@@ -31,6 +31,7 @@ import { useI18n } from 'vue-i18n'
 import { useBlockStore, type Block } from '@/stores/blocks'
 import { useDatabaseStore, type DatabaseEntry } from '@/stores/database'
 import { useDatabaseTemplatesStore } from '@/stores/databaseTemplates'
+import { WS_BLOCK_EVENT, type BlockEventPayload } from '@/stores/ws'
 import BlockTopSection from '@/components/main/BlockTopSection.vue'
 import BlockPropertySection from '@/components/main/BlockPropertySection.vue'
 import BlockContentSection from '@/components/main/BlockContentSection.vue'
@@ -63,9 +64,13 @@ const block = computed<Block | null>(() =>
 )
 
 /**
- * Build a DatabaseEntry-compatible shape from the template store data so
- * BlockPropertySection can render and mutate property values correctly.
- * Values come from the template store (populated by GET /entry-templates).
+ * Build a DatabaseEntry-compatible shape for BlockPropertySection.
+ *
+ * - content / icon come from the reactive blockStore so that title and icon
+ *   changes made via BlockTopSection are reflected immediately (the blockStore
+ *   patches blocks[templateId] in-place on every WS event).
+ * - values come from the templateStore, which is refreshed after every
+ *   property mutation (onRefresh) and on every relevant WS event (_onWsEvent).
  */
 const templateEntry = computed<DatabaseEntry | null>(() => {
   if (!block.value) return null
@@ -124,8 +129,44 @@ function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') close()
 }
 
-onMounted(() => document.addEventListener('keydown', onKeydown))
-onUnmounted(() => document.removeEventListener('keydown', onKeydown))
+// ── WebSocket sync ────────────────────────────────────────────────────────────
+
+/**
+ * Re-fetch template values whenever the backend broadcasts an update for this
+ * template block. This covers:
+ * - content_updated  (title changed via BlockTopSection)
+ * - appearance_updated (icon changed)
+ * - database_entries_updated on the owning database (value upsert from another session)
+ *
+ * The blockStore already patches blocks[templateId] in-place for block-level
+ * events, so BlockTopSection stays reactive automatically. We only need to
+ * re-fetch the templateStore for value changes.
+ */
+function _onWsEvent(e: Event): void {
+  const { event_type, block_id } = (e as CustomEvent<BlockEventPayload>).detail
+  // Value mutations broadcast database_entries_updated with block_id = databaseId.
+  if (event_type === 'database_entries_updated' && block_id === props.databaseId) {
+    templateStore.fetchTemplates(props.databaseId)
+    return
+  }
+  // Direct block updates on the template itself (title, icon).
+  if (
+    (event_type === 'content_updated' || event_type === 'appearance_updated') &&
+    block_id === props.templateId
+  ) {
+    templateStore.fetchTemplates(props.databaseId)
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('keydown', onKeydown)
+  window.addEventListener(WS_BLOCK_EVENT, _onWsEvent)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', onKeydown)
+  window.removeEventListener(WS_BLOCK_EVENT, _onWsEvent)
+})
 
 // ── Panel resize ──────────────────────────────────────────────────────────────
 
