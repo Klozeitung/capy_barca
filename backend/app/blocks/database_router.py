@@ -67,9 +67,10 @@ Every database automatically receives a linked ``parent_item`` /
   (single-parent policy).  Writing this property triggers
   ``_sync_parent_item``, which maintains the mirror ``sub_item`` values
   bilaterally: the old parent's sub_item list loses the entry, the new
-  parent's sub_item list gains it.
-* **sub_item** – backend-managed mirror (in ``_READONLY_TYPES``); stores
-  the list of child entry IDs.  Direct writes are rejected with 422.
+  parent's sub_item list gains it.  A cycle check prevents circular hierarchies.
+* **sub_item** – also user-writable; writing it directly triggers
+  ``_sync_sub_item``, which keeps the ``parent_item`` mirror in sync on
+  each affected child entry.
 
 Computed properties (formula / rollup)
 ---------------------------------------
@@ -123,8 +124,9 @@ database_router = APIRouter(prefix="/api/databases", tags=["databases"])
 # regular upsert endpoint.  An attempt to upsert these via the API is
 # rejected with 422.  They are populated automatically on entry creation
 # and (for last_edited_*, formula, rollup) on every value upsert.
-# sub_item is the backend-managed mirror of parent_item – direct writes
-# are rejected; parent_item itself IS user-writable and handled specially.
+# sub_item is user-writable (direct writes are accepted and trigger bilateral
+# sync via _sync_sub_item); it is also maintained automatically as a mirror
+# whenever parent_item is written.
 _READONLY_TYPES: frozenset[str] = frozenset(
     {
         "id",
@@ -134,7 +136,6 @@ _READONLY_TYPES: frozenset[str] = frozenset(
         "last_edited_time",
         "formula",
         "rollup",
-        "sub_item",
     }
 )
 
@@ -631,6 +632,118 @@ def _sync_parent_item(
             schema_id=sub_item_schema.id,
             value={"related_ids": current},
         )
+
+
+def _would_create_parent_cycle(
+    db: Session,
+    entry_id: uuid.UUID,
+    proposed_parent_id: uuid.UUID,
+    parent_item_schema_id: uuid.UUID,
+) -> bool:
+    """
+    Return True if setting *proposed_parent_id* as the parent of *entry_id*
+    would create a cycle in the parent–child hierarchy.
+
+    Walks the ancestor chain of *proposed_parent_id* upward until either
+    *entry_id* is found (cycle) or the chain terminates (no cycle).  Bounded
+    by a depth limit as a safety net against corrupt existing data.
+    """
+    MAX_DEPTH = 200
+    current_id: uuid.UUID | None = proposed_parent_id
+    visited: set[str] = set()
+    depth = 0
+
+    while current_id is not None and depth < MAX_DEPTH:
+        id_str = str(current_id)
+        if id_str in visited:
+            break  # Already-broken cycle in existing data — stop safely.
+        if current_id == entry_id:
+            return True
+        visited.add(id_str)
+        pv = repo.get_value(db, current_id, parent_item_schema_id)
+        if pv is None or not pv.value:
+            break
+        parent_ids: list[str] = list(pv.value.get("related_ids") or [])
+        if not parent_ids:
+            break
+        try:
+            current_id = uuid.UUID(parent_ids[0])
+        except ValueError:
+            break
+        depth += 1
+
+    return False
+
+
+def _sync_sub_item(
+    db: Session,
+    entry_id: uuid.UUID,
+    new_child_ids: list[str],
+    old_child_ids: list[str],
+    parent_item_schema,
+) -> None:
+    """
+    Maintain the ``parent_item`` mirror whenever a ``sub_item`` value is written
+    directly.
+
+    When entry B's sub_item gains child A:
+    * A's ``parent_item`` is set to B (if A had a different parent, that parent
+      is cleared first — single-parent policy).
+
+    When entry B's sub_item loses child A:
+    * A's ``parent_item`` is cleared if it currently points to B.
+
+    Parameters
+    ----------
+    db:
+        Active database session (within the caller's transaction).
+    entry_id:
+        UUID of the entry whose ``sub_item`` was just written (the parent).
+    new_child_ids:
+        The ``related_ids`` list that was just stored.
+    old_child_ids:
+        The ``related_ids`` list that existed before this write.
+    parent_item_schema:
+        The partner ``PropertySchema`` of type ``parent_item``.
+        If ``None`` the sync is a no-op.
+    """
+    if parent_item_schema is None:
+        return
+
+    entry_id_str = str(entry_id)
+    added   = set(new_child_ids) - set(old_child_ids)
+    removed = set(old_child_ids) - set(new_child_ids)
+
+    # For newly added children: set their parent_item to this entry,
+    # clearing any previous parent first (single-parent policy).
+    for cid_str in added:
+        try:
+            cid = uuid.UUID(cid_str)
+        except ValueError:
+            continue
+        repo.upsert_value(
+            db,
+            page_id=cid,
+            schema_id=parent_item_schema.id,
+            value={"related_ids": [entry_id_str]},
+        )
+
+    # For removed children: clear their parent_item if it still points here.
+    for cid_str in removed:
+        try:
+            cid = uuid.UUID(cid_str)
+        except ValueError:
+            continue
+        pv = repo.get_value(db, cid, parent_item_schema.id)
+        if pv and pv.value:
+            current_parents = list(pv.value.get("related_ids") or [])
+            if entry_id_str in current_parents:
+                repo.upsert_value(
+                    db,
+                    page_id=cid,
+                    schema_id=parent_item_schema.id,
+                    value=None,
+                )
 
 
 def _ensure_bilateral_mirror(
@@ -2104,8 +2217,9 @@ async def upsert_value(
             detail=f"Property '{schema.name}' is system-managed and cannot be set directly.",
         )
 
-    # ── parent_item: single-parent policy ────────────────────────────────────
+    # ── parent_item: single-parent policy + cycle detection ──────────────────
     is_parent_item = schema.type == "parent_item"
+    is_sub_item    = schema.type == "sub_item"
     if is_parent_item and payload.value is not None:
         related = payload.value.get("related_ids") or []
         if len(related) > 1:
@@ -2113,6 +2227,24 @@ async def upsert_value(
                 status_code=422,
                 detail="parent_item only supports a single parent (single-parent policy).",
             )
+        if len(related) == 1:
+            try:
+                proposed_parent_id = uuid.UUID(related[0])
+            except ValueError:
+                raise HTTPException(status_code=422, detail="Invalid parent entry ID.")
+            # Resolve partner schema for the loop walk.
+            partner_id_str = (schema.config or {}).get("partner_schema_id")
+            partner_schema = None
+            if partner_id_str:
+                all_schemas = repo.list_schemas(db, database_id)
+                partner_schema = next(
+                    (s for s in all_schemas if str(s.id) == partner_id_str), None
+                )
+            if _would_create_parent_cycle(db, entry_id, proposed_parent_id, schema.id):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Setting this parent would create a cycle in the hierarchy.",
+                )
 
     config = schema.config or {}
     has_timeline = bool(config.get("hasTimeline", False))
@@ -2174,6 +2306,20 @@ async def upsert_value(
                     (s for s in all_schemas if str(s.id) == partner_id_str), None
                 )
 
+        # ── sub_item: capture old state and resolve parent_item partner ───────
+        old_child_ids: list[str] = []
+        parent_item_schema_ref = None
+        if is_sub_item:
+            old_pv3 = repo.get_value(db, entry_id, schema_id)
+            if old_pv3 and old_pv3.value:
+                old_child_ids = list(old_pv3.value.get("related_ids") or [])
+            partner_id_str_si = config.get("partner_schema_id")
+            if partner_id_str_si:
+                all_schemas_si = repo.list_schemas(db, database_id)
+                parent_item_schema_ref = next(
+                    (s for s in all_schemas_si if str(s.id) == partner_id_str_si), None
+                )
+
         # ── Build the value to store ─────────────────────────────────────────
         stored_value = payload.value
 
@@ -2214,6 +2360,15 @@ async def upsert_value(
             new_parent_ids = list((stored_value or {}).get("related_ids") or [])
             _sync_parent_item(
                 db, entry_id, new_parent_ids, old_parent_ids, sub_item_schema_ref
+            )
+
+        # ── sub_item sync ────────────────────────────────────────────────────
+        # When sub_item is written directly, keep the parent_item mirror in
+        # sync. Suppressed for entry_template blocks (same rationale as above).
+        if is_sub_item and entry.type != "entry_template":
+            new_child_ids = list((stored_value or {}).get("related_ids") or [])
+            _sync_sub_item(
+                db, entry_id, new_child_ids, old_child_ids, parent_item_schema_ref
             )
 
         _refresh_last_edited(db, database_id, entry_id, current_user.id)
@@ -2409,12 +2564,12 @@ async def apply_entry_template(
 
     Copies the template's ``content`` (title, icon) and all writable
     property values onto *entry_id*.  Readonly property types
-    (``id``, ``created_*``, ``last_edited_*``, ``formula``, ``rollup``,
-    ``sub_item``) are intentionally skipped — the target entry keeps its
-    own auto-generated values for these.
+    (``id``, ``created_*``, ``last_edited_*``, ``formula``, ``rollup``)
+    are intentionally skipped — the target entry keeps its own
+    auto-generated values for these.
 
-    Bilateral relation side-effects are applied via the same
-    ``_sync_bilateral_relation`` helper used by the regular upsert endpoint.
+    Bilateral relation side-effects, parent_item sync, and sub_item sync
+    are applied using the same helpers as the regular upsert endpoint.
 
     Returns 204 No Content on success.
     Returns 404 if the database, template, or target entry is not found,
@@ -2486,6 +2641,20 @@ async def apply_entry_template(
                 _raw_target = (schema.config or {}).get("target_database_id")
                 if _raw_target and str(_raw_target) != str(database_id):
                     bilateral_target_dbs.add(str(_raw_target))
+
+            # Keep parent_item / sub_item mirrors in sync.
+            partner_id_str = (schema.config or {}).get("partner_schema_id")
+            partner_schema = None
+            if partner_id_str:
+                partner_schema = next(
+                    (s for s in all_schemas if str(s.id) == partner_id_str), None
+                )
+            if schema.type == "parent_item":
+                new_parent_ids = list(_extract_related_ids_now(pv.value))
+                _sync_parent_item(db, entry_id, new_parent_ids, [], partner_schema)
+            elif schema.type == "sub_item":
+                new_child_ids = list(_extract_related_ids_now(pv.value))
+                _sync_sub_item(db, entry_id, new_child_ids, [], partner_schema)
 
         _refresh_last_edited(db, database_id, entry_id, current_user.id)
         compute_all_for_entry(db, database_id, entry_id)

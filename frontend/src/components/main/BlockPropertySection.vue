@@ -743,7 +743,7 @@ function onGroupDragEnd(): void {
               :schema="schema"
               :entry="entry"
               :database-id="databaseId"
-              :readonly="true"
+              @change="handleRelationChange(schema, $event)"
             />
 
             <LinkCell

@@ -80,10 +80,11 @@ export const PROPERTY_TYPES: readonly PropertyTypeDefinition[] = [
   // ── Sub-item hierarchy ────────────────────────────────────────────────────
   // parent_item: user-writable (sets the parent via upsert_value), but its
   //              config (partner_schema_id) is locked after creation.
-  // sub_item:    backend-managed mirror (readonly); receives ids automatically
-  //              when any entry's parent_item is updated.
+  // sub_item:    user-writable (sets children directly via upsert_value);
+  //              also maintained automatically as a mirror whenever
+  //              parent_item is written. Config is locked after creation.
   { value: 'parent_item', labelKey: 'db.propType.parent_item', icon: 'mdi:arrow-up-circle-outline',   group: 'readonly', configLocked: true },
-  { value: 'sub_item',    labelKey: 'db.propType.sub_item',    icon: 'mdi:arrow-down-circle-outline', group: 'readonly', readonly: true, configLocked: true },
+  { value: 'sub_item',    labelKey: 'db.propType.sub_item',    icon: 'mdi:arrow-down-circle-outline', group: 'readonly',               configLocked: true },
 ] as const
 
 /**

@@ -1245,8 +1245,8 @@ def test_upsert_parent_item_single_parent_policy_enforced(http_client):
     assert "single-parent" in resp.json()["detail"].lower()
 
 
-def test_cannot_write_sub_item_directly(http_client):
-    """Direct writes to sub_item must be rejected with 422."""
+def test_can_write_sub_item_directly(http_client):
+    """Direct writes to sub_item must be accepted (sub_item is user-writable)."""
     db_id = _create_database(http_client)
     _, si = _get_subitem_schemas(http_client, db_id)
     entry = _create_entry(http_client, db_id)
@@ -1255,7 +1255,7 @@ def test_cannot_write_sub_item_directly(http_client):
         f"/api/databases/{db_id}/entries/{entry['id']}/values/{si['id']}",
         json={"value": {"related_ids": []}},
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 204
 
 
 def test_multiple_children_appear_in_sub_item(http_client):
@@ -2672,3 +2672,116 @@ def test_apply_regular_entry_as_template_returns_404(http_client):
         f"/api/databases/{db_id}/entry-templates/{not_a_template['id']}/apply/{target['id']}"
     )
     assert resp.status_code == 404
+
+# ─── Loop detection and sub_item direct writes ────────────────────────────────
+
+
+def _get_subitem_schemas(http_client, db_id):
+    _seed(http_client, db_id)
+    schemas = http_client.get(f"/api/databases/{db_id}/schemas").json()
+    pi = next(s for s in schemas if s["type"] == "parent_item")
+    si = next(s for s in schemas if s["type"] == "sub_item")
+    return pi, si
+
+
+def test_parent_item_cycle_direct_returns_422(http_client):
+    """Setting A's parent to itself must be rejected."""
+    db_id = _create_database(http_client)
+    pi, _si = _get_subitem_schemas(http_client, db_id)
+    entry_a = _create_entry(http_client, db_id)
+
+    resp = http_client.put(
+        f"/api/databases/{db_id}/entries/{entry_a['id']}/values/{pi['id']}",
+        json={"value": {"related_ids": [entry_a["id"]]}},
+    )
+    assert resp.status_code == 422
+
+
+def test_parent_item_cycle_indirect_returns_422(http_client):
+    """A → B → A cycle must be rejected when setting B's parent to A."""
+    db_id = _create_database(http_client)
+    pi, _si = _get_subitem_schemas(http_client, db_id)
+    entry_a = _create_entry(http_client, db_id)
+    entry_b = _create_entry(http_client, db_id)
+
+    # A's parent = B (valid)
+    resp = http_client.put(
+        f"/api/databases/{db_id}/entries/{entry_a['id']}/values/{pi['id']}",
+        json={"value": {"related_ids": [entry_b["id"]]}},
+    )
+    assert resp.status_code == 204
+
+    # B's parent = A — would create A → B → A cycle
+    resp = http_client.put(
+        f"/api/databases/{db_id}/entries/{entry_b['id']}/values/{pi['id']}",
+        json={"value": {"related_ids": [entry_a["id"]]}},
+    )
+    assert resp.status_code == 422
+
+
+def test_parent_item_three_level_cycle_returns_422(http_client):
+    """A → B → C → A three-level cycle must be rejected."""
+    db_id = _create_database(http_client)
+    pi, _si = _get_subitem_schemas(http_client, db_id)
+    a = _create_entry(http_client, db_id)
+    b = _create_entry(http_client, db_id)
+    c = _create_entry(http_client, db_id)
+
+    _upsert_value(http_client, db_id, a["id"], pi["id"], {"related_ids": [b["id"]]})
+    _upsert_value(http_client, db_id, b["id"], pi["id"], {"related_ids": [c["id"]]})
+
+    resp = http_client.put(
+        f"/api/databases/{db_id}/entries/{c['id']}/values/{pi['id']}",
+        json={"value": {"related_ids": [a["id"]]}},
+    )
+    assert resp.status_code == 422
+
+
+def test_sub_item_direct_write_accepted(http_client):
+    """Writing sub_item directly must be accepted (no longer readonly)."""
+    db_id = _create_database(http_client)
+    pi, si = _get_subitem_schemas(http_client, db_id)
+    parent = _create_entry(http_client, db_id)
+    child  = _create_entry(http_client, db_id)
+
+    resp = http_client.put(
+        f"/api/databases/{db_id}/entries/{parent['id']}/values/{si['id']}",
+        json={"value": {"related_ids": [child["id"]]}},
+    )
+    assert resp.status_code == 204
+
+
+def test_sub_item_direct_write_syncs_parent_item(http_client):
+    """Setting B's sub_item to [A] must set A's parent_item to B."""
+    db_id = _create_database(http_client)
+    pi, si = _get_subitem_schemas(http_client, db_id)
+    parent_entry = _create_entry(http_client, db_id)
+    child_entry  = _create_entry(http_client, db_id)
+
+    _upsert_value(http_client, db_id, parent_entry["id"], si["id"],
+                  {"related_ids": [child_entry["id"]]})
+
+    entries = http_client.get(f"/api/databases/{db_id}/entries").json()
+    child_row = next(e for e in entries if e["id"] == child_entry["id"])
+    parent_val = child_row["values"].get(pi["id"]) or {}
+    assert parent_entry["id"] in (parent_val.get("related_ids") or [])
+
+
+def test_sub_item_direct_remove_clears_parent_item(http_client):
+    """Removing A from B's sub_item must clear A's parent_item."""
+    db_id = _create_database(http_client)
+    pi, si = _get_subitem_schemas(http_client, db_id)
+    parent_entry = _create_entry(http_client, db_id)
+    child_entry  = _create_entry(http_client, db_id)
+
+    # Add child via sub_item
+    _upsert_value(http_client, db_id, parent_entry["id"], si["id"],
+                  {"related_ids": [child_entry["id"]]})
+    # Remove by writing empty
+    _upsert_value(http_client, db_id, parent_entry["id"], si["id"],
+                  {"related_ids": []})
+
+    entries = http_client.get(f"/api/databases/{db_id}/entries").json()
+    child_row = next(e for e in entries if e["id"] == child_entry["id"])
+    parent_val = child_row["values"].get(pi["id"]) or {}
+    assert (parent_val.get("related_ids") or []) == []
