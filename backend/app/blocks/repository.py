@@ -595,6 +595,7 @@ def query_entries(
     base_conds = [
         Block.parent_id == database_id,
         Block.state == 'active',
+        Block.type != 'entry_template',
     ]
 
     # Build one clause per group; empty groups (all filters invalid) are skipped
@@ -748,6 +749,7 @@ def list_children(
     parent_id: uuid.UUID,
     *,
     state: Optional[str] = "active",
+    exclude_types: Optional[frozenset[str]] = None,
 ) -> list[Block]:
     """
     Return the direct children of *parent_id*, ordered by position ascending.
@@ -760,6 +762,10 @@ def list_children(
         UUID of the parent block.
     state:
         Filter by block state. Pass ``None`` to return children of all states.
+    exclude_types:
+        Optional set of block type strings to exclude from the result.
+        Pass ``frozenset({"entry_template"})`` when listing database entries
+        so that template blocks are not surfaced as regular entries.
     """
     stmt = (
         select(Block)
@@ -768,6 +774,8 @@ def list_children(
     )
     if state is not None:
         stmt = stmt.where(Block.state == state)
+    if exclude_types:
+        stmt = stmt.where(Block.type.not_in(exclude_types))
     return list(db.scalars(stmt).all())
 
 

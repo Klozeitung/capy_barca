@@ -285,7 +285,7 @@ onUnmounted(() => {
           :block-id="entryId"
         />
 
-        <BlockContentSection :parent-id="entryId" />
+        <BlockContentSection :parent-id="entryId" :database-id="databaseId" />
       </div>
     </div>
   </Teleport>

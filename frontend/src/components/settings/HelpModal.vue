@@ -90,7 +90,6 @@ const blockGroups = computed<BlockGroup[]>(() => [
   {
     labelKey: 'help.groupStructure',
     items: [
-      { icon: 'mdi:calendar-month-outline', nameKey: 'block.types.calendar',          descKey: 'editor.slashMenu.calendarDesc' },
       { icon: 'mdi:view-column-outline',    nameKey: 'block.types.layout',            descKey: 'editor.slashMenu.layoutDesc' },
       { icon: 'mdi:sync',                   nameKey: 'block.types.synched_origin',    descKey: 'editor.slashMenu.synchedOriginDesc' },
       { icon: 'mdi:sync',                   nameKey: 'block.types.synched_mirror',    descKey: 'editor.slashMenu.synchedOriginDesc' },
@@ -101,8 +100,9 @@ const blockGroups = computed<BlockGroup[]>(() => [
   {
     labelKey: 'help.groupDatabase',
     items: [
-      { icon: 'mdi:table',             nameKey: 'block.types.database',        descKey: 'editor.slashMenu.databaseDesc' },
-      { icon: 'mdi:table-arrow-right', nameKey: 'block.types.linked_database', descKey: 'editor.slashMenu.linkedDatabaseDesc' },
+      { icon: 'mdi:table',                           nameKey: 'block.types.database',        descKey: 'editor.slashMenu.databaseDesc' },
+      { icon: 'mdi:table-arrow-right',               nameKey: 'block.types.linked_database', descKey: 'editor.slashMenu.linkedDatabaseDesc' },
+      { icon: 'mdi:file-document-multiple-outline',  nameKey: 'db.templates.title',          descKey: 'help.databaseTemplatesDesc' },
     ],
   },
 ])

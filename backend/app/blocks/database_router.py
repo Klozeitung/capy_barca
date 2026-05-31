@@ -2,8 +2,8 @@
 Database router.
 
 HTTP interface for database block operations: property schema CRUD, entry
-listing (with embedded property values), entry creation, and per-cell value
-upsert.
+listing (with embedded property values), entry creation, per-cell value
+upsert, and entry template management.
 
 All endpoints require a valid session cookie. The service layer is used
 only for entry creation (``service.create_block``); schema and value
@@ -16,6 +16,28 @@ Convention
 * Mutation handlers that broadcast a WebSocket event are ``async def``.
 * Schema CRUD and value upsert are ``def`` – they are contained mutations
   that do not require a broadcast (clients re-fetch after their own writes).
+
+Entry templates
+---------------
+Templates are real ``entry_template``-type blocks stored as direct children
+of a database block, identical in structure to regular ``page``-type entries.
+They participate in the schema lifecycle automatically: adding or removing a
+property schema affects templates and real entries alike because they share
+the same parent-child relationship and PropertyValue table.
+
+Templates are excluded from all regular entry queries
+(``GET /entries``, ``POST /entries/query``) and from formula / rollup
+aggregation by filtering ``type != 'entry_template'`` at the repository
+layer.
+
+New endpoints
+~~~~~~~~~~~~~
+POST   /{database_id}/entry-templates               – create a template
+GET    /{database_id}/entry-templates               – list all templates
+POST   /{database_id}/entry-templates/{tid}/apply/{entry_id}
+                                                    – copy template content
+                                                      and writable values
+                                                      onto an existing entry
 
 Relation synchronisation
 ------------------------
@@ -962,7 +984,10 @@ def _migrate_relation_values_to_timeline(
     schema_id:
         UUID of the relation schema that was just enabled for timeline.
     """
-    entries = repo.list_children(db, database_id, state="active")
+    entries = repo.list_children(
+        db, database_id, state="active",
+        exclude_types=frozenset({"entry_template"}),
+    )
     for entry in entries:
         pv = repo.get_value(db, entry.id, schema_id)
         if pv is None or not pv.value:
@@ -1307,7 +1332,10 @@ def update_schema(
 
         # Re-evaluate all entries when computed config changes
         if effective_type in ("formula", "rollup") and payload.config is not None:
-            entries = repo.list_children(db, database_id, state="active")
+            entries = repo.list_children(
+                db, database_id, state="active",
+                exclude_types=frozenset({"entry_template"}),
+            )
             for entry in entries:
                 compute_all_for_entry(db, database_id, entry.id)
 
@@ -1523,7 +1551,10 @@ def list_entries(
     dict on each entry maps schema_id (string) to the stored JSONB payload.
     """
     _get_database_or_raise(db, database_id)
-    entries = repo.list_children(db, database_id, state="active")
+    entries = repo.list_children(
+        db, database_id, state="active",
+        exclude_types=frozenset({"entry_template"}),
+    )
     if not entries:
         return []
 
@@ -2255,3 +2286,223 @@ async def upsert_value(
         )
 
 
+# ─── Entry-template endpoints ─────────────────────────────────────────────────
+
+
+class EntryTemplateResponse(BaseModel):
+    """A database entry template block with its property values."""
+    id: uuid.UUID
+    position: float
+    content: Optional[dict]
+    icon: Optional[str]
+    values: dict[str, Optional[dict]]
+
+
+@database_router.post(
+    "/{database_id}/entry-templates",
+    response_model=EntryTemplateResponse,
+    status_code=201,
+)
+async def create_entry_template(
+    database_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Create a new entry template block inside *database_id*.
+
+    The template is stored as a child block of the database with
+    ``type = 'entry_template'``.  Readonly properties (id, created_*,
+    last_edited_*, formula, rollup) are seeded immediately so the template
+    displays the same property set as regular entries.
+
+    Templates do not appear in any regular entry query or relation / rollup
+    aggregation.
+    """
+    _get_database_or_raise(db, database_id)
+    try:
+        block = service.create_block(db, type="entry_template", parent_id=database_id)
+        _populate_readonly_properties(db, database_id, block.id, block.created_at, current_user.id)
+        compute_all_for_entry(db, database_id, block.id)
+        db.commit()
+        await broadcast_block_event(
+            event_type="database_entries_updated",
+            block_id=str(database_id),
+            before=None,
+            after={"database_id": str(database_id)},
+        )
+        return EntryTemplateResponse(
+            id=block.id,
+            position=block.position,
+            content=block.content,
+            icon=block.icon,
+            values={},
+        )
+    except BlockNotFound as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc))
+    except BlockConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception:
+        db.rollback()
+        raise
+
+
+@database_router.get(
+    "/{database_id}/entry-templates",
+    response_model=list[EntryTemplateResponse],
+)
+def list_entry_templates(
+    database_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _session: uuid.UUID = Depends(require_session),
+):
+    """
+    Return all active entry templates belonging to *database_id*.
+
+    Values are loaded in a single additional query (no N+1), identical to
+    the regular ``GET /entries`` endpoint.
+    """
+    _get_database_or_raise(db, database_id)
+    templates = [
+        b for b in repo.list_children(db, database_id, state="active")
+        if b.type == "entry_template"
+    ]
+    if not templates:
+        return []
+    values_map = repo.list_values_for_pages(db, [t.id for t in templates])
+    return [
+        EntryTemplateResponse(
+            id=t.id,
+            position=t.position,
+            content=t.content,
+            icon=t.icon,
+            values={
+                str(pv.property_schema_id): pv.value
+                for pv in values_map.get(t.id, [])
+            },
+        )
+        for t in templates
+    ]
+
+
+@database_router.post(
+    "/{database_id}/entry-templates/{template_id}/apply/{entry_id}",
+    status_code=204,
+)
+async def apply_entry_template(
+    database_id: uuid.UUID,
+    template_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Apply an entry template onto an existing database entry.
+
+    Copies the template's ``content`` (title, icon) and all writable
+    property values onto *entry_id*.  Readonly property types
+    (``id``, ``created_*``, ``last_edited_*``, ``formula``, ``rollup``,
+    ``sub_item``) are intentionally skipped — the target entry keeps its
+    own auto-generated values for these.
+
+    Bilateral relation side-effects are applied via the same
+    ``_sync_bilateral_relation`` helper used by the regular upsert endpoint.
+
+    Returns 204 No Content on success.
+    Returns 404 if the database, template, or target entry is not found,
+    or if the template / entry do not belong to the given database.
+    """
+    _get_database_or_raise(db, database_id)
+
+    template = repo.get_block(db, template_id)
+    if template is None or template.parent_id != database_id or template.type != "entry_template":
+        raise HTTPException(
+            status_code=404,
+            detail=f"Entry template {template_id} not found in database {database_id}",
+        )
+
+    target = repo.get_block(db, entry_id)
+    if target is None or target.parent_id != database_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Entry {entry_id} not found in database {database_id}",
+        )
+
+    values_map = repo.list_values_for_pages(db, [template_id])
+    template_pvs = values_map.get(template_id, [])
+    all_schemas = repo.list_schemas(db, database_id)
+    schema_map = {s.id: s for s in all_schemas}
+    bilateral_target_dbs: set[str] = set()
+
+    try:
+        # Copy block-level content (title, icon) from the template.
+        if template.content:
+            target.content = dict(template.content)
+        if template.icon:
+            target.icon = template.icon
+        db.flush()
+
+        # Copy all writable property values from the template.
+        for pv in template_pvs:
+            schema = schema_map.get(pv.property_schema_id)
+            if schema is None or schema.type in _READONLY_TYPES:
+                continue
+            if pv.value is None:
+                continue
+
+            repo.upsert_value(
+                db,
+                page_id=entry_id,
+                schema_id=pv.property_schema_id,
+                value=pv.value,
+            )
+
+            # Keep bilateral relation mirrors in sync.
+            is_bilateral = (
+                schema.type == "relation"
+                and (schema.config or {}).get("direction") in ("bilateral", "bilateral_self")
+            )
+            if is_bilateral:
+                is_relation_timeline = bool((schema.config or {}).get("hasTimeline", False))
+                if is_relation_timeline:
+                    new_pool = dict((pv.value or {}).get("relationPool") or {})
+                    mirror_schema = _get_mirror_schema(db, schema)
+                    _sync_bilateral_relation_timeline(
+                        db, schema, mirror_schema, entry_id, new_pool, old_pool={}
+                    )
+                else:
+                    new_related_ids = list(_extract_related_ids_now(pv.value))
+                    _sync_bilateral_relation(
+                        db, schema, entry_id, new_related_ids, old_related_ids=[]
+                    )
+                _raw_target = (schema.config or {}).get("target_database_id")
+                if _raw_target and str(_raw_target) != str(database_id):
+                    bilateral_target_dbs.add(str(_raw_target))
+
+        _refresh_last_edited(db, database_id, entry_id, current_user.id)
+        compute_all_for_entry(db, database_id, entry_id)
+        compute_same_db_rollup_dependents(db, database_id, entry_id)
+        db.commit()
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+    await broadcast_block_event(
+        event_type="database_entries_updated",
+        block_id=str(database_id),
+        before=None,
+        after={"database_id": str(database_id)},
+    )
+    for affected_id in bilateral_target_dbs:
+        await broadcast_block_event(
+            event_type="database_entries_updated",
+            block_id=str(affected_id),
+            before=None,
+            after={"database_id": str(affected_id)},
+        )

@@ -2499,3 +2499,176 @@ def test_upsert_engine_failure_does_not_break_response(http_client, monkeypatch)
     )
     assert resp.status_code == 204
 
+
+# ─── Entry-template endpoints ─────────────────────────────────────────────────
+
+
+def _create_entry_template(http_client, database_id: str) -> dict:
+    resp = http_client.post(f"/api/databases/{database_id}/entry-templates")
+    assert resp.status_code == 201
+    return resp.json()
+
+
+# ── POST /{database_id}/entry-templates ───────────────────────────────────────
+
+
+def test_create_entry_template_returns_201(http_client):
+    db_id = _create_database(http_client)
+    resp = http_client.post(f"/api/databases/{db_id}/entry-templates")
+    assert resp.status_code == 201
+
+
+def test_create_entry_template_response_has_id(http_client):
+    db_id = _create_database(http_client)
+    tmpl = _create_entry_template(http_client, db_id)
+    assert "id" in tmpl
+
+
+def test_create_entry_template_unknown_database_returns_404(http_client):
+    resp = http_client.post(f"/api/databases/{uuid.uuid4()}/entry-templates")
+    assert resp.status_code == 404
+
+
+# ── GET /{database_id}/entry-templates ────────────────────────────────────────
+
+
+def test_list_entry_templates_returns_200(http_client):
+    db_id = _create_database(http_client)
+    resp = http_client.get(f"/api/databases/{db_id}/entry-templates")
+    assert resp.status_code == 200
+
+
+def test_list_entry_templates_empty_for_new_database(http_client):
+    db_id = _create_database(http_client)
+    result = http_client.get(f"/api/databases/{db_id}/entry-templates").json()
+    assert result == []
+
+
+def test_list_entry_templates_returns_created_template(http_client):
+    db_id = _create_database(http_client)
+    tmpl = _create_entry_template(http_client, db_id)
+    result = http_client.get(f"/api/databases/{db_id}/entry-templates").json()
+    assert any(t["id"] == tmpl["id"] for t in result)
+
+
+def test_list_entry_templates_does_not_include_regular_entries(http_client):
+    db_id = _create_database(http_client)
+    _create_entry(http_client, db_id)
+    _create_entry_template(http_client, db_id)
+    result = http_client.get(f"/api/databases/{db_id}/entry-templates").json()
+    assert len(result) == 1
+
+
+def test_list_entry_templates_unknown_database_returns_404(http_client):
+    resp = http_client.get(f"/api/databases/{uuid.uuid4()}/entry-templates")
+    assert resp.status_code == 404
+
+
+# ── Templates excluded from regular entry queries ─────────────────────────────
+
+
+def test_entry_templates_excluded_from_list_entries(http_client):
+    """GET /entries must never include entry_template blocks."""
+    db_id = _create_database(http_client)
+    real_entry = _create_entry(http_client, db_id)
+    _create_entry_template(http_client, db_id)
+    entries = http_client.get(f"/api/databases/{db_id}/entries").json()
+    assert len(entries) == 1
+    assert entries[0]["id"] == real_entry["id"]
+
+
+def test_entry_templates_excluded_from_query_entries(http_client):
+    """POST /entries/query must never include entry_template blocks."""
+    db_id = _create_database(http_client)
+    real_entry = _create_entry(http_client, db_id)
+    _create_entry_template(http_client, db_id)
+    resp = http_client.post(
+        f"/api/databases/{db_id}/entries/query",
+        json={"filter_groups": [], "sorts": [], "limit": 100, "offset": 0},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["entries"][0]["id"] == real_entry["id"]
+
+
+# ── POST /{database_id}/entry-templates/{template_id}/apply/{entry_id} ────────
+
+
+def test_apply_entry_template_returns_204(http_client):
+    db_id = _create_database(http_client)
+    tmpl = _create_entry_template(http_client, db_id)
+    entry = _create_entry(http_client, db_id)
+    resp = http_client.post(
+        f"/api/databases/{db_id}/entry-templates/{tmpl['id']}/apply/{entry['id']}"
+    )
+    assert resp.status_code == 204
+
+
+def test_apply_entry_template_copies_text_property(http_client):
+    db_id = _create_database(http_client)
+    text_schema = _create_schema(http_client, db_id, name="Notes", type_="text")
+    tmpl = _create_entry_template(http_client, db_id)
+    _upsert_value(http_client, db_id, tmpl["id"], text_schema["id"], {"text": "From template"})
+
+    entry = _create_entry(http_client, db_id)
+    http_client.post(
+        f"/api/databases/{db_id}/entry-templates/{tmpl['id']}/apply/{entry['id']}"
+    )
+
+    entries = http_client.get(f"/api/databases/{db_id}/entries").json()
+    row = next(e for e in entries if e["id"] == entry["id"])
+    assert row["values"].get(text_schema["id"], {}).get("text") == "From template"
+
+
+def test_apply_entry_template_skips_readonly_properties(http_client):
+    """Readonly properties (id, created_*) must not be overwritten on apply."""
+    db_id = _create_database(http_client)
+    _seed(http_client, db_id)  # seeds id, created_by, created_time, …
+
+    tmpl = _create_entry_template(http_client, db_id)
+    entry = _create_entry(http_client, db_id)
+
+    # Capture the entry's own id value before apply.
+    schemas = http_client.get(f"/api/databases/{db_id}/schemas").json()
+    id_schema = next(s for s in schemas if s["type"] == "id")
+    entries_before = http_client.get(f"/api/databases/{db_id}/entries").json()
+    row_before = next(e for e in entries_before if e["id"] == entry["id"])
+    id_val_before = row_before["values"].get(id_schema["id"])
+
+    http_client.post(
+        f"/api/databases/{db_id}/entry-templates/{tmpl['id']}/apply/{entry['id']}"
+    )
+
+    entries_after = http_client.get(f"/api/databases/{db_id}/entries").json()
+    row_after = next(e for e in entries_after if e["id"] == entry["id"])
+    assert row_after["values"].get(id_schema["id"]) == id_val_before
+
+
+def test_apply_entry_template_unknown_template_returns_404(http_client):
+    db_id = _create_database(http_client)
+    entry = _create_entry(http_client, db_id)
+    resp = http_client.post(
+        f"/api/databases/{db_id}/entry-templates/{uuid.uuid4()}/apply/{entry['id']}"
+    )
+    assert resp.status_code == 404
+
+
+def test_apply_entry_template_unknown_entry_returns_404(http_client):
+    db_id = _create_database(http_client)
+    tmpl = _create_entry_template(http_client, db_id)
+    resp = http_client.post(
+        f"/api/databases/{db_id}/entry-templates/{tmpl['id']}/apply/{uuid.uuid4()}"
+    )
+    assert resp.status_code == 404
+
+
+def test_apply_regular_entry_as_template_returns_404(http_client):
+    """Passing a regular page entry as the template_id must return 404."""
+    db_id = _create_database(http_client)
+    not_a_template = _create_entry(http_client, db_id)
+    target = _create_entry(http_client, db_id)
+    resp = http_client.post(
+        f"/api/databases/{db_id}/entry-templates/{not_a_template['id']}/apply/{target['id']}"
+    )
+    assert resp.status_code == 404

@@ -8,9 +8,10 @@
  *
  * Sections
  * --------
- *  storage  – Storage   (capacity cards)
- *  backup   – Backup    (admin-only: backup script download + instructions)
- *  users    – Users     (admin-only: user management)
+ *  language – Language   (locale switcher, available to all users)
+ *  storage  – Storage    (capacity cards)
+ *  backup   – Backup     (admin-only: backup script download + instructions)
+ *  users    – Users      (admin-only: user management)
  */
 import { ref, computed, watch, onMounted } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -18,6 +19,7 @@ import { useI18n } from 'vue-i18n'
 import { useSettingsModal } from '@/composables/useSettingsModal'
 import { useAuthStore } from '@/stores/auth'
 import { apiClient, ApiError } from '@/api/client'
+import { setLocale } from '@/plugins/i18n'
 
 const { t } = useI18n()
 const { closeSettings } = useSettingsModal()
@@ -40,7 +42,25 @@ interface UserRow {
 
 // ── State: general ─────────────────────────────────────────────────────────────
 
-const activeSection = ref<string>('storage')
+const activeSection = ref<string>('language')
+
+// ── State: language ────────────────────────────────────────────────────────────
+
+type SupportedLocale = 'de' | 'en'
+
+const { locale } = useI18n()
+
+const currentLocale = ref<SupportedLocale>(locale.value as SupportedLocale)
+
+const LANGUAGES: { code: SupportedLocale; labelKey: string; flag: string }[] = [
+  { code: 'de', labelKey: 'settings.languageDe', flag: '🇩🇪' },
+  { code: 'en', labelKey: 'settings.languageEn', flag: '🇬🇧' },
+]
+
+function selectLocale(code: SupportedLocale): void {
+  currentLocale.value = code
+  setLocale(code)
+}
 
 // ── State: storage ─────────────────────────────────────────────────────────────
 
@@ -287,6 +307,15 @@ function handleBackdropClick(e: MouseEvent): void {
 
             <button
               class="settings-nav__item"
+              :class="{ 'settings-nav__item--active': activeSection === 'language' }"
+              @click="activeSection = 'language'"
+            >
+              <Icon icon="mdi:translate" width="15" height="15" class="settings-nav__icon" />
+              <span>{{ t('settings.language') }}</span>
+            </button>
+
+            <button
+              class="settings-nav__item"
               :class="{ 'settings-nav__item--active': activeSection === 'storage' }"
               @click="activeSection = 'storage'"
             >
@@ -341,8 +370,34 @@ function handleBackdropClick(e: MouseEvent): void {
           <!-- Right: content -->
           <div class="settings-view">
 
+            <!-- ── Language ─────────────────────────────────────────────── -->
+            <template v-if="activeSection === 'language'">
+              <h2 class="settings-view__heading">{{ t('settings.language') }}</h2>
+              <p class="settings-view__desc">{{ t('settings.languageDesc') }}</p>
+
+              <div class="lang-options">
+                <button
+                  v-for="lang in LANGUAGES"
+                  :key="lang.code"
+                  class="lang-option"
+                  :class="{ 'lang-option--active': currentLocale === lang.code }"
+                  @click="selectLocale(lang.code)"
+                >
+                  <span class="lang-option__flag">{{ lang.flag }}</span>
+                  <span class="lang-option__label">{{ t(lang.labelKey) }}</span>
+                  <Icon
+                    v-if="currentLocale === lang.code"
+                    icon="mdi:check"
+                    width="15"
+                    height="15"
+                    class="lang-option__check"
+                  />
+                </button>
+              </div>
+            </template>
+
             <!-- ── Storage ──────────────────────────────────────────────── -->
-            <template v-if="activeSection === 'storage'">
+            <template v-else-if="activeSection === 'storage'">
               <h2 class="settings-view__heading">{{ t('settings.storage') }}</h2>
 
               <div v-if="capacityError" class="settings-view__error">
@@ -617,7 +672,7 @@ function handleBackdropClick(e: MouseEvent): void {
                         :disabled="newUserSaving || !newUsername.trim() || newPassword.length < 8"
                         @click="createUser"
                       >
-                        {{ newUserSaving ? '...' : 'Anlegen' }}
+                        {{ newUserSaving ? '...' : t('settings.usersCreate') }}
                       </button>
                     </div>
                   </div>
@@ -1324,5 +1379,55 @@ function handleBackdropClick(e: MouseEvent): void {
 @keyframes spin {
   from { transform: rotate(0deg); }
   to   { transform: rotate(360deg); }
+}
+
+/* ── Language section ────────────────────────────────────────────────────── */
+
+.lang-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 0.5rem;
+  max-width: 320px;
+}
+
+.lang-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-surface);
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: var(--color-text);
+  text-align: left;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.lang-option:hover {
+  background: var(--color-hover);
+}
+
+.lang-option--active {
+  border-color: var(--color-accent);
+  background: var(--color-accent-subtle);
+}
+
+.lang-option__flag {
+  font-size: 1.25rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.lang-option__label {
+  flex: 1;
+  font-weight: 500;
+}
+
+.lang-option__check {
+  color: var(--color-accent);
+  flex-shrink: 0;
 }
 </style>

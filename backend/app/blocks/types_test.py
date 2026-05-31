@@ -250,3 +250,26 @@ def test_synched_types_are_distinct_from_layout():
     assert "synched_mirror" != "layout"
     assert "synched_origin" in BLOCK_TYPES
     assert "synched_mirror" in BLOCK_TYPES
+
+
+# ── entry_template ────────────────────────────────────────────────────────────
+
+
+def test_block_types_contains_entry_template():
+    assert "entry_template" in BLOCK_TYPES
+
+
+def test_validate_entry_template():
+    assert validate_block_type("entry_template") == "entry_template"
+
+
+def test_entry_template_is_distinct_from_page():
+    assert "page" in BLOCK_TYPES
+    assert "entry_template" in BLOCK_TYPES
+    assert "page" != "entry_template"
+
+
+def test_entry_template_is_distinct_from_database():
+    assert "database" in BLOCK_TYPES
+    assert "entry_template" in BLOCK_TYPES
+    assert "database" != "entry_template"

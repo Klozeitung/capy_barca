@@ -1,0 +1,391 @@
+<script setup lang="ts">
+/**
+ * DatabaseTemplateEditor
+ *
+ * Thin slide-in panel for editing a single entry template.
+ *
+ * Structure
+ * ---------
+ * The component reuses the same editing stack as SideView (BlockTopSection,
+ * BlockPropertySection, BlockContentSection) but wraps it in a narrower
+ * overlay with a "Template" badge in the header instead of entry navigation.
+ *
+ * Props
+ * -----
+ * databaseId  – the database that owns the template.
+ * templateId  – the entry_template block ID to edit.
+ *
+ * Emits
+ * -----
+ * close       – close the editor.
+ */
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { Icon } from '@iconify/vue'
+import { useI18n } from 'vue-i18n'
+import { useBlockStore, type Block } from '@/stores/blocks'
+import { useDatabaseStore, type DatabaseEntry } from '@/stores/database'
+import BlockTopSection from '@/components/main/BlockTopSection.vue'
+import BlockPropertySection from '@/components/main/BlockPropertySection.vue'
+import BlockContentSection from '@/components/main/BlockContentSection.vue'
+
+// ── Props / emits ─────────────────────────────────────────────────────────────
+
+const props = defineProps<{
+  databaseId: string
+  templateId: string
+}>()
+
+const emit = defineEmits<{
+  (e: 'close'): void
+}>()
+
+// ── Dependencies ──────────────────────────────────────────────────────────────
+
+const { t } = useI18n()
+const blockStore = useBlockStore()
+const dbStore = useDatabaseStore()
+
+// ── Load template block ───────────────────────────────────────────────────────
+
+const loading = ref(true)
+const error = ref(false)
+
+const block = computed<Block | null>(() =>
+  blockStore.blocks[props.templateId] ?? null,
+)
+
+/**
+ * Templates are entry_template-type blocks; they do not appear in the regular
+ * entries list.  We synthesise a minimal DatabaseEntry shape so
+ * BlockPropertySection can render the property values.
+ */
+const templateEntry = computed<DatabaseEntry | null>(() => {
+  if (!block.value) return null
+  const allTemplates = dbStore.getEntries(props.databaseId)
+  // Try the normal entries list first (shouldn't be there, but be defensive).
+  const found = allTemplates.find((e) => e.id === props.templateId)
+  if (found) return found
+  // Fall back to a minimal shape so the property section still renders.
+  return {
+    id: props.templateId,
+    position: block.value.position,
+    content: block.value.content ?? null,
+    icon: block.value.icon ?? null,
+    state: block.value.state,
+    values: {},
+  }
+})
+
+async function loadTemplate(): Promise<void> {
+  loading.value = true
+  error.value = false
+  try {
+    await blockStore.fetchBlock(props.templateId)
+    await blockStore.fetchChildren(props.templateId)
+    await dbStore.fetchSchemas(props.databaseId)
+  } catch {
+    error.value = true
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => loadTemplate())
+
+// ── Slide-in animation ────────────────────────────────────────────────────────
+
+const visible = ref(false)
+
+onMounted(() => {
+  nextTick(() => { visible.value = true })
+})
+
+function close(): void {
+  visible.value = false
+  setTimeout(() => emit('close'), 220)
+}
+
+// ── Keyboard ──────────────────────────────────────────────────────────────────
+
+function onKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape') close()
+}
+
+onMounted(() => document.addEventListener('keydown', onKeydown))
+onUnmounted(() => document.removeEventListener('keydown', onKeydown))
+
+// ── Panel resize ──────────────────────────────────────────────────────────────
+
+const STORAGE_KEY = 'dte-panel-width'
+const MIN_WIDTH = 280
+const MAX_WIDTH_RATIO = 0.92
+
+function clampWidth(w: number): number {
+  return Math.min(Math.max(w, MIN_WIDTH), Math.floor(window.innerWidth * MAX_WIDTH_RATIO))
+}
+
+function readStoredWidth(): number {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    if (stored) {
+      const n = parseInt(stored, 10)
+      if (!isNaN(n)) return clampWidth(n)
+    }
+  } catch { /* storage unavailable */ }
+  return clampWidth(Math.min(Math.max(Math.round(window.innerWidth * 0.5), 380), 640))
+}
+
+const panelWidth = ref(380)
+const isResizing = ref(false)
+
+onMounted(() => { panelWidth.value = readStoredWidth() })
+
+function onResizeStart(e: MouseEvent): void {
+  e.preventDefault()
+  isResizing.value = true
+  document.addEventListener('mousemove', onResizeMove)
+  document.addEventListener('mouseup', onResizeEnd)
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'col-resize'
+}
+
+function onResizeMove(e: MouseEvent): void {
+  panelWidth.value = clampWidth(window.innerWidth - e.clientX)
+}
+
+function onResizeEnd(): void {
+  isResizing.value = false
+  document.removeEventListener('mousemove', onResizeMove)
+  document.removeEventListener('mouseup', onResizeEnd)
+  document.body.style.userSelect = ''
+  document.body.style.cursor = ''
+  try {
+    localStorage.setItem(STORAGE_KEY, String(panelWidth.value))
+  } catch { /* storage unavailable */ }
+}
+
+onUnmounted(() => {
+  document.removeEventListener('mousemove', onResizeMove)
+  document.removeEventListener('mouseup', onResizeEnd)
+  document.body.style.userSelect = ''
+  document.body.style.cursor = ''
+})
+
+// ── Property section visibility ───────────────────────────────────────────────
+
+const showProperties = ref(true)
+</script>
+
+<template>
+  <Teleport to="body">
+    <div
+      class="dte-panel"
+      :class="{ 'dte-panel--open': visible, 'dte-panel--resizing': isResizing }"
+      :style="{ width: panelWidth + 'px' }"
+      role="dialog"
+      :aria-label="t('db.templates.editorTitle')"
+    >
+      <!-- Resize handle -->
+      <div class="dte-resize-handle" @mousedown="onResizeStart" />
+
+      <!-- Header bar -->
+      <div class="dte__header">
+        <span class="dte__badge">
+          <Icon icon="mdi:file-document-edit-outline" width="13" height="13" />
+          {{ t('db.templates.editorBadge') }}
+        </span>
+        <div class="dte__header-spacer" />
+        <button
+          class="dte__header-btn"
+          :title="t('actions.cancel')"
+          @click="close"
+        >
+          <Icon icon="mdi:close" width="15" height="15" />
+        </button>
+      </div>
+
+      <!-- Loading / error states -->
+      <div v-if="loading" class="dte__state" aria-busy="true">
+        <span class="dte__spinner" />
+      </div>
+
+      <div v-else-if="error" class="dte__state">
+        {{ t('errors.loadFailed') }}
+      </div>
+
+      <!-- Template editing body -->
+      <div v-else-if="block" class="dte__body">
+        <BlockTopSection :block="block" />
+
+        <!-- Property section toggle -->
+        <button
+          class="dte__props-toggle"
+          :title="showProperties ? t('propertySection.hideSection') : t('propertySection.showSection')"
+          @click="showProperties = !showProperties"
+        >
+          <Icon
+            :icon="showProperties ? 'mdi:chevron-down' : 'mdi:chevron-right'"
+            width="14"
+            height="14"
+          />
+          <span>{{ t('propertySection.title') }}</span>
+        </button>
+
+        <BlockPropertySection
+          v-if="showProperties && templateEntry"
+          :database-id="databaseId"
+          :entry="templateEntry"
+        />
+
+        <BlockContentSection :parent-id="templateId" />
+      </div>
+    </div>
+  </Teleport>
+</template>
+
+<style scoped>
+/* ── Panel ──────────────────────────────────────────────────────────────── */
+
+.dte-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100%;
+  background: var(--color-bg);
+  border-left: 1px solid var(--color-border);
+  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.10);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+  z-index: 200;
+}
+
+.dte-panel--open {
+  transform: translateX(0);
+}
+
+.dte-panel--resizing {
+  transition: none;
+}
+
+/* ── Resize handle ───────────────────────────────────────────────────────── */
+
+.dte-resize-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 5px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 1;
+}
+
+.dte-resize-handle:hover {
+  background: var(--color-accent-subtle);
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
+.dte__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  height: 42px;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.dte__badge {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  background: var(--color-hover);
+  padding: 2px 8px;
+  border-radius: 4px;
+  user-select: none;
+}
+
+.dte__header-spacer {
+  flex: 1;
+}
+
+.dte__header-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  transition: background 0.12s, color 0.12s;
+}
+
+.dte__header-btn:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+/* ── Loading / error states ─────────────────────────────────────────────── */
+
+.dte__state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+}
+
+.dte__spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: dte-spin 0.7s linear infinite;
+}
+
+@keyframes dte-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Body ───────────────────────────────────────────────────────────────── */
+
+.dte__body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Property section toggle (mirrors SideView style) ───────────────────── */
+
+.dte__props-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 4px 12px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  text-align: left;
+  transition: color 0.1s;
+}
+
+.dte__props-toggle:hover {
+  color: var(--color-text);
+}
+</style>

@@ -69,6 +69,8 @@ import RollupCell from './properties/cells/RollupCell.vue'
 import FormulaCell from './properties/cells/FormulaCell.vue'
 import SideView from '@/components/main/SideView.vue'
 import AutomationsModal from './AutomationsModal.vue'
+import DatabaseTemplateEditor from './DatabaseTemplateEditor.vue'
+import TemplateManagerPanel from './subcomponents/TemplateManagerPanel.vue'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -451,6 +453,9 @@ const orderedColumns = computed<OrderedColumn[]>(() => {
 // ── Panel / menu visibility ───────────────────────────────────────────────────
 
 const showAutomationsModal = ref(false)
+const showTemplatesModal = ref(false)
+/** ID of the entry_template block currently open in the editor, or null. */
+const editingTemplateId = ref<string | null>(null)
 
 function closeAllPanels() {
   showFilterPanel.value    = false
@@ -1525,6 +1530,27 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
             </button>
           </div>
 
+          <!-- Templates -->
+          <div class="db__toolbar-item">
+            <button
+              class="db__toolbar-btn"
+              :class="{ 'db__toolbar-btn--active': showTemplatesModal }"
+              :title="t('db.templates.manage')"
+              @click.stop="showTemplatesModal = !showTemplatesModal; showFilterPanel = false; showSortPanel = false; showExportMenu = false; showAutomationsModal = false"
+            >
+              <Icon icon="mdi:file-document-multiple-outline" width="14" height="14" />
+              {{ t('db.templates.title') }}
+            </button>
+            <!-- Template manager dropdown -->
+            <div v-if="showTemplatesModal" class="db__panel db__panel--template-manager" @click.stop>
+              <TemplateManagerPanel
+                :database-id="blockId"
+                @edit-template="(id) => { editingTemplateId = id; showTemplatesModal = false }"
+                @close="showTemplatesModal = false"
+              />
+            </div>
+          </div>
+
         </div>
 
         <div class="db__toolbar-right">
@@ -2111,6 +2137,14 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
       :database-id="blockId"
       :schemas="schemas"
       @close="showAutomationsModal = false"
+    />
+
+    <!-- ── Template editor panel ────────────────────────────────────────── -->
+    <DatabaseTemplateEditor
+      v-if="editingTemplateId"
+      :database-id="blockId"
+      :template-id="editingTemplateId"
+      @close="editingTemplateId = null"
     />
 
     <!-- ── Limit-hint tooltip ────────────────────────────────────────────── -->

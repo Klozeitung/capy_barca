@@ -88,6 +88,7 @@ import DatabaseBlock from '@/components/editor/blocks/DatabaseBlock.vue'
 // #100 – table of contents block
 import TableOfContentsBlock from '@/components/editor/blocks/TableOfContentsBlock.vue'
 import { useToggleState } from '@/composables/useToggleState'
+import { useDatabaseTemplatesStore } from '@/stores/databaseTemplates'
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
@@ -95,6 +96,12 @@ const props = defineProps<{
   parentId: string
   /** True when rendered as children of a toggle block — reduces padding. */
   nested?: boolean
+  /**
+   * When the parent block is a database entry or template, pass the owning
+   * database block ID here.  The empty state uses it to display the template
+   * picker for that database.
+   */
+  databaseId?: string
 }>()
 
 // ── Dependencies ──────────────────────────────────────────────────────────────
@@ -103,6 +110,7 @@ const { t } = useI18n()
 const router = useRouter()
 const blockStore = useBlockStore()
 const drag = useDrag()
+const templateStore = useDatabaseTemplatesStore()
 
 // ── Children ──────────────────────────────────────────────────────────────────
 
@@ -338,15 +346,15 @@ function onNavigate(blockId: string, direction: 'up' | 'down'): void {
   }
 }
 
-// ── #9 – Add block affordance (clicking empty area) ───────────────────────────
-// Nur einen neuen Block erstellen, wenn der letzte kein leerer Paragraph ist.
-// Andernfalls den letzten Block fokussieren.
+// ── #9 – Add block affordance (clicking empty area) ─────────────────────────
+// Only create a new block when the last one is not already an empty paragraph;
+// otherwise focus that block instead.
 
 async function onAddBlock(): Promise<void> {
   const kids = children.value
   const last = kids[kids.length - 1]
 
-  // Guard: ist der letzte Block bereits ein leerer Paragraph, nur fokussieren.
+  // Guard: if the last block is already an empty paragraph, just focus it.
   if (last && last.type === 'paragraph' && ((last.content?.text as string | undefined) ?? '') === '') {
     pendingFocusBlockId.value = last.id
     return
@@ -364,6 +372,15 @@ async function onAddBlock(): Promise<void> {
   await blockStore.fetchChildren(props.parentId, true)
   await nextTick()
   pendingFocusBlockId.value = block.id
+}
+
+// ── Template apply (from empty-state picker) ─────────────────────────────────
+
+async function applyTemplate(templateId: string): Promise<void> {
+  if (!props.databaseId) return
+  await templateStore.applyTemplate(props.databaseId, templateId, props.parentId)
+  // Refresh entry content after apply.
+  await blockStore.fetchChildren(props.parentId, true)
 }
 
 // ── Non-text block helpers ────────────────────────────────────────────────────
@@ -1219,12 +1236,38 @@ async function onDropEnd(e: DragEvent): Promise<void> {
       v-if="isEmpty"
       class="block-content__empty"
       :class="{ 'block-content__empty--drop-active': dropAtEnd }"
-      @click="onAddBlock"
       @dragover="onDragOverEmpty"
       @dragleave="onDragLeaveEmpty"
       @drop="onDropEmpty"
     >
-      {{ t('main.noContent') }}
+      <!-- Template picker: shown when this section belongs to a database entry
+           and the owning database has at least one template defined. -->
+      <template v-if="databaseId && templateStore.getTemplates(databaseId).length > 0">
+        <div class="block-content__template-hint">
+          {{ t('db.templates.emptyHint') }}
+        </div>
+        <div class="block-content__template-list">
+          <button
+            v-for="tmpl in templateStore.getTemplates(databaseId)"
+            :key="tmpl.id"
+            class="block-content__template-btn"
+            @click.stop="applyTemplate(tmpl.id)"
+          >
+            <Icon
+              :icon="tmpl.icon ?? 'mdi:file-document-outline'"
+              width="13"
+              height="13"
+            />
+            {{ (tmpl.content?.title as string | undefined) || t('db.templates.untitled') }}
+          </button>
+          <button class="block-content__template-btn block-content__template-btn--add" @click="onAddBlock">
+            {{ t('main.noContent') }}
+          </button>
+        </div>
+      </template>
+      <template v-else>
+        <span @click="onAddBlock">{{ t('main.noContent') }}</span>
+      </template>
     </div>
 
     <!--
@@ -1425,7 +1468,8 @@ async function onDropEnd(e: DragEvent): Promise<void> {
   cursor: text;
   min-height: 2rem;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
   border-radius: 6px;
   transition: background 0.1s;
 }
@@ -1434,6 +1478,47 @@ async function onDropEnd(e: DragEvent): Promise<void> {
   background: var(--color-accent-subtle);
   outline: 1.5px dashed var(--color-accent);
   outline-offset: -1px;
+}
+
+/* ── Template picker (shown when templates exist for the parent database) ── */
+
+.block-content__template-hint {
+  font-size: 0.775rem;
+  color: var(--color-text-muted);
+  margin-bottom: 6px;
+}
+
+.block-content__template-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.block-content__template-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: var(--color-surface);
+  font-size: 0.775rem;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+  white-space: nowrap;
+}
+
+.block-content__template-btn:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+  border-color: var(--color-border-strong, var(--color-border));
+}
+
+.block-content__template-btn--add {
+  border-style: dashed;
+  color: var(--color-text-muted);
 }
 
 /* ── Add area ─────────────────────────────────────────────────────────────── */

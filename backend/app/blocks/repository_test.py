@@ -126,6 +126,37 @@ def test_list_children_returns_empty_for_childless_block(db, page):
     assert children == []
 
 
+def test_list_children_exclude_types_filters_out_entry_template(db, workspace, database_block):
+    """entry_template blocks are hidden from regular entry listings."""
+    template = repo.create_block(
+        db, type="entry_template", position=1.0, parent_id=database_block.id
+    )
+    page_entry = repo.create_block(
+        db, type="page", position=2.0, parent_id=database_block.id
+    )
+    db.commit()
+
+    all_children = repo.list_children(db, database_block.id)
+    assert any(c.id == template.id for c in all_children)
+    assert any(c.id == page_entry.id for c in all_children)
+
+    filtered = repo.list_children(
+        db, database_block.id, exclude_types=frozenset({"entry_template"})
+    )
+    assert all(c.id != template.id for c in filtered)
+    assert any(c.id == page_entry.id for c in filtered)
+
+
+def test_list_children_exclude_types_none_returns_all(db, workspace, database_block):
+    """Passing exclude_types=None (default) does not filter any types."""
+    template = repo.create_block(
+        db, type="entry_template", position=1.0, parent_id=database_block.id
+    )
+    db.commit()
+    children = repo.list_children(db, database_block.id, exclude_types=None)
+    assert any(c.id == template.id for c in children)
+
+
 # ─── create_block ─────────────────────────────────────────────────────────────
 
 
@@ -509,6 +540,19 @@ def test_query_entries_returns_all_when_no_filters(db, database_block):
     entries, total = repo.query_entries(db, database_block.id, [], [])
     assert total == 2
     assert len(entries) == 2
+
+
+def test_query_entries_excludes_entry_template_blocks(db, database_block):
+    """entry_template blocks must never appear in query_entries results."""
+    _make_entry(db, database_block, "Real entry", position=1.0)
+    repo.create_block(
+        db, type="entry_template", position=2.0, parent_id=database_block.id,
+        content={"title": "My Template"},
+    )
+    db.commit()
+    entries, total = repo.query_entries(db, database_block.id, [], [])
+    assert total == 1
+    assert all(e.type != "entry_template" for e in entries)
 
 
 def test_query_entries_empty_database(db, database_block):

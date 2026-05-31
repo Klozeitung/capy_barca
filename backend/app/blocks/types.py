@@ -19,7 +19,9 @@ BLOCK_TYPES: Final[frozenset[str]] = frozenset(
         "page",
         "database",
         "database_view",
-        "linked_database",  # inline view of an existing database; reference_id → target DB
+        "linked_database",   # inline view of an existing database; reference_id → target DB
+        "entry_template",    # template entry stored as a real child of a database block;
+                             # excluded from all regular entry queries and relation counts
         # ── Text ────────────────────────────────────────────────────────────
         "paragraph",
         "text_toggle",           # collapsible paragraph; children stored in DB like toggle
