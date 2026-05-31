@@ -1,0 +1,1100 @@
+/* ── Root ───────────────────────────────────────────────────────────────── */
+.db {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 40px 60px 80px;
+  min-height: 100%;
+  position: relative;
+}
+
+.db--inline {
+  padding: 0 0 8px;
+  min-height: unset;
+}
+
+/* ── Loading ─────────────────────────────────────────────────────────────── */
+.db__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 0;
+  color: var(--color-text-muted);
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.db__spinner { animation: spin 1s linear infinite; }
+
+/* ── Title ───────────────────────────────────────────────────────────────── */
+.db__title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.db__title-icon-wrap { position: relative; flex-shrink: 0; }
+
+.db__title-icon-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  transition: background 0.15s, color 0.15s;
+}
+
+.db__title-icon-btn:hover { background: var(--color-hover); color: var(--color-text); }
+.db__title-icon { display: block; }
+
+.db__title-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--color-text);
+  width: 100%;
+  padding: 0;
+}
+
+.db__title-input::placeholder { color: var(--color-text-muted); }
+
+/* ── View tabs ───────────────────────────────────────────────────────────── */
+/*
+ * BUG FIX: added flex-shrink: 0 so the tab bar never compresses vertically
+ * when the entry list grows long and the flex column runs short on height.
+ */
+.db__tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 0;
+  border-bottom: 1px solid var(--color-border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex-shrink: 0;        /* BUG FIX: prevent vertical compression */
+  min-height: 36px;      /* BUG FIX: guarantee a stable height */
+}
+
+.db__tabs::-webkit-scrollbar { display: none; }
+
+.db__tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px 7px;
+  border-radius: 6px 6px 0 0;
+  border: 1px solid transparent;
+  border-bottom: none;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  transition: color 0.15s, background 0.15s;
+  position: relative;
+  bottom: -1px;
+  flex-shrink: 0;        /* BUG FIX: keep individual tabs from shrinking */
+  min-height: 30px;      /* BUG FIX: stable tab height */
+}
+
+.db__tab:hover { color: var(--color-text); background: var(--color-hover); }
+
+.db__tab--active {
+  color: var(--color-text);
+  background: var(--color-bg);
+  border-color: var(--color-border);
+  font-weight: 500;
+}
+
+.db__tab--dragging { opacity: 0.4; }
+
+.db__tab--drag-over {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+  border-radius: 6px 6px 0 0;
+}
+
+.db__tab-label {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.db__tab-type-icon {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.db__tab-rename-input {
+  background: transparent;
+  border: none;
+  outline: 1px solid var(--color-accent);
+  border-radius: 2px;
+  font-size: 0.8rem;
+  color: var(--color-text);
+  padding: 0 3px;
+  width: 90px;
+}
+
+/* ── Tab action menu (dots button) ──────────────────────────────────────── */
+.db__tab-menu-wrap {
+  display: contents;
+}
+
+.db__tab-menu {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  padding: 2px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+.db__tab:hover .db__tab-menu,
+.db__tab--active .db__tab-menu { opacity: 1; }
+
+.db__tab-menu:hover { color: var(--color-text); background: var(--color-hover); }
+
+.db__tab-action-menu {
+  position: fixed;
+  z-index: 400;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 140px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  white-space: nowrap;
+}
+
+.db__tab-action-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--color-text);
+  padding: 6px 10px;
+  border-radius: 4px;
+  width: 100%;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.db__tab-action-item:hover { background: var(--color-hover); }
+
+.db__tab-action-item--danger { color: #e05555; }
+.db__tab-action-item--danger:hover { background: rgba(224, 85, 85, 0.08); }
+
+/* ── View delete confirmation dialog ─────────────────────────────────────── */
+.db__view-delete-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.db__view-delete-dialog {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 28px 28px 24px;
+  max-width: 360px;
+  width: 90%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.22);
+}
+
+.db__view-delete-icon {
+  color: #e05555;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.db__view-delete-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-text);
+  text-align: center;
+}
+
+.db__view-delete-warning {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  text-align: center;
+  line-height: 1.5;
+}
+
+.db__view-delete-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+  width: 100%;
+}
+
+.db__view-delete-cancel,
+.db__view-delete-confirm {
+  flex: 1;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: none;
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.db__view-delete-cancel {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.db__view-delete-cancel:hover { background: var(--color-border); }
+
+.db__view-delete-confirm {
+  background: #e05555;
+  color: #fff;
+}
+
+.db__view-delete-confirm:hover { background: #c43f3f; }
+
+.db__tabs-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  padding: 4px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+
+.db__tabs-add:hover { color: var(--color-text); background: var(--color-hover); }
+
+/* ── Toolbar ─────────────────────────────────────────────────────────────── */
+/*
+ * BUG FIX: added flex-shrink: 0 and min-height so the toolbar does not get
+ * squashed when many table rows push the flex column's available height down.
+ */
+.db__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 6px 0;
+  margin-bottom: 4px;
+  flex-shrink: 0;    /* BUG FIX: prevent vertical compression */
+  min-height: 38px;  /* BUG FIX: stable toolbar height */
+}
+
+.db__toolbar-left,
+.db__toolbar-right { display: flex; align-items: center; gap: 4px; }
+
+.db__toolbar-item { position: relative; }
+
+.db__toolbar-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  padding: 5px 8px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+  min-height: 28px;  /* BUG FIX: stable button height */
+  white-space: nowrap;
+}
+
+.db__toolbar-btn:hover { color: var(--color-text); background: var(--color-hover); }
+
+.db__toolbar-btn--active { color: var(--color-accent); background: var(--color-accent-subtle); }
+
+.db__toolbar-btn--new-entry { color: var(--color-accent); }
+.db__toolbar-btn--new-entry:hover { color: var(--color-accent); background: var(--color-accent-subtle); }
+.db__toolbar-btn--new-entry:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.db__toolbar-badge {
+  background: var(--color-accent);
+  color: #fff;
+  border-radius: 8px;
+  padding: 1px 5px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* ── Panel ───────────────────────────────────────────────────────────────── */
+.db__panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 200;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 10px;
+  min-width: 460px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.db__panel--right { left: auto; right: 0; min-width: 160px; }
+
+.db__panel-empty {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  margin: 0;
+  padding: 2px 0;
+  font-style: italic;
+}
+
+.db__panel-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.db__panel-select {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 0.78rem;
+  color: var(--color-text);
+  cursor: pointer;
+  flex: 1;
+  min-width: 0;
+}
+
+.db__panel-select--short { flex: 0 0 110px; }
+
+.db__panel-input {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 0.78rem;
+  color: var(--color-text);
+  flex: 1;
+  min-width: 0;
+}
+
+.db__panel-input--narrow { flex: 0 0 70px; }
+
+.db__panel-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  padding: 3px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+}
+
+.db__panel-remove:hover { color: #e05555; background: var(--color-hover); }
+
+.db__panel-add-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  padding: 4px 6px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+.db__panel-add-btn:hover { color: var(--color-text); background: var(--color-hover); }
+
+.db__panel-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--color-text);
+  padding: 7px 10px;
+  border-radius: 5px;
+  width: 100%;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.db__panel-action:hover { background: var(--color-hover); }
+
+/* ── Table wrapper ───────────────────────────────────────────────────────── */
+.db__table-wrap {
+  overflow-x: auto;
+  overflow-y: visible;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  width: 100%;
+}
+
+/* ── Table ───────────────────────────────────────────────────────────────── */
+.db__table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.db__table--resizing { user-select: none; cursor: col-resize; }
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+/*
+ * DELIBERATE DESIGN — border model (do not revert):
+ * Every th has a right border only; border-left is intentionally absent so
+ * that the drag-handle column and the first data column read as one entity.
+ * The handle th additionally clears its own right border so the visual gap
+ * between handle and name column is removed entirely.
+ */
+.db__th {
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  border-right: 1px solid var(--color-border);
+  border-left: none;
+  padding: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  position: relative;
+  cursor: grab;
+  user-select: none;
+}
+
+.db__th:last-child { border-right: none; min-width: 40px; width: 40px; cursor: default; }
+.db__th--name { min-width: 160px; padding: 8px 16px 8px 12px; }
+.db__th--handle { cursor: default; border-right: none; }
+.db__th--add { min-width: 40px; width: 40px; cursor: default; border-right: none; }
+.db__th--drag-over { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.db__th--dragging { opacity: 0.4; }
+
+.db__th-inner {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  gap: 4px;
+}
+
+.db__th-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.db__th-type-icon { flex-shrink: 0; opacity: 0.7; }
+
+.db__th-icon-wrap {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.db__th-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 2px;
+  border-radius: 3px;
+  cursor: pointer;
+  color: inherit;
+  transition: background 0.1s;
+}
+
+.db__th-icon-btn:hover {
+  background: var(--color-hover);
+}
+
+.db__th-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.db__th-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  padding: 2px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+
+.db__th:hover .db__th-btn { opacity: 1; }
+.db__th-btn:hover { background: var(--color-hover); }
+.db__th-btn--delete:hover { color: #e05555; }
+.db__th-btn--confirm { color: var(--color-accent); opacity: 1; }
+.db__th-btn--confirm:hover { color: var(--color-accent); background: var(--color-accent-subtle); }
+
+/* Wrap toggle: always visible and accented when wrap is active for that column */
+.db__th-btn--wrap-active {
+  opacity: 1;
+  color: var(--color-accent);
+}
+
+.db__th-btn--wrap-active:hover {
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
+}
+
+.db__th-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  z-index: 1;
+  transition: background 0.15s;
+}
+
+.db__th-resize:hover,
+.db__th-resize--active { background: var(--color-accent); }
+
+/* ── Rows ────────────────────────────────────────────────────────────────── */
+.db__row { transition: background 0.1s; }
+.db__row:hover { background: var(--color-hover); }
+
+.db__row--drop-above { box-shadow: inset 0 2px 0 var(--color-accent); }
+.db__row--drop-below { box-shadow: inset 0 -2px 0 var(--color-accent); }
+
+/* ── Cells ───────────────────────────────────────────────────────────────── */
+/*
+ * DELIBERATE DESIGN — border model (do not revert):
+ * td carries only a right and bottom border; border-left is absent so that
+ * no double borders appear between adjacent cells. The handle td additionally
+ * clears its right border so the drag-handle column and the first real data
+ * column appear as one seamless entity, calming the overall UI.
+ */
+.db__td {
+  border-top: 1px solid var(--color-border);
+  border-right: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  border-left: none;
+  padding: 0;
+  vertical-align: middle;
+  overflow: hidden;
+}
+
+.db__td:last-child { border-right: none; }
+
+.db__td--handle {
+  width: 28px;
+  min-width: 28px;
+  text-align: center;
+  cursor: grab;
+  border-right: none;
+}
+
+.db__td--name { min-width: 160px; }
+.db__td--add  { border-right: none; }
+
+/* ── Wrap mode overrides ─────────────────────────────────────────────────────── */
+/*
+ * When a column has wrap enabled, the td aligns content to the top so
+ * multi-line cells don't appear vertically centred in taller rows.
+ * The cell content classes (scoped inside child components) are overridden
+ * via global selectors with !important to beat Vue's scoped-CSS specificity.
+ */
+.db__td--wrap {
+  vertical-align: top;
+}
+
+.db__td--wrap .db__cell-value {
+  white-space: pre-wrap !important;
+  word-break: break-word;
+  text-overflow: clip !important;
+  align-items: flex-start;
+}
+
+/* FormulaCell uses .formula-cell as its root class */
+.db__td--wrap .formula-cell {
+  white-space: pre-wrap !important;
+  word-break: break-word;
+  text-overflow: clip !important;
+  align-items: flex-start;
+}
+
+/* LinkCell anchor inside .db__cell-value */
+.db__td--wrap .db__cell-link {
+  white-space: pre-wrap !important;
+  word-break: break-word;
+  text-overflow: clip !important;
+}
+
+/* Timeline "all" mode (TimelineSlotList inside .db__cell-timeline-all).
+ * .tsl__period stays nowrap intentionally — it is a compact label.
+ * .tsl__value is the text slot that should wrap with the column width. */
+.db__td--wrap .tsl__value {
+  white-space: pre-wrap !important;
+  word-break: break-word;
+  text-overflow: clip !important;
+}
+
+.db__row-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 36px;
+  padding: 0 6px;
+  opacity: 0;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.db__row:hover .db__row-handle { opacity: 1; }
+
+/* ── Name cell ───────────────────────────────────────────────────────────── */
+.db__name-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  min-height: 36px;
+}
+
+.db__entry-icon { flex-shrink: 0; color: var(--color-text-muted); }
+
+.db__entry-icon-wrap {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.db__entry-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 1px;
+  border-radius: 3px;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  transition: background 0.12s, color 0.12s;
+}
+
+.db__entry-icon-btn:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.db__entry-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.875rem;
+  cursor: text;
+}
+
+.db__entry-name--empty { color: var(--color-text-muted); font-style: italic; }
+
+.db__open-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  padding: 2px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.db__name-cell:hover .db__open-btn { opacity: 1; }
+.db__open-btn:hover { color: var(--color-accent); }
+
+.db__cell-input {
+  display: block;
+  width: 100%;
+  padding: 7px 12px;
+  background: transparent;
+  border: none;
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+  font-size: 0.875rem;
+  color: var(--color-text);
+  min-height: 36px;
+  box-sizing: border-box;
+}
+
+/* ── Add column button ───────────────────────────────────────────────────── */
+.db__add-col-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 30px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  transition: color 0.15s, background 0.15s;
+}
+
+.db__add-col-btn:hover { color: var(--color-text); background: var(--color-hover); }
+
+/* ── Row context menu ────────────────────────────────────────────────────── */
+.db__row-ctx-menu {
+  position: fixed;
+  z-index: 1000;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 4px;
+  min-width: 160px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.db__row-ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--color-text);
+  border-radius: 4px;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.db__row-ctx-item:hover { background: var(--color-hover); }
+.db__row-ctx-item--danger:hover { background: rgba(224, 85, 85, 0.1); color: #e05555; }
+
+/* ── Filter panel ────────────────────────────────────────────────────────── */
+.db__panel--filters { min-width: 500px; }
+
+.db__filter-group {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.db__filter-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.db__filter-group-remove { margin-left: auto; opacity: 1; }
+
+.db__panel-select--conjunction {
+  flex: 0 0 auto;
+  width: auto;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--color-accent);
+  background: var(--color-accent-subtle);
+  border-color: var(--color-accent);
+}
+
+.db__panel-row--indented { padding-left: 4px; }
+
+.db__panel-add-btn--indented { padding-left: 20px; }
+
+.db__panel-add-btn--group {
+  margin-top: 4px;
+  border-top: 1px solid var(--color-border);
+  padding-top: 8px;
+  color: var(--color-accent);
+}
+
+.db__panel-add-btn--group:hover { background: var(--color-accent-subtle); color: var(--color-accent); }
+
+/* ── Add row ─────────────────────────────────────────────────────────────── */
+.db__add-row-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  transition: color 0.15s, background 0.15s;
+  align-self: flex-start;
+}
+
+.db__add-row-btn:hover:not(:disabled) { color: var(--color-text); background: var(--color-hover); }
+
+.db__add-row-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Group header ────────────────────────────────────────────────────────── */
+/*
+ * BUG FIX: removed position: sticky / top: 0 / z-index: 2.
+ * The previous sticky positioning caused group-header rows to travel with
+ * the viewport during vertical scrolling and stack on top of later group
+ * headers, making them illegible. Group headers now flow naturally with the
+ * table content.
+ */
+.db__group-header-body {
+  /* intentionally no sticky positioning */
+}
+
+.db__group-header-row { background: transparent; }
+
+.db__group-header-handle {
+  border-bottom: 1px solid var(--color-border);
+  border-right: none;
+  width: 28px;
+  min-width: 28px;
+  flex-shrink: 0;
+}
+
+.db__group-header-cell {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-border);
+  border-right: none;
+  overflow: visible;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  user-select: none;
+}
+
+.db__group-header-icon {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.db__group-header-label {
+  color: var(--color-text);
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+
+/* ── Group body / rows ───────────────────────────────────────────────────── */
+.db__group-body {
+  border-bottom: 8px solid transparent;
+}
+
+/* ── Aggregation footer row ──────────────────────────────────────────────── */
+.db__aggregation-row { background: transparent; }
+.db__aggregation-row:hover { background: transparent; }
+
+.db__aggregation-cell {
+  padding: 0;
+  border: none;
+  vertical-align: middle;
+  position: relative;
+  cursor: pointer;
+  overflow: visible;
+}
+
+.db__agg-inner {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  min-height: 26px;
+  position: relative;
+  overflow: visible;
+}
+
+.db__agg-handle-cell {
+  cursor: default;
+  width: 28px;
+  min-width: 28px;
+  border: none;
+  padding: 0 2px;
+  overflow: visible;
+  white-space: nowrap;
+}
+
+.db__aggregation-cell:last-child { border-right: none; }
+
+.db__aggregation-cell:hover .db__agg-plus { opacity: 0.6; }
+
+.db__agg-plus {
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.db__aggregation-row:hover .db__agg-plus { opacity: 0.35; }
+
+.db__agg-badge {
+  flex-shrink: 0;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+}
+
+.db__agg-value {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Aggregation inline picker ───────────────────────────────────────────── */
+.db__agg-picker {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  z-index: 200;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 90px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}
+
+.db__agg-picker-opt {
+  display: block;
+  width: 100%;
+  padding: 5px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-align: left;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  transition: background 0.1s, color 0.1s;
+}
+
+.db__agg-picker-opt:hover { background: var(--color-hover); color: var(--color-text); }
+.db__agg-picker-opt--active { color: var(--color-accent); }
+
+/* ── Per-group add-row button ────────────────────────────────────────────── */
+.db__group-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 6px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  transition: color 0.15s, background 0.15s;
+  opacity: 0;
+}
+
+.db__aggregation-row:hover .db__group-add-btn { opacity: 1; }
+.db__group-add-btn:hover:not(:disabled) { color: var(--color-text); background: var(--color-hover); }
+.db__group-add-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+/* ── Planned view placeholder ────────────────────────────────────────────── */
+.db__view-planned {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 80px 32px;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.db__view-planned p {
+  margin: 0;
+  font-size: 0.875rem;
+}

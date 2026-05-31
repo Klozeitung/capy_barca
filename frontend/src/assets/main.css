@@ -1,0 +1,109 @@
+/* ── Reset ─────────────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ── Design tokens: dark (default) ─────────────────────────────────────────── */
+:root {
+  color-scheme: dark;
+
+  --color-bg:             #191919;
+  --color-sidebar-bg:     #1f1f1f;
+  --color-surface:        #252525;
+  --color-border:         #333;
+  --color-hover:          rgba(255, 255, 255, 0.05);
+  --color-active:         rgba(255, 255, 255, 0.09);
+  --color-accent:         #4a7c59;
+  --color-accent-subtle:  rgba(74, 124, 89, 0.15);
+  --color-text:           #e8e8e8;
+  --color-text-muted:     #888;
+
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Design tokens: light ───────────────────────────────────────────────────── */
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+
+    --color-bg:             #ffffff;
+    --color-sidebar-bg:     #f7f7f7;
+    --color-surface:        #f0f0f0;
+    --color-border:         #e0e0e0;
+    --color-hover:          rgba(0, 0, 0, 0.04);
+    --color-active:         rgba(0, 0, 0, 0.07);
+    --color-accent:         #4a7c59;
+    --color-accent-subtle:  rgba(74, 124, 89, 0.10);
+    --color-text:           #1a1a1a;
+    --color-text-muted:     #888;
+  }
+}
+
+/* ── Base ───────────────────────────────────────────────────────────────────── */
+html,
+body,
+#app {
+  height: 100%;
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+body {
+  overflow: hidden;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+textarea,
+input {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--color-text);
+}
+
+/* ── Utility ─────────────────────────────────────────────────────────────────── */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Print ───────────────────────────────────────────────────────────────────── */
+@media print {
+  *,
+  *::before,
+  *::after {
+    print-color-adjust: exact !important;
+    -webkit-print-color-adjust: exact !important;
+  }
+
+  html,
+    body,
+    #app {
+      height: auto !important;
+      overflow: visible !important;
+      font-size: 11px !important;
+  }
+}

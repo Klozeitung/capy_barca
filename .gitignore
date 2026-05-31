@@ -1,0 +1,50 @@
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# local session uploads
+static/uploads/
+static/audio_cache/
+
+# local ssl stuff
+ssl/
+
+# Database and chats / Sessions
+*.db
+sessions.pkl
+
+# backup
+recovery/import/*.capy
+recovery/backup/log/*.log
+
+# Python virtual environment
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+
+# mkcert stuff
+ffmpeg-2025-06-26-git-09cd38e9d5-essentials_build/
+mkcert.exe
+
+# Build artifacts
+build/
+*.egg-info/
+*.local
+node_modules/
+
+# Docker
+*.log
+
+# IDE / Editor folders
+.vscode/
+.idea/
+
+backups/
+
+*.pem
+
+recovery/import/*.gz
+recovery/import/*.capy
