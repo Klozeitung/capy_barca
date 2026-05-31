@@ -124,6 +124,10 @@ onMounted(async () => {
   if (!blockStore.hasLoadedChildren(props.parentId)) {
     await blockStore.fetchChildren(props.parentId)
   }
+  // Pre-load templates so the empty-state picker is available immediately.
+  if (props.databaseId && templateStore.getTemplates(props.databaseId).length === 0) {
+    templateStore.fetchTemplates(props.databaseId)
+  }
 })
 
 // Re-fetch whenever the cache is invalidated. This fires after any mutation
@@ -379,7 +383,8 @@ async function onAddBlock(): Promise<void> {
 async function applyTemplate(templateId: string): Promise<void> {
   if (!props.databaseId) return
   await templateStore.applyTemplate(props.databaseId, templateId, props.parentId)
-  // Refresh entry content after apply.
+  // Refresh block metadata (title, icon) and content after apply.
+  await blockStore.fetchBlock(props.parentId)
   await blockStore.fetchChildren(props.parentId, true)
 }
 

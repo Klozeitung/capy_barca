@@ -2,13 +2,19 @@
 /**
  * DatabaseTemplateEditor
  *
- * Thin slide-in panel for editing a single entry template.
+ * Slide-in panel for editing a single entry template.
  *
  * Structure
  * ---------
- * The component reuses the same editing stack as SideView (BlockTopSection,
+ * Reuses the same editing stack as SideView (BlockTopSection,
  * BlockPropertySection, BlockContentSection) but wraps it in a narrower
  * overlay with a "Template" badge in the header instead of entry navigation.
+ *
+ * Template values are loaded from the databaseTemplates store, which fetches
+ * them from GET /{database_id}/entry-templates. Property mutations go through
+ * dbStore.upsertValue (same endpoint as regular entries — the backend accepts
+ * entry_template blocks identically). After every refresh the template list is
+ * re-fetched so the values stay in sync.
  *
  * Props
  * -----
@@ -24,6 +30,7 @@ import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useBlockStore, type Block } from '@/stores/blocks'
 import { useDatabaseStore, type DatabaseEntry } from '@/stores/database'
+import { useDatabaseTemplatesStore } from '@/stores/databaseTemplates'
 import BlockTopSection from '@/components/main/BlockTopSection.vue'
 import BlockPropertySection from '@/components/main/BlockPropertySection.vue'
 import BlockContentSection from '@/components/main/BlockContentSection.vue'
@@ -44,8 +51,9 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const blockStore = useBlockStore()
 const dbStore = useDatabaseStore()
+const templateStore = useDatabaseTemplatesStore()
 
-// ── Load template block ───────────────────────────────────────────────────────
+// ── Load ──────────────────────────────────────────────────────────────────────
 
 const loading = ref(true)
 const error = ref(false)
@@ -55,34 +63,33 @@ const block = computed<Block | null>(() =>
 )
 
 /**
- * Templates are entry_template-type blocks; they do not appear in the regular
- * entries list.  We synthesise a minimal DatabaseEntry shape so
- * BlockPropertySection can render the property values.
+ * Build a DatabaseEntry-compatible shape from the template store data so
+ * BlockPropertySection can render and mutate property values correctly.
+ * Values come from the template store (populated by GET /entry-templates).
  */
 const templateEntry = computed<DatabaseEntry | null>(() => {
   if (!block.value) return null
-  const allTemplates = dbStore.getEntries(props.databaseId)
-  // Try the normal entries list first (shouldn't be there, but be defensive).
-  const found = allTemplates.find((e) => e.id === props.templateId)
-  if (found) return found
-  // Fall back to a minimal shape so the property section still renders.
+  const tmpl = templateStore.getTemplates(props.databaseId)
+    .find((t) => t.id === props.templateId)
   return {
     id: props.templateId,
     position: block.value.position,
     content: block.value.content ?? null,
     icon: block.value.icon ?? null,
     state: block.value.state,
-    values: {},
+    values: (tmpl?.values ?? {}) as DatabaseEntry['values'],
   }
 })
 
-async function loadTemplate(): Promise<void> {
+async function load(): Promise<void> {
   loading.value = true
   error.value = false
   try {
     await blockStore.fetchBlock(props.templateId)
     await blockStore.fetchChildren(props.templateId)
     await dbStore.fetchSchemas(props.databaseId)
+    // Fetch templates so values are populated in the store.
+    await templateStore.fetchTemplates(props.databaseId)
   } catch {
     error.value = true
   } finally {
@@ -90,7 +97,13 @@ async function loadTemplate(): Promise<void> {
   }
 }
 
-onMounted(() => loadTemplate())
+onMounted(() => load())
+
+// After a property mutation BlockPropertySection emits 'refresh'.
+// Re-fetch templates so values stay in sync.
+async function onRefresh(): Promise<void> {
+  await templateStore.fetchTemplates(props.databaseId)
+}
 
 // ── Slide-in animation ────────────────────────────────────────────────────────
 
@@ -214,7 +227,7 @@ const showProperties = ref(true)
       </div>
 
       <!-- Template editing body -->
-      <div v-else-if="block" class="dte__body">
+      <div v-else-if="block && templateEntry" class="dte__body">
         <BlockTopSection :block="block" />
 
         <!-- Property section toggle -->
@@ -232,12 +245,16 @@ const showProperties = ref(true)
         </button>
 
         <BlockPropertySection
-          v-if="showProperties && templateEntry"
+          v-if="showProperties"
           :database-id="databaseId"
           :entry="templateEntry"
+          @refresh="onRefresh"
         />
 
-        <BlockContentSection :parent-id="templateId" />
+        <BlockContentSection
+          :parent-id="templateId"
+          :database-id="databaseId"
+        />
       </div>
     </div>
   </Teleport>
