@@ -8,14 +8,14 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 
 ## Features
 
-- **Pages and blocks** — hierarchical workspace with rich-text pages, headings, lists, code blocks, and file attachments
-- **Databases** — structured tables with custom property types (text, select, date, relation, formula, rollup, and more), filters, sorting, and multiple views per database
-- **Property timelining** — any database property can be given a timeline: values are stored as date-ranged slots rather than a single value, so the full history of how a property changed over time is preserved and queryable. Each slot has a configurable start and end date; open-ended ranges, "always valid" entries, and relation pools with per-linked-entry date ranges are all supported. Columns can display the current value, all slots, or a value at a specific point in time — making it possible to model things like role changes, status histories, or time-bound relations directly in a database without external tooling.
-- **Automations** — rule-based triggers that act on database entries
-- **Comments** — inline comments on pages and database entries
-- **Collaborative editing** — real-time document collaboration via integrated Collabora Online (WOPI)
-- **Backup and restore** — portable `.capy` backup files covering database, uploads, and configuration; full restore via a single script
-- **Multi-user** — admin and member roles, optional self-registration
+- **Pages and blocks** hierarchical workspace with rich-text pages, headings, lists, code blocks, and file attachments
+- **Databases** structured tables with custom property types (text, select, date, relation, formula, rollup, and more), filters, sorting, and multiple views per database
+- **Property timelining** any database property can be given a timeline: values are stored as date-ranged slots rather than a single value, so the full history of how a property changed over time is preserved and queryable.
+- **Automations** rule-based triggers that act on database entries
+- **Comments** inline comments on pages and database entries
+- **Collaborative editing** real-time document collaboration via integrated Collabora Online (WOPI)
+- **Backup and restore** portable `.capy` backup files covering database, uploads, and configuration; full restore via a single script
+- **Multi-user** admin and member roles, optional self-registration
 
 ---
 

@@ -24,6 +24,7 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { apiClient } from '@/api/client'
+import { useDatabaseTemplatesStore } from '@/stores/databaseTemplates'
 
 // ── Domain types ──────────────────────────────────────────────────────────────
 
@@ -535,11 +536,23 @@ export const useDatabaseStore = defineStore('database', () => {
     value: Record<string, unknown> | null,
   ): Promise<void> {
     // Optimistic local update so the cell does not flicker back on blur.
+    // Covers both regular entries and entry_template blocks.
     const localEntries = entries.value[databaseId]
     if (localEntries) {
       const row = localEntries.find((e) => e.id === entryId)
       if (row) {
         row.values[schemaId] = value
+      }
+    }
+
+    // Also update the template store optimistically so the property picker
+    // in DatabaseTemplateEditor reflects changes immediately.
+    const templateStore = useDatabaseTemplatesStore()
+    const tmplList = templateStore.templates[databaseId]
+    if (tmplList) {
+      const tmpl = tmplList.find((t) => t.id === entryId)
+      if (tmpl) {
+        tmpl.values[schemaId] = value
       }
     }
 

@@ -2190,7 +2190,10 @@ async def upsert_value(
         )
 
         # ── Bilateral sync ───────────────────────────────────────────────────
-        if is_bilateral:
+        # Suppressed for entry_template blocks: templates store relation values
+        # for later Apply but must not write mirror sides — the template block
+        # itself is not a real participant in any relation graph.
+        if is_bilateral and entry.type != "entry_template":
             if is_relation_timeline:
                 new_pool = dict((stored_value or {}).get("relationPool") or {})
                 mirror_schema = _get_mirror_schema(db, schema)
@@ -2204,7 +2207,10 @@ async def upsert_value(
                 )
 
         # ── parent_item sync ─────────────────────────────────────────────────
-        if is_parent_item:
+        # Suppressed for entry_template blocks for the same reason: setting a
+        # parent_item value on a template must not register the template block
+        # as a sub-item on the referenced parent entry.
+        if is_parent_item and entry.type != "entry_template":
             new_parent_ids = list((stored_value or {}).get("related_ids") or [])
             _sync_parent_item(
                 db, entry_id, new_parent_ids, old_parent_ids, sub_item_schema_ref

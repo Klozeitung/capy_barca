@@ -160,17 +160,28 @@ const subItemSchema = computed(() =>
 )
 
 /**
- * Map from entry id → child ids, built from sub_item values.
- * Only populated when the sub_item schema exists.
+ * Map from entry id → child ids, derived from parentMap (the inverse of
+ * parent_item values). This is the authoritative source for tree rendering:
+ * it is always consistent with subItemParentMap because it is computed from
+ * the same parent_item values that the user writes directly.
+ *
+ * Previously this was built from sub_item values, which are a backend-managed
+ * mirror. Using the mirror caused entries to disappear from the tree whenever
+ * the sub_item value on the parent was stale or missing (e.g. immediately
+ * after a parent_item write before the WS refresh arrived).
+ *
+ * Only populated when the sub_item schema exists (i.e. the pair is seeded).
  */
 const subItemChildrenMap = computed((): Map<string, string[]> => {
   if (!subItemSchema.value) return new Map()
-  const sid = subItemSchema.value.id
   const map = new Map<string, string[]>()
-  for (const entry of displayedEntries.value) {
-    const val = entry.values[sid]
-    const kids = (val?.related_ids as string[] | undefined) ?? []
-    if (kids.length > 0) map.set(entry.id, kids)
+  for (const [childId, parentId] of subItemParentMap.value) {
+    const existing = map.get(parentId)
+    if (existing) {
+      existing.push(childId)
+    } else {
+      map.set(parentId, [childId])
+    }
   }
   return map
 })
