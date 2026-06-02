@@ -182,21 +182,22 @@ async function onFullSizeUpdate(val: boolean): Promise<void> {
     </div>
 
     <template v-else-if="block">
+      <!-- Sticky toolbar: page settings button.
+           Shown for all block types (pages and databases) so that
+           permissions can be managed from any full-screen view. -->
+      <div class="main-view__toolbar">
+        <button
+          class="main-view__settings-btn"
+          :title="t('pageSettings.title')"
+          @click="showPageSettings = true"
+        >
+          <Icon icon="mdi:cog-outline" width="15" height="15" />
+        </button>
+      </div>
+
       <DatabaseBlock v-if="block.type === 'database'" :block-id="block.id" />
 
       <template v-else>
-        <!-- Sticky toolbar: page settings button in the top-right corner.
-             Stays visible while the user scrolls through the page content. -->
-        <div class="main-view__toolbar">
-          <button
-            class="main-view__settings-btn"
-            :title="t('pageSettings.title')"
-            @click="showPageSettings = true"
-          >
-            <Icon icon="mdi:cog-outline" width="15" height="15" />
-          </button>
-        </div>
-
         <BlockTopSection :block="block" />
 
         <!-- Property section toggle — only visible for database entries. -->
@@ -244,9 +245,9 @@ async function onFullSizeUpdate(val: boolean): Promise<void> {
       </template>
     </template>
 
-    <!-- Page settings modal -->
+    <!-- Page / block settings modal (pages and databases) -->
     <PageSettingsModal
-      v-if="showPageSettings && block && block.type !== 'database'"
+      v-if="showPageSettings && block"
       :block="block"
       :full-size="fullSize"
       @close="showPageSettings = false"

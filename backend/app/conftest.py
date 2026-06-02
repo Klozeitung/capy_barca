@@ -6,6 +6,7 @@ from sqlalchemy.pool import StaticPool
 import app.automations.automations_models  # noqa: F401 – registers Automation with Base
 import app.blocks.models  # noqa: F401 – registers Block, PropertySchema, PropertyValue,
                            #               BlockPreference, BlockEvent with Base
+import app.permissions.model  # noqa: F401 – registers BlockPermission, BlockPermissionGrant with Base
 import app.blocks.router as block_router_module
 import app.comments.comments_models  # noqa: F401 – registers Comment with Base
 import app.comments.comments_router as comments_router_module

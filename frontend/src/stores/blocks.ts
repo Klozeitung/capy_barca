@@ -15,6 +15,7 @@ export interface Block {
   content: Record<string, unknown> | null
   icon: string | null
   cover: string | null
+  owner_id?: string | null
 }
 
 export interface BlockPreference {

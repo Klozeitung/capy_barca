@@ -198,7 +198,9 @@
     "sectionExport": "Export",
     "exportTitle": "Export",
     "exportAsPdf": "Als PDF exportieren",
-    "exportAsPdfHint": "Aktuelle Seite drucken oder als PDF-Datei speichern."
+    "exportAsPdfHint": "Aktuelle Seite drucken oder als PDF-Datei speichern.",
+    "sectionPermissions": "Berechtigungen",
+    "permissionsTitle": "Zugriffssteuerung"
   },
   "trash": {
     "title": "Papierkorb",
@@ -637,7 +639,11 @@
     "editorShiftEnter": "Zeilenumbruch im aktuellen Block",
     "editorBackspace": "Leeren Block entfernen, vorherigen fokussieren",
     "editorTab": "Listenelement einrücken",
-    "editorShiftTab": "Listenelement ausrücken"
+    "editorShiftTab": "Listenelement ausrücken",
+    "sectionPermissions": "Berechtigungen",
+    "permissionsTitle": "Zugriffssteuerung",
+    "permissionsIntro": "Jeder Block kann individuell eingeschränkt werden. Ohne explizite Einstellung erbt ein Block die Berechtigung seines Elternelements.",
+    "permissionsNote": "Berechtigungen werden über den Schraubenschlüssel-Button in den Seiteneinstellungen verwaltet. Administratoren sehen immer alle Blöcke."
   },
   "synchedBlock": {
     "originLabel": "Synced",
@@ -666,5 +672,33 @@
     "delete": "Kommentar löschen",
     "confirmDelete": "Zum Bestätigen erneut klicken",
     "unknownAuthor": "Unbekannt"
+  },
+  "permissions": {
+    "ownerLabel": "Eigentümer",
+    "noOwner": "Kein Eigentümer",
+    "accessLabel": "Zugriff",
+    "modeInherit": "Vom Elternelement erben",
+    "modeInheritDesc": "Verwendet die Einstellung des übergeordneten Blocks.",
+    "modeEveryone": "Alle Nutzer",
+    "modeEveryoneDesc": "Alle angemeldeten Nutzer können diesen Block sehen.",
+    "modePrivate": "Nur Eigentümer",
+    "modePrivateDesc": "Nur der Eigentümer kann diesen Block sehen.",
+    "modeWhitelist": "Ausgewählte Nutzer",
+    "modeWhitelistDesc": "Eigentümer und explizit freigegebene Nutzer können diesen Block sehen.",
+    "grantedUsers": "Freigegebene Nutzer",
+    "noGrants": "Noch keine Nutzer freigegeben.",
+    "selectUser": "Nutzer auswählen…",
+    "addGrant": "Hinzufügen",
+    "removeGrant": "Zugriff entfernen",
+    "inheritedAs": "Geerbt: {mode}",
+    "save": "Speichern",
+    "saving": "Wird gespeichert…",
+    "loadError": "Berechtigungen konnten nicht geladen werden.",
+    "saveError": "Berechtigungen konnten nicht gespeichert werden.",
+    "readonlyNotice": "Nur der Eigentümer oder ein Administrator kann Berechtigungen ändern.",
+    "warnAccessibilityTitle": "Nur über direkten Link erreichbar",
+    "warnAccessibilityBody": "Dieser Block ist zugänglicher eingestellt als seine übergeordneten Blöcke. Nutzer ohne Zugang zu den Elternblöcken können ihn nur über einen direkten Link öffnen, nicht über den Navigationsbaum.",
+    "copyLink": "Link kopieren",
+    "linkCopied": "Link kopiert"
   }
 }

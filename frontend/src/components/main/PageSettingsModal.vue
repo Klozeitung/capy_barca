@@ -21,10 +21,11 @@
  * and exposed here via props/emits so the modal stays stateless with respect
  * to that setting.
  */
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useBlockStore, type Block } from '@/stores/blocks'
+import PermissionsSection from './PermissionsSection.vue'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
@@ -46,13 +47,24 @@ const blockStore = useBlockStore()
 
 // ── Sidebar sections ──────────────────────────────────────────────────────────
 
-const SECTIONS = [
-  { key: 'page',   labelKey: 'pageSettings.sectionPage',   icon: 'mdi:file-document-outline' },
-  { key: 'export', labelKey: 'pageSettings.sectionExport', icon: 'mdi:export-variant' },
+// All sections for page-type blocks
+const ALL_SECTIONS = [
+  { key: 'page',        labelKey: 'pageSettings.sectionPage',        icon: 'mdi:file-document-outline' },
+  { key: 'export',      labelKey: 'pageSettings.sectionExport',      icon: 'mdi:export-variant' },
+  { key: 'permissions', labelKey: 'pageSettings.sectionPermissions', icon: 'mdi:shield-lock-outline' },
 ] as const
 
-type SectionKey = typeof SECTIONS[number]['key']
-const activeSection = ref<SectionKey>('page')
+// For database blocks, only permissions apply (cover/full-size are page-only)
+const SECTIONS = computed(() =>
+  props.block.type === 'database'
+    ? ALL_SECTIONS.filter(s => s.key === 'permissions')
+    : ALL_SECTIONS,
+)
+
+type SectionKey = 'page' | 'export' | 'permissions'
+const activeSection = ref<SectionKey>(
+  props.block.type === 'database' ? 'permissions' : 'page',
+)
 
 // ── Full-size toggle ──────────────────────────────────────────────────────────
 
@@ -303,6 +315,14 @@ function exportAsPdf(): void {
                     PDF
                   </button>
                 </div>
+              </div>
+            </template>
+
+            <!-- ── Permissions ─────────────────────────────────────── -->
+            <template v-if="activeSection === 'permissions'">
+              <div class="psm__section">
+                <p class="psm__section-title">{{ t('pageSettings.permissionsTitle') }}</p>
+                <PermissionsSection :block-id="block.id" />
               </div>
             </template>
 

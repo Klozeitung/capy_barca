@@ -2785,3 +2785,24 @@ def test_sub_item_direct_remove_clears_parent_item(http_client):
     child_row = next(e for e in entries if e["id"] == child_entry["id"])
     parent_val = child_row["values"].get(pi["id"]) or {}
     assert (parent_val.get("related_ids") or []) == []
+
+
+# ─── Permission enforcement ───────────────────────────────────────────────────
+
+
+def test_list_entries_admin_bypasses_permission(http_client):
+    """Admin users always receive entries regardless of permission settings."""
+    db_id = _create_database(http_client)
+    _create_entry(http_client, db_id)
+    resp = http_client.get(f"/api/databases/{db_id}/entries")
+    assert resp.status_code == 200
+    assert len(resp.json()) >= 1
+
+
+def test_query_entries_admin_bypasses_permission(http_client):
+    """Admin users always receive query results regardless of permission settings."""
+    db_id = _create_database(http_client)
+    _create_entry(http_client, db_id)
+    resp = http_client.post(f"/api/databases/{db_id}/entries/query", json={})
+    assert resp.status_code == 200
+    assert resp.json()["total"] >= 1

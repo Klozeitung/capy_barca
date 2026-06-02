@@ -84,7 +84,7 @@ _cors_credentials = True
 
 app = FastAPI(
     title="CapyBarca API",
-    version="0.12.4",
+    version="0.13.0",
     lifespan=lifespan,
 )
 
@@ -106,6 +106,7 @@ from app.blocks.database_router import database_router  # noqa: E402
 from app.blocks.router import block_router  # noqa: E402
 from app.comments.comments_router import comments_router  # noqa: E402
 from app.media.router import media_router  # noqa: E402
+from app.permissions.router import permissions_router  # noqa: E402
 from app.session.login_router import login_router  # noqa: E402
 from app.setup_router import setup_router  # noqa: E402
 from app.users.router import users_router  # noqa: E402
@@ -116,6 +117,7 @@ app.include_router(automations_router)
 app.include_router(block_router)
 app.include_router(comments_router)
 app.include_router(database_router)
+app.include_router(permissions_router)
 app.include_router(media_router)
 app.include_router(login_router)
 app.include_router(setup_router)

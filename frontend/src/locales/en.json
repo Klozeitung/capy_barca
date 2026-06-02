@@ -198,7 +198,9 @@
     "sectionExport": "Export",
     "exportTitle": "Export",
     "exportAsPdf": "Export as PDF",
-    "exportAsPdfHint": "Print or save the current page as a PDF file."
+    "exportAsPdfHint": "Print or save the current page as a PDF file.",
+    "sectionPermissions": "Permissions",
+    "permissionsTitle": "Access control"
   },
   "trash": {
     "title": "Recycle Bin",
@@ -670,7 +672,11 @@
     "editorShiftEnter": "Insert line break in current block",
     "editorBackspace": "Remove empty block, focus previous",
     "editorTab": "Indent list item",
-    "editorShiftTab": "Outdent list item"
+    "editorShiftTab": "Outdent list item",
+    "sectionPermissions": "Permissions",
+    "permissionsTitle": "Access control",
+    "permissionsIntro": "Each block can be individually restricted. Without an explicit setting, a block inherits the permission of its parent.",
+    "permissionsNote": "Permissions are managed via the gear button in page settings. Admins always see all blocks."
   },
   "synchedBlock": {
     "originLabel": "Synced",
@@ -699,5 +705,33 @@
     "delete": "Delete comment",
     "confirmDelete": "Click again to confirm",
     "unknownAuthor": "Unknown"
+  },
+  "permissions": {
+    "ownerLabel": "Owner",
+    "noOwner": "No owner",
+    "accessLabel": "Access",
+    "modeInherit": "Inherit from parent",
+    "modeInheritDesc": "Uses the permission setting of the parent block.",
+    "modeEveryone": "Everyone",
+    "modeEveryoneDesc": "All authenticated users can see this block.",
+    "modePrivate": "Owner only",
+    "modePrivateDesc": "Only the owner can see this block.",
+    "modeWhitelist": "Specific users",
+    "modeWhitelistDesc": "The owner and explicitly listed users can see this block.",
+    "grantedUsers": "Shared with",
+    "noGrants": "No users added yet.",
+    "selectUser": "Select a user…",
+    "addGrant": "Add",
+    "removeGrant": "Remove access",
+    "inheritedAs": "Inherited: {mode}",
+    "save": "Save",
+    "saving": "Saving…",
+    "loadError": "Could not load permissions.",
+    "saveError": "Could not save permissions.",
+    "readonlyNotice": "Only the owner or an admin can change permissions.",
+    "warnAccessibilityTitle": "Only reachable via direct link",
+    "warnAccessibilityBody": "This block has a more permissive setting than its parent blocks. Users without access to the parent blocks can only open it via a direct link — it will not appear in the navigation tree.",
+    "copyLink": "Copy link",
+    "linkCopied": "Link copied"
   }
 }

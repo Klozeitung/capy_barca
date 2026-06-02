@@ -1570,3 +1570,49 @@ def test_deep_duplicate_synched_mirror_has_new_id(db, workspace, page):
     db.commit()
 
     assert dup_mirror.id != mirror.id
+
+
+# ─── create_block owner_id ────────────────────────────────────────────────────
+
+
+def test_create_block_sets_owner_id(db, workspace):
+    import uuid as _uuid
+    uid = _uuid.uuid4()
+    block = service.create_block(
+        db, type="page", parent_id=workspace.id, owner_id=uid
+    )
+    db.commit()
+    assert block.owner_id == uid
+
+
+def test_create_block_owner_id_defaults_to_none(db, workspace):
+    block = service.create_block(db, type="page", parent_id=workspace.id)
+    db.commit()
+    assert block.owner_id is None
+
+
+def test_deep_duplicate_inherits_owner_id(db, workspace):
+    import uuid as _uuid
+    uid = _uuid.uuid4()
+    original = service.create_block(
+        db, type="page", parent_id=workspace.id, owner_id=uid
+    )
+    db.commit()
+    dup = service.deep_duplicate(db, original.id, parent_id=workspace.id, position=99.0)
+    db.commit()
+    assert dup.owner_id == uid
+
+
+def test_deep_duplicate_uses_explicit_owner_id(db, workspace):
+    import uuid as _uuid
+    original_owner = _uuid.uuid4()
+    new_owner = _uuid.uuid4()
+    original = service.create_block(
+        db, type="page", parent_id=workspace.id, owner_id=original_owner
+    )
+    db.commit()
+    dup = service.deep_duplicate(
+        db, original.id, parent_id=workspace.id, position=99.0, owner_id=new_owner
+    )
+    db.commit()
+    assert dup.owner_id == new_owner

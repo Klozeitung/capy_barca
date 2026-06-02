@@ -112,6 +112,7 @@ from app.blocks.computed import (
 from app.blocks.formula_engine import FormulaError, validate_syntax
 from app.blocks.router import get_db
 from app.blocks.service import BlockConflict, BlockNotFound
+from app.permissions import repository as perm_repo
 from app.session.deps import get_current_user, require_session
 from app.users.model import User
 from app.ws.broadcaster import broadcast_block_event
@@ -1654,7 +1655,7 @@ def validate_formula(
 def list_entries(
     database_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: uuid.UUID = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Return all active entry blocks of a database, enriched with their
@@ -1662,8 +1663,12 @@ def list_entries(
 
     Values are loaded in a single additional query (no N+1). The ``values``
     dict on each entry maps schema_id (string) to the stored JSONB payload.
+    Non-admin users that do not have access to the database block receive an
+    empty list (this prevents leaking entry content via relation pickers).
     """
     _get_database_or_raise(db, database_id)
+    if not perm_repo.can_user_access(db, database_id, current_user):
+        return []
     entries = repo.list_children(
         db, database_id, state="active",
         exclude_types=frozenset({"entry_template"}),
@@ -1696,7 +1701,7 @@ def query_entries(
     database_id: uuid.UUID,
     payload: EntryQueryRequest,
     db: Session = Depends(get_db),
-    _session: uuid.UUID = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Return a filtered, sorted, paginated list of database entries.
@@ -1721,8 +1726,16 @@ def query_entries(
     ----------
     ``limit`` is capped at 10 000 server-side.  ``total`` in the response
     reflects the full filtered count before the limit is applied.
+
+    Permission
+    ----------
+    Non-admin users that do not have access to the database block receive an
+    empty result set. This cleanly prevents relation-cell pickers from
+    surfacing entries from databases the user may not see.
     """
     _get_database_or_raise(db, database_id)
+    if not perm_repo.can_user_access(db, database_id, current_user):
+        return EntryQueryResponse(entries=[], total=0)
     schemas = repo.list_schemas(db, database_id)
     schema_map: dict[str, object] = {str(s.id): s for s in schemas}
 

@@ -30,22 +30,42 @@ def mock_auth():
 
 
 @pytest.fixture
-def http_client(isolated_db):
+def http_client(isolated_db, monkeypatch):
     """
     TestClient with workspace root pre-seeded and session cookie set on the
     client instance (avoids the per-request cookies DeprecationWarning).
 
     ``isolated_db`` is explicitly requested to guarantee fixture ordering:
     the in-memory DB must be ready before we seed the workspace root.
+
+    ``get_current_user`` is overridden via FastAPI dependency overrides so
+    that endpoints which need the current user (for permissions / owner_id)
+    receive a fake admin user without a live session.
     """
+    import uuid as _uuid
+    from app.main import app as _app
+    from app.session.deps import get_current_user
+    from app.users.model import User
+
+    fake_user = User(
+        id=_uuid.uuid4(),
+        username="testuser",
+        password_hash="x",
+        role="admin",
+        is_active=True,
+    )
+    _app.dependency_overrides[get_current_user] = lambda: fake_user
+
     with s.SessionLocal() as db:
         block = Block(id=WORKSPACE_ROOT_ID, type="workspace", position=0.0)
         db.add(block)
         db.commit()
 
-    client = TestClient(app)
+    client = TestClient(_app)
     client.cookies.set("session", "test-token")
-    return client
+    yield client
+
+    _app.dependency_overrides.clear()
 
 
 # ─── Auth guard ───────────────────────────────────────────────────────────────
@@ -752,3 +772,22 @@ def test_remove_cover_unknown_block_returns_404(http_client, tmp_path, monkeypat
 
     response = http_client.delete(f"/api/blocks/{uuid.uuid4()}/cover")
     assert response.status_code == 404
+
+
+# ─── owner_id in responses ────────────────────────────────────────────────────
+
+
+def test_create_block_response_has_owner_id_field(http_client):
+    """BlockResponse must include owner_id regardless of its value."""
+    resp = http_client.post(
+        "/api/blocks",
+        json={"type": "page", "parent_id": str(WORKSPACE_ROOT_ID)},
+    )
+    assert resp.status_code == 201
+    assert "owner_id" in resp.json()
+
+
+def test_get_block_response_has_owner_id_field(http_client):
+    resp = http_client.get(f"/api/blocks/{WORKSPACE_ROOT_ID}")
+    assert resp.status_code == 200
+    assert "owner_id" in resp.json()

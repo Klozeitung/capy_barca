@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.blocks import events as ev
 from app.blocks import repository as repo
-from app.blocks.models import Block, PropertySchema
+from app.blocks.models import Block, PropertySchema, WORKSPACE_ROOT_ID
 from app.blocks.types import validate_block_type
 
 # Minimum acceptable gap between adjacent sibling positions. When any gap
@@ -429,6 +429,31 @@ def rebalance_positions(db: Session, parent_id: uuid.UUID) -> list[uuid.UUID]:
 # ─── Core operations ──────────────────────────────────────────────────────────
 
 
+def _apply_first_level_permission(
+    db: Session,
+    block_id: uuid.UUID,
+    parent_id: Optional[uuid.UUID],
+) -> None:
+    """
+    Automatically set mode='private' for direct children of the workspace root.
+
+    Design contract
+    ---------------
+    Workspace root              -> mode='everyone'  (migration seed, never changes)
+    First-level blocks          -> mode='private'   (set here on creation/move)
+    All blocks at deeper levels -> no row (inherit, resolves to parent's private)
+
+    The check is idempotent: an existing explicit permission row is never
+    overwritten so that a user who manually changed the mode is not surprised
+    after a duplicate or move operation.
+    """
+    if parent_id != WORKSPACE_ROOT_ID:
+        return
+    from app.permissions import repository as perm_repo
+    if perm_repo.get_permission_row(db, block_id) is None:
+        perm_repo.set_permission(db, block_id, "private", [])
+
+
 def create_block(
     db: Session,
     *,
@@ -439,6 +464,7 @@ def create_block(
     content: Optional[dict] = None,
     icon: Optional[str] = None,
     cover: Optional[str] = None,
+    owner_id: Optional[uuid.UUID] = None,
 ) -> Block:
     """
     Create a new block under *parent_id*.
@@ -486,6 +512,9 @@ def create_block(
         icon=icon,
         cover=cover,
     )
+    if owner_id is not None:
+        block.owner_id = owner_id
+    _apply_first_level_permission(db, block.id, parent_id)
     ev.emit_created(db, block.id, _block_snapshot(block))
     return block
 
@@ -496,6 +525,7 @@ def deep_duplicate(
     *,
     parent_id: uuid.UUID,
     position: float,
+    owner_id: Optional[uuid.UUID] = None,
 ) -> Block:
     """
     Recursively duplicate *block_id* and its entire active subtree under
@@ -573,11 +603,18 @@ def deep_duplicate(
         icon=original.icon,
         cover=original.cover,
     )
+    # Carry the owner forward; default to the original owner when no explicit
+    # owner_id is supplied (e.g. when called recursively for child blocks).
+    new_block.owner_id = owner_id if owner_id is not None else original.owner_id
+    # Apply default first-level permission to the root copy.
+    # Child copies are placed under new_block (not workspace root) so the
+    # helper is a no-op for them — inheritance handles their visibility.
+    _apply_first_level_permission(db, new_block.id, parent_id)
     ev.emit_created(db, new_block.id, _block_snapshot(new_block))
 
     # Recursively copy all active children, preserving their relative positions.
     for child in repo.list_children(db, block_id, state="active"):
-        deep_duplicate(db, child.id, parent_id=new_block.id, position=child.position)
+        deep_duplicate(db, child.id, parent_id=new_block.id, position=child.position, owner_id=new_block.owner_id)
 
     return new_block
 
@@ -923,6 +960,11 @@ def move(
     siblings = repo.list_children(db, new_parent_id, state="active")
     if _min_sibling_gap(siblings) < _REBALANCE_THRESHOLD:
         rebalance_positions(db, new_parent_id)
+
+    # If the block is being moved to the workspace root and has no explicit
+    # permission row yet, give it the default first-level 'private' setting.
+    # This prevents accidental exposure when dragging content to root level.
+    _apply_first_level_permission(db, block_id, new_parent_id)
 
     db.refresh(block)
     return block

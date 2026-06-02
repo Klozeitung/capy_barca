@@ -610,6 +610,7 @@ if docker compose exec backend pytest \
     app/automations/automations_engine_test.py \
     app/automations/automations_router_test.py \
     app/comments/comments_router_test.py \
+    app/permissions/router_test.py \
     -v; then
     echo -e "${GREEN}[OK] Backend tests passed.${NC}"
 else

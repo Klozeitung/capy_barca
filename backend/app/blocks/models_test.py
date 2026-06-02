@@ -375,3 +375,38 @@ def test_property_value_relationship_to_page(db, page, database_block):
     db.commit()
     db.refresh(page)
     assert any(v.property_schema_id == schema.id for v in page.property_values)
+
+
+# ─── Block owner_id ───────────────────────────────────────────────────────────
+
+
+def test_block_owner_id_is_nullable(db):
+    block = Block(type="page", position=1.0)
+    db.add(block)
+    db.commit()
+    db.refresh(block)
+    assert block.owner_id is None
+
+
+def test_block_owner_id_can_be_set(db):
+    import uuid as _uuid
+    uid = _uuid.uuid4()
+    block = Block(type="page", position=1.0, owner_id=uid)
+    db.add(block)
+    db.commit()
+    db.refresh(block)
+    assert block.owner_id == uid
+
+
+def test_block_owner_id_is_independent_of_created_by(db, database_block):
+    """owner_id lives on the Block row; created_by is a PropertySchema type."""
+    from app.blocks.models import PropertySchema
+    import uuid as _uuid
+    uid = _uuid.uuid4()
+    block = Block(type="page", position=1.0, owner_id=uid)
+    db.add(block)
+    db.commit()
+    db.refresh(block)
+    assert block.owner_id == uid
+    # The Block row has no 'created_by' column — that is a property schema type.
+    assert not hasattr(block, "created_by")

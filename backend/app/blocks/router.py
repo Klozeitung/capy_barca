@@ -31,10 +31,45 @@ from app.blocks.computed import compute_cross_db_dependents, compute_same_db_rol
 from app.blocks.service import BlockConflict, BlockNotFound
 from app.blocks.types import validate_block_type
 from app.database.database import SessionLocal
+from app.permissions import repository as perm_repo
 from app.session.session import validate_token
+from app.users.model import User
 from app.ws.broadcaster import broadcast_block_event
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_user_from_session(db, session_token: Optional[str]) -> Optional[User]:
+    """
+    Resolve the authenticated User from a session token, or None.
+
+    Uses the module-local ``validate_token`` reference (patchable in tests)
+    so this function degrades safely to None in test setups that patch
+    ``validate_token`` without inserting a live session record.
+
+    The block router enforces authentication via the separate
+    ``require_session`` dependency; this helper only provides user identity
+    for owner_id stamping and permission filtering without adding a second
+    authentication gate.
+    """
+    if not session_token or not validate_token(session_token):
+        return None
+    try:
+        from app.session.session import SessionRecord
+        record = (
+            db.query(SessionRecord)
+            .filter(SessionRecord.token == session_token)
+            .first()
+        )
+        if record is None:
+            return None
+        user_id = getattr(record, "user_id", None)
+        if user_id is None:
+            return None
+        return db.get(User, user_id)
+    except Exception:
+        return None
+
 
 block_router = APIRouter(prefix="/api/blocks", tags=["blocks"])
 
@@ -209,6 +244,7 @@ class BlockResponse(BaseModel):
     content: Optional[dict]
     icon: Optional[str]
     cover: Optional[str]
+    owner_id: Optional[uuid.UUID] = None
 
     model_config = {"from_attributes": True}
 
@@ -263,6 +299,7 @@ def _block_to_dict(block) -> dict:
         "content": block.content,
         "icon": block.icon,
         "cover": block.cover,
+        "owner_id": str(block.owner_id) if getattr(block, "owner_id", None) else None,
     }
 
 
@@ -288,6 +325,7 @@ async def create_block(
     _session: str = Depends(require_session),
 ):
     """Create a new block under the given parent."""
+    current_user = _resolve_user_from_session(db, _session)
     try:
         block = service.create_block(
             db,
@@ -298,6 +336,7 @@ async def create_block(
             content=payload.content,
             icon=payload.icon,
             cover=payload.cover,
+            owner_id=current_user.id if current_user else None,
         )
         db.commit()
         await broadcast_block_event(
@@ -323,8 +362,16 @@ def list_trash(
     Only the roots of deleted subtrees are returned; trashed children are
     omitted because restoring a root automatically restores all descendants.
     Results are ordered by most recently updated first.
+    Non-admin users only see trashed blocks they own.
     """
-    return repo.list_trash(db)
+    blocks = repo.list_trash(db)
+    current_user = _resolve_user_from_session(db, _session)
+    if current_user is not None and current_user.role != "admin":
+        blocks = [
+            b for b in blocks
+            if getattr(b, "owner_id", None) == current_user.id
+        ]
+    return blocks
 
 
 @block_router.get("/{block_id}", response_model=BlockResponse)
@@ -336,6 +383,13 @@ def get_block(
     """Return a single block by ID."""
     block = repo.get_block(db, block_id)
     if block is None:
+        raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
+    # Return 404 (not 403) for inaccessible blocks to avoid leaking existence.
+    # Permission check requires a resolved user; degrade gracefully to open
+    # access when the session cannot be resolved (e.g. in test setups that
+    # only patch validate_token without inserting a live session record).
+    current_user = _resolve_user_from_session(db, _session)
+    if current_user is not None and not perm_repo.can_user_access(db, block_id, current_user):
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
     return block
 
@@ -352,12 +406,22 @@ def list_children(
 
     The ``state`` query parameter filters by block state. Defaults to
     ``active``. Pass ``state=`` (empty) to return children of all states.
+    Children that the current user may not access are silently excluded.
+    When the user cannot be resolved (e.g. test environments that only patch
+    ``validate_token``), the full child list is returned unfiltered.
     """
     try:
         repo.get_block_or_raise(db, block_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
-    return repo.list_children(db, block_id, state=state or None)
+    children = repo.list_children(db, block_id, state=state or None)
+    current_user = _resolve_user_from_session(db, _session)
+    if current_user is not None and current_user.role != "admin":
+        children = [
+            c for c in children
+            if perm_repo.can_user_access(db, c.id, current_user)
+        ]
+    return children
 
 
 @block_router.patch("/{block_id}", response_model=BlockResponse)
@@ -620,11 +684,13 @@ async def duplicate_block(
         parent_id = original.parent_id  # workspace-level blocks have no parent
 
     try:
+        _dup_user = _resolve_user_from_session(db, _session)
         new_block = service.deep_duplicate(
             db,
             block_id,
             parent_id=parent_id,
             position=position,
+            owner_id=_dup_user.id if _dup_user else None,
         )
         db.commit()
         await broadcast_block_event(

@@ -25,8 +25,9 @@ const { closeHelp } = useHelpModal()
 // ── Section navigation ────────────────────────────────────────────────────────
 
 const SECTIONS = [
-  { key: 'blocks',    labelKey: 'help.sectionBlocks',    icon: 'mdi:view-grid-outline' },
-  { key: 'shortcuts', labelKey: 'help.sectionShortcuts', icon: 'mdi:keyboard-outline' },
+  { key: 'blocks',      labelKey: 'help.sectionBlocks',      icon: 'mdi:view-grid-outline' },
+  { key: 'shortcuts',   labelKey: 'help.sectionShortcuts',   icon: 'mdi:keyboard-outline' },
+  { key: 'permissions', labelKey: 'help.sectionPermissions', icon: 'mdi:shield-lock-outline' },
 ] as const
 
 type SectionKey = typeof SECTIONS[number]['key']
@@ -140,6 +141,15 @@ function handleBackdropClick(e: MouseEvent): void {
     closeHelp()
   }
 }
+// ── Permission mode reference data ───────────────────────────────────────────
+
+const permissionModes = [
+  { icon: 'mdi:arrow-up-circle-outline', labelKey: 'permissions.modeInherit',    descKey: 'permissions.modeInheritDesc' },
+  { icon: 'mdi:earth',                  labelKey: 'permissions.modeEveryone',   descKey: 'permissions.modeEveryoneDesc' },
+  { icon: 'mdi:lock-outline',           labelKey: 'permissions.modePrivate',    descKey: 'permissions.modePrivateDesc' },
+  { icon: 'mdi:account-multiple-outline', labelKey: 'permissions.modeWhitelist', descKey: 'permissions.modeWhitelistDesc' },
+]
+
 </script>
 
 <template>
@@ -245,6 +255,28 @@ function handleBackdropClick(e: MouseEvent): void {
                 </div>
               </div>
 
+            </template>
+
+            <!-- ── Permissions ────────────────────────────────────────── -->
+            <template v-else-if="activeSection === 'permissions'">
+              <div class="hm__group">
+                <p class="hm__group-label">{{ t('help.permissionsTitle') }}</p>
+                <p class="hm__permissions-intro">{{ t('help.permissionsIntro') }}</p>
+                <div class="hm__perm-modes">
+                  <div
+                    v-for="item in permissionModes"
+                    :key="item.labelKey"
+                    class="hm__perm-mode"
+                  >
+                    <Icon :icon="item.icon" width="14" height="14" class="hm__perm-icon" />
+                    <div class="hm__perm-text">
+                      <span class="hm__perm-label">{{ t(item.labelKey) }}</span>
+                      <span class="hm__perm-desc">{{ t(item.descKey) }}</span>
+                    </div>
+                  </div>
+                </div>
+                <p class="hm__permissions-note">{{ t('help.permissionsNote') }}</p>
+              </div>
             </template>
 
           </div>
@@ -494,4 +526,59 @@ function handleBackdropClick(e: MouseEvent): void {
   color: var(--color-text-muted);
   font-size: 0.8125rem;
 }
+/* ── Permissions section ─────────────────────────────────────────────────── */
+.hm__permissions-intro {
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+  line-height: 1.5;
+  margin: 0 0 10px;
+}
+
+.hm__perm-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.hm__perm-mode {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: var(--color-hover);
+}
+
+.hm__perm-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--color-text-muted);
+}
+
+.hm__perm-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.hm__perm-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.hm__perm-desc {
+  font-size: 0.76rem;
+  color: var(--color-text-muted);
+  line-height: 1.35;
+}
+
+.hm__permissions-note {
+  font-size: 0.775rem;
+  color: var(--color-text-muted);
+  margin: 0;
+  line-height: 1.45;
+}
+
 </style>

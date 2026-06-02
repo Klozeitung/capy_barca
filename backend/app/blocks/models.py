@@ -66,6 +66,13 @@ class Block(Base):
     content: Mapped[Optional[Any]] = mapped_column(sa.JSON, nullable=True, default=None)
     icon: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True, default=None)
     cover: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True, default=None)
+    # Owner of this block.  No FK so that deleting a user does not affect
+    # the block tree.  Set to the creating user at block creation time.
+    # Backfilled to the first active admin for all pre-existing rows by
+    # migration 0015.
+    owner_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        sa.Uuid, nullable=True, default=None, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
     )
