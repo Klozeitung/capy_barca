@@ -102,7 +102,9 @@
       "linkedDatabaseDesc": "Ansicht einer vorhandenen Datenbank einbetten"
     },
     "mention": {
-      "noResults": "Keine passenden Seiten"
+      "noResults": "Keine passenden Seiten",
+      "lockedTooltip": "Kein Zugriff auf diesen Block",
+      "lockedLabel": "Gesperrt"
     }
   },
   "layout": {

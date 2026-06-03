@@ -41,31 +41,27 @@ logger = logging.getLogger(__name__)
 
 def _resolve_user_from_session(db, session_token: Optional[str]) -> Optional[User]:
     """
-    Resolve the authenticated User from a session token, or None.
+    Resolve the authenticated User from a raw session token, or None.
 
-    Uses the module-local ``validate_token`` reference (patchable in tests)
-    so this function degrades safely to None in test setups that patch
-    ``validate_token`` without inserting a live session record.
+    Delegates to the module-local ``validate_token`` reference (patchable in
+    tests) which handles token hashing and expiry internally and returns the
+    ``user_id`` directly — no second DB round-trip via SessionRecord needed.
 
-    The block router enforces authentication via the separate
-    ``require_session`` dependency; this helper only provides user identity
-    for owner_id stamping and permission filtering without adding a second
-    authentication gate.
+    In test setups that patch ``validate_token`` to return ``True`` (a
+    non-UUID truthy value), ``db.get(User, True)`` returns None and
+    permission checks are skipped, preserving backward compatibility.
+
+    The block router already enforces authentication via ``require_session``;
+    this helper only provides user identity for owner_id stamping and
+    permission filtering without duplicating the auth gate.
     """
-    if not session_token or not validate_token(session_token):
+    if not session_token:
+        return None
+    # validate_token hashes the token and checks expiry; returns user_id or None.
+    user_id = validate_token(session_token)
+    if not user_id:
         return None
     try:
-        from app.session.session import SessionRecord
-        record = (
-            db.query(SessionRecord)
-            .filter(SessionRecord.token == session_token)
-            .first()
-        )
-        if record is None:
-            return None
-        user_id = getattr(record, "user_id", None)
-        if user_id is None:
-            return None
         return db.get(User, user_id)
     except Exception:
         return None

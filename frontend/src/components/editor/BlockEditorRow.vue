@@ -120,6 +120,14 @@ const MENTION_STORAGE_RE = /@([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0
  */
 let _mentionAnchor: { node: Text; offset: number } | null = null
 
+/**
+ * Block IDs for which a fetch attempt returned 404 during the last
+ * loadContentFromStorage call.  Used by buildChipElement to render a
+ * locked chip instead of a navigable one.
+ * Cleared and rebuilt on every loadContentFromStorage invocation.
+ */
+const inaccessibleMentions = new Set<string>()
+
 // ── Focus state ───────────────────────────────────────────────────────────────
 
 /** Guards against applying remote (WebSocket) updates while the user is typing. */
@@ -246,7 +254,51 @@ function buildIconSvg(iconName: string, size = 14): SVGElement | null {
  * atomic unit — the caret cannot enter it and it is skipped as a whole by
  * arrow-key navigation.
  */
+/**
+ * Build a locked mention chip for a block the current user cannot access.
+ *
+ * The chip is non-interactive (no click handler) and displays a lock icon
+ * with a localised "Locked" label.  It is not contenteditable so the user
+ * can still delete it as an atomic unit via Backspace.
+ */
+function buildLockedChipElement(blockId: string): HTMLElement {
+  const chip = document.createElement('span')
+  chip.className = 'editor-row__mention-chip editor-row__mention-chip--locked'
+  chip.contentEditable = 'false'
+  chip.setAttribute('data-mention-id', blockId)
+  chip.title = t('editor.mention.lockedTooltip')
+
+  const iconWrap = document.createElement('span')
+  iconWrap.className = 'editor-row__mention-chip__icon'
+  const lockSvg = buildIconSvg('mdi:lock-outline', 12)
+  if (lockSvg) {
+    iconWrap.appendChild(lockSvg)
+  } else {
+    loadIcon('mdi:lock-outline').then(() => {
+      const svg = buildIconSvg('mdi:lock-outline', 12)
+      if (svg && iconWrap.isConnected) {
+        iconWrap.textContent = ''
+        iconWrap.appendChild(svg)
+      }
+    }).catch(() => {})
+  }
+  chip.appendChild(iconWrap)
+
+  const titleSpan = document.createElement('span')
+  titleSpan.className = 'editor-row__mention-chip__title'
+  titleSpan.textContent = t('editor.mention.lockedLabel')
+  chip.appendChild(titleSpan)
+
+  // No click handler — the referenced block is not accessible.
+  return chip
+}
+
 function buildChipElement(blockId: string, block: Block | null): HTMLElement {
+  // If the block is known to be inaccessible, render the locked variant.
+  if (block === null && inaccessibleMentions.has(blockId)) {
+    return buildLockedChipElement(blockId)
+  }
+
   const chip = document.createElement('span')
   chip.className = 'editor-row__mention-chip'
   chip.contentEditable = 'false'
@@ -364,6 +416,8 @@ function applyContentToDOMSync(storageText: string): void {
  * re-renders with resolved titles once the fetches complete.
  */
 async function loadContentFromStorage(storageText: string): Promise<void> {
+  // Reset inaccessibility state for this load — will be repopulated below.
+  inaccessibleMentions.clear()
   applyContentToDOMSync(storageText)
 
   const missingIds: string[] = []
@@ -374,9 +428,18 @@ async function loadContentFromStorage(storageText: string): Promise<void> {
   }
   if (!missingIds.length) return
 
-  await Promise.all(missingIds.map((id) => blockStore.fetchBlock(id).catch(() => {})))
+  // Fetch missing blocks.  Failures (404 / permission denied) populate
+  // inaccessibleMentions so that the second DOM pass renders locked chips.
+  await Promise.all(
+    missingIds.map((id) =>
+      blockStore.fetchBlock(id).catch(() => {
+        inaccessibleMentions.add(id)
+      }),
+    ),
+  )
 
   if (!isFocused.value) {
+    // Second pass: chips for 404 IDs now render as locked.
     applyContentToDOMSync(storageText)
     nextTick(() => { if (editorEl.value) autoResize(editorEl.value) })
   }
@@ -1388,5 +1451,16 @@ async function applySlashSelection(type: string): Promise<void> {
 
 .editor-row__mention-chip__title {
   /* Inherits font properties from the chip wrapper. */
+}
+
+.editor-row__mention-chip--locked {
+  opacity: 0.6;
+  cursor: default;
+  color: var(--color-text-muted);
+  background: color-mix(in srgb, var(--color-text-muted) 8%, transparent);
+}
+
+.editor-row__mention-chip--locked:hover {
+  background: color-mix(in srgb, var(--color-text-muted) 8%, transparent);
 }
 </style>

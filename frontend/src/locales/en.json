@@ -102,7 +102,9 @@
       "linkedDatabaseDesc": "Embed a view of an existing database"
     },
     "mention": {
-      "noResults": "No matching pages"
+      "noResults": "No matching pages",
+      "lockedTooltip": "You do not have access to this block",
+      "lockedLabel": "Locked"
     }
   },
   "layout": {
