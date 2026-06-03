@@ -293,6 +293,9 @@ watch(() => props.blockId, () => loadComments())
   flex-direction: column;
   gap: 10px;
   flex-shrink: 0;
+  max-width: 720px;
+  margin: 0 auto;
+  width: 100%;
 }
 
 /* ── State (loading / error) ────────────────────────────────────────────────── */

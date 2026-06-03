@@ -292,6 +292,20 @@ async function onFullSizeUpdate(val: boolean): Promise<void> {
   padding-right: 0;
 }
 
+.main-view--full-size .main-view__props-toggle {
+  max-width: none;
+}
+
+.main-view--full-size .main-view__comments-toggle {
+  max-width: none;
+}
+
+.main-view--full-size :deep(.bcs) {
+  max-width: none;
+  padding-left: 0;
+  padding-right: 0;
+}
+
 /* ── Toolbar (settings button row) ───────────────────────────────────────── */
 .main-view__toolbar {
   position: sticky;
@@ -332,6 +346,8 @@ async function onFullSizeUpdate(val: boolean): Promise<void> {
   align-items: center;
   gap: 6px;
   width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
   padding: 7px 2rem;
   border: none;
   border-top: 1px solid var(--color-border);
@@ -356,6 +372,8 @@ async function onFullSizeUpdate(val: boolean): Promise<void> {
   align-items: center;
   gap: 6px;
   width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
   padding: 7px 2rem;
   border: none;
   border-top: 1px solid var(--color-border);
