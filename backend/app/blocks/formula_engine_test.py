@@ -1262,9 +1262,12 @@ def test_string_comparison():
     assert ev('"abc" != "def"') is True
 
 
-def test_none_propagation_in_arithmetic():
+def test_empty_prop_treated_as_zero_in_arithmetic():
+    # An empty (missing) source property counts as 0 in a numeric context,
+    # so the formula yields a value instead of surfacing a type error.
     result = evaluate("prop('Missing') + 1", {})
-    assert result.error is not None  # None + 1 is a type error
+    assert result.error is None
+    assert result.result == 1
 
 
 def test_ifs_inside_formula():
@@ -1511,3 +1514,143 @@ def test_validate_syntax_accepts_new_functions():
     validate_syntax("unstyle(prop('X'))")
     validate_syntax("equal(prop('A'), prop('B'))")
     validate_syntax("divide(prop('A'), prop('B'))")
+
+# ─── Empty source coercion (empty == 0) ──────────────────────────────────────
+#
+# Regression coverage for the bug where a formula cell rendered "Error" when a
+# referenced source property was empty. In a numeric context an empty value
+# (None or "") is treated as 0, matching Notion. The variadic aggregates skip
+# empties instead, and toNumber("") deliberately stays empty (None).
+
+
+def test_empty_add_yields_other_operand():
+    # prop a + prop b, b empty -> a
+    assert ev("prop('a') + prop('b')", {"a": 5}) == 5
+    assert ev("prop('b') + prop('a')", {"a": 5}) == 5
+
+
+def test_empty_add_both_empty_yields_empty():
+    # All operands empty -> relay empty (None), not a fabricated 0.
+    assert ev("prop('a') + prop('b')", {}) is None
+
+
+def test_empty_subtract():
+    assert ev("prop('a') - prop('b')", {"a": 5}) == 5
+    assert ev("prop('a') - prop('b')", {"b": 5}) == -5
+
+
+def test_empty_multiply_yields_zero():
+    assert ev("prop('a') * prop('b')", {"a": 5}) == 0
+
+
+def test_empty_power_base_and_exponent():
+    assert ev("prop('a') ^ prop('b')", {"a": 5}) == 1   # 5 ^ 0
+    assert ev("prop('a') ^ prop('b')", {"b": 3}) == 0   # 0 ^ 3
+
+
+def test_empty_negation_yields_empty():
+    assert ev("-prop('b')", {}) is None
+
+
+def test_empty_in_unary_math_functions_yields_empty():
+    assert ev("abs(prop('b'))", {}) is None
+    assert ev("round(prop('b'))", {}) is None
+    assert ev("ceil(prop('b'))", {}) is None
+    assert ev("floor(prop('b'))", {}) is None
+
+
+def test_empty_string_in_numeric_context_is_zero():
+    # An empty text property ("") used outside the string-concat (+) path
+    assert ev("prop('t') * 2", {"t": ""}) == 0
+    assert ev("prop('t') - 3", {"t": ""}) == -3
+
+
+def test_empty_in_ordered_comparison():
+    assert ev("prop('b') < prop('a')", {"a": 5}) is True    # 0 < 5
+    assert ev("prop('a') >= prop('b')", {"a": 5}) is True   # 5 >= 0
+    assert ev("prop('t') < 5", {"t": ""}) is True           # 0 < 5
+
+
+def test_genuine_non_numeric_string_still_errors():
+    # Only *empty* coerces to 0; real garbage must still raise.
+    assert err("prop('t') * 2", {"t": "abc"})
+
+
+def test_empty_divisor_is_division_by_zero():
+    # empty -> 0, so dividing by it is a genuine division-by-zero error.
+    assert "Division by zero" in err("prop('a') / prop('b')", {"a": 5})
+    assert "Division by zero" in err("10 / prop('b')", {})
+
+
+def test_empty_modulo_divisor_is_modulo_by_zero():
+    assert "Modulo by zero" in err("prop('a') % prop('b')", {"a": 5})
+
+
+def test_dateadd_with_empty_amount_leaves_date_unchanged():
+    ctx = {"D": "2024-06-15T00:00:00+00:00"}
+    assert ev(
+        "formatDate(dateAdd(prop('D'), prop('n'), 'days'), 'YYYY-MM-DD')", ctx
+    ) == "2024-06-15"
+
+
+def test_variadic_skips_empty_string_like_none():
+    # sum/min/max/avg exclude empties so they do not skew the aggregate.
+    assert ev("sum(prop('a'), prop('b'))", {"a": 5}) == 5
+    assert ev("sum(prop('a'), prop('t'))", {"a": 5, "t": ""}) == 5
+    assert ev("min(prop('a'), prop('b'))", {"a": 5}) == 5      # not 0
+    assert ev("avg(prop('a'), prop('b'))", {"a": 4}) == 4      # empty excluded
+    assert ev("avg(prop('a'), prop('t'))", {"a": 4, "t": ""}) == 4
+
+
+def test_variadic_all_empty_returns_none():
+    assert ev("sum(prop('a'), prop('b'))", {}) is None
+    assert ev("avg(prop('a'), prop('t'))", {"t": ""}) is None
+
+
+def test_tonumber_empty_stays_empty_but_integrates_with_arithmetic():
+    # Standalone toNumber of an empty source relays empty (Notion idiom)…
+    assert ev("toNumber(prop('x'))", {}) is None
+    # …yet still composes in arithmetic because + coerces the None to 0.
+    assert ev("toNumber(prop('x')) + 5", {}) == 5
+
+# ─── All-source-empty relays empty (not 0) ───────────────────────────────────
+#
+# When *every* operand of an arithmetic operation is empty there is nothing to
+# compute, so the result is relayed as empty. A single empty among concrete
+# values still counts as 0 (covered above). Empty sub-results propagate, so a
+# fully empty nested expression stays empty while any concrete value (prop or
+# literal) collapses the empties around it to 0.
+
+
+def test_all_empty_subtract_multiply_power_yield_empty():
+    assert ev("prop('a') - prop('b')", {}) is None
+    assert ev("prop('a') * prop('b')", {}) is None
+    assert ev("prop('a') ^ prop('b')", {}) is None
+
+
+def test_all_empty_divide_relays_empty_not_div_by_zero():
+    # Both empty -> empty, rather than coercing the divisor to 0 and erroring.
+    assert ev("prop('a') / prop('b')", {}) is None
+    assert ev("prop('a') % prop('b')", {}) is None
+    assert ev("divide(prop('a'), prop('b'))", {}) is None
+
+
+def test_empty_propagates_through_nested_arithmetic():
+    # (a + b) + c, all empty -> empty all the way up.
+    assert ev("prop('a') + prop('b') + prop('c')", {}) is None
+    assert ev("(prop('a') - prop('b')) * prop('c')", {}) is None
+
+
+def test_concrete_value_collapses_surrounding_empties_to_zero():
+    # A literal counts as concrete, so the empties around it act as 0.
+    assert ev("prop('a') + prop('b') + 5", {}) == 5
+    assert ev("prop('a') + prop('b')", {"b": 7}) == 7
+    # A concrete 0 (not empty) is distinct from empty and keeps computing.
+    assert ev("prop('a') + prop('b')", {"a": 0, "b": 0}) == 0
+
+
+def test_single_empty_unary_and_math_still_zero_when_concrete():
+    # Contrast with the all-empty unary tests: a concrete value computes.
+    assert ev("-prop('b')", {"b": 4}) == -4
+    assert ev("abs(prop('b'))", {"b": -3}) == 3
+    assert ev("round(prop('b'), 1)", {"b": 2.34}) == pytest.approx(2.3)

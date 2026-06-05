@@ -511,7 +511,7 @@ def test_formula_simple_multiplication(db, database_block, entry):
     assert "error" not in pv.value
 
 
-def test_formula_missing_prop_returns_none_not_error(db, database_block, entry):
+def test_formula_missing_prop_treated_as_zero(db, database_block, entry):
     schema = repo.create_schema(
         db, database_id=database_block.id, name="Ref", type="formula",
         position=1.0, config={"expression": "prop('Missing') + 1"},
@@ -523,8 +523,11 @@ def test_formula_missing_prop_returns_none_not_error(db, database_block, entry):
 
     pv = repo.get_value(db, entry.id, schema.id)
     assert pv is not None
-    # None + 1 is a type error → error field set
-    assert "error" in pv.value
+    # An empty (missing) source property counts as 0 in a numeric context,
+    # so the formula evaluates to a value instead of surfacing a type error.
+    assert pv.value["result"] == 1
+    assert pv.value["result_type"] == "number"
+    assert "error" not in pv.value
 
 
 def test_formula_chained_formulas_evaluate_in_order(db, database_block, entry):

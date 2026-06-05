@@ -39,6 +39,22 @@ Functions       : abs(x)  round(x[, digits])  ceil(x)  floor(x)
                   hour(d)  minute(d)  week(d)
 String concat   : "hello" + " world"  (implicit when either side is string)
 
+Empty / null handling
+---------------------
+An empty source value — ``None`` or the empty string ``""`` — participates in
+arithmetic as ``0`` *only when combined with a concrete value*. When every
+operand of an arithmetic operation is empty, the result is relayed as empty
+(``None``) rather than fabricated as ``0``; because empty sub-results
+propagate, a fully empty expression such as ``prop("A") + prop("B")`` yields
+empty, while ``prop("A") + prop("B")`` with one value present yields that
+value, and ``prop("A") + 5`` yields ``5`` (the literal counts as concrete).
+The same all-empty rule applies to unary minus and ``abs``/``round``/``ceil``/
+``floor``. Ordered comparisons (``<`` …) instead coerce empty to ``0`` so they
+always return a boolean, and ``dateAdd``/``dateSubtract`` treat an empty amount
+as ``0`` (no shift). The variadic aggregates ``sum``/``min``/``max``/``avg``
+skip empty values entirely, and ``toNumber("")`` returns empty (``None``) — the
+Notion idiom for "empty number".
+
 Date units (dateAdd / dateSubtract / dateBetween)
 -------------------------------------------------
   "years"  "quarters"  "months"  "weeks"  "days"  "hours"  "minutes"
@@ -614,9 +630,38 @@ def _try_datetime(v: Any) -> Optional[_Datetime]:
 # ─── Evaluator ────────────────────────────────────────────────────────────────
 
 
-def _require_num(v: Any, ctx: str) -> float | int:
+def _is_empty(v: Any) -> bool:
+    """
+    Return ``True`` when *v* represents an empty source value.
+
+    Empty means ``None`` (an unset number/date property) or the empty string
+    ``""`` (an unset text property). Used by the arithmetic operators and the
+    unary numeric functions to decide whether *all* of their inputs are empty —
+    in which case the result is relayed as empty rather than collapsed to ``0``.
+    """
     if isinstance(v, _Styled):
         v = v.value
+    return v is None or v == ""
+
+
+def _require_num(v: Any, ctx: str) -> float | int:
+    """
+    Coerce *v* to a number for use in a numeric context.
+
+    Empty values — ``None`` and the empty string ``""`` — are treated as ``0``.
+    This is the *mixed* case: an empty operand combined with a concrete value
+    counts as zero, so ``prop("A") + prop("B")`` with an empty ``B`` yields
+    ``A`` instead of surfacing a type error. The decision about whether *all*
+    operands are empty (and the result should therefore stay empty) is made by
+    the caller via :func:`_is_empty` before this coercion runs.
+
+    Genuine non-numeric values (non-empty strings, booleans, …) still raise a
+    ``FormulaError`` so that real type mistakes remain visible.
+    """
+    if isinstance(v, _Styled):
+        v = v.value
+    if v is None or v == "":
+        return 0
     if isinstance(v, bool):
         raise FormulaError(f"{ctx}: expected number, got boolean")
     if isinstance(v, (int, float)):
@@ -640,6 +685,8 @@ def _eval(node: Any, ctx: dict[str, FormulaValue]) -> FormulaValue:  # noqa: PLR
     if isinstance(node, UnaryOp):
         val = _eval(node.operand, ctx)
         if node.op == "-":
+            if _is_empty(val):
+                return None
             return -_require_num(val, "negation")
         if node.op == "not":
             return not bool(val)
@@ -659,37 +706,48 @@ def _eval(node: Any, ctx: dict[str, FormulaValue]) -> FormulaValue:  # noqa: PLR
         left = _eval(node.left, ctx)
         right = _eval(node.right, ctx)
 
+        # Unwrap styled wrappers once for value inspection.
+        lv = left.value if isinstance(left, _Styled) else left
+        rv = right.value if isinstance(right, _Styled) else right
+
         if op == "+":
-            lv = left.value if isinstance(left, _Styled) else left
-            rv = right.value if isinstance(right, _Styled) else right
             if isinstance(lv, str) or isinstance(rv, str):
                 return (str(lv) if lv is not None else "") + (
                     str(rv) if rv is not None else ""
                 )
+            # All operands empty -> relay empty; a single empty side -> 0.
+            if _is_empty(lv) and _is_empty(rv):
+                return None
             return _require_num(left, "+") + _require_num(right, "+")
         if op == "-":
+            if _is_empty(lv) and _is_empty(rv):
+                return None
             return _require_num(left, "-") - _require_num(right, "-")
         if op == "*":
+            if _is_empty(lv) and _is_empty(rv):
+                return None
             return _require_num(left, "*") * _require_num(right, "*")
         if op == "/":
+            if _is_empty(lv) and _is_empty(rv):
+                return None
             r = _require_num(right, "/")
             if r == 0:
                 raise FormulaError("Division by zero")
             return _require_num(left, "/") / r
         if op == "%":
+            if _is_empty(lv) and _is_empty(rv):
+                return None
             r = _require_num(right, "%")
             if r == 0:
                 raise FormulaError("Modulo by zero")
             return _require_num(left, "%") % r
         if op == "^":
+            if _is_empty(lv) and _is_empty(rv):
+                return None
             return _require_num(left, "^") ** _require_num(right, "^")
         if op == "==":
-            lv = left.value if isinstance(left, _Styled) else left
-            rv = right.value if isinstance(right, _Styled) else right
             return lv == rv
         if op == "!=":
-            lv = left.value if isinstance(left, _Styled) else left
-            rv = right.value if isinstance(right, _Styled) else right
             return lv != rv
         # Ordered comparisons: try datetime first, fall back to numeric.
         if op in ("<", "<=", ">", ">="):
@@ -780,12 +838,18 @@ def _call(node: FuncCall, ctx: dict[str, FormulaValue]) -> FormulaValue:  # noqa
     if name == "abs":
         if len(args) != 1:
             raise FormulaError("abs() requires exactly one argument")
-        return abs(_require_num(_eval(args[0], ctx), "abs"))
+        v = _eval(args[0], ctx)
+        if _is_empty(v):
+            return None
+        return abs(_require_num(v, "abs"))
 
     if name == "round":
         if len(args) not in (1, 2):
             raise FormulaError("round() requires 1 or 2 arguments")
-        val = _require_num(_eval(args[0], ctx), "round")
+        v = _eval(args[0], ctx)
+        if _is_empty(v):
+            return None
+        val = _require_num(v, "round")
         digits = int(_require_num(_eval(args[1], ctx), "round digits")) if len(args) == 2 else 0
         result = round(val, digits)
         return int(result) if digits == 0 else result
@@ -793,12 +857,18 @@ def _call(node: FuncCall, ctx: dict[str, FormulaValue]) -> FormulaValue:  # noqa
     if name == "ceil":
         if len(args) != 1:
             raise FormulaError("ceil() requires exactly one argument")
-        return math.ceil(_require_num(_eval(args[0], ctx), "ceil"))
+        v = _eval(args[0], ctx)
+        if _is_empty(v):
+            return None
+        return math.ceil(_require_num(v, "ceil"))
 
     if name == "floor":
         if len(args) != 1:
             raise FormulaError("floor() requires exactly one argument")
-        return math.floor(_require_num(_eval(args[0], ctx), "floor"))
+        v = _eval(args[0], ctx)
+        if _is_empty(v):
+            return None
+        return math.floor(_require_num(v, "floor"))
 
     # ── Text ──────────────────────────────────────────────────────────────────
 
@@ -949,10 +1019,14 @@ def _call(node: FuncCall, ctx: dict[str, FormulaValue]) -> FormulaValue:  # noqa
         # Notion-compatible alias for the / operator.
         if len(args) != 2:
             raise FormulaError("divide(a, b) requires exactly two arguments")
-        r = _require_num(_eval(args[1], ctx), "divide")
+        lv = _eval(args[0], ctx)
+        rv = _eval(args[1], ctx)
+        if _is_empty(lv) and _is_empty(rv):
+            return None
+        r = _require_num(rv, "divide")
         if r == 0:
             raise FormulaError("Division by zero")
-        return _require_num(_eval(args[0], ctx), "divide") / r
+        return _require_num(lv, "divide") / r
 
     # ── Variadic math ─────────────────────────────────────────────────────────
 
@@ -962,7 +1036,12 @@ def _call(node: FuncCall, ctx: dict[str, FormulaValue]) -> FormulaValue:  # noqa
         nums: list[float | int] = []
         for a in args:
             v = _eval(a, ctx)
-            if v is None:
+            if isinstance(v, _Styled):
+                v = v.value
+            # Skip empty values (None / "") so they never skew an aggregate.
+            # This mirrors the count_empty / count_not_empty rollup split and
+            # keeps avg/min/max correct when some related entries are unset.
+            if v is None or v == "":
                 continue
             nums.append(_require_num(v, name))
         if not nums:
