@@ -486,6 +486,62 @@
 
 .db__table--resizing { user-select: none; cursor: col-resize; }
 
+/* ── Sticky header & frozen columns ──────────────────────────────────────── */
+/*
+ * Sticky header needs a real vertical scroll container. Because the wrapper
+ * already scrolls horizontally (overflow-x: auto), the browser computes
+ * overflow-y to auto; adding a max-height turns the wrapper into the scrollport
+ * the sticky header pins against. Short tables stay short — max-height only
+ * caps, it never stretches. Frozen columns pin against the same wrapper's
+ * horizontal scrollport and work independently of the sticky-header option.
+ */
+.db__table-wrap--sticky {
+  max-height: var(--db-sticky-max-height, 70vh);
+  overflow-y: auto;
+}
+
+.db__table--sticky-header thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+/*
+ * Frozen header cells pin horizontally — and vertically as well when the
+ * header is sticky — so they must sit above both the sticky header row and the
+ * frozen body cells. The left offset is supplied inline (measured at runtime).
+ */
+.db__th--frozen {
+  position: sticky;
+  z-index: 4;
+}
+
+/*
+ * Specificity guard: the `.db__table--sticky-header thead th` rule above is
+ * more specific than `.db__th--frozen`, so without this the frozen corner cell
+ * would inherit z-index 3 and the scrolling (non-frozen) headers would paint
+ * over it via DOM order. Re-assert the higher stacking level for the corner.
+ */
+.db__table--sticky-header thead th.db__th--frozen {
+  z-index: 4;
+}
+
+/*
+ * Frozen body / aggregation cells pin horizontally. An opaque background
+ * (matching the table canvas) keeps scrolled content from bleeding through.
+ */
+.db__td--frozen,
+.db__aggregation-cell--frozen {
+  position: sticky;
+  z-index: 2;
+  background: var(--color-bg);
+}
+
+/* Preserve the row-hover feedback on pinned cells. */
+.db__row:hover .db__td--frozen {
+  background: var(--color-hover);
+}
+
 /* ── Header ──────────────────────────────────────────────────────────────── */
 /*
  * DELIBERATE DESIGN — border model (do not revert):

@@ -19,7 +19,7 @@
  * FilterPanel  – filter UI (template + styles live in DatabaseBlock.css)
  * SortPanel    – sort UI
  */
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useBlockStore } from '@/stores/blocks'
@@ -28,6 +28,8 @@ import { useDrag } from '@/composables/useDrag'
 import {
   useDatabaseStore,
   normalizeSelectOption,
+  clampFrozenColumns,
+  isStickyHeaderEnabled,
   type PropertySchema,
   type DatabaseEntry,
   type DatabaseView,
@@ -461,6 +463,95 @@ const orderedColumns = computed<OrderedColumn[]>(() => {
   return result
 })
 
+// ── Sticky header & frozen columns ────────────────────────────────────────────
+
+/**
+ * Sticky column header (vertical scroll) and frozen leftmost columns
+ * (horizontal scroll) for the table view.
+ *
+ * Frozen left-offsets are measured from the rendered header-cell widths
+ * (offsetWidth, scroll-independent) rather than offsetLeft, so a re-measure
+ * while the table is scrolled horizontally cannot corrupt the values. The
+ * handle column is pinned (left: 0) whenever at least one column is frozen.
+ */
+const theadRowEl = ref<HTMLElement | null>(null)
+
+const stickyHeaderEnabled = computed<boolean>(() => isStickyHeaderEnabled(activeView.value))
+
+const frozenColumnCount = computed<number>(() => clampFrozenColumns(activeView.value?.frozenColumns))
+
+/** Keys of the leftmost columns to freeze, in render order. */
+const frozenColumnKeys = computed<Set<string>>(
+  () => new Set(orderedColumns.value.slice(0, frozenColumnCount.value).map(c => c.key)),
+)
+
+/** Whether the drag-handle column is pinned (true when any column is frozen). */
+const handleFrozen = computed<boolean>(() => frozenColumnCount.value > 0)
+
+/** Measured left offset (px) per frozen column key. */
+const frozenOffsets = ref<Record<string, number>>({})
+
+function measureFrozenOffsets(): void {
+  const count = frozenColumnCount.value
+  if (count === 0) {
+    if (Object.keys(frozenOffsets.value).length > 0) frozenOffsets.value = {}
+    return
+  }
+  const row = theadRowEl.value
+  if (!row) return
+  const cells = Array.from(row.children) as HTMLElement[]
+  // cells[0] = handle, cells[1..] = orderedColumns, last = add-column placeholder.
+  const next: Record<string, number> = {}
+  let acc = cells[0] ? cells[0].offsetWidth : 0
+  const cols = orderedColumns.value
+  for (let i = 0; i < count && i < cols.length; i++) {
+    next[cols[i].key] = acc
+    const cell = cells[i + 1]
+    acc += cell ? cell.offsetWidth : 0
+  }
+  frozenOffsets.value = next
+}
+
+/** Inline style (left offset) for a frozen data/header column cell. */
+function frozenColStyle(key: string): Record<string, string> {
+  if (!frozenColumnKeys.value.has(key)) return {}
+  const left = frozenOffsets.value[key]
+  return left == null ? {} : { left: `${left}px` }
+}
+
+/** True when a column is frozen AND its offset has been measured. */
+function isFrozenCol(key: string): boolean {
+  return frozenColumnKeys.value.has(key) && frozenOffsets.value[key] != null
+}
+
+/** Inline style for the pinned drag-handle column. */
+const handleFrozenStyle = computed<Record<string, string>>(
+  () => (handleFrozen.value ? { left: '0px' } : ({} as Record<string, string>)),
+)
+
+let _frozenRO: ResizeObserver | null = null
+
+function _attachFrozenObserver(): void {
+  _frozenRO?.disconnect()
+  _frozenRO = null
+  const el = theadRowEl.value
+  if (el && typeof ResizeObserver !== 'undefined') {
+    _frozenRO = new ResizeObserver(() => measureFrozenOffsets())
+    _frozenRO.observe(el)
+  }
+}
+
+// Re-measure / re-observe whenever the rendered table structure can change.
+watch(
+  () => [
+    activeViewId.value,
+    activeView.value?.viewType,
+    frozenColumnCount.value,
+    orderedColumns.value.length,
+  ] as const,
+  () => nextTick(() => { _attachFrozenObserver(); measureFrozenOffsets() }),
+)
+
 // ── Panel / menu visibility ───────────────────────────────────────────────────
 
 const showAutomationsModal = ref(false)
@@ -569,12 +660,17 @@ onMounted(async () => {
   document.addEventListener('click', closeAllPanels)
   window.addEventListener(WS_BLOCK_EVENT, _onDbEntriesUpdated)
   window.addEventListener(WS_BLOCK_EVENT, _onDbSchemaUpdated)
+  window.addEventListener('resize', measureFrozenOffsets)
+  nextTick(() => { _attachFrozenObserver(); measureFrozenOffsets() })
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', closeAllPanels)
   window.removeEventListener(WS_BLOCK_EVENT, _onDbEntriesUpdated)
   window.removeEventListener(WS_BLOCK_EVENT, _onDbSchemaUpdated)
+  window.removeEventListener('resize', measureFrozenOffsets)
+  _frozenRO?.disconnect()
+  _frozenRO = null
   resizeCleanup()
   if (_tipTimer) clearTimeout(_tipTimer)
 })
@@ -1616,11 +1712,21 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
 
       <!-- ── Table view ──────────────────────────────────────────────────── -->
       <template v-if="!activeView || activeView.viewType === 'table'">
-        <div class="db__table-wrap">
-          <table class="db__table" :class="{ 'db__table--resizing': resizingKey !== null }">
+        <div class="db__table-wrap" :class="{ 'db__table-wrap--sticky': stickyHeaderEnabled }">
+          <table
+            class="db__table"
+            :class="{
+              'db__table--resizing': resizingKey !== null,
+              'db__table--sticky-header': stickyHeaderEnabled,
+            }"
+          >
             <thead>
-              <tr>
-                <th class="db__th db__th--handle"></th>
+              <tr ref="theadRowEl">
+                <th
+                  class="db__th db__th--handle"
+                  :class="{ 'db__th--frozen': handleFrozen }"
+                  :style="handleFrozenStyle"
+                ></th>
                 <template v-for="col in orderedColumns" :key="col.key">
                   <!-- Name column header -->
                   <th
@@ -1629,8 +1735,9 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                     :class="{
                       'db__th--drag-over': colDropKey === NAME_COL_KEY,
                       'db__th--dragging':  colDragKey === NAME_COL_KEY,
+                      'db__th--frozen':    isFrozenCol(NAME_COL_KEY),
                     }"
-                    :style="colStyle(NAME_COL_KEY)"
+                    :style="{ ...colStyle(NAME_COL_KEY), ...frozenColStyle(NAME_COL_KEY) }"
                     draggable="true"
                     @dragstart="onColDragStart($event, NAME_COL_KEY)"
                     @dragover="onColDragOver($event, NAME_COL_KEY)"
@@ -1653,8 +1760,9 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                     :class="{
                       'db__th--drag-over': colDropKey === col.key,
                       'db__th--dragging':  colDragKey === col.key,
+                      'db__th--frozen':    isFrozenCol(col.key),
                     }"
-                    :style="colStyle(col.key)"
+                    :style="{ ...colStyle(col.key), ...frozenColStyle(col.key) }"
                     draggable="true"
                     @dragstart="onColDragStart($event, col.key)"
                     @dragover="onColDragOver($event, col.key)"
@@ -1743,13 +1851,25 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                 @dragleave="clearRowDropState(entry.id)"
                 @drop="onRowDrop($event, entry)"
               >
-                <td class="db__td db__td--handle" @dragover.stop.prevent @drop.stop @click.stop>
+                <td
+                  class="db__td db__td--handle"
+                  :class="{ 'db__td--frozen': handleFrozen }"
+                  :style="handleFrozenStyle"
+                  @dragover.stop.prevent
+                  @drop.stop
+                  @click.stop
+                >
                   <span class="db__row-handle" draggable="true" @click.stop="openRowContextMenu($event, entry)">
                     <Icon icon="mdi:drag" width="13" height="13" />
                   </span>
                 </td>
                 <template v-for="col in orderedColumns" :key="col.key">
-                  <td v-if="col.key === NAME_COL_KEY" class="db__td db__td--name">
+                  <td
+                    v-if="col.key === NAME_COL_KEY"
+                    class="db__td db__td--name"
+                    :class="{ 'db__td--frozen': isFrozenCol(NAME_COL_KEY) }"
+                    :style="frozenColStyle(NAME_COL_KEY)"
+                  >
                     <input
                       v-if="editingNameId === entry.id"
                       v-model="nameDraft"
@@ -1809,7 +1929,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                       </button>
                     </div>
                   </td>
-                  <td v-else class="db__td" :class="{ 'db__td--wrap': isWrapped(col.key) }" @click="onCellClick(entry, col.schema!)">
+                  <td v-else class="db__td" :class="{ 'db__td--wrap': isWrapped(col.key), 'db__td--frozen': isFrozenCol(col.key) }" :style="frozenColStyle(col.key)" @click="onCellClick(entry, col.schema!)">
                     <CheckboxCell   v-if="col.schema!.type === 'checkbox'"                                                               :entry="entry" :schema="col.schema!" :database-id="blockId" />
                     <SelectCell     v-else-if="col.schema!.type === 'select' && (col.schema!.config?.mode ?? 'single') === 'single'"     :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
                     <MultiSelectCell v-else-if="col.schema!.type === 'select' && col.schema!.config?.mode === 'multiple'"                :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
@@ -1832,7 +1952,11 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
             <!-- Flat aggregation footer -->
             <tfoot v-if="!isGrouped">
               <tr class="db__aggregation-row">
-                <td class="db__td db__td--handle db__agg-handle-cell">
+                <td
+                  class="db__td db__td--handle db__agg-handle-cell"
+                  :class="{ 'db__aggregation-cell--frozen': handleFrozen }"
+                  :style="handleFrozenStyle"
+                >
                   <button class="db__group-add-btn" :disabled="isAddingRow" @mouseenter="hasMore ? showTip($event, t('db.addRowLimitHint')) : undefined" @mouseleave="hideTip" @click="addRow">
                     <Icon icon="mdi:plus" width="13" height="13" />
                     {{ t('db.addRowShort') }}
@@ -1841,7 +1965,8 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                 <template v-for="col in orderedColumns" :key="col.key">
                   <td
                     class="db__aggregation-cell"
-                    :style="colStyle(col.key)"
+                    :class="{ 'db__aggregation-cell--frozen': isFrozenCol(col.key) }"
+                    :style="{ ...colStyle(col.key), ...frozenColStyle(col.key) }"
                     @click.stop="aggPickerKey = aggPickerKey === ('flat:' + col.key) ? null : ('flat:' + col.key)"
                   >
                     <div class="db__agg-inner">
@@ -1872,7 +1997,11 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
             <template v-else v-for="group in tableGroups" :key="group.key">
               <tbody class="db__group-header-body">
                 <tr class="db__group-header-row">
-                  <td class="db__td db__td--handle db__group-header-handle"></td>
+                  <td
+                    class="db__td db__td--handle db__group-header-handle"
+                    :class="{ 'db__td--frozen': handleFrozen }"
+                    :style="handleFrozenStyle"
+                  ></td>
                   <td :colspan="orderedColumns.length + 1" class="db__group-header-cell">
                     <Icon icon="mdi:chevron-right" width="12" height="12" class="db__group-header-icon" />
                     <span class="db__group-header-label">{{ group.label }}</span>
@@ -1896,13 +2025,25 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                   @dragleave="clearRowDropState(entry.id)"
                   @drop="onRowDrop($event, entry)"
                 >
-                  <td class="db__td db__td--handle" @dragover.stop.prevent @drop.stop @click.stop>
+                  <td
+                    class="db__td db__td--handle"
+                    :class="{ 'db__td--frozen': handleFrozen }"
+                    :style="handleFrozenStyle"
+                    @dragover.stop.prevent
+                    @drop.stop
+                    @click.stop
+                  >
                     <span class="db__row-handle" draggable="true" @click.stop="openRowContextMenu($event, entry)">
                       <Icon icon="mdi:drag" width="13" height="13" />
                     </span>
                   </td>
                   <template v-for="col in orderedColumns" :key="col.key">
-                    <td v-if="col.key === NAME_COL_KEY" class="db__td db__td--name">
+                    <td
+                      v-if="col.key === NAME_COL_KEY"
+                      class="db__td db__td--name"
+                      :class="{ 'db__td--frozen': isFrozenCol(NAME_COL_KEY) }"
+                      :style="frozenColStyle(NAME_COL_KEY)"
+                    >
                       <input
                         v-if="editingNameId === entry.id"
                         v-model="nameDraft"
@@ -1942,7 +2083,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                         </button>
                       </div>
                     </td>
-                    <td v-else class="db__td" :class="{ 'db__td--wrap': isWrapped(col.key) }" @click="onCellClick(entry, col.schema!)">
+                    <td v-else class="db__td" :class="{ 'db__td--wrap': isWrapped(col.key), 'db__td--frozen': isFrozenCol(col.key) }" :style="frozenColStyle(col.key)" @click="onCellClick(entry, col.schema!)">
                       <CheckboxCell   v-if="col.schema!.type === 'checkbox'"                                                               :entry="entry" :schema="col.schema!" :database-id="blockId" />
                       <SelectCell     v-else-if="col.schema!.type === 'select' && (col.schema!.config?.mode ?? 'single') === 'single'"     :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
                       <MultiSelectCell v-else-if="col.schema!.type === 'select' && col.schema!.config?.mode === 'multiple'"                :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
@@ -1963,7 +2104,11 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
 
                 <!-- Per-group aggregation footer -->
                 <tr class="db__aggregation-row">
-                  <td class="db__td db__td--handle db__agg-handle-cell">
+                  <td
+                    class="db__td db__td--handle db__agg-handle-cell"
+                    :class="{ 'db__aggregation-cell--frozen': handleFrozen }"
+                    :style="handleFrozenStyle"
+                  >
                     <button class="db__group-add-btn" :disabled="isAddingRow" @mouseenter="hasMore ? showTip($event, t('db.addRowLimitHint')) : undefined" @mouseleave="hideTip" @click="addGroupRow(group.groupValue)">
                       <Icon icon="mdi:plus" width="13" height="13" />
                       {{ t('db.addRowShort') }}
@@ -1972,7 +2117,8 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                   <template v-for="col in orderedColumns" :key="col.key">
                     <td
                       class="db__aggregation-cell"
-                      :style="colStyle(col.key)"
+                      :class="{ 'db__aggregation-cell--frozen': isFrozenCol(col.key) }"
+                      :style="{ ...colStyle(col.key), ...frozenColStyle(col.key) }"
                       @click.stop="aggPickerKey = aggPickerKey === (group.key + ':' + col.key) ? null : (group.key + ':' + col.key)"
                     >
                       <div class="db__agg-inner">

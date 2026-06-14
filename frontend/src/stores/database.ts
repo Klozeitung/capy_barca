@@ -316,6 +316,44 @@ export interface DatabaseView {
    * Toggle is controlled per-column via the column-header wrap button.
    */
   wrapColumns?: string[]
+  /**
+   * For viewType === 'table': keep the column header row pinned to the top of
+   * the scroll area while scrolling vertically.
+   * Absent is treated as true (sticky); set to false to restore the legacy
+   * behaviour where the header scrolls away with the content.
+   */
+  stickyHeader?: boolean
+  /**
+   * For viewType === 'table': number of leftmost columns (counted from the
+   * Name column) that stay pinned while scrolling horizontally.
+   * Range 0..MAX_FROZEN_COLUMNS; 0 (default) freezes nothing. The drag-handle
+   * column is pinned alongside the data columns whenever this is >= 1.
+   */
+  frozenColumns?: number
+}
+
+// ── Sticky-header / frozen-column helpers ─────────────────────────────────────
+
+/** Maximum number of leftmost columns that can be frozen in a table view. */
+export const MAX_FROZEN_COLUMNS = 3
+
+/**
+ * Clamp a raw frozen-column count into the valid 0..MAX_FROZEN_COLUMNS range.
+ * Non-numeric or missing input resolves to 0.
+ */
+export function clampFrozenColumns(n: number | undefined | null): number {
+  if (n == null || Number.isNaN(n)) return 0
+  return Math.max(0, Math.min(MAX_FROZEN_COLUMNS, Math.floor(n)))
+}
+
+/**
+ * Whether the column header should stay pinned while scrolling vertically.
+ * Defaults to true when the field is absent (backward-compatible).
+ */
+export function isStickyHeaderEnabled(
+  view: Pick<DatabaseView, 'stickyHeader'> | null | undefined,
+): boolean {
+  return (view?.stickyHeader ?? true) !== false
 }
 
 // ── Query types (server-side filter / sort / pagination) ─────────────────────

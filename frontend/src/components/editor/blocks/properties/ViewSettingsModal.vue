@@ -7,6 +7,7 @@
  *  - viewType   : switch between table / calendar and configure type-specific options
  *  - properties : visibility toggles per column
  *  - grouping   : (table view only) group-by property + per-column aggregation functions
+ *  - headers    : (table view only) sticky column header + frozen leftmost columns
  *
  * Layout mirrors the global settings modal: a narrow sidebar on the left
  * with section navigation, and a content pane on the right.
@@ -23,7 +24,7 @@ import { ref, computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import type { DatabaseView, PropertySchema, ViewType } from '@/stores/database'
-import { useDatabaseStore } from '@/stores/database'
+import { useDatabaseStore, clampFrozenColumns, MAX_FROZEN_COLUMNS } from '@/stores/database'
 import { getPropertyTypeIcon, isReadonlyPropertyType } from '@/stores/propertyTypes'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
@@ -50,6 +51,7 @@ const SECTIONS = [
   { key: 'viewType',   labelKey: 'db.viewSettings.sectionViewType',   icon: 'mdi:view-dashboard-outline' },
   { key: 'properties', labelKey: 'db.viewSettings.sectionProperties', icon: 'mdi:eye-outline' },
   { key: 'grouping',   labelKey: 'db.viewSettings.sectionGrouping',   icon: 'mdi:group' },
+  { key: 'headers',    labelKey: 'db.viewSettings.sectionHeaders',    icon: 'mdi:pin-outline' },
 ] as const
 
 type SectionKey = typeof SECTIONS[number]['key']
@@ -82,6 +84,8 @@ const localViewType           = ref<ViewType>(props.view.viewType ?? 'table')
 const localCalendarSchemaId   = ref<string>(props.view.calendarDateSchemaId ?? '')
 const localCalendarSubtype    = ref<'standard' | 'agenda'>(props.view.calendarSubtype ?? 'standard')
 const localGroupBySchemaId    = ref<string>(props.view.groupBySchemaId ?? '')
+const localStickyHeader       = ref<boolean>(props.view.stickyHeader ?? true)
+const localFrozenColumns      = ref<number>(clampFrozenColumns(props.view.frozenColumns))
 
 // ── Date schemas (for calendar property picker) ───────────────────────────────
 
@@ -168,8 +172,23 @@ function emitUpdate(): void {
     calendarDateSchemaId: localCalendarSchemaId.value || undefined,
     calendarSubtype: localCalendarSubtype.value,
     groupBySchemaId: localGroupBySchemaId.value || undefined,
+    stickyHeader: localStickyHeader.value,
+    frozenColumns: localFrozenColumns.value,
   })
 }
+
+function setStickyHeader(value: boolean): void {
+  localStickyHeader.value = value
+  emitUpdate()
+}
+
+function setFrozenColumns(count: number): void {
+  localFrozenColumns.value = clampFrozenColumns(count)
+  emitUpdate()
+}
+
+/** Selectable frozen-column counts: 0..MAX_FROZEN_COLUMNS. */
+const frozenColumnOptions = Array.from({ length: MAX_FROZEN_COLUMNS + 1 }, (_, i) => i)
 
 function setViewType(type: ViewType): void {
   if (type === localViewType.value) return
@@ -245,7 +264,7 @@ function hideAllReadonly() {
         <!-- Sidebar -->
         <nav class="vsm__sidebar">
           <button
-            v-for="section in SECTIONS.filter(s => s.key !== 'grouping' || localViewType === 'table')"
+            v-for="section in SECTIONS.filter(s => (s.key !== 'grouping' && s.key !== 'headers') || localViewType === 'table')"
             :key="section.key"
             class="vsm__nav-item"
             :class="{ 'vsm__nav-item--active': activeSection === section.key }"
@@ -404,6 +423,53 @@ function hideAllReadonly() {
               <option v-for="s in groupableSchemas" :key="s.id" :value="s.id">{{ s.name }}</option>
             </select>
 
+
+          </template>
+
+          <!-- ── Section: Headers & frozen columns (table view only) ─────── -->
+          <template v-if="activeSection === 'headers'">
+
+            <!-- Sticky column header -->
+            <div class="vsm__section-header">
+              <span class="vsm__section-title">{{ t('db.viewSettings.headersStickyTitle') }}</span>
+            </div>
+
+            <div class="vsm__check-row">
+              <button
+                class="vsm__toggle"
+                :class="{ 'vsm__toggle--on': localStickyHeader }"
+                role="checkbox"
+                :aria-checked="localStickyHeader"
+                :title="localStickyHeader ? t('db.viewSettings.hide') : t('db.viewSettings.show')"
+                @click="setStickyHeader(!localStickyHeader)"
+              >
+                <Icon
+                  :icon="localStickyHeader ? 'mdi:checkbox-marked-outline' : 'mdi:checkbox-blank-outline'"
+                  width="18"
+                  height="18"
+                />
+              </button>
+              <div class="vsm__check-text">
+                <span class="vsm__check-label">{{ t('db.viewSettings.stickyHeader') }}</span>
+                <span class="vsm__hint">{{ t('db.viewSettings.stickyHeaderHint') }}</span>
+              </div>
+            </div>
+
+            <!-- Frozen leftmost columns -->
+            <div class="vsm__section-header vsm__section-header--spaced">
+              <span class="vsm__section-title">{{ t('db.viewSettings.frozenColumns') }}</span>
+            </div>
+
+            <select
+              class="vsm__select"
+              :value="String(localFrozenColumns)"
+              @change="setFrozenColumns(parseInt(($event.target as HTMLSelectElement).value, 10))"
+            >
+              <option v-for="n in frozenColumnOptions" :key="n" :value="String(n)">
+                {{ n === 0 ? t('db.viewSettings.frozenColumnsNone') : String(n) }}
+              </option>
+            </select>
+            <p class="vsm__hint">{{ t('db.viewSettings.frozenColumnsHint') }}</p>
 
           </template>
 
@@ -786,5 +852,24 @@ function hideAllReadonly() {
 
 .vsm__create-date-btn:hover:not(:disabled) { opacity: 0.8; }
 .vsm__create-date-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Headers & frozen columns section ────────────────────────────────────── */
+.vsm__check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.vsm__check-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.vsm__check-label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--color-text);
+}
 
 </style>
