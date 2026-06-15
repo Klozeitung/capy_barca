@@ -54,6 +54,10 @@ const blockStore = useBlockStore()
 // ── Timeline ──────────────────────────────────────────────────────────────────
 
 const hasTimeline = computed(() => !!(props.schema.config?.hasTimeline))
+
+// Chip wrapping is opt-in per relation property (#12). Off by default: chips
+// stay on a single line and clip within the cell border; on: chips wrap.
+const wrapContent = computed(() => props.schema.config?.wrapContent === true)
 const timelineOpen = ref(false)
 const anchorRect = ref<DOMRect | undefined>()
 
@@ -349,7 +353,7 @@ async function onSideViewRefresh(): Promise<void> {
           class="rel-cell__timeline-slot"
         >
           <span class="rel-cell__slot-label">{{ group.period }}</span>
-          <div class="rel-cell__slot-chips">
+          <div class="rel-cell__slot-chips" :class="{ 'rel-cell__slot-chips--stack': wrapContent }">
             <span
               v-for="id in displayedIdsForGroup(group.ids)"
               :key="id"
@@ -380,7 +384,7 @@ async function onSideViewRefresh(): Promise<void> {
 
     <!-- "last" / normal mode: flat tag strip -->
     <template v-else>
-      <div class="rel-cell__tags">
+      <div class="rel-cell__tags" :class="{ 'rel-cell__tags--stack': wrapContent }">
         <span
           v-for="id in displayedRelatedIds"
           :key="id"
@@ -590,6 +594,14 @@ async function onSideViewRefresh(): Promise<void> {
   gap: 3px;
   align-items: center;
   flex: 1;
+  min-width: 0;
+}
+
+/* wrapContent enabled: one chip per line within the slot. */
+.rel-cell__slot-chips--stack {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: flex-start;
 }
 
 .rel-cell__slot-empty {
@@ -599,11 +611,22 @@ async function onSideViewRefresh(): Promise<void> {
 }
 
 /* ── Tags ────────────────────────────────────────────────────────────────── */
+/*
+ * Default (wrapContent off): chips flow horizontally and wrap onto new lines
+ * as needed, within the column width — the column is never stretched, the row
+ * grows vertically. wrapContent on: each chip sits on its own line.
+ */
 .rel-cell__tags {
   display: flex;
   flex-wrap: wrap;
   gap: 3px;
   align-items: center;
+}
+
+.rel-cell__tags--stack {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: flex-start;
 }
 
 .rel-cell__tag {
@@ -644,6 +667,31 @@ async function onSideViewRefresh(): Promise<void> {
   white-space: nowrap;
 }
 
+/*
+ * Stack mode (wrapContent on): show each chip's full title and let long titles
+ * break onto multiple lines inside the chip, instead of the compact single-line
+ * ellipsis used in the default flow layout.
+ */
+.rel-cell__tags--stack .rel-cell__tag,
+.rel-cell__slot-chips--stack .rel-cell__tag {
+  max-width: 100%;
+  align-items: flex-start;
+}
+
+.rel-cell__tags--stack .rel-cell__tag-open,
+.rel-cell__slot-chips--stack .rel-cell__tag-open {
+  overflow: visible;
+  align-items: flex-start;
+}
+
+.rel-cell__tags--stack .rel-cell__tag-text,
+.rel-cell__slot-chips--stack .rel-cell__tag-text {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: break-word;
+}
+
 .rel-cell__tag-remove {
   background: transparent;
   border: none;
@@ -669,6 +717,7 @@ async function onSideViewRefresh(): Promise<void> {
   display: flex;
   align-items: center;
   padding: 2px 4px;
+  flex-shrink: 0;
   transition: color 0.15s, border-color 0.15s;
 }
 

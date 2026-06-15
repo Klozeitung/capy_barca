@@ -40,7 +40,7 @@ from __future__ import annotations
 import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from sqlalchemy.orm import Session
 
@@ -352,6 +352,37 @@ _ROLLUP_FUNCTIONS: frozenset[str] = frozenset({
     "latest_date",    # latest datetime across related entries
     "date_range",     # ISO string "start → end" spanning earliest to latest
 })
+
+# Rollup target column types that store related entry IDs. When such a column
+# is rolled up with a raw-display function, the IDs are resolved to entry
+# titles for human-readable output (#11).
+_RELATION_COL_TYPES = frozenset({"relation", "parent_item", "sub_item"})
+_RAW_DISPLAY_FUNCTIONS = frozenset({"show_original", "first_value", "last_value"})
+
+
+def _resolve_relation_titles(
+    scalars: list[Any],
+    resolve_title: Callable[[str], Optional[str]],
+) -> list[Any]:
+    """
+    Flatten relation-rollup *scalars* (each a list of related entry IDs) into a
+    flat list of resolved entry titles.
+
+    ``resolve_title`` maps an entry ID string to its title, returning:
+      * ``None``  – entry missing or trashed; it is skipped entirely.
+      * ``""``    – active but untitled entry; emitted as ``None`` so the cell
+                    renders a placeholder rather than an empty chip.
+      * a string  – the entry title, emitted as-is.
+    """
+    titles: list[Any] = []
+    for scalar in scalars:
+        if not scalar:
+            continue
+        for rid_raw in scalar:
+            title = resolve_title(str(rid_raw))
+            if title is not None:
+                titles.append(title or None)
+    return titles
 
 
 def _aggregate(values: list[Any], function: str) -> Any:
@@ -693,6 +724,24 @@ def _compute_rollup(
             None,
         )
         scalars.append(_extract_scalar(col_type, pv.value if pv else None))
+
+    # Relation-typed rollup targets yield lists of related entry IDs. For the
+    # raw-display functions, resolve those IDs to entry titles so the cell
+    # shows names instead of UUIDs (#11). Counting/aggregating functions keep
+    # the ID lists so their semantics (links per entry) are unchanged.
+    if col_type in _RELATION_COL_TYPES and function in _RAW_DISPLAY_FUNCTIONS:
+        def _resolve_title(rid_str: str) -> Optional[str]:
+            try:
+                target_uuid = uuid.UUID(rid_str)
+            except (ValueError, TypeError):
+                return None
+            block = repo.get_block(db, target_uuid)
+            if block is None or block.state != "active":
+                return None
+            return (block.content or {}).get("title") or ""
+
+        _store(_aggregate(_resolve_relation_titles(scalars, _resolve_title), function))
+        return
 
     _store(_aggregate(scalars, function))
 

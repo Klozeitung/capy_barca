@@ -338,6 +338,8 @@
       "rollupHint": "Rolls up values from a column in the related database.",
       "rollupShowTypeBadge": "Show function badge",
       "rollupShowTypeBadgeHint": "Displays a small badge with the aggregation type (e.g. ERL, SUM) in front of the value. Off by default.",
+      "wrapContent": "Wrap chips",
+      "wrapContentHint": "When on, each chip is placed on its own line. When off, chips flow inline and wrap as needed within the column.",
       "rollupLoadingColumns": "Loading columns…",
       "rollupFunctionCountValues": "Count values",
       "rollupFunctionCountEmpty": "Count empty",
@@ -696,7 +698,8 @@
     "databasesTitle": "Dates & rollups",
     "databasesDateIntro": "Your preferred date format is set under Settings → Date and applies everywhere dates are shown — table cells, rollups, and formula results.",
     "databasesDateOverride": "A single date property can deviate from this default: open its settings and pick an explicit format instead of \"Global\". Dates are always stored in a canonical format, so changing the display never alters the underlying value.",
-    "databasesRollupBadge": "Rollup properties can show a small function badge (e.g. ERL for earliest date) in front of the value. It is off by default and can be enabled per property in the rollup settings."
+    "databasesRollupBadge": "Rollup properties can show a small function badge (e.g. ERL for earliest date) in front of the value. It is off by default and can be enabled per property in the rollup settings.",
+    "databasesChipWrap": "By default, relation and rollup chips flow inline and wrap as needed within the column. Enable \"Wrap chips\" in the property settings to place each chip on its own line."
   },
   "synchedBlock": {
     "originLabel": "Synced",

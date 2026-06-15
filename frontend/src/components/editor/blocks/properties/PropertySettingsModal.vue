@@ -520,6 +520,10 @@ const rollupFunction = ref<string>(
 const rollupShowTypeBadge = ref<boolean>(
   (props.schema.config?.show_type_badge as boolean | undefined) ?? false,
 )
+// Chip wrapping for relation / rollup cells — off by default (#12).
+const wrapContent = ref<boolean>(
+  (props.schema.config?.wrapContent as boolean | undefined) ?? false,
+)
 
 const ROLLUP_FUNCTIONS = [
   // ── Count ──────────────────────────────────────────────────────────────────
@@ -661,6 +665,7 @@ async function save() {
             ? mirrorPropertyName.value.trim() || null
             : null,
         hasTimeline: hasTimeline.value,
+        wrapContent: wrapContent.value,
       }
       break
     case 'formula':
@@ -672,6 +677,7 @@ async function save() {
         rollup_schema_id:   rollupSchemaId.value || null,
         function:           rollupFunction.value,
         show_type_badge:    rollupShowTypeBadge.value,
+        wrapContent:        wrapContent.value,
       }
       break
     case 'id': {
@@ -936,6 +942,14 @@ function moveOption(index: number, direction: -1 | 1) {
             />
             <p class="psm__hint">{{ t('db.settings.relationMirrorHint') }}</p>
           </div>
+
+          <div class="psm__field">
+            <label class="psm__check-label">
+              <input type="checkbox" v-model="wrapContent" class="psm__checkbox" />
+              {{ t('db.settings.wrapContent') }}
+            </label>
+            <p class="psm__hint">{{ t('db.settings.wrapContentHint') }}</p>
+          </div>
         </template>
 
         <!-- ── ID ──────────────────────────────────────────────────────────── -->
@@ -1136,6 +1150,14 @@ function moveOption(index: number, direction: -1 | 1) {
               {{ t('db.settings.rollupShowTypeBadge') }}
             </label>
             <p class="psm__hint">{{ t('db.settings.rollupShowTypeBadgeHint') }}</p>
+          </div>
+
+          <div class="psm__field">
+            <label class="psm__check-label">
+              <input type="checkbox" v-model="wrapContent" class="psm__checkbox" />
+              {{ t('db.settings.wrapContent') }}
+            </label>
+            <p class="psm__hint">{{ t('db.settings.wrapContentHint') }}</p>
           </div>
         </template>
 

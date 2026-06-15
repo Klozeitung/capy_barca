@@ -1424,6 +1424,15 @@ function computeAggregation(
 
 // ── Wrap column toggle ────────────────────────────────────────────────────────
 
+// Column types whose cells render chips (relation family + rollup). These
+// manage their own chip-wrapping via a per-property setting (#12), so the
+// per-view line-wrap header button is not offered for them.
+const CHIP_COLUMN_TYPES = new Set(['relation', 'parent_item', 'sub_item', 'rollup'])
+
+function supportsLineWrap(schema: PropertySchema | null | undefined): boolean {
+  return !!schema && !CHIP_COLUMN_TYPES.has(schema.type)
+}
+
 function isWrapped(colKey: string): boolean {
   return (activeView.value?.wrapColumns ?? []).includes(colKey)
 }
@@ -1807,7 +1816,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                         <Icon icon="mdi:trash-can-outline" width="13" height="13" />
                       </button>
                       <button
-                        v-if="deletingSchemaId !== col.key"
+                        v-if="deletingSchemaId !== col.key && supportsLineWrap(col.schema)"
                         class="db__th-btn"
                         :class="{ 'db__th-btn--wrap-active': isWrapped(col.key) }"
                         :title="isWrapped(col.key) ? t('db.wrapColumnOff') : t('db.wrapColumnOn')"

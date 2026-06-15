@@ -307,6 +307,8 @@
       "rollupHint": "Aggregiert Werte einer Spalte aus der verknüpften Datenbank.",
       "rollupShowTypeBadge": "Funktions-Badge anzeigen",
       "rollupShowTypeBadgeHint": "Zeigt ein kleines Badge mit dem Aggregationstyp (z. B. ERL, SUM) vor dem Wert an. Standardmäßig aus.",
+      "wrapContent": "Chips umbrechen",
+      "wrapContentHint": "Wenn aktiv, steht jeder Chip in einer eigenen Zeile. Wenn aus, fließen die Chips nebeneinander und brechen bei Bedarf innerhalb der Spalte um.",
       "rollupFunctionCountValues": "Anzahl Werte",
       "rollupFunctionCountUnique": "Anzahl eindeutig",
       "rollupRelation": "Relation",
@@ -674,7 +676,8 @@
     "databasesTitle": "Datum & Rollups",
     "databasesDateIntro": "Dein bevorzugtes Datumsformat legst du unter Einstellungen → Datum fest. Es gilt überall, wo Datumsangaben erscheinen — in Tabellenzellen, Rollups und Formelergebnissen.",
     "databasesDateOverride": "Eine einzelne Datumseigenschaft kann von dieser Vorgabe abweichen: Öffne ihre Einstellungen und wähle statt \"Global\" ein festes Format. Datumswerte werden immer in einem kanonischen Format gespeichert; eine geänderte Anzeige verändert den zugrunde liegenden Wert nie.",
-    "databasesRollupBadge": "Rollup-Eigenschaften können ein kleines Funktions-Badge (z. B. ERL für frühestes Datum) vor dem Wert anzeigen. Es ist standardmäßig aus und kann je Eigenschaft in den Rollup-Einstellungen aktiviert werden."
+    "databasesRollupBadge": "Rollup-Eigenschaften können ein kleines Funktions-Badge (z. B. ERL für frühestes Datum) vor dem Wert anzeigen. Es ist standardmäßig aus und kann je Eigenschaft in den Rollup-Einstellungen aktiviert werden.",
+    "databasesChipWrap": "Standardmäßig fließen Relation- und Rollup-Chips nebeneinander und brechen bei Bedarf innerhalb der Spalte um. Aktiviere \"Chips umbrechen\" in den Eigenschafts-Einstellungen, um jeden Chip in eine eigene Zeile zu setzen."
   },
   "synchedBlock": {
     "originLabel": "Synced",

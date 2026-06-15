@@ -81,6 +81,10 @@ const badge = computed(() =>
 // off by default (#10). Set via the property settings modal.
 const showTypeBadge = computed<boolean>(() => props.schema.config?.show_type_badge === true)
 
+// Chip wrapping (show_original / percent_per_option) is opt-in per rollup
+// property (#12). Off by default: chips stay on one line and clip; on: wrap.
+const wrapContent = computed<boolean>(() => props.schema.config?.wrapContent === true)
+
 const hasError = computed(() => !!cellData.value?.error)
 const errorMessage = computed(() => cellData.value?.error ?? '')
 
@@ -156,6 +160,7 @@ const optionEntries = computed<{ label: string; pct: string }[]>(() => {
     :class="{
       'rollup-cell--error': hasError,
       'rollup-cell--list':  resultKind === 'list' || resultKind === 'option_map',
+      'rollup-cell--wrap':  wrapContent,
     }"
     :title="hasError ? errorMessage : undefined"
   >
@@ -216,6 +221,8 @@ const optionEntries = computed<{ label: string; pct: string }[]>(() => {
   cursor: default;
 }
 
+/* List/option-map layout. Default: chips flow and wrap within the column.
+ * wrapContent on (rollup-cell--wrap): one chip per line (#12). */
 .rollup-cell--list {
   white-space: normal;
   flex-wrap: wrap;
@@ -253,7 +260,14 @@ const optionEntries = computed<{ label: string; pct: string }[]>(() => {
   flex-wrap: wrap;
   gap: 3px;
   align-items: center;
-  overflow: hidden;
+  min-width: 0;
+}
+
+/* wrapContent enabled: one chip per line. */
+.rollup-cell--wrap .rollup-cell__chips {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: flex-start;
 }
 
 .rollup-cell__chip {
@@ -267,6 +281,14 @@ const optionEntries = computed<{ label: string; pct: string }[]>(() => {
   border: 1px solid var(--color-border);
   color: var(--color-text);
   white-space: nowrap;
+}
+
+/* Stack mode (wrapContent on): show full value, wrap long content inside the chip. */
+.rollup-cell--wrap .rollup-cell__chip {
+  white-space: normal;
+  word-break: break-word;
+  max-width: 100%;
+  align-items: flex-start;
 }
 
 .rollup-cell__chip--null {
