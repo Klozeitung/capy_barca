@@ -18,10 +18,12 @@
  *
  * Layout: [function badge] [value / chips]
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { Icon } from '@iconify/vue'
 import type { DatabaseEntry, PropertySchema } from '@/stores/database'
 import { useAuthStore } from '@/stores/auth'
 import { getCellValue, maybeFormatRollupDate } from './cellUtils'
+import SideView from '@/components/main/SideView.vue'
 
 const props = defineProps<{
   entry: DatabaseEntry
@@ -88,9 +90,24 @@ const wrapContent = computed<boolean>(() => props.schema.config?.wrapContent ===
 const hasError = computed(() => !!cellData.value?.error)
 const errorMessage = computed(() => cellData.value?.error ?? '')
 
+// Relation rollups (show_original / first_value / last_value over a relation
+// target) carry resolved entry descriptors and a `relation: true` flag so the
+// cell can render clickable chips that open the entry (#11).
+interface RelationChip { id: string; title: string; database_id: string | null }
+
+const isRelation = computed<boolean>(() => cellData.value?.relation === true)
+
+const relationEntries = computed<RelationChip[]>(() => {
+  if (!isRelation.value) return []
+  const r = cellData.value?.result
+  if (Array.isArray(r)) return r as RelationChip[]
+  if (r && typeof r === 'object') return [r as RelationChip]
+  return []
+})
+
 // ── Result classification ─────────────────────────────────────────────────────
 
-type ResultKind = 'empty' | 'scalar' | 'percent' | 'list' | 'option_map'
+type ResultKind = 'empty' | 'scalar' | 'percent' | 'list' | 'option_map' | 'relation'
 
 const PERCENT_FUNCTIONS = new Set([
   'percent_empty', 'percent_not_empty', 'percent_checked', 'percent_unchecked',
@@ -100,6 +117,7 @@ const resultKind = computed<ResultKind>(() => {
   if (hasError.value) return 'empty'
   const r = cellData.value?.result
   if (r === null || r === undefined) return 'empty'
+  if (isRelation.value) return 'relation'
   if (functionKey.value === 'percent_per_option') return 'option_map'
   if (functionKey.value === 'show_original') return 'list'
   if (Array.isArray(r)) return 'list'
@@ -107,6 +125,18 @@ const resultKind = computed<ResultKind>(() => {
   if (PERCENT_FUNCTIONS.has(functionKey.value)) return 'percent'
   return 'scalar'
 })
+
+// ── Side view (open related entry from a relation chip) ────────────────────────
+
+const sideViewEntry = ref<RelationChip | null>(null)
+
+function openEntry(chip: RelationChip): void {
+  if (chip.database_id) sideViewEntry.value = chip
+}
+
+function closeSideView(): void {
+  sideViewEntry.value = null
+}
 
 // ── Scalar display ────────────────────────────────────────────────────────────
 
@@ -159,7 +189,7 @@ const optionEntries = computed<{ label: string; pct: string }[]>(() => {
     class="rollup-cell"
     :class="{
       'rollup-cell--error': hasError,
-      'rollup-cell--list':  resultKind === 'list' || resultKind === 'option_map',
+      'rollup-cell--list':  resultKind === 'list' || resultKind === 'option_map' || resultKind === 'relation',
       'rollup-cell--wrap':  wrapContent,
     }"
     :title="hasError ? errorMessage : undefined"
@@ -190,6 +220,28 @@ const optionEntries = computed<{ label: string; pct: string }[]>(() => {
           :class="{ 'rollup-cell__chip--null': item === '—' }"
         >{{ item }}</span>
       </span>
+    </template>
+
+    <!-- relation: clickable chips that open the related entry -->
+    <template v-else-if="resultKind === 'relation'">
+      <span class="rollup-cell__chips">
+        <span
+          v-for="chip in relationEntries"
+          :key="chip.id"
+          class="rollup-cell__rel-chip"
+          :title="chip.title || undefined"
+          @click.stop="openEntry(chip)"
+        >
+          <Icon icon="mdi:file-outline" width="10" height="10" class="rollup-cell__rel-chip-icon" />
+          <span class="rollup-cell__rel-chip-text">{{ chip.title || '—' }}</span>
+        </span>
+      </span>
+      <SideView
+        v-if="sideViewEntry && sideViewEntry.database_id"
+        :database-id="sideViewEntry.database_id"
+        :entry-id="sideViewEntry.id"
+        @close="closeSideView"
+      />
     </template>
 
     <!-- percent_per_option: option label + percentage -->
@@ -307,5 +359,48 @@ const optionEntries = computed<{ label: string; pct: string }[]>(() => {
 .rollup-cell__chip-pct {
   font-size: 0.72rem;
   color: var(--color-text-muted);
+}
+
+/* ── Relation chips (clickable, open the related entry) ────────────────────── */
+.rollup-cell__rel-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--color-accent-subtle);
+  border: 1px solid var(--color-accent);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 0.78rem;
+  color: var(--color-text);
+  max-width: 130px;
+  cursor: pointer;
+}
+
+.rollup-cell__rel-chip:hover .rollup-cell__rel-chip-text {
+  text-decoration: underline;
+}
+
+.rollup-cell__rel-chip-icon {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.rollup-cell__rel-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Stack mode (wrapContent on): full title with internal wrapping. */
+.rollup-cell--wrap .rollup-cell__rel-chip {
+  max-width: 100%;
+  align-items: flex-start;
+}
+
+.rollup-cell--wrap .rollup-cell__rel-chip-text {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: break-word;
 }
 </style>

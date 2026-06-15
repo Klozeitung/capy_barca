@@ -17,7 +17,7 @@ from app.blocks.computed import (
     _aggregate,
     _extract_scalar,
     _infer_result_type,
-    _resolve_relation_titles,
+    _resolve_relation_entries,
     _serialise_formula_result,
     build_dependency_graph,
     compute_all_for_entry,
@@ -364,41 +364,41 @@ def test_aggregate_show_original_preserves_order():
     assert _aggregate(["c", "a", "b"], "show_original") == ["c", "a", "b"]
 
 
-# ── _resolve_relation_titles (relation rollup → titles, #11) ──────────────────
+# ── _resolve_relation_entries (relation rollup → clickable chips, #11) ────────
 
-def _fake_resolver(mapping: dict[str, str | None]):
-    """Return a resolver that maps known IDs and treats unknown IDs as missing."""
+def _fake_entry_resolver(mapping: dict[str, dict | None]):
+    """Return a resolver mapping known IDs to descriptors, unknown IDs to None."""
     return lambda rid: mapping.get(rid, None)
 
 
-def test_resolve_relation_titles_flattens_and_maps():
+def _desc(id_: str, title: str, db_: str = "db1") -> dict:
+    return {"id": id_, "title": title, "database_id": db_}
+
+
+def test_resolve_relation_entries_flattens_and_maps():
     scalars = [["a", "b"], ["c"]]
-    resolver = _fake_resolver({"a": "Alice", "b": "Bob", "c": "Carol"})
-    assert _resolve_relation_titles(scalars, resolver) == ["Alice", "Bob", "Carol"]
+    resolver = _fake_entry_resolver({
+        "a": _desc("a", "Alice"), "b": _desc("b", "Bob"), "c": _desc("c", "Carol"),
+    })
+    assert _resolve_relation_entries(scalars, resolver) == [
+        _desc("a", "Alice"), _desc("b", "Bob"), _desc("c", "Carol"),
+    ]
 
 
-def test_resolve_relation_titles_skips_missing_entries():
-    # "b" resolves to None (missing / trashed) and is dropped entirely.
+def test_resolve_relation_entries_skips_missing():
     scalars = [["a", "b"]]
-    resolver = _fake_resolver({"a": "Alice", "b": None})
-    assert _resolve_relation_titles(scalars, resolver) == ["Alice"]
+    resolver = _fake_entry_resolver({"a": _desc("a", "Alice"), "b": None})
+    assert _resolve_relation_entries(scalars, resolver) == [_desc("a", "Alice")]
 
 
-def test_resolve_relation_titles_untitled_becomes_none():
-    # Active but untitled entry ("") is emitted as None for placeholder display.
-    scalars = [["a"]]
-    resolver = _fake_resolver({"a": ""})
-    assert _resolve_relation_titles(scalars, resolver) == [None]
-
-
-def test_resolve_relation_titles_skips_empty_scalars():
+def test_resolve_relation_entries_skips_empty_scalars():
     scalars = [None, [], ["a"]]
-    resolver = _fake_resolver({"a": "Alice"})
-    assert _resolve_relation_titles(scalars, resolver) == ["Alice"]
+    resolver = _fake_entry_resolver({"a": _desc("a", "Alice")})
+    assert _resolve_relation_entries(scalars, resolver) == [_desc("a", "Alice")]
 
 
-def test_resolve_relation_titles_empty_input():
-    assert _resolve_relation_titles([], _fake_resolver({})) == []
+def test_resolve_relation_entries_empty_input():
+    assert _resolve_relation_entries([], _fake_entry_resolver({})) == []
 
 
 # ─── build_dependency_graph ───────────────────────────────────────────────────

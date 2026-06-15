@@ -360,29 +360,27 @@ _RELATION_COL_TYPES = frozenset({"relation", "parent_item", "sub_item"})
 _RAW_DISPLAY_FUNCTIONS = frozenset({"show_original", "first_value", "last_value"})
 
 
-def _resolve_relation_titles(
+def _resolve_relation_entries(
     scalars: list[Any],
-    resolve_title: Callable[[str], Optional[str]],
-) -> list[Any]:
+    resolve_entry: Callable[[str], Optional[dict]],
+) -> list[dict]:
     """
     Flatten relation-rollup *scalars* (each a list of related entry IDs) into a
-    flat list of resolved entry titles.
+    flat list of entry descriptors for clickable chips.
 
-    ``resolve_title`` maps an entry ID string to its title, returning:
-      * ``None``  – entry missing or trashed; it is skipped entirely.
-      * ``""``    – active but untitled entry; emitted as ``None`` so the cell
-                    renders a placeholder rather than an empty chip.
-      * a string  – the entry title, emitted as-is.
+    ``resolve_entry`` maps an entry ID string to a descriptor dict
+    ``{"id", "title", "database_id"}`` for an active entry, or ``None`` for a
+    missing/trashed entry (which is skipped).
     """
-    titles: list[Any] = []
+    out: list[dict] = []
     for scalar in scalars:
         if not scalar:
             continue
         for rid_raw in scalar:
-            title = resolve_title(str(rid_raw))
-            if title is not None:
-                titles.append(title or None)
-    return titles
+            entry = resolve_entry(str(rid_raw))
+            if entry is not None:
+                out.append(entry)
+    return out
 
 
 def _aggregate(values: list[Any], function: str) -> Any:
@@ -658,10 +656,12 @@ def _compute_rollup(
     roll_col_id_raw = config.get("rollup_schema_id")
     function: str = config.get("function", "count")
 
-    def _store(result: Any, error: str | None = None) -> None:
+    def _store(result: Any, error: str | None = None, extra: dict | None = None) -> None:
         val: dict = {"result": result, "function": function}
         if error:
             val["error"] = error
+        if extra:
+            val.update(extra)
         repo.upsert_value(db, page_id=entry_id, schema_id=schema.id, value=val)
         values_map[schema.id] = val
 
@@ -726,11 +726,11 @@ def _compute_rollup(
         scalars.append(_extract_scalar(col_type, pv.value if pv else None))
 
     # Relation-typed rollup targets yield lists of related entry IDs. For the
-    # raw-display functions, resolve those IDs to entry titles so the cell
-    # shows names instead of UUIDs (#11). Counting/aggregating functions keep
-    # the ID lists so their semantics (links per entry) are unchanged.
+    # raw-display functions, resolve those IDs to entry descriptors so the cell
+    # can render clickable relation chips instead of raw UUIDs (#11). Counting/
+    # aggregating functions keep the ID lists so their semantics are unchanged.
     if col_type in _RELATION_COL_TYPES and function in _RAW_DISPLAY_FUNCTIONS:
-        def _resolve_title(rid_str: str) -> Optional[str]:
+        def _resolve_entry(rid_str: str) -> Optional[dict]:
             try:
                 target_uuid = uuid.UUID(rid_str)
             except (ValueError, TypeError):
@@ -738,9 +738,20 @@ def _compute_rollup(
             block = repo.get_block(db, target_uuid)
             if block is None or block.state != "active":
                 return None
-            return (block.content or {}).get("title") or ""
+            return {
+                "id": str(block.id),
+                "title": (block.content or {}).get("title") or "",
+                "database_id": str(block.parent_id) if block.parent_id else None,
+            }
 
-        _store(_aggregate(_resolve_relation_titles(scalars, _resolve_title), function))
+        entries = _resolve_relation_entries(scalars, _resolve_entry)
+        if function == "show_original":
+            result: Any = entries
+        elif function == "first_value":
+            result = entries[0] if entries else None
+        else:  # last_value
+            result = entries[-1] if entries else None
+        _store(result, extra={"relation": True})
         return
 
     _store(_aggregate(scalars, function))
