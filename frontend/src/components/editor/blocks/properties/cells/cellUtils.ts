@@ -9,10 +9,14 @@
  * - getCellValue            – extract the raw value object for a given schema column
  * - displayValue            – render a human-readable string for any property type
  * - formatDateString        – apply a configured date format pattern
+ * - resolveDateFormat       – pick the effective display format (property → user → fallback)
+ * - formatCanonicalDate     – format a single canonical ISO string (auto time)
+ * - maybeFormatRollupDate   – format rollup ISO scalars / ranges, pass through non-dates
  * - vFocus                  – Vue directive: focus an element when it mounts
  */
 import type { Directive } from 'vue'
 import type { DatabaseEntry, PropertySchema } from '@/stores/database'
+import { useAuthStore } from '@/stores/auth'
 
 // ── v-focus directive ─────────────────────────────────────────────────────────
 
@@ -101,6 +105,50 @@ export function getRawCellValue(
 
 // ── Date formatting ───────────────────────────────────────────────────────────
 
+/**
+ * Sentinel stored in a date property's ``config.dateFormat`` meaning "use the
+ * user's global preference". New date properties default to this; existing
+ * properties keep whatever explicit token they were saved with.
+ */
+export const GLOBAL_DATE_FORMAT = 'global'
+
+/** Fallback used when neither a property override nor a user preference exists. */
+const FALLBACK_DATE_FORMAT = 'DD.MM.YYYY'
+
+// Canonical ISO shapes produced by the backend (Python datetime.isoformat()):
+//   "2026-03-31"  "2026-03-31T14:30:00"  "2026-03-31T00:00:00+00:00"
+export const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+export const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/
+
+/**
+ * Read the current user's preferred date format from the auth store.
+ *
+ * Guarded so that any call outside an active Pinia instance (e.g. isolated
+ * unit tests) degrades gracefully to an empty string rather than throwing.
+ */
+function currentUserDateFormat(): string {
+  try {
+    return useAuthStore().dateFormat || ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Resolve the effective display format for a schema:
+ *   1. an explicit per-property token (anything other than the global sentinel)
+ *   2. the user's global preference
+ *   3. a hard fallback
+ *
+ * ``userFormat`` may be passed explicitly (e.g. for deterministic exports);
+ * otherwise it is read from the auth store.
+ */
+export function resolveDateFormat(schema: PropertySchema, userFormat?: string): string {
+  const local = schema.config?.dateFormat as string | undefined
+  if (local && local !== GLOBAL_DATE_FORMAT) return local
+  return (userFormat ?? currentUserDateFormat()) || FALLBACK_DATE_FORMAT
+}
+
 export function formatDateString(
   isoStr: string,
   format: string,
@@ -125,6 +173,42 @@ export function formatDateString(
   }
   if (includeTime && timePart) return `${dateStr} ${timePart}`
   return dateStr
+}
+
+/**
+ * Format a single canonical ISO string for display in the given format.
+ *
+ * The time component is shown only when it is present AND not midnight, so
+ * all-day values (stored at T00:00) render as a plain date while genuinely
+ * timed values keep their HH:MM. Used for computed values (rollups, formulas)
+ * that carry no explicit ``includeTime`` flag.
+ */
+export function formatCanonicalDate(iso: string, format: string): string {
+  if (!iso) return ''
+  const tIdx = iso.indexOf('T')
+  const timePart = tIdx !== -1 ? iso.slice(tIdx + 1, tIdx + 6) : ''
+  const hasMeaningfulTime = timePart !== '' && timePart !== '00:00'
+  return formatDateString(iso, format, hasMeaningfulTime)
+}
+
+/**
+ * Best-effort formatting of a rollup/formula string result that may contain a
+ * canonical date. Handles a single ISO value and an "isoA → isoB" range
+ * (emitted by the date_range rollup). Non-date strings pass through unchanged.
+ */
+export function maybeFormatRollupDate(value: string, format: string): string {
+  if (!value) return value
+  if (value.includes(' → ')) {
+    const [a, b] = value.split(' → ')
+    if (ISO_DATE_RE.test(a) || ISO_DATETIME_RE.test(a)) {
+      return `${formatCanonicalDate(a, format)} → ${formatCanonicalDate(b, format)}`
+    }
+    return value
+  }
+  if (ISO_DATETIME_RE.test(value) || ISO_DATE_RE.test(value)) {
+    return formatCanonicalDate(value, format)
+  }
+  return value
 }
 
 // ── Display value ─────────────────────────────────────────────────────────────
@@ -152,7 +236,7 @@ export function formatSlotScalar(slotVal: Record<string, unknown>, schema: Prope
     case 'date': {
       const start  = (slotVal.start as string | undefined) ?? ''
       const end    = (slotVal.end   as string | undefined) ?? ''
-      const fmt    = (schema.config?.dateFormat  as string  | undefined) ?? 'DD.MM.YYYY'
+      const fmt    = resolveDateFormat(schema)
       const time   = (schema.config?.includeTime as boolean | undefined) ?? false
       const hasEnd = (schema.config?.hasEndDate  as boolean | undefined) ?? false
       if (!start) return ''
@@ -236,7 +320,7 @@ export function displayValue(
       const end         = (val.end         as string  | undefined) ?? ''
       const hasEndDate  = (schema.config?.hasEndDate  as boolean | undefined) ?? false
       const includeTime = (schema.config?.includeTime as boolean | undefined) ?? false
-      const dateFormat  = (schema.config?.dateFormat  as string  | undefined) ?? 'DD-MM-YYYY'
+      const dateFormat  = resolveDateFormat(schema)
       if (!start) return ''
       const startFmt = formatDateString(start, dateFormat, includeTime)
       if (hasEndDate && end && end !== start) {

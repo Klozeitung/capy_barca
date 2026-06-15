@@ -62,6 +62,42 @@ function selectLocale(code: SupportedLocale): void {
   setLocale(code)
 }
 
+// ── State: date format ─────────────────────────────────────────────────────────
+
+const DATE_FORMAT_OPTIONS = ['DD.MM.YYYY', 'MM.DD.YYYY', 'YYYY-MM-DD', 'YYYY-DD-MM'] as const
+type DateFormatToken = typeof DATE_FORMAT_OPTIONS[number]
+
+const dateFormatPref = ref<string>(auth.dateFormat)
+const dateFormatSaving = ref<DateFormatToken | null>(null)
+const dateFormatError = ref(false)
+
+/** Render a fixed sample date (31 Dec 2026) in the given token for preview. */
+function dateFormatSample(fmt: DateFormatToken): string {
+  const y = '2026', m = '12', d = '31'
+  switch (fmt) {
+    case 'MM.DD.YYYY': return `${m}.${d}.${y}`
+    case 'YYYY-MM-DD': return `${y}-${m}-${d}`
+    case 'YYYY-DD-MM': return `${y}-${d}-${m}`
+    case 'DD.MM.YYYY':
+    default:           return `${d}.${m}.${y}`
+  }
+}
+
+async function selectDateFormat(fmt: DateFormatToken): Promise<void> {
+  if (fmt === dateFormatPref.value) return
+  dateFormatSaving.value = fmt
+  dateFormatError.value = false
+  try {
+    await apiClient.patch('/api/users/me/date-format', { date_format: fmt })
+    dateFormatPref.value = fmt
+    auth.setDateFormat(fmt)
+  } catch {
+    dateFormatError.value = true
+  } finally {
+    dateFormatSaving.value = null
+  }
+}
+
 // ── State: storage ─────────────────────────────────────────────────────────────
 
 const capacity = ref<CapacityData | null>(null)
@@ -316,6 +352,15 @@ function handleBackdropClick(e: MouseEvent): void {
 
             <button
               class="settings-nav__item"
+              :class="{ 'settings-nav__item--active': activeSection === 'date' }"
+              @click="activeSection = 'date'"
+            >
+              <Icon icon="mdi:calendar-text-outline" width="15" height="15" class="settings-nav__icon" />
+              <span>{{ t('settings.date') }}</span>
+            </button>
+
+            <button
+              class="settings-nav__item"
               :class="{ 'settings-nav__item--active': activeSection === 'storage' }"
               @click="activeSection = 'storage'"
             >
@@ -394,6 +439,36 @@ function handleBackdropClick(e: MouseEvent): void {
                   />
                 </button>
               </div>
+            </template>
+
+            <!-- ── Date format ──────────────────────────────────────────── -->
+            <template v-else-if="activeSection === 'date'">
+              <h2 class="settings-view__heading">{{ t('settings.date') }}</h2>
+              <p class="settings-view__desc">{{ t('settings.dateDesc') }}</p>
+
+              <div class="lang-options">
+                <button
+                  v-for="fmt in DATE_FORMAT_OPTIONS"
+                  :key="fmt"
+                  class="lang-option"
+                  :class="{ 'lang-option--active': dateFormatPref === fmt }"
+                  :disabled="dateFormatSaving !== null"
+                  @click="selectDateFormat(fmt)"
+                >
+                  <span class="date-option__token">{{ fmt }}</span>
+                  <span class="date-option__sample">{{ dateFormatSample(fmt) }}</span>
+                  <Icon
+                    v-if="dateFormatPref === fmt"
+                    icon="mdi:check"
+                    width="15"
+                    height="15"
+                    class="lang-option__check"
+                  />
+                </button>
+              </div>
+              <p v-if="dateFormatError" class="settings-view__desc feedback--err">
+                {{ t('settings.dateSaveError') }}
+              </p>
             </template>
 
             <!-- ── Storage ──────────────────────────────────────────────── -->
@@ -1429,5 +1504,25 @@ function handleBackdropClick(e: MouseEvent): void {
 .lang-option__check {
   color: var(--color-accent);
   flex-shrink: 0;
+}
+
+/* ── Date format section ─────────────────────────────────────────────────── */
+
+.lang-option:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.date-option__token {
+  flex: 1;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.date-option__sample {
+  flex-shrink: 0;
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
 }
 </style>

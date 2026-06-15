@@ -2,6 +2,7 @@
 User management router.
 """
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -12,6 +13,12 @@ from app.users import repository as user_repo
 from app.users.model import User
 
 users_router = APIRouter(prefix="/api/users", tags=["users"])
+
+# Canonical display date-format tokens a user may choose as their global
+# preference. These govern frontend rendering only; dates are always stored
+# and exchanged as ISO 8601. The per-property "global" sentinel is a database
+# property concept and is intentionally NOT a valid user-level value here.
+DateFormatToken = Literal["DD.MM.YYYY", "MM.DD.YYYY", "YYYY-MM-DD", "YYYY-DD-MM"]
 
 
 # ─── Schemas ──────────────────────────────────────────────────────────────────
@@ -27,6 +34,7 @@ class UserResponse(BaseModel):
     username: str
     role: str
     is_active: bool
+    date_format: str
 
     model_config = {"from_attributes": True}
 
@@ -39,6 +47,10 @@ class CreateUserRequest(BaseModel):
 
 class ChangeUsernameRequest(BaseModel):
     username: str = Field(min_length=1)
+
+
+class ChangeDateFormatRequest(BaseModel):
+    date_format: DateFormatToken
 
 
 class ChangePasswordRequest(BaseModel):
@@ -109,6 +121,24 @@ def change_own_password(
         raise HTTPException(status_code=401, detail="Aktuelles Passwort ist falsch")
     user_repo.update_password(db, current_user, payload.new_password)
     db.commit()
+
+
+@users_router.patch("/me/date-format", response_model=UserResponse)
+def change_own_date_format(
+    payload: ChangeDateFormatRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Set the preferred display date format for the current user.
+
+    Invalid tokens are rejected by request validation (422). The value affects
+    frontend rendering only; stored dates remain ISO 8601.
+    """
+    user_repo.update_date_format(db, current_user, payload.date_format)
+    db.commit()
+    db.refresh(current_user)
+    return current_user
 
 
 # ─── Admin: user list + create ────────────────────────────────────────────────

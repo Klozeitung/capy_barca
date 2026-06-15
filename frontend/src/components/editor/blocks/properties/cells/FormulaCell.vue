@@ -19,8 +19,8 @@
  * the result type and renders accordingly:
  *
  *   boolean  → check / cross icon
- *   ISO date (date-only)      → DD.MM.YYYY
- *   ISO datetime (with time)  → DD.MM.YYYY HH:mm
+ *   ISO date / datetime → rendered in the user's preferred date format,
+ *                         with time shown only when present and non-midnight
  *   number   → toLocaleString (decimal comma for de-DE locale)
  *   string   → as-is
  *   null     → empty
@@ -44,28 +44,21 @@
 import { computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import type { DatabaseEntry, PropertySchema } from '@/stores/database'
-import { getCellValue } from './cellUtils'
+import { useAuthStore } from '@/stores/auth'
+import { getCellValue, formatCanonicalDate, ISO_DATE_RE, ISO_DATETIME_RE } from './cellUtils'
 
 const props = defineProps<{
   entry: DatabaseEntry
   schema: PropertySchema
 }>()
 
+const auth = useAuthStore()
+
 // ── ISO datetime detection ────────────────────────────────────────────────────
-
-// Matches strings produced by Python's datetime.isoformat():
-//   "2026-03-31T00:00:00+00:00"  "2026-03-31T14:30:00"  "2026-03-31"
-const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/
-const ISO_DATE_RE     = /^\d{4}-\d{2}-\d{2}$/
-
-function formatIso(iso: string): string {
-  const tIdx = iso.indexOf('T')
-  const datePart = tIdx !== -1 ? iso.slice(0, tIdx) : iso
-  const timePart = tIdx !== -1 ? iso.slice(tIdx + 1, tIdx + 6) : ''  // HH:MM
-  const [year, month, day] = datePart.split('-')
-  const date = `${day}.${month}.${year}`
-  return timePart ? `${date} ${timePart}` : date
-}
+//
+// Detection regexes and the canonical-date formatter are shared via cellUtils
+// so formula dates render in the user's preferred format (#10), consistent
+// with date and rollup cells. Time is shown only when present and non-midnight.
 
 // ── Style hint maps ───────────────────────────────────────────────────────────
 
@@ -122,8 +115,8 @@ const displayText = computed<string>(() => {
   switch (resultKind.value) {
     case 'empty':    return ''
     case 'boolean':  return ''                      // rendered via icon
-    case 'datetime': return formatIso(r as string)
-    case 'date':     return formatIso(r as string)
+    case 'datetime': return formatCanonicalDate(r as string, auth.dateFormat)
+    case 'date':     return formatCanonicalDate(r as string, auth.dateFormat)
     case 'number':   return (r as number).toLocaleString('de-DE', { maximumFractionDigits: 10 })
     case 'string':   return r as string
     default:         return String(r)

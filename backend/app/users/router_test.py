@@ -80,6 +80,44 @@ def test_get_me_returns_401_unauthenticated():
     assert anon_client.get("/api/users/me").status_code == 401
 
 
+def test_get_me_returns_default_date_format(admin_client):
+    data = admin_client.get("/api/users/me").json()
+    assert data["date_format"] == "DD.MM.YYYY"
+
+
+# ── PATCH /api/users/me/date-format ──────────────────────────────────────────
+
+def test_change_date_format_returns_200(admin_client):
+    response = admin_client.patch(
+        "/api/users/me/date-format",
+        json={"date_format": "YYYY-MM-DD"},
+    )
+    assert response.status_code == 200
+    assert response.json()["date_format"] == "YYYY-MM-DD"
+
+
+def test_change_date_format_persists(admin_client):
+    admin_client.patch("/api/users/me/date-format", json={"date_format": "MM.DD.YYYY"})
+    data = admin_client.get("/api/users/me").json()
+    assert data["date_format"] == "MM.DD.YYYY"
+
+
+def test_change_date_format_invalid_returns_422(admin_client):
+    response = admin_client.patch(
+        "/api/users/me/date-format",
+        json={"date_format": "DD/MM/YY"},
+    )
+    assert response.status_code == 422
+
+
+def test_change_date_format_returns_401_unauthenticated():
+    response = anon_client.patch(
+        "/api/users/me/date-format",
+        json={"date_format": "YYYY-MM-DD"},
+    )
+    assert response.status_code == 401
+
+
 # ── PATCH /api/users/me/password ─────────────────────────────────────────────
 
 def test_change_password_returns_204(admin_client):

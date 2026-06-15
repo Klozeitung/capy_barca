@@ -39,6 +39,11 @@ def test_login_response_body_on_success():
     assert data["role"] == "admin"
 
 
+def test_login_response_includes_date_format():
+    response = client.post("/api/login", json={"username": "capybarca", "password": "geheim"})
+    assert response.json()["date_format"] == "DD.MM.YYYY"
+
+
 def test_login_sets_session_cookie():
     response = client.post("/api/login", json={"username": "capybarca", "password": "geheim"})
     assert "session" in response.cookies
@@ -92,6 +97,12 @@ def test_verify_returns_200_after_login():
     assert data["authenticated"] is True
     assert data["username"] == "capybarca"
     assert data["role"] == "admin"
+
+
+def test_verify_response_includes_date_format():
+    client.post("/api/login", json={"username": "capybarca", "password": "geheim"})
+    data = client.get("/api/verify").json()
+    assert data["date_format"] == "DD.MM.YYYY"
 
 
 def test_verify_returns_401_with_invalid_token():

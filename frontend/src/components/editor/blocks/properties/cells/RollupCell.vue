@@ -20,12 +20,15 @@
  */
 import { computed } from 'vue'
 import type { DatabaseEntry, PropertySchema } from '@/stores/database'
-import { getCellValue } from './cellUtils'
+import { useAuthStore } from '@/stores/auth'
+import { getCellValue, maybeFormatRollupDate } from './cellUtils'
 
 const props = defineProps<{
   entry: DatabaseEntry
   schema: PropertySchema
 }>()
+
+const auth = useAuthStore()
 
 // ── Badges ────────────────────────────────────────────────────────────────────
 
@@ -74,6 +77,10 @@ const badge = computed(() =>
   FUNCTION_LABELS[functionKey.value] ?? functionKey.value.toUpperCase(),
 )
 
+// The function-type badge (ERL / LAT / SUM …) is opt-in per rollup property,
+// off by default (#10). Set via the property settings modal.
+const showTypeBadge = computed<boolean>(() => props.schema.config?.show_type_badge === true)
+
 const hasError = computed(() => !!cellData.value?.error)
 const errorMessage = computed(() => cellData.value?.error ?? '')
 
@@ -107,7 +114,9 @@ const scalarDisplay = computed<string>(() => {
     return resultKind.value === 'percent' ? `${formatted} %` : formatted
   }
   if (typeof r === 'boolean') return r ? 'true' : 'false'
-  return String(r)
+  // Date aggregations (earliest_date / latest_date / date_range) arrive as
+  // canonical ISO strings; render them in the user's preferred format (#10).
+  return maybeFormatRollupDate(String(r), auth.dateFormat)
 })
 
 // ── List display (show_original) ──────────────────────────────────────────────
@@ -122,7 +131,8 @@ const listItems = computed<string[]>(() => {
     if (typeof v === 'number') {
       return Number.isInteger(v) ? String(v) : v.toFixed(2).replace(/\.?0+$/, '')
     }
-    return String(v)
+    // show_original of a date column yields canonical ISO strings; format them.
+    return maybeFormatRollupDate(String(v), auth.dateFormat)
   })
 })
 
@@ -149,8 +159,8 @@ const optionEntries = computed<{ label: string; pct: string }[]>(() => {
     }"
     :title="hasError ? errorMessage : undefined"
   >
-    <!-- Badge -->
-    <span v-if="badge" class="rollup-cell__badge">{{ badge }}</span>
+    <!-- Function-type badge (opt-in, #10) -->
+    <span v-if="badge && showTypeBadge" class="rollup-cell__badge">{{ badge }}</span>
 
     <!-- Error state -->
     <template v-if="hasError">

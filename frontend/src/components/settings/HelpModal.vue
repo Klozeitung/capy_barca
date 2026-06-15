@@ -27,6 +27,7 @@ const { closeHelp } = useHelpModal()
 const SECTIONS = [
   { key: 'blocks',      labelKey: 'help.sectionBlocks',      icon: 'mdi:view-grid-outline' },
   { key: 'shortcuts',   labelKey: 'help.sectionShortcuts',   icon: 'mdi:keyboard-outline' },
+  { key: 'databases',   labelKey: 'help.sectionDatabases',   icon: 'mdi:database-cog-outline' },
   { key: 'permissions', labelKey: 'help.sectionPermissions', icon: 'mdi:shield-lock-outline' },
 ] as const
 
@@ -258,6 +259,15 @@ const permissionModes = [
             </template>
 
             <!-- ── Permissions ────────────────────────────────────────── -->
+            <template v-else-if="activeSection === 'databases'">
+              <div class="hm__group">
+                <p class="hm__group-label">{{ t('help.databasesTitle') }}</p>
+                <p class="hm__permissions-intro">{{ t('help.databasesDateIntro') }}</p>
+                <p class="hm__permissions-intro">{{ t('help.databasesDateOverride') }}</p>
+                <p class="hm__permissions-note">{{ t('help.databasesRollupBadge') }}</p>
+              </div>
+            </template>
+
             <template v-else-if="activeSection === 'permissions'">
               <div class="hm__group">
                 <p class="hm__group-label">{{ t('help.permissionsTitle') }}</p>

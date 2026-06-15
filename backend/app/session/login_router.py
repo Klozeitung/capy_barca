@@ -38,7 +38,12 @@ def login(request: Request, payload: LoginRequest, response: Response):
         max_age=_COOKIE_MAX_AGE,
         secure=_SECURE,
     )
-    return {"success": True, "username": user.username, "role": user.role}
+    return {
+        "success": True,
+        "username": user.username,
+        "role": user.role,
+        "date_format": user.date_format,
+    }
 
 
 @login_router.get("/api/verify")
@@ -47,9 +52,9 @@ def verify(session: Optional[str] = Cookie(default=None)):
     Return 200 with user context if the request carries a valid session
     cookie, 401 otherwise.
 
-    The response includes ``username`` and ``role`` so the frontend can
-    display user information and gate admin features without a separate
-    profile request.
+    The response includes ``username``, ``role`` and the user's preferred
+    ``date_format`` so the frontend can display user information, gate admin
+    features, and render dates without a separate profile request.
     """
     if not session:
         raise HTTPException(status_code=401, detail="Nicht angemeldet")
@@ -67,7 +72,12 @@ def verify(session: Optional[str] = Cookie(default=None)):
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Nicht angemeldet")
 
-    return {"authenticated": True, "username": user.username, "role": user.role}
+    return {
+        "authenticated": True,
+        "username": user.username,
+        "role": user.role,
+        "date_format": user.date_format,
+    }
 
 
 @login_router.post("/api/logout")

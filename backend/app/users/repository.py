@@ -97,6 +97,18 @@ def update_role(db: Session, user: User, new_role: str) -> None:
     db.flush()
 
 
+def update_date_format(db: Session, user: User, new_format: str) -> None:
+    """
+    Update the preferred display date format for *user*.
+
+    *new_format* is one of the canonical display tokens (validated by the
+    router). Storage and interchange of dates remain ISO 8601 regardless of
+    this preference. The caller must commit the session after this call.
+    """
+    user.date_format = new_format
+    db.flush()
+
+
 def update_password(db: Session, user: User, new_password: str) -> None:
     """
     Replace the user's password with a new bcrypt hash.

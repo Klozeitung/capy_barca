@@ -77,8 +77,10 @@ const dateIncludeTime = ref<boolean>(
 const dateHasEndDate = ref<boolean>(
   (props.schema.config?.hasEndDate as boolean | undefined) ?? false,
 )
+// New date properties default to the global user preference; existing
+// properties keep whatever explicit token they were saved with (#10).
 const dateFormat = ref<string>(
-  (props.schema.config?.dateFormat as string | undefined) ?? 'DD.MM.YYYY',
+  (props.schema.config?.dateFormat as string | undefined) ?? 'global',
 )
 
 const DATE_FORMATS = [
@@ -514,6 +516,10 @@ const rollupSchemaId = ref<string>(
 const rollupFunction = ref<string>(
   (props.schema.config?.function as string | undefined) ?? 'count',
 )
+// Function-type badge (ERL / SUM …) shown in the cell — off by default (#10).
+const rollupShowTypeBadge = ref<boolean>(
+  (props.schema.config?.show_type_badge as boolean | undefined) ?? false,
+)
 
 const ROLLUP_FUNCTIONS = [
   // ── Count ──────────────────────────────────────────────────────────────────
@@ -665,6 +671,7 @@ async function save() {
         relation_schema_id: rollupRelationSchemaId.value || null,
         rollup_schema_id:   rollupSchemaId.value || null,
         function:           rollupFunction.value,
+        show_type_badge:    rollupShowTypeBadge.value,
       }
       break
     case 'id': {
@@ -792,6 +799,7 @@ function moveOption(index: number, direction: -1 | 1) {
           <div class="psm__field">
             <label class="psm__label">{{ t('db.settings.dateFormat') }}</label>
             <select v-model="dateFormat" class="psm__native-select">
+              <option value="global">{{ t('db.settings.dateFormatGlobal') }}</option>
               <option v-for="fmt in DATE_FORMATS" :key="fmt" :value="fmt">{{ fmt }}</option>
             </select>
           </div>
@@ -1120,6 +1128,14 @@ function moveOption(index: number, direction: -1 | 1) {
               </button>
             </div>
             <p class="psm__hint">{{ t('db.settings.rollupHint') }}</p>
+          </div>
+
+          <div class="psm__field">
+            <label class="psm__check-label">
+              <input type="checkbox" v-model="rollupShowTypeBadge" class="psm__checkbox" />
+              {{ t('db.settings.rollupShowTypeBadge') }}
+            </label>
+            <p class="psm__hint">{{ t('db.settings.rollupShowTypeBadgeHint') }}</p>
           </div>
         </template>
 
