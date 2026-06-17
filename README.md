@@ -12,12 +12,13 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 
 - **Pages and blocks** hierarchical workspace with rich-text pages, headings, lists, code blocks, and file attachments
 - **Databases** structured tables with custom property types (text, select, date, relation, formula, rollup, and more), filters, sorting, and multiple views per database
-- **Property timelining** any database property can be given a timeline: values are stored as date-ranged slots rather than a single value, so the full history of how a property changed over time is preserved and queryable.
+- **Property timelining** any database property can be given a timeline: values are stored as date-ranged slots rather than a single value. Example: In Notion, you could only put "City A" in a relation property for a character in a world-building database, but if that location were to change, you wouldn't be able to see the previous cities the character resided in. With CapyBarca you can display a full history within a single property ("timelining a property"). Atm rollups and formulas will only use the most recent value but specific and broad querying is a planned feature.
 - **Automations** rule-based triggers that act on database entries
 - **Comments** inline comments on pages and database entries
 - **Collaborative editing** real-time document collaboration via integrated Collabora Online (WOPI)
 - **Backup and restore** portable `.capy` backup files covering database, uploads, and configuration; full restore via a single script
 - **Multi-user** admin and member roles, optional self-registration
+- **Supported Languages**: English, German
 
 ---
 
