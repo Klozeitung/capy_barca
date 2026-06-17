@@ -1,3 +1,5 @@
+![alt text](https://github.com/Klozeitung/capy_barca/blob/main/frontend/public/CapyBarca.png "CapyBarca Logo")
+
 # CapyBarca
 
 CapyBarca is a self-hosted personal knowledge management application. It runs entirely on your own infrastructure, requires no cloud account, and keeps your data under your control.
@@ -111,15 +113,22 @@ Key variables:
 
 ---
 
-## AI Usage Disclosure
+## Transparency
 
-The Anthropic LLM "Claude" was used in creating this software.
+- **AI Usage Disclosure**: The Anthropic LLM "Claude" was used in creating this software.
+- **System Testing**: CapyBarca is not yet tested for broad system compatability. "Runs fine on mine" is all the dev can say at this point.
 
 ---
 
 ## Project Status
 
-This project is a work in progress. It is used by its developer since February 2026 as full replacement of Notion.
+This project is a work in progress. It is used by its developer since February 2026 as full replacement of Notion. Having been worked on in a private repo, it was copied to a (this) public repository when it was deemed to be useful and stable enough.
+
+Despite heavy testing (some 1300 automated backend tests each time a new version is build in the dev environment by setup.sh and a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet. Thus, this honest disclaimer is in order:
+
+DO NOT USE FOR IRREPLACABLE DATA AND FILES. USE AT OWN RISK.
+
+Please use the backup system as regularly as possible.
 
 ---
 

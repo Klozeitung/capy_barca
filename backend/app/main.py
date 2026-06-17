@@ -84,7 +84,7 @@ _cors_credentials = True
 
 app = FastAPI(
     title="CapyBarca API",
-    version="0.13.8",
+    version="0.13.8.1",
     lifespan=lifespan,
 )
 
