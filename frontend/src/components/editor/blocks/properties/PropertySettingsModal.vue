@@ -220,7 +220,7 @@ interface FormulaHelpEntry {
   signature: string
   description: string
   example: string
-  category: 'logic' | 'math' | 'text' | 'date' | 'operator'
+  category: 'logic' | 'math' | 'text' | 'list' | 'date' | 'operator'
   insert: string
 }
 
@@ -356,6 +356,15 @@ const FORMULA_HELP: FormulaHelpEntry[] = [
     category: 'math',
     insert: 'divide(, )',
   },
+  // ── List ───────────────────────────────────────────────────────────────────
+  {
+    name: 'at',
+    signature: 'at(list, index)',
+    description: 'Returns the element at the given index in a list (e.g. a show_original rollup). Supports negative indexing: -1 is the last element. Returns null when the index is out of range.',
+    example: "dateBetween(prop('Datum'), at(prop('Rollup Dates'), 0), 'years')",
+    category: 'list',
+    insert: "at(, 0)",
+  },
   // ── Date & Time ────────────────────────────────────────────────────────────
   {
     name: 'now',
@@ -480,7 +489,7 @@ const FORMULA_HELP: FormulaHelpEntry[] = [
   },
 ]
 
-const CATEGORY_ORDER: FormulaHelpEntry['category'][] = ['logic', 'math', 'text', 'date', 'operator']
+const CATEGORY_ORDER: FormulaHelpEntry['category'][] = ['logic', 'math', 'text', 'list', 'date', 'operator']
 
 const filteredHelpEntries = computed<FormulaHelpEntry[]>(() => {
   const q = formulaHelpSearch.value.trim().toLowerCase()
@@ -1065,7 +1074,7 @@ function moveOption(index: number, direction: -1 | 1) {
               </p>
 
               <!-- Categories -->
-              <template v-for="cat in ['logic', 'math', 'text', 'date', 'operator']" :key="cat">
+              <template v-for="cat in ['logic', 'math', 'text', 'list', 'date', 'operator']" :key="cat">
                 <template v-if="(filteredHelpByCategory.get(cat as any) ?? []).length > 0">
                   <div class="psm__help-category">
                     {{ t(`db.settings.formulaHelpCat_${cat}`) }}

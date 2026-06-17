@@ -294,6 +294,8 @@
       "relationTarget": "Ziel-Datenbank",
       "relationNoTargets": "Keine anderen Datenbanken vorhanden",
       "formulaExpression": "Formelausdruck",
+      "formulaHelpCat_list": "Liste",
+      "formulaHelpCat_date": "Datum & Uhrzeit",
       "formulaPlaceholder": "z. B. prop(\"Preis\") * prop(\"Menge\")",
       "dateFormat": "Datumsformat",
       "dateFormatGlobal": "Global (Benutzervorgabe)",

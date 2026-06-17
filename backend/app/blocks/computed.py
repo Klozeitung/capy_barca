@@ -288,9 +288,20 @@ def _extract_scalar(schema_type: str, value: Optional[dict], config: Optional[di
     if schema_type == "checkbox":
         return value.get("checked")
     if schema_type == "select":
-        # Frontend stores single-select as {"option": "label"}.
-        # Legacy path: {"selected": "label"} or {"selected": ["a", "b"]} (multi).
-        raw = value["option"] if "option" in value else value.get("selected")
+        # Single-select (frontend): {"option": "label"}.
+        # Multi-select (frontend):  {"options": ["label", …]}.
+        # Legacy paths: {"selected": "label"} or {"selected": ["a", "b"]}.
+        #
+        # For multi-valued shapes the first label is returned so that scalar
+        # comparisons such as prop('Typ') == "Geburt" work for the common
+        # single-value case; format()/contains() can be used over the full set
+        # via the relation-style list handling elsewhere.
+        if "option" in value:
+            raw = value["option"]
+        elif "options" in value:
+            raw = value.get("options")
+        else:
+            raw = value.get("selected")
         if isinstance(raw, list):
             return raw[0] if raw else None
         return raw
@@ -311,7 +322,21 @@ def _extract_scalar(schema_type: str, value: Optional[dict], config: Optional[di
             return list(slot.get("related_ids", [])) if slot else []
         return value.get("related_ids", [])
     if schema_type in ("formula", "rollup"):
-        return value.get("result")
+        # A formula or rollup whose result is a relation-descriptor list
+        # (marked with relation=True, e.g. a formula returning prop('Ort') or
+        # a relation rollup) is treated like a relation column when it is
+        # itself rolled up: return the list of related entry IDs so the
+        # relation-aware rollup path can resolve them to chips. Empty results
+        # therefore yield an empty list rather than a placeholder. All other
+        # results pass through unchanged.
+        result = value.get("result")
+        if value.get("relation") is True and isinstance(result, list):
+            ids: list[str] = []
+            for item in result:
+                if isinstance(item, dict) and "id" in item:
+                    ids.append(str(item["id"]))
+            return ids
+        return result
     if schema_type in ("created_by", "last_edited_by"):
         return value.get("user_id") or value.get("username")  # user_id (new) or username (legacy)
     if schema_type in ("created_time", "last_edited_time"):
@@ -381,6 +406,62 @@ def _resolve_relation_entries(
             if entry is not None:
                 out.append(entry)
     return out
+
+
+def _resolve_formula_relation(
+    result: Any,
+    resolve_entry: Callable[[str], Optional[dict]],
+) -> tuple[Any, bool]:
+    """
+    Detect and normalise a formula result that represents relation targets.
+
+    Returns ``(resolved_result, True)`` when *result* is:
+
+    * A ``list[str]`` whose every item is a valid UUID string — each UUID is
+      passed through *resolve_entry*; missing / inactive entries are skipped.
+    * A ``list[dict]`` where every item already has ``id`` and ``title`` keys
+      (produced by a ``show_original`` rollup over a relation column whose
+      value was passed through ``prop()`` in the formula).
+    * A single ``dict`` with ``id`` and ``title`` keys (produced by a
+      ``first_value`` / ``last_value`` rollup over a relation column); wrapped
+      in a list for uniform downstream handling.
+
+    Returns ``(result, False)`` unchanged for all other shapes so the normal
+    scalar serialisation path is used.
+    """
+    # Single entry descriptor (first_value / last_value rollup over relation)
+    if isinstance(result, dict) and "id" in result and "title" in result:
+        return [result], True
+
+    if not isinstance(result, list) or not result:
+        return result, False
+
+    first = result[0]
+
+    # Already-resolved list (show_original rollup over relation column)
+    if isinstance(first, dict) and "id" in first and "title" in first:
+        return result, True
+
+    # Raw strings from a relation property; bail out if any are not UUIDs
+    # so that plain string lists are never mistaken for relation results.
+    if not isinstance(first, str):
+        return result, False
+
+    for item in result:
+        if not isinstance(item, str):
+            return result, False
+        try:
+            uuid.UUID(item)
+        except ValueError:
+            return result, False
+
+    # All items are valid UUID strings — resolve to entry descriptors.
+    entries: list[dict] = []
+    for item in result:
+        entry = resolve_entry(item)
+        if entry is not None:
+            entries.append(entry)
+    return entries, True
 
 
 def _aggregate(values: list[Any], function: str) -> Any:
@@ -632,10 +713,35 @@ def _compute_formula(
 
     ctx = _formula_context(all_schemas, values_map)
     fr = evaluate(expression, ctx)
+    serialised = _serialise_formula_result(fr.result)
+
+    # If the formula result is a list of relation UUIDs or already-resolved
+    # entry descriptors (e.g. the formula passes through a relation prop or a
+    # show_original rollup prop), normalise to a descriptor list and mark the
+    # stored value with relation=True so FormulaCell renders clickable chips
+    # instead of raw UUIDs (#20).
+    def _resolve_entry(rid_str: str) -> Optional[dict]:
+        try:
+            target_uuid = uuid.UUID(rid_str)
+        except (ValueError, TypeError):
+            return None
+        block = repo.get_block(db, target_uuid)
+        if block is None or block.state != "active":
+            return None
+        return {
+            "id": str(block.id),
+            "title": (block.content or {}).get("title") or "",
+            "database_id": str(block.parent_id) if block.parent_id else None,
+        }
+
+    resolved, is_relation = _resolve_formula_relation(serialised, _resolve_entry)
+
     val: dict = {
-        "result": _serialise_formula_result(fr.result),
+        "result": resolved,
         "result_type": _infer_result_type(fr.result),
     }
+    if is_relation:
+        val["relation"] = True
     if fr.style:
         val["style"] = fr.style
     if fr.error:
@@ -725,11 +831,22 @@ def _compute_rollup(
         )
         scalars.append(_extract_scalar(col_type, pv.value if pv else None))
 
+    # A formula / rollup target column whose stored values carry relation=True
+    # holds relation-entry IDs (resolved above into ID lists). Treat it like a
+    # native relation column so the raw-display chip path below applies, giving
+    # clickable chips instead of [object Object] (and no chip for empty values).
+    target_is_relation_formula = col_type in ("formula", "rollup") and any(
+        isinstance(pv.value, dict) and pv.value.get("relation") is True
+        for rid in active_related_ids
+        for pv in related_map.get(rid, [])
+        if pv.property_schema_id == rollup_col_id
+    )
+
     # Relation-typed rollup targets yield lists of related entry IDs. For the
     # raw-display functions, resolve those IDs to entry descriptors so the cell
     # can render clickable relation chips instead of raw UUIDs (#11). Counting/
     # aggregating functions keep the ID lists so their semantics are unchanged.
-    if col_type in _RELATION_COL_TYPES and function in _RAW_DISPLAY_FUNCTIONS:
+    if (col_type in _RELATION_COL_TYPES or target_is_relation_formula) and function in _RAW_DISPLAY_FUNCTIONS:
         def _resolve_entry(rid_str: str) -> Optional[dict]:
             try:
                 target_uuid = uuid.UUID(rid_str)

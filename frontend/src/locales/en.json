@@ -323,6 +323,8 @@
       "formulaHelpCat_logic": "Logic",
       "formulaHelpCat_math": "Math",
       "formulaHelpCat_text": "Text",
+      "formulaHelpCat_list": "List",
+      "formulaHelpCat_date": "Date & Time",
       "formulaHelpCat_operator": "Operators",
       "rollupRelation": "Relation property",
       "rollupRelationPlaceholder": "Select a relation…",

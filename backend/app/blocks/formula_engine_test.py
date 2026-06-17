@@ -1654,3 +1654,91 @@ def test_single_empty_unary_and_math_still_zero_when_concrete():
     assert ev("-prop('b')", {"b": 4}) == -4
     assert ev("abs(prop('b'))", {"b": -3}) == 3
     assert ev("round(prop('b'), 1)", {"b": 2.34}) == pytest.approx(2.3)
+
+
+# ─── at() ─────────────────────────────────────────────────────────────────────
+
+
+def test_at_first_element():
+    assert ev("at(prop('L'), 0)", {"L": ["a", "b", "c"]}) == "a"
+
+
+def test_at_middle_element():
+    assert ev("at(prop('L'), 1)", {"L": ["a", "b", "c"]}) == "b"
+
+
+def test_at_last_element_by_positive_index():
+    assert ev("at(prop('L'), 2)", {"L": ["a", "b", "c"]}) == "c"
+
+
+def test_at_negative_index_last():
+    assert ev("at(prop('L'), -1)", {"L": ["a", "b", "c"]}) == "c"
+
+
+def test_at_negative_index_second_to_last():
+    assert ev("at(prop('L'), -2)", {"L": ["a", "b", "c"]}) == "b"
+
+
+def test_at_out_of_bounds_positive():
+    assert ev("at(prop('L'), 99)", {"L": ["a", "b"]}) is None
+
+
+def test_at_out_of_bounds_negative():
+    assert ev("at(prop('L'), -99)", {"L": ["a", "b"]}) is None
+
+
+def test_at_empty_list_returns_none():
+    assert ev("at(prop('L'), 0)", {"L": []}) is None
+
+
+def test_at_null_list_returns_none():
+    assert ev("at(null, 0)") is None
+
+
+def test_at_null_index_returns_none():
+    assert ev("at(prop('L'), null)", {"L": ["x"]}) is None
+
+
+def test_at_numeric_elements():
+    assert ev("at(prop('L'), 0)", {"L": [10, 20, 30]}) == 10
+
+
+def test_at_with_none_element():
+    # None is a valid element; at() returns it as-is
+    assert ev("at(prop('L'), 1)", {"L": ["a", None, "c"]}) is None
+
+
+def test_at_date_string_element():
+    # Primary use-case from issue #13: index into a rollup date list
+    result = ev("at(prop('Dates'), 0)", {"Dates": ["2024-06-15", "2025-01-01"]})
+    assert result == "2024-06-15"
+
+
+def test_at_date_string_usable_in_datebetween():
+    from datetime import datetime as _DT, timezone
+    ctx = {
+        "Datum": _DT(2026, 1, 1, tzinfo=timezone.utc),
+        "Rollup": ["2000-01-01"],
+    }
+    result = ev("dateBetween(prop('Datum'), at(prop('Rollup'), 0), 'years')", ctx)
+    assert result == 26
+
+
+def test_at_wrong_arg_count_zero():
+    assert err("at()")
+
+
+def test_at_wrong_arg_count_one():
+    assert err("at(prop('L'))")
+
+
+def test_at_wrong_arg_count_three():
+    assert err("at(prop('L'), 0, 1)")
+
+
+def test_at_non_list_first_arg_raises():
+    assert err("at('hello', 0)")
+
+
+def test_at_validate_syntax_accepted():
+    validate_syntax("at(prop('Dates'), 0)")

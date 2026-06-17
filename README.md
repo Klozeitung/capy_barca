@@ -125,7 +125,7 @@ Key variables:
 
 This project is a work in progress. It is used by its developer since February 2026 as full replacement of Notion. Having been worked on in a private repo, it was copied to a (this) public repository when it was deemed to be useful and stable enough.
 
-Despite heavy testing (some 1300 automated backend tests each time a new version is build in the dev environment by setup.sh and a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet. Thus, this honest disclaimer is in order:
+Despite heavy testing (~1430 automated backend tests each time a new version is build in the dev environment by setup.sh and a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet. Thus, this honest disclaimer is in order:
 
 DO NOT USE FOR IRREPLACABLE DATA AND FILES. USE AT OWN RISK.
 

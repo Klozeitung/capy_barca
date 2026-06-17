@@ -8,6 +8,7 @@
  *
  * Value shape:
  *   { result: string | number | boolean | null, error?: string, style?: string[] }
+ *   { result: RelationChip[], relation: true, error?: string }   ← relation target
  *
  * Config shape (set in PropertySettingsModal):
  *   { expression: string }
@@ -18,6 +19,7 @@
  * are serialised to ISO 8601 strings before storage. This component detects
  * the result type and renders accordingly:
  *
+ *   relation → clickable entry chips (same as RollupCell relation mode)
  *   boolean  → check / cross icon
  *   ISO date / datetime → rendered in the user's preferred date format,
  *                         with time shown only when present and non-midnight
@@ -41,11 +43,12 @@
  * indicator. The full error message is accessible via a native tooltip
  * (title attribute) so users can hover to diagnose configuration issues.
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { Icon } from '@iconify/vue'
 import type { DatabaseEntry, PropertySchema } from '@/stores/database'
 import { useAuthStore } from '@/stores/auth'
 import { getCellValue, formatCanonicalDate, ISO_DATE_RE, ISO_DATETIME_RE } from './cellUtils'
+import SideView from '@/components/main/SideView.vue'
 
 const props = defineProps<{
   entry: DatabaseEntry
@@ -59,6 +62,38 @@ const auth = useAuthStore()
 // Detection regexes and the canonical-date formatter are shared via cellUtils
 // so formula dates render in the user's preferred format (#10), consistent
 // with date and rollup cells. Time is shown only when present and non-midnight.
+
+// ── Relation chip support (#20) ───────────────────────────────────────────────
+//
+// When the backend resolves a formula result to a list of related entry
+// descriptors it sets ``relation: true`` on the stored value, mirroring the
+// rollup engine. This cell renders those descriptors as clickable chips.
+
+interface RelationChip {
+  id: string
+  title: string
+  database_id: string | null
+}
+
+const isRelation = computed<boolean>(() => cellData.value?.relation === true)
+
+const relationEntries = computed<RelationChip[]>(() => {
+  if (!isRelation.value) return []
+  const r = cellData.value?.result
+  if (Array.isArray(r)) return r as RelationChip[]
+  if (r && typeof r === 'object') return [r as RelationChip]
+  return []
+})
+
+const sideViewEntry = ref<RelationChip | null>(null)
+
+function openEntry(chip: RelationChip): void {
+  if (chip.database_id) sideViewEntry.value = chip
+}
+
+function closeSideView(): void {
+  sideViewEntry.value = null
+}
 
 // ── Style hint maps ───────────────────────────────────────────────────────────
 
@@ -93,10 +128,11 @@ const cellData = computed(() => getCellValue(props.entry, props.schema.id) as an
 const hasError  = computed(() => !!cellData.value?.error)
 const errorMessage = computed(() => cellData.value?.error ?? '')
 
-type ResultKind = 'empty' | 'boolean' | 'datetime' | 'date' | 'number' | 'string'
+type ResultKind = 'empty' | 'relation' | 'boolean' | 'datetime' | 'date' | 'number' | 'string'
 
 const resultKind = computed<ResultKind>(() => {
   if (cellData.value === null || cellData.value === undefined) return 'empty'
+  if (isRelation.value) return 'relation'
   const r = cellData.value.result
   if (r === null || r === undefined) return 'empty'
   if (typeof r === 'boolean') return 'boolean'
@@ -164,10 +200,11 @@ const formulaInlineStyle = computed<Record<string, string>>(() => {
   <span
     class="formula-cell"
     :class="{
-      'formula-cell--error':   hasError,
-      'formula-cell--boolean': !hasError && resultKind === 'boolean',
-      'formula-cell--true':    !hasError && resultKind === 'boolean' && resultValue === true,
-      'formula-cell--false':   !hasError && resultKind === 'boolean' && resultValue === false,
+      'formula-cell--error':    hasError,
+      'formula-cell--boolean':  !hasError && resultKind === 'boolean',
+      'formula-cell--true':     !hasError && resultKind === 'boolean' && resultValue === true,
+      'formula-cell--false':    !hasError && resultKind === 'boolean' && resultValue === false,
+      'formula-cell--relation': !hasError && resultKind === 'relation',
     }"
     :style="hasError ? undefined : formulaInlineStyle"
     :title="hasError ? errorMessage : undefined"
@@ -176,6 +213,20 @@ const formulaInlineStyle = computed<Record<string, string>>(() => {
     <template v-if="hasError">
       <Icon icon="mdi:alert-circle-outline" width="13" height="13" class="formula-cell__error-icon" />
       <span class="formula-cell__error-text" :title="errorMessage">Error</span>
+    </template>
+
+    <!-- Relation chips (#20) — same visual treatment as RollupCell relation chips -->
+    <template v-else-if="resultKind === 'relation'">
+      <span
+        v-for="chip in relationEntries"
+        :key="chip.id"
+        class="formula-cell__rel-chip"
+        :class="{ 'formula-cell__rel-chip--clickable': !!chip.database_id }"
+        @click.stop="openEntry(chip)"
+      >
+        <Icon icon="mdi:file-document-outline" width="11" height="11" class="formula-cell__rel-chip-icon" />
+        <span class="formula-cell__rel-chip-text">{{ chip.title || chip.id }}</span>
+      </span>
     </template>
 
     <!-- Boolean: icon only -->
@@ -197,6 +248,14 @@ const formulaInlineStyle = computed<Record<string, string>>(() => {
       {{ displayText }}
     </template>
   </span>
+
+  <!-- Side view for opening a related entry by clicking a chip -->
+  <SideView
+    v-if="sideViewEntry"
+    :entry-id="sideViewEntry.id"
+    :database-id="sideViewEntry.database_id!"
+    @close="closeSideView"
+  />
 </template>
 
 <style scoped>
@@ -238,5 +297,44 @@ const formulaInlineStyle = computed<Record<string, string>>(() => {
 /* Boolean states */
 .formula-cell--true  { color: #3dba76; }
 .formula-cell--false { color: var(--color-text-muted); opacity: 0.5; }
+
+/* Relation chip rendering (#20) — mirrors RollupCell __rel-chip */
+.formula-cell--relation {
+  flex-wrap: wrap;
+  gap: 3px;
+  white-space: normal;
+}
+
+.formula-cell__rel-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--color-accent-subtle);
+  border: 1px solid var(--color-accent);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 0.78rem;
+  color: var(--color-text);
+  max-width: 130px;
+}
+
+.formula-cell__rel-chip--clickable {
+  cursor: pointer;
+}
+
+.formula-cell__rel-chip--clickable:hover .formula-cell__rel-chip-text {
+  text-decoration: underline;
+}
+
+.formula-cell__rel-chip-icon {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.formula-cell__rel-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 </style>
 

@@ -17,6 +17,7 @@ from app.blocks.computed import (
     _aggregate,
     _extract_scalar,
     _infer_result_type,
+    _resolve_formula_relation,
     _resolve_relation_entries,
     _serialise_formula_result,
     build_dependency_graph,
@@ -169,6 +170,26 @@ def test_extract_scalar_select_option_key_takes_priority():
     assert _extract_scalar("select", {"option": "A", "selected": "B"}) == "A"
 
 
+def test_extract_scalar_select_options_key_multi():
+    # Multi-select frontend format: {"options": ["label", …]} — first label
+    # is returned so prop('Typ') == "Geburt" works for the single-value case.
+    assert _extract_scalar("select", {"options": ["Geburt"]}) == "Geburt"
+
+
+def test_extract_scalar_select_options_key_multiple_values():
+    assert _extract_scalar("select", {"options": ["Geburt", "Tod"]}) == "Geburt"
+
+
+def test_extract_scalar_select_options_key_empty_list():
+    assert _extract_scalar("select", {"options": []}) is None
+
+
+def test_extract_scalar_select_options_key_after_option():
+    # "option" (single) still takes priority over "options" (multi) when both
+    # are present, preserving single-select semantics.
+    assert _extract_scalar("select", {"option": "X", "options": ["Y"]}) == "X"
+
+
 def test_extract_scalar_date():
     result = _extract_scalar("date", {"start": "2025-01-01", "end": "2025-01-31"})
     assert result == {"start": "2025-01-01", "end": "2025-01-31"}
@@ -181,6 +202,42 @@ def test_extract_scalar_date_no_end():
 
 def test_extract_scalar_formula_result():
     assert _extract_scalar("formula", {"result": 99}) == 99
+
+
+def test_extract_scalar_formula_relation_result_returns_ids():
+    # A formula whose result is a relation-descriptor list (relation=True) is
+    # extracted as a plain list of related entry IDs, so that rolling it up
+    # routes through the relation chip path instead of [object Object].
+    value = {
+        "result": [
+            {"id": "u1", "title": "Vyrenell", "database_id": "db"},
+            {"id": "u2", "title": "Other", "database_id": "db"},
+        ],
+        "relation": True,
+        "result_type": "text",
+    }
+    assert _extract_scalar("formula", value) == ["u1", "u2"]
+
+
+def test_extract_scalar_formula_relation_empty_list():
+    value = {"result": [], "relation": True, "result_type": "text"}
+    assert _extract_scalar("formula", value) == []
+
+
+def test_extract_scalar_formula_non_relation_string_passthrough():
+    # The else-branch of a relation formula stores a plain "" — must not be
+    # mistaken for a relation result.
+    value = {"result": "", "result_type": "text"}
+    assert _extract_scalar("formula", value) == ""
+
+
+def test_extract_scalar_rollup_relation_result_returns_ids():
+    value = {
+        "result": [{"id": "u9", "title": "X", "database_id": "db"}],
+        "relation": True,
+        "function": "show_original",
+    }
+    assert _extract_scalar("rollup", value) == ["u9"]
 
 
 def test_extract_scalar_none_value():
@@ -818,3 +875,344 @@ def test_aggregate_checked_all_none():
 
 def test_aggregate_checked_all_true():
     assert _aggregate([True, True, True], "checked") == 3
+
+
+# ─── _resolve_formula_relation ────────────────────────────────────────────────
+#
+# Pure unit tests using a fake resolver — no database needed.
+
+
+def _fake_formula_resolver(mapping: dict[str, dict | None]):
+    """Returns a resolver that maps UUID strings to descriptors or None."""
+    return lambda rid: mapping.get(rid)
+
+
+def _rdesc(id_: str, title: str = "", db_: str | None = "db1") -> dict:
+    return {"id": id_, "title": title, "database_id": db_}
+
+
+def test_resolve_formula_relation_uuid_list_resolved():
+    resolver = _fake_formula_resolver({
+        "00000000-0000-0000-0000-000000000001": _rdesc("00000000-0000-0000-0000-000000000001", "Alice"),
+        "00000000-0000-0000-0000-000000000002": _rdesc("00000000-0000-0000-0000-000000000002", "Bob"),
+    })
+    result, is_rel = _resolve_formula_relation(
+        ["00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002"],
+        resolver,
+    )
+    assert is_rel is True
+    assert len(result) == 2
+    assert result[0]["title"] == "Alice"
+    assert result[1]["title"] == "Bob"
+
+
+def test_resolve_formula_relation_uuid_list_skips_missing():
+    resolver = _fake_formula_resolver({
+        "00000000-0000-0000-0000-000000000001": _rdesc("00000000-0000-0000-0000-000000000001", "Alice"),
+        "00000000-0000-0000-0000-000000000002": None,
+    })
+    result, is_rel = _resolve_formula_relation(
+        ["00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002"],
+        resolver,
+    )
+    assert is_rel is True
+    assert len(result) == 1
+    assert result[0]["title"] == "Alice"
+
+
+def test_resolve_formula_relation_already_resolved_list():
+    descriptors = [
+        _rdesc("a", "Alpha"),
+        _rdesc("b", "Beta"),
+    ]
+    result, is_rel = _resolve_formula_relation(descriptors, lambda _: None)
+    assert is_rel is True
+    assert result is descriptors
+
+
+def test_resolve_formula_relation_single_descriptor_wrapped():
+    desc = _rdesc("a", "Alpha")
+    result, is_rel = _resolve_formula_relation(desc, lambda _: None)
+    assert is_rel is True
+    assert result == [desc]
+
+
+def test_resolve_formula_relation_plain_string_list_passthrough():
+    plain = ["hello", "world"]
+    result, is_rel = _resolve_formula_relation(plain, lambda _: None)
+    assert is_rel is False
+    assert result is plain
+
+
+def test_resolve_formula_relation_empty_list_passthrough():
+    result, is_rel = _resolve_formula_relation([], lambda _: None)
+    assert is_rel is False
+    assert result == []
+
+
+def test_resolve_formula_relation_scalar_passthrough():
+    result, is_rel = _resolve_formula_relation("hello", lambda _: None)
+    assert is_rel is False
+    assert result == "hello"
+
+
+def test_resolve_formula_relation_none_passthrough():
+    result, is_rel = _resolve_formula_relation(None, lambda _: None)
+    assert is_rel is False
+    assert result is None
+
+
+def test_resolve_formula_relation_number_passthrough():
+    result, is_rel = _resolve_formula_relation(42, lambda _: None)
+    assert is_rel is False
+    assert result == 42
+
+
+def test_resolve_formula_relation_mixed_list_non_uuid_passthrough():
+    # A list where one item is not a valid UUID should pass through unchanged.
+    mixed = ["00000000-0000-0000-0000-000000000001", "not-a-uuid"]
+    result, is_rel = _resolve_formula_relation(mixed, lambda _: None)
+    assert is_rel is False
+    assert result is mixed
+
+
+# ─── compute_all_for_entry: formula returning relation prop (#20) ─────────────
+
+
+def test_formula_relation_prop_resolves_to_chips(db, database_block, entry):
+    """A formula that returns prop('Rel') yields resolved chips with relation=True."""
+    # Create a second entry that will be the relation target
+    target = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
+    target.content = {"title": "Target Entry"}
+    db.commit()
+
+    rel_schema = repo.create_schema(
+        db, database_id=database_block.id, name="Rel", type="relation",
+        position=1.0, config={"target_database_id": str(database_block.id)},
+    )
+    formula_schema = repo.create_schema(
+        db, database_id=database_block.id, name="RelFormula", type="formula",
+        position=2.0, config={"expression": "prop('Rel')"},
+    )
+    db.commit()
+
+    # Link entry -> target via the relation property
+    repo.upsert_value(
+        db, page_id=entry.id, schema_id=rel_schema.id,
+        value={"related_ids": [str(target.id)]},
+    )
+    db.commit()
+
+    compute_all_for_entry(db, database_block.id, entry.id)
+    db.commit()
+
+    pv = repo.get_value(db, entry.id, formula_schema.id)
+    assert pv is not None
+    assert pv.value.get("relation") is True
+    assert isinstance(pv.value["result"], list)
+    assert len(pv.value["result"]) == 1
+    assert pv.value["result"][0]["id"] == str(target.id)
+    assert pv.value["result"][0]["title"] == "Target Entry"
+    assert "error" not in pv.value
+
+
+def test_formula_empty_relation_prop_stays_empty(db, database_block, entry):
+    """A formula returning an empty relation prop should produce no relation chips."""
+    rel_schema = repo.create_schema(
+        db, database_id=database_block.id, name="Rel", type="relation",
+        position=1.0, config={"target_database_id": str(database_block.id)},
+    )
+    formula_schema = repo.create_schema(
+        db, database_id=database_block.id, name="RelFormula", type="formula",
+        position=2.0, config={"expression": "prop('Rel')"},
+    )
+    db.commit()
+
+    repo.upsert_value(
+        db, page_id=entry.id, schema_id=rel_schema.id,
+        value={"related_ids": []},
+    )
+    db.commit()
+
+    compute_all_for_entry(db, database_block.id, entry.id)
+    db.commit()
+
+    pv = repo.get_value(db, entry.id, formula_schema.id)
+    assert pv is not None
+    # Empty list is not a relation result — no chips, no relation flag.
+    assert pv.value.get("relation") is not True
+
+
+def test_formula_multiselect_condition_returns_relation_chips(db, database_block, entry):
+    """Regression: a multi-select ({"options": [...]}) condition that gates a
+    relation prop must fire, so the relation target renders as chips.
+
+    Mirrors the real-world formula:
+        if(prop('Typ') == "Geburt", prop('Ort'), "")
+    where 'Typ' is a multi-select storing {"options": ["Geburt"]}.
+    """
+    target = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
+    target.content = {"title": "Vyrenell"}
+    db.commit()
+
+    typ = repo.create_schema(
+        db, database_id=database_block.id, name="Typ", type="select",
+        position=1.0, config={"mode": "multiple", "options": [{"label": "Geburt"}]},
+    )
+    ort = repo.create_schema(
+        db, database_id=database_block.id, name="Ort", type="relation",
+        position=2.0, config={"target_database_id": str(database_block.id)},
+    )
+    formula = repo.create_schema(
+        db, database_id=database_block.id, name="Formel", type="formula",
+        position=3.0, config={"expression": "if(prop('Typ')==\"Geburt\",prop('Ort'),\"\")"},
+    )
+    db.commit()
+
+    repo.upsert_value(db, page_id=entry.id, schema_id=typ.id, value={"options": ["Geburt"]})
+    repo.upsert_value(
+        db, page_id=entry.id, schema_id=ort.id,
+        value={"related_ids": [str(target.id)]},
+    )
+    db.commit()
+
+    compute_all_for_entry(db, database_block.id, entry.id)
+    db.commit()
+
+    pv = repo.get_value(db, entry.id, formula.id)
+    assert pv is not None
+    assert pv.value.get("relation") is True
+    assert len(pv.value["result"]) == 1
+    assert pv.value["result"][0]["title"] == "Vyrenell"
+
+
+def test_formula_multiselect_condition_not_met_stays_empty(db, database_block, entry):
+    """When the multi-select value does not match, the else branch ("") wins."""
+    target = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
+    target.content = {"title": "Vyrenell"}
+    db.commit()
+
+    typ = repo.create_schema(
+        db, database_id=database_block.id, name="Typ", type="select",
+        position=1.0, config={"mode": "multiple", "options": [{"label": "Tod"}]},
+    )
+    ort = repo.create_schema(
+        db, database_id=database_block.id, name="Ort", type="relation",
+        position=2.0, config={"target_database_id": str(database_block.id)},
+    )
+    formula = repo.create_schema(
+        db, database_id=database_block.id, name="Formel", type="formula",
+        position=3.0, config={"expression": "if(prop('Typ')==\"Geburt\",prop('Ort'),\"\")"},
+    )
+    db.commit()
+
+    repo.upsert_value(db, page_id=entry.id, schema_id=typ.id, value={"options": ["Tod"]})
+    repo.upsert_value(
+        db, page_id=entry.id, schema_id=ort.id,
+        value={"related_ids": [str(target.id)]},
+    )
+    db.commit()
+
+    compute_all_for_entry(db, database_block.id, entry.id)
+    db.commit()
+
+    pv = repo.get_value(db, entry.id, formula.id)
+    assert pv is not None
+    assert pv.value.get("relation") is not True
+    assert pv.value["result"] == ""
+
+
+def test_rollup_over_relation_formula_resolves_chips_and_skips_empty(db, workspace):
+    """Regression: rolling up a formula column whose result is a relation
+    descriptor list must render clickable chips (not [object Object]) and must
+    not emit placeholder chips for entries whose formula result is empty.
+
+    Setup mirrors the real data:
+      Plot DB        : entries with an 'Ort' relation and a formula
+                       'Geburtsort Formel' = prop('Ort')
+      Characters DB  : 'Plot' relation -> Plot entries
+                       'Geburtsort Test' rollup (show_original) over the
+                       Plot formula column.
+    """
+    # ── Target DB that 'Ort' points at (the birthplace entries) ───────────────
+    places_db = repo.create_block(db, type="database", position=1.0, parent_id=workspace.id)
+    db.commit()
+    vyrenell = repo.create_block(db, type="page", position=1.0, parent_id=places_db.id)
+    vyrenell.content = {"title": "Vyrenell"}
+    db.commit()
+
+    # ── Plot DB: Ort relation + formula returning prop('Ort') ─────────────────
+    plot_db = repo.create_block(db, type="database", position=2.0, parent_id=workspace.id)
+    db.commit()
+    ort = repo.create_schema(
+        db, database_id=plot_db.id, name="Ort", type="relation",
+        position=1.0, config={"target_database_id": str(places_db.id)},
+    )
+    geburtsort_formel = repo.create_schema(
+        db, database_id=plot_db.id, name="Geburtsort Formel", type="formula",
+        position=2.0, config={"expression": "prop('Ort')"},
+    )
+    db.commit()
+
+    # Plot entry WITH a birthplace
+    plot_with = repo.create_block(db, type="page", position=1.0, parent_id=plot_db.id)
+    plot_with.content = {"title": "Geburt Alfred"}
+    db.commit()
+    repo.upsert_value(
+        db, page_id=plot_with.id, schema_id=ort.id,
+        value={"related_ids": [str(vyrenell.id)]},
+    )
+    # Plot entry WITHOUT a birthplace (empty Ort)
+    plot_without = repo.create_block(db, type="page", position=2.0, parent_id=plot_db.id)
+    plot_without.content = {"title": "Alfred Test"}
+    db.commit()
+    repo.upsert_value(
+        db, page_id=plot_without.id, schema_id=ort.id, value={"related_ids": []},
+    )
+    db.commit()
+
+    compute_all_for_entry(db, plot_db.id, plot_with.id)
+    compute_all_for_entry(db, plot_db.id, plot_without.id)
+    db.commit()
+
+    # ── Characters DB: Plot relation + rollup (show_original) over formula ────
+    chars_db = repo.create_block(db, type="database", position=3.0, parent_id=workspace.id)
+    db.commit()
+    plot_rel = repo.create_schema(
+        db, database_id=chars_db.id, name="Plot", type="relation",
+        position=1.0, config={"target_database_id": str(plot_db.id)},
+    )
+    geburtsort_test = repo.create_schema(
+        db, database_id=chars_db.id, name="Geburtsort Test", type="rollup",
+        position=2.0, config={
+            "relation_schema_id": str(plot_rel.id),
+            "rollup_schema_id": str(geburtsort_formel.id),
+            "function": "show_original",
+        },
+    )
+    db.commit()
+
+    # Character linked to BOTH plot entries (one with, one without birthplace)
+    prince = repo.create_block(db, type="page", position=1.0, parent_id=chars_db.id)
+    prince.content = {"title": "Prince Alfred"}
+    db.commit()
+    repo.upsert_value(
+        db, page_id=prince.id, schema_id=plot_rel.id,
+        value={"related_ids": [str(plot_with.id), str(plot_without.id)]},
+    )
+    db.commit()
+
+    compute_all_for_entry(db, chars_db.id, prince.id)
+    db.commit()
+
+    pv = repo.get_value(db, prince.id, geburtsort_test.id)
+    assert pv is not None
+    # Resolved to relation chips, not raw descriptors / [object Object].
+    assert pv.value.get("relation") is True
+    result = pv.value["result"]
+    assert isinstance(result, list)
+    # Exactly ONE chip: Vyrenell. The empty-birthplace plot entry contributes
+    # no placeholder chip.
+    assert len(result) == 1
+    assert result[0]["title"] == "Vyrenell"
+    assert result[0]["id"] == str(vyrenell.id)

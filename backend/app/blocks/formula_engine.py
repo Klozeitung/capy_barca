@@ -27,6 +27,7 @@ Functions       : abs(x)  round(x[, digits])  ceil(x)  floor(x)
                   len(s)  concat(s, …)  empty(x)  format(x)  toNumber(x)
                   contains(text, sub)  equal(a, b)  divide(a, b)
                   style(x, hint, …)  unstyle(x)
+                  at(list, index)
                   if(cond, then, else)
                   ifs(cond1, val1, cond2, val2, …[, default])
                   and(a, b, …)  or(a, b, …)  not(a)
@@ -1055,6 +1056,29 @@ def _call(node: FuncCall, ctx: dict[str, FormulaValue]) -> FormulaValue:  # noqa
         if name == "avg":
             return sum(nums) / len(nums)
 
+    # ── List access ───────────────────────────────────────────────────────────
+
+    if name == "at":
+        if len(args) != 2:
+            raise FormulaError("at(list, index) requires exactly two arguments")
+        lst = _eval(args[0], ctx)
+        if isinstance(lst, _Styled):
+            lst = lst.value
+        idx_val = _eval(args[1], ctx)
+        if isinstance(idx_val, _Styled):
+            idx_val = idx_val.value
+        if lst is None:
+            return None
+        if not isinstance(lst, list):
+            raise FormulaError(
+                f"at(): first argument must be a list, got {type(lst).__name__}"
+            )
+        if idx_val is None:
+            return None
+        idx = int(_require_num(idx_val, "at index"))
+        if idx < -len(lst) or idx >= len(lst):
+            return None
+        return lst[idx]
 
     # ── Date & time ───────────────────────────────────────────────────────────
 
@@ -1171,6 +1195,8 @@ _KNOWN_FUNCTIONS: frozenset[str] = frozenset({
     "contains", "style", "unstyle",
     # Math (variadic)
     "sum", "min", "max", "avg",
+    # List access
+    "at",
     # Aliases / compatibility (Notion parity)
     "equal", "divide",
     # Date & time
