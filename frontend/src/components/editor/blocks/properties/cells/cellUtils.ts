@@ -8,6 +8,8 @@
  * - getAllTimelineRelatedIds – collect all related IDs across all timeline slots
  * - getCellValue            – extract the raw value object for a given schema column
  * - displayValue            – render a human-readable string for any property type
+ * - formatRollupExport      – plain-text rollup rendering (export)
+ * - formatFormulaExport     – plain-text formula rendering (export)
  * - formatDateString        – apply a configured date format pattern
  * - resolveDateFormat       – pick the effective display format (property → user → fallback)
  * - formatCanonicalDate     – format a single canonical ISO string (auto time)
@@ -259,10 +261,87 @@ export function formatPeriodKey(key: string): string {
   return e ? `${shorten(s)} → ${shorten(e)}` : `${shorten(s)} →`
 }
 
+const ROLLUP_PERCENT_FUNCTIONS = new Set([
+  'percent_empty', 'percent_not_empty', 'percent_checked', 'percent_unchecked',
+])
+
+/** Render a rollup cell value as plain text (for export). Mirrors RollupCell. */
+export function formatRollupExport(
+  value: Record<string, unknown>,
+  schema: PropertySchema,
+): string {
+  if (value.error) return ''
+  const result = value.result
+  if (result === null || result === undefined) return ''
+
+  // Relation rollups carry {id, title} descriptors – titles are embedded.
+  if (value.relation === true) {
+    const items = Array.isArray(result) ? result : [result]
+    return (items as Array<Record<string, unknown> | null>)
+      .map(e => ((e?.title as string | undefined) ?? '').trim())
+      .filter(Boolean)
+      .join(', ')
+  }
+
+  const fmt = resolveDateFormat(schema)
+
+  // show_original / list of raw scalars
+  if (Array.isArray(result)) {
+    return result
+      .map(v => {
+        if (v === null || v === undefined) return ''
+        if (typeof v === 'number') return String(v)
+        if (typeof v === 'boolean') return v ? 'true' : 'false'
+        return maybeFormatRollupDate(String(v), fmt)
+      })
+      .filter(s => s !== '')
+      .join(', ')
+  }
+
+  // percent_per_option map
+  if (typeof result === 'object') {
+    return Object.entries(result as Record<string, number>)
+      .sort((a, b) => b[1] - a[1])
+      .map(([label, pct]) => `${label}: ${Number.isInteger(pct) ? pct : pct.toFixed(1)} %`)
+      .join(', ')
+  }
+
+  // scalar / percent / boolean / date
+  if (typeof result === 'number') {
+    const formatted = Number.isInteger(result)
+      ? String(result)
+      : result.toFixed(2).replace(/\.?0+$/, '')
+    const fn = (value.function as string | undefined) ?? ''
+    return ROLLUP_PERCENT_FUNCTIONS.has(fn) ? `${formatted} %` : formatted
+  }
+  if (typeof result === 'boolean') return result ? 'true' : 'false'
+  return maybeFormatRollupDate(String(result), fmt)
+}
+
+/** Render a formula cell value as plain text (for export). Mirrors FormulaCell. */
+export function formatFormulaExport(
+  value: Record<string, unknown>,
+  schema: PropertySchema,
+): string {
+  if (value.error) return ''
+  const r = value.result
+  if (r === null || r === undefined) return ''
+  if (typeof r === 'boolean') return r ? 'true' : 'false'
+  if (typeof r === 'number') return r.toLocaleString('de-DE', { maximumFractionDigits: 10 })
+  if (typeof r === 'string') {
+    if (ISO_DATETIME_RE.test(r) || ISO_DATE_RE.test(r)) {
+      return formatCanonicalDate(r, resolveDateFormat(schema))
+    }
+    return r
+  }
+  return String(r)
+}
+
 export function displayValue(
   entry: DatabaseEntry,
   schema: PropertySchema,
   resolveUser?: (userId: string) => string,
+  resolveEntryTitle?: (entryId: string) => string,
 ): string {
   const raw = getRawCellValue(entry, schema.id)
   if (raw === null || raw === undefined) return ''
@@ -356,6 +435,26 @@ export function displayValue(
       if (!dt) return ''
       try { return new Date(dt).toLocaleString() } catch { return dt }
     }
+
+    case 'checkbox':
+      return val.checked ? 'true' : 'false'
+
+    case 'relation': case 'parent_item': case 'sub_item': {
+      const ids = (val.related_ids as string[] | undefined) ?? []
+      if (ids.length === 0) return ''
+      return ids
+        .map(id => {
+          const title = resolveEntryTitle?.(id)
+          return title && title.trim() ? title : id
+        })
+        .join(', ')
+    }
+
+    case 'rollup':
+      return formatRollupExport(val, schema)
+
+    case 'formula':
+      return formatFormulaExport(val, schema)
 
     default:
       return (val.text as string | undefined) ?? ''
