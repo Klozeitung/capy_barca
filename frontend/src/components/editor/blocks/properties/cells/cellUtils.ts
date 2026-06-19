@@ -353,8 +353,33 @@ export function displayValue(
     const timeline = raw._timeline as Record<string, unknown>
     const keys = Object.keys(timeline)
     if (keys.length === 0) return ''
+
+    // Relation-type slots store ``related_ids`` rather than a scalar value, so
+    // they must be resolved to entry titles here. ``formatSlotScalar`` has no
+    // relation case and no access to the title resolver, which is why timeline
+    // relations previously exported the period only, dropping the chips. This
+    // mirrors the "last"-mode relation branch below.
+    const isRelationType =
+      schema.type === 'relation' ||
+      schema.type === 'parent_item' ||
+      schema.type === 'sub_item'
+
+    const renderSlot = (slot: Record<string, unknown>): string => {
+      if (isRelationType) {
+        const ids = (slot?.related_ids as string[] | undefined) ?? []
+        return ids
+          .map(id => {
+            const title = resolveEntryTitle?.(id)
+            return title && title.trim() ? title : id
+          })
+          .filter(Boolean)
+          .join(', ')
+      }
+      return formatSlotScalar(slot, schema)
+    }
+
     if (keys.length === 1 && keys[0] === '') {
-      return formatSlotScalar(timeline[''] as Record<string, unknown>, schema)
+      return renderSlot(timeline[''] as Record<string, unknown>)
     }
     const sorted = keys.slice().sort((a, b) => {
       const as_ = a.startsWith('→') ? '' : a.split('→')[0]
@@ -363,7 +388,7 @@ export function displayValue(
     })
     return sorted
       .map(k => {
-        const sv = formatSlotScalar(timeline[k] as Record<string, unknown>, schema)
+        const sv = renderSlot(timeline[k] as Record<string, unknown>)
         return sv ? `${formatPeriodKey(k)}: ${sv}` : formatPeriodKey(k)
       })
       .filter(Boolean)
