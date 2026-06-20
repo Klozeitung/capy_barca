@@ -267,6 +267,20 @@ async function onFullSizeUpdate(val: boolean): Promise<void> {
   position: relative;
 }
 
+/* ── Entry property section width ────────────────────────────────────────── */
+/*
+ * #17: In the full-page entry view the property section (.bps) had no
+ * max-width and always spanned the full width, so toggling full-size produced
+ * no visible change. Constrain it to the same content column width as the
+ * title / content (and the toggle buttons) here; the full-size override below
+ * lifts the cap so the section expands together with the rest of the page.
+ */
+.main-view :deep(.bps) {
+  max-width: 720px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
 /* ── Full-size mode ──────────────────────────────────────────────────────── */
 /*
  * Override the max-width constraint that BlockTopSection (.block-meta) and

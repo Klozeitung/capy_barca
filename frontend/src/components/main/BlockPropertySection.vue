@@ -41,8 +41,15 @@ import {
   useDatabaseStore,
   type PropertySchema,
   type DatabaseEntry,
+  type DatabaseView,
 } from '@/stores/database'
 import { isReadonlyPropertyType, getSchemaIcon } from '@/stores/propertyTypes'
+import {
+  hideSchemaInAllViews,
+  removeGroupFromFolded,
+  removeGroupFromOrder,
+  schemaIdsInGroup,
+} from './propertySectionHelpers'
 
 import AddSchemaPanel from '@/components/editor/blocks/properties/AddSchemaPanel.vue'
 import PropertySettingsModal from '@/components/editor/blocks/properties/PropertySettingsModal.vue'
@@ -65,6 +72,11 @@ const DEFAULT_GROUP = 'Standard'
 const PREF_GROUP_ORDER = 'property_group_order'
 const PREF_GROUPS_FOLDED = 'property_groups_folded'
 const PREF_VISIBILITY = 'property_sideview_visibility'
+// Shared with DatabaseBlock: the persisted list of database views.
+const PREF_VIEWS = 'views'
+// Window event consumed by a live DatabaseBlock to hide a freshly added
+// property in its in-memory views (#25). Mirrors the constant in DatabaseBlock.
+const DB_HIDE_SCHEMA_EVENT = 'capybarca:db-hide-schema-in-views'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
@@ -350,10 +362,45 @@ async function onAddSchemaPanelClose(newSchemaId?: string): Promise<void> {
   const targetGroup = addSchemaForGroup.value
   addSchemaForGroup.value = null
 
-  if (newSchemaId && targetGroup && targetGroup !== DEFAULT_GROUP) {
+  if (!newSchemaId) return
+
+  if (targetGroup && targetGroup !== DEFAULT_GROUP) {
     // Patch the newly created schema to belong to the target group.
     await dbStore.updateSchema(props.databaseId, newSchemaId, { group: targetGroup })
   }
+
+  // #25: A property added from the property section is hidden in *all*
+  // database views; the table renders it only after the user opts in via the
+  // view settings. (When added from a DatabaseBlock view it is hidden in every
+  // view except the active one — that path lives in DatabaseBlock.)
+  //
+  // 1) Sync any live DatabaseBlock (e.g. the table behind this side panel)
+  //    immediately so the new column does not flash into its views.
+  window.dispatchEvent(new CustomEvent(DB_HIDE_SCHEMA_EVENT, {
+    detail: { databaseId: props.databaseId, schemaId: newSchemaId },
+  }))
+  // 2) Persist so the change survives where no DatabaseBlock is mounted
+  //    (e.g. the full-page entry view).
+  await hideNewSchemaInAllViews(newSchemaId)
+}
+
+/**
+ * Add the given schema to the hiddenColumns of every persisted view so a
+ * property created from the side panel does not surface in any table view
+ * until explicitly enabled. Preferences are re-fetched first so a concurrently
+ * open DatabaseBlock's view edits are not clobbered.
+ */
+async function hideNewSchemaInAllViews(schemaId: string): Promise<void> {
+  await blockStore.fetchPreferences(props.databaseId)
+  const stored = blockStore.getPreference<DatabaseView[] | null>(
+    props.databaseId,
+    PREF_VIEWS,
+    null,
+  )
+  if (!stored || !Array.isArray(stored) || stored.length === 0) return
+
+  const { views, changed } = hideSchemaInAllViews(stored, schemaId)
+  if (changed) await blockStore.setPreference(props.databaseId, PREF_VIEWS, views)
 }
 
 // ── Add group ─────────────────────────────────────────────────────────────────
@@ -419,6 +466,49 @@ async function finishRename(): Promise<void> {
     delete newFolded[oldName]
     foldedMap.value = newFolded
     await blockStore.setPreference(props.databaseId, PREF_GROUPS_FOLDED, newFolded)
+  }
+}
+
+// ── Delete group ──────────────────────────────────────────────────────────────
+//
+// Custom groups only. The group itself is removed; its member properties are
+// never deleted — they are reassigned to the default group. A two-step confirm
+// (click-to-arm, click-again-to-delete, auto-reset after 3s) mirrors the
+// per-property delete affordance.
+
+const confirmDeleteGroup = ref<string | null>(null)
+let confirmDeleteGroupTimer: ReturnType<typeof setTimeout> | null = null
+
+function requestDeleteGroup(groupName: string): void {
+  if (groupName === DEFAULT_GROUP) return
+  if (confirmDeleteGroup.value === groupName) {
+    if (confirmDeleteGroupTimer) { clearTimeout(confirmDeleteGroupTimer); confirmDeleteGroupTimer = null }
+    confirmDeleteGroup.value = null
+    deleteGroup(groupName)
+    return
+  }
+  confirmDeleteGroup.value = groupName
+  if (confirmDeleteGroupTimer) clearTimeout(confirmDeleteGroupTimer)
+  confirmDeleteGroupTimer = setTimeout(() => { confirmDeleteGroup.value = null }, 3000)
+}
+
+async function deleteGroup(groupName: string): Promise<void> {
+  if (groupName === DEFAULT_GROUP) return
+
+  // Reassign member properties back to the default group.
+  const memberIds = schemaIdsInGroup(schemas.value, groupName, DEFAULT_GROUP)
+  for (const id of memberIds) {
+    await dbStore.updateSchema(props.databaseId, id, { group: DEFAULT_GROUP })
+  }
+
+  // Drop the group from the persisted order.
+  await saveGroupOrder(removeGroupFromOrder(groupOrder.value, groupName))
+
+  // Drop the group from the fold-state preference if present.
+  if (foldedMap.value[groupName] !== undefined) {
+    const nextFolded = removeGroupFromFolded(foldedMap.value, groupName)
+    foldedMap.value = nextFolded
+    await blockStore.setPreference(props.databaseId, PREF_GROUPS_FOLDED, nextFolded)
   }
 }
 
@@ -620,6 +710,18 @@ function onGroupDragEnd(): void {
         >
           {{ group.name }}
         </span>
+
+        <!-- Delete group (custom groups only) — properties move to default -->
+        <button
+          class="bps__group-delete-btn"
+          :class="{ 'bps__group-delete-btn--confirm': confirmDeleteGroup === group.name }"
+          :title="confirmDeleteGroup === group.name
+            ? t('propertySection.deleteGroupConfirm')
+            : t('propertySection.deleteGroup')"
+          @click.stop="requestDeleteGroup(group.name)"
+        >
+          <Icon icon="mdi:trash-can-outline" width="13" height="13" />
+        </button>
 
         <!-- Drag handle for group -->
         <Icon
@@ -973,6 +1075,40 @@ function onGroupDragEnd(): void {
   opacity: 1 !important;
 }
 
+/* ── Delete group button ────────────────────────────────────────────────── */
+
+.bps__group-delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  opacity: 0;
+  flex-shrink: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+
+.bps__group-header:hover .bps__group-delete-btn {
+  opacity: 0.6;
+}
+
+.bps__group-delete-btn:hover {
+  opacity: 1 !important;
+  background: var(--color-hover);
+  color: #e05555;
+}
+
+.bps__group-delete-btn--confirm {
+  opacity: 1 !important;
+  color: #e05555;
+  background: rgba(220, 70, 70, 0.1);
+}
+
 .bps__group-header--drop-target {
   background: var(--color-accent-subtle);
   border-radius: 4px;
@@ -1090,6 +1226,21 @@ function onGroupDragEnd(): void {
   align-items: center;
   cursor: pointer;
   font-size: 0.85rem;
+}
+
+/*
+ * #17: Checkbox cells center themselves for the table layout (.db__checkbox
+ * uses margin: 0 auto; the timeline variant centers via flex). In the
+ * left-aligned property section they must sit flush left instead of awkwardly
+ * in the middle of the value column.
+ */
+.bps__cell :deep(.db__checkbox) {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.bps__cell :deep(.db__checkbox-timeline) {
+  justify-content: flex-start;
 }
 
 /* ── Add property button ────────────────────────────────────────────────── */

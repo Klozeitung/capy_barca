@@ -396,7 +396,10 @@ function positionPanel() {
     left:  `${left}px`,
     top:   `${top}px`,
     width: `${panelWidth}px`,
-    zIndex: '500',
+    // #19: must sit above the SideView panel (z-index 900); otherwise the
+    // editor opens behind it and the trigger appears inoperative. Matches the
+    // relation picker's stacking level (1000).
+    zIndex: '1000',
   }
 }
 

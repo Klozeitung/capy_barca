@@ -240,6 +240,17 @@ function hideAllReadonly() {
   hidden.value = updated
   emitUpdate()
 }
+
+function hideAll() {
+  // Hide every toggleable column. The name column has no toggle and is always
+  // visible, so it is never added to the hidden set.
+  const updated = new Set(hidden.value)
+  for (const col of allColumns.value) {
+    if (!col.isName) updated.add(col.key)
+  }
+  hidden.value = updated
+  emitUpdate()
+}
 </script>
 
 <template>
@@ -369,6 +380,9 @@ function hideAllReadonly() {
                 </button>
                 <button class="vsm__link-btn" @click="hideAllReadonly">
                   {{ t('db.viewSettings.hideSystem') }}
+                </button>
+                <button class="vsm__link-btn" @click="hideAll">
+                  {{ t('db.viewSettings.hideAll') }}
                 </button>
               </div>
             </div>

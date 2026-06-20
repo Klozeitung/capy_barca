@@ -80,6 +80,11 @@ const NAME_COL_KEY     = '__name__'
 const PREF_VIEWS       = 'views'
 const PREF_ACTIVE_VIEW = 'active_view'
 
+// Window event emitted by BlockPropertySection when a property added from the
+// side panel must be hidden in every view of this database (#25). Kept as a
+// plain string literal shared by both components to avoid a new shared module.
+const DB_HIDE_SCHEMA_EVENT = 'capybarca:db-hide-schema-in-views'
+
 const READONLY_SCHEMA_TYPES = new Set([
   'id', 'created_by', 'created_time', 'last_edited_by', 'last_edited_time',
   'parent_item', 'sub_item',
@@ -610,6 +615,27 @@ function _onDbSchemaUpdated(e: Event): void {
   }
 }
 
+/**
+ * #25: A property added from the property section (side panel / full-page
+ * entry view) must be hidden in every view of this database. That schema is
+ * created on the same client, so it is already in the store by the time the
+ * standard "remote schema" path runs — that path only reacts to
+ * previously-unknown schemas and would do nothing here. BlockPropertySection
+ * therefore emits this dedicated event so a live DatabaseBlock can sync its
+ * in-memory views immediately. Persistence is owned by the dispatcher.
+ */
+function _onHideSchemaInViews(e: Event): void {
+  const detail = (e as CustomEvent<{ databaseId?: string; schemaId?: string }>).detail
+  if (!detail || detail.databaseId !== props.blockId || !detail.schemaId) return
+  const schemaId = detail.schemaId
+  for (const view of views.value) {
+    if (!view.hiddenColumns) view.hiddenColumns = []
+    if (!view.hiddenColumns.includes(schemaId)) {
+      view.hiddenColumns.push(schemaId)
+    }
+  }
+}
+
 onMounted(async () => {
   await Promise.all([
     blockStore.fetchBlock(props.blockId),
@@ -660,6 +686,7 @@ onMounted(async () => {
   document.addEventListener('click', closeAllPanels)
   window.addEventListener(WS_BLOCK_EVENT, _onDbEntriesUpdated)
   window.addEventListener(WS_BLOCK_EVENT, _onDbSchemaUpdated)
+  window.addEventListener(DB_HIDE_SCHEMA_EVENT, _onHideSchemaInViews)
   window.addEventListener('resize', measureFrozenOffsets)
   nextTick(() => { _attachFrozenObserver(); measureFrozenOffsets() })
 })
@@ -668,6 +695,7 @@ onUnmounted(() => {
   document.removeEventListener('click', closeAllPanels)
   window.removeEventListener(WS_BLOCK_EVENT, _onDbEntriesUpdated)
   window.removeEventListener(WS_BLOCK_EVENT, _onDbSchemaUpdated)
+  window.removeEventListener(DB_HIDE_SCHEMA_EVENT, _onHideSchemaInViews)
   window.removeEventListener('resize', measureFrozenOffsets)
   _frozenRO?.disconnect()
   _frozenRO = null

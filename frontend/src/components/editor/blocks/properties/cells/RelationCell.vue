@@ -329,6 +329,11 @@ onMounted(async () => {
 const sideViewEntryId = ref<string | null>(null)
 
 function openRelatedEntry(id: string): void {
+  // #14: The clicked chip lives inside cellEl, so the picker's click-away
+  // handler ignores it and would leave the picker open behind the side view.
+  // Dismiss any open picker / timeline editor explicitly before opening.
+  closePicker()
+  timelineOpen.value = false
   sideViewEntryId.value = id
 }
 
