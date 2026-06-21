@@ -568,7 +568,7 @@
 }
 
 .db__th:last-child { border-right: none; min-width: 40px; width: 40px; cursor: default; }
-.db__th--name { min-width: 160px; padding: 8px 16px 8px 12px; }
+.db__th--name { min-width: 160px; padding: 0; }
 .db__th--handle { cursor: default; border-right: none; }
 .db__th--add { min-width: 40px; width: 40px; cursor: default; border-right: none; }
 .db__th--drag-over { outline: 2px solid var(--color-accent); outline-offset: -2px; }
@@ -749,6 +749,20 @@
 .db__td--wrap .tsl__value {
   white-space: pre-wrap !important;
   word-break: break-word;
+  text-overflow: clip !important;
+}
+
+/* Name cell: the title text element (.db__entry-name) is single-line with an
+ * ellipsis by default. In wrap mode let it break across lines and top-align the
+ * cell content, mirroring the behaviour of the other wrap-enabled columns. */
+.db__td--wrap .db__name-cell {
+  align-items: flex-start;
+}
+
+.db__td--wrap .db__entry-name {
+  white-space: pre-wrap !important;
+  word-break: break-word;
+  overflow: visible;
   text-overflow: clip !important;
 }
 

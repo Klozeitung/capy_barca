@@ -1782,7 +1782,19 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                     @drop="onColDrop($event, NAME_COL_KEY)"
                     @dragend="onColDragEnd"
                   >
-                    {{ t('db.nameColumn') }}
+                    <div class="db__th-inner">
+                      <span class="db__th-label">
+                        <span class="db__th-name">{{ t('db.nameColumn') }}</span>
+                      </span>
+                      <button
+                        class="db__th-btn"
+                        :class="{ 'db__th-btn--wrap-active': isWrapped(NAME_COL_KEY) }"
+                        :title="isWrapped(NAME_COL_KEY) ? t('db.wrapColumnOff') : t('db.wrapColumnOn')"
+                        @click.stop="toggleWrapColumn(NAME_COL_KEY)"
+                      >
+                        <Icon icon="mdi:wrap" width="13" height="13" />
+                      </button>
+                    </div>
                     <span
                       class="db__th-resize"
                       :class="{ 'db__th-resize--active': resizingKey === NAME_COL_KEY }"
@@ -1904,7 +1916,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                   <td
                     v-if="col.key === NAME_COL_KEY"
                     class="db__td db__td--name"
-                    :class="{ 'db__td--frozen': isFrozenCol(NAME_COL_KEY) }"
+                    :class="{ 'db__td--wrap': isWrapped(NAME_COL_KEY), 'db__td--frozen': isFrozenCol(NAME_COL_KEY) }"
                     :style="frozenColStyle(NAME_COL_KEY)"
                   >
                     <input
@@ -2078,7 +2090,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                     <td
                       v-if="col.key === NAME_COL_KEY"
                       class="db__td db__td--name"
-                      :class="{ 'db__td--frozen': isFrozenCol(NAME_COL_KEY) }"
+                      :class="{ 'db__td--wrap': isWrapped(NAME_COL_KEY), 'db__td--frozen': isFrozenCol(NAME_COL_KEY) }"
                       :style="frozenColStyle(NAME_COL_KEY)"
                     >
                       <input
