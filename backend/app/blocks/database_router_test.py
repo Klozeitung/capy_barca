@@ -2065,6 +2065,43 @@ def test_pool_to_timeline_full_example():
     )
 
 
+def test_pool_to_timeline_ancient_dates_keep_correct_boundaries():
+    """Regression: years < 1000 must produce zero-padded change-points.
+
+    strftime("%Y") drops the leading zeros of ancient years on glibc, so a
+    derived change-point for year 61 rendered as "61-..." and string-sorted
+    after a modern "2020-..." boundary. That mis-ordering swapped slot bounds
+    (the bounded slot inherited the next entry's start as its end) and dropped
+    the "until" slot entirely. Each slot must keep its own original bounds.
+    """
+    pool = {
+        "rom-id":   ["→0059-05-03T13:50:00"],
+        "isca-id":  ["0059-08-08T12:00:00→0061-06-01T19:30:00"],
+        "ileda-id": ["2020-01-30T21:05:00→"],
+    }
+    timeline = _pool_to_timeline(pool)
+    assert timeline == {
+        "→0059-05-03T13:50:00": {"related_ids": ["rom-id"]},
+        "0059-08-08T12:00:00→0061-06-01T19:30:00": {"related_ids": ["isca-id"]},
+        "2020-01-30T21:05:00→": {"related_ids": ["ileda-id"]},
+    }
+
+
+def test_pool_to_timeline_ancient_dates_change_points_zero_padded():
+    """Every derived slot key must use a 4-digit, zero-padded year so the keys
+    sort chronologically by plain string comparison."""
+    pool = {
+        "a": ["0061-06-01T19:30:00→0063-01-01T00:00:00"],
+        "b": ["0063-06-01T00:00:00→"],
+    }
+    timeline = _pool_to_timeline(pool)
+    for key in timeline:
+        for boundary in key.split("→"):
+            if boundary:
+                # Year segment is the part before the first '-', always 4 chars.
+                assert len(boundary.split("-", 1)[0]) == 4, key
+
+
 # ── Timeline: upsert endpoint validation ─────────────────────────────────────
 
 def test_upsert_timeline_value_valid(http_client):

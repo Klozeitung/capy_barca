@@ -934,7 +934,17 @@ def _pool_to_timeline(pool: dict, nuance_pool: Optional[dict] = None) -> dict:
             return None
 
     def _fmt_ts(dt: _DT) -> str:
-        return dt.strftime("%Y-%m-%dT%H:%M:%S")
+        # NOTE: strftime("%Y") does not zero-pad years < 1000 on glibc, so a
+        # date like year 61 would render as "61-..." instead of "0061-...".
+        # The sweepline mixes these derived change-points with the raw,
+        # 4-digit-padded client timestamps and orders them by plain string
+        # comparison; an unpadded year breaks that ordering ("61-..." sorts
+        # after "2020-...") and corrupts every slot boundary. Format the
+        # components explicitly to guarantee a fixed-width, zero-padded year.
+        return (
+            f"{dt.year:04d}-{dt.month:02d}-{dt.day:02d}"
+            f"T{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}"
+        )
 
     # ── Separate always-valid from time-bounded ranges ────────────────────────
     always_uids: list[str] = []
