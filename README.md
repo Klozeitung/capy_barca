@@ -13,6 +13,7 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 - **Pages and blocks** hierarchical workspace with rich-text pages, headings, lists, code blocks, and file attachments
 - **Databases** structured tables with custom property types (text, select, date, relation, formula, rollup, and more), filters, sorting, and multiple views per database
 - **Property timelining** any database property can be given a timeline: values are stored as date-ranged slots rather than a single value. Example: In Notion, you could only put "City A" in a relation property for a character in a world-building database, but if that location were to change, you wouldn't be able to see the previous cities the character resided in. With CapyBarca you can display a full history within a single property ("timelining a property"). Atm rollups and formulas will only use the most recent value but specific and broad querying is a planned feature.
+- **Nuanced Relations**: relation properties are able to track qualifiers, so called "Nuances". Example: In Notion, you could only put "organisation X" into the relation property "organisation" in a character database. CapyBarca allows you to qualify that relation. Now you not only can set it to "**organisation X** *as* **rank A**", but you can combine nuancing and timelining, enabling you to track the career of your character within not only one, but any number of organisations. Of course, nuancing (and timelining) has a lot more nifty use cases.
 - **Automations** rule-based triggers that act on database entries
 - **Comments** inline comments on pages and database entries
 - **Collaborative editing** real-time document collaboration via integrated Collabora Online (WOPI)
@@ -124,6 +125,8 @@ Key variables:
 ## Project Status
 
 This project is a work in progress. It is used by its developer since February 2026 as full replacement of Notion. Having been worked on in a private repo, it was copied to a (this) public repository when it was deemed to be useful and stable enough.
+
+As Timelining and Nuancing are rather complicated features, rollups and formulas will work without taking nuances into account and will default to "last state" for timelined properties - for now.
 
 Despite heavy testing (~1430 automated backend tests each time a new version is build in the dev environment by setup.sh and a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet. Thus, this honest disclaimer is in order:
 

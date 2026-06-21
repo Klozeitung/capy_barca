@@ -1960,6 +1960,8 @@ from app.blocks.database_router import (
     _validate_timeline_value,
     _pool_to_timeline,
     _parse_pool_range,
+    _sanitize_nuance_pool,
+    _sanitize_flat_nuances,
 )
 
 
@@ -2174,6 +2176,70 @@ def test_update_schema_has_timeline_propagates_to_bilateral_mirror(http_client):
     mirror = next((s for s in schemas_b if s["name"] == "Linked Back"), None)
     assert mirror is not None, "Mirror schema not found"
     assert mirror["config"].get("hasTimeline") is True
+
+
+def test_update_schema_nuance_propagates_to_bilateral_mirror(http_client):
+    """Enabling nuance on a bilateral relation writes the mirror's own framing
+    from the source's synced side, and vice versa (sides are swapped)."""
+    db_a = _create_database(http_client)
+    db_b = _create_database(http_client)
+    schema = _create_relation_schema(
+        http_client, db_a, db_b,
+        name="Linked", direction="bilateral", mirror_name="Linked Back",
+    )
+
+    http_client.patch(
+        f"/api/databases/{db_a}/schemas/{schema['id']}",
+        json={"config": {
+            **schema["config"],
+            "nuance": {
+                "enabled": True,
+                "options": [{"label": "successfully"}],
+                "affix1": "as",
+                "affix2": "",
+                "orientation": "prepended",
+                "synced": {"affix1": "held by", "affix2": "", "orientation": "appended"},
+            },
+        }},
+    )
+
+    schemas_b = http_client.get(f"/api/databases/{db_b}/schemas").json()
+    mirror = next(s for s in schemas_b if s["name"] == "Linked Back")
+    mn = mirror["config"]["nuance"]
+    assert mn["enabled"] is True
+    assert mn["options"] == [{"label": "successfully"}]
+    # The mirror's own framing is the source's synced side.
+    assert mn["affix1"] == "held by"
+    assert mn["orientation"] == "appended"
+    # The mirror's synced side mirrors the source's own framing.
+    assert mn["synced"]["affix1"] == "as"
+    assert mn["synced"]["orientation"] == "prepended"
+
+
+def test_update_schema_nuance_disable_propagates_to_mirror(http_client):
+    """Disabling nuance on the source disables it on the mirror too."""
+    db_a = _create_database(http_client)
+    db_b = _create_database(http_client)
+    schema = _create_relation_schema(
+        http_client, db_a, db_b,
+        name="Linked", direction="bilateral", mirror_name="Linked Back",
+    )
+    base_cfg = {
+        "enabled": True, "options": [{"label": "x"}],
+        "affix1": "a", "affix2": "b", "orientation": "prepended",
+        "synced": {"affix1": "c", "affix2": "d", "orientation": "appended"},
+    }
+    http_client.patch(
+        f"/api/databases/{db_a}/schemas/{schema['id']}",
+        json={"config": {**schema["config"], "nuance": base_cfg}},
+    )
+    http_client.patch(
+        f"/api/databases/{db_a}/schemas/{schema['id']}",
+        json={"config": {**schema["config"], "nuance": {"enabled": False}}},
+    )
+    schemas_b = http_client.get(f"/api/databases/{db_b}/schemas").json()
+    mirror = next(s for s in schemas_b if s["name"] == "Linked Back")
+    assert mirror["config"]["nuance"] == {"enabled": False}
 
 
 def test_update_schema_has_timeline_disabled_propagates_to_mirror(http_client):
@@ -2412,6 +2478,219 @@ def test_pool_to_timeline_invalid_timestamp_skipped():
     # Should not raise; unparseable timestamps are silently dropped
     result = _pool_to_timeline(pool)
     assert isinstance(result, dict)
+
+
+# ── Nuance: _pool_to_timeline threading + sanitizers (pure) ───────────────────
+
+def test_pool_to_timeline_nuance_carried_into_slot():
+    """A per-(uid, range) label surfaces in the matching slot's nuances map."""
+    pool = {"a": ["2024-01-01T00:00:00→"]}
+    nuance_pool = {"a": {"2024-01-01T00:00:00→": "interim"}}
+    timeline = _pool_to_timeline(pool, nuance_pool)
+    slot = timeline["2024-01-01T00:00:00→"]
+    assert slot["related_ids"] == ["a"]
+    assert slot["nuances"] == {"a": "interim"}
+
+
+def test_pool_to_timeline_nuance_varies_per_range():
+    """The same uid carries different labels in different ranges."""
+    pool = {"a": [
+        "2024-01-01T00:00:00→2024-12-31T23:59:59",
+        "2025-01-01T00:00:00→",
+    ]}
+    nuance_pool = {"a": {
+        "2024-01-01T00:00:00→2024-12-31T23:59:59": "interim",
+        "2025-01-01T00:00:00→": "confirmed",
+    }}
+    timeline = _pool_to_timeline(pool, nuance_pool)
+    assert timeline["2024-01-01T00:00:00→2024-12-31T23:59:59"]["nuances"] == {"a": "interim"}
+    assert timeline["2025-01-01T00:00:00→"]["nuances"] == {"a": "confirmed"}
+
+
+def test_pool_to_timeline_always_valid_nuance():
+    """An always-valid uid carries its '' nuance into the sole slot."""
+    timeline = _pool_to_timeline({"a": [""]}, {"a": {"": "successfully"}})
+    assert timeline[""]["nuances"] == {"a": "successfully"}
+
+
+def test_pool_to_timeline_partial_nuance_in_shared_slot():
+    """Only labelled uids appear in nuances; unlabelled ones are omitted."""
+    timeline = _pool_to_timeline({"a": [""], "b": [""]}, {"a": {"": "lead"}})
+    assert set(timeline[""]["related_ids"]) == {"a", "b"}
+    assert timeline[""]["nuances"] == {"a": "lead"}
+
+
+def test_pool_to_timeline_empty_nuance_pool_adds_no_key():
+    """Regression: no nuance_pool (or empty) must not add a 'nuances' key."""
+    pool = {
+        "a": ["2024-01-01T00:00:00→2024-12-31T23:59:59"],
+        "b": ["2025-01-01T00:00:00→"],
+    }
+    assert all("nuances" not in slot for slot in _pool_to_timeline(pool).values())
+    assert all("nuances" not in slot for slot in _pool_to_timeline(pool, {}).values())
+
+
+def test_sanitize_nuance_pool_drops_unknown_pairs_and_blanks():
+    pool = {"a": ["x"]}
+    raw = {"a": {"x": "keep", "y": "drop-range"}, "ghost": {"x": "drop-uid"}}
+    assert _sanitize_nuance_pool(raw, pool) == {"a": {"x": "keep"}}
+    assert _sanitize_nuance_pool({"a": {"x": "   "}}, pool) == {}
+    assert _sanitize_nuance_pool("not-a-dict", pool) == {}
+
+
+def test_sanitize_flat_nuances_keeps_only_linked_uids():
+    assert _sanitize_flat_nuances({"a": "k", "ghost": "q"}, ["a"]) == {"a": "k"}
+    assert _sanitize_flat_nuances({"a": "  "}, ["a"]) == {}
+    assert _sanitize_flat_nuances(None, ["a"]) == {}
+
+
+# ── Nuance: storage round-trip + bilateral mirror + migration (integration) ───
+
+def test_nuance_pool_round_trip(http_client):
+    """A nuancePool written alongside relationPool is persisted and threaded
+    into the computed _timeline slot."""
+    db_id = _create_database(http_client)
+    schema = _create_relation_schema(
+        http_client, db_id, db_id, name="Links", direction="unilateral",
+    )
+    http_client.patch(
+        f"/api/databases/{db_id}/schemas/{schema['id']}",
+        json={"config": {**schema["config"], "hasTimeline": True}},
+    )
+    entry_a = _create_entry(http_client, db_id)
+    entry_b = _create_entry(http_client, db_id)
+
+    resp = http_client.put(
+        f"/api/databases/{db_id}/entries/{entry_a['id']}/values/{schema['id']}",
+        json={"value": {
+            "relationPool": {entry_b["id"]: [""]},
+            "nuancePool": {entry_b["id"]: {"": "successfully"}},
+        }},
+    )
+    assert resp.status_code == 204
+
+    entries = http_client.get(f"/api/databases/{db_id}/entries").json()
+    row = next(e for e in entries if e["id"] == entry_a["id"])
+    val = row["values"].get(schema["id"])
+    assert val["nuancePool"] == {entry_b["id"]: {"": "successfully"}}
+    assert val["_timeline"][""]["nuances"] == {entry_b["id"]: "successfully"}
+
+
+def test_nuance_pool_sanitised_on_write(http_client):
+    """Labels for uids/ranges absent from the pool are stripped at storage."""
+    db_id = _create_database(http_client)
+    schema = _create_relation_schema(
+        http_client, db_id, db_id, name="Links", direction="unilateral",
+    )
+    http_client.patch(
+        f"/api/databases/{db_id}/schemas/{schema['id']}",
+        json={"config": {**schema["config"], "hasTimeline": True}},
+    )
+    entry_a = _create_entry(http_client, db_id)
+    entry_b = _create_entry(http_client, db_id)
+
+    http_client.put(
+        f"/api/databases/{db_id}/entries/{entry_a['id']}/values/{schema['id']}",
+        json={"value": {
+            "relationPool": {entry_b["id"]: [""]},
+            "nuancePool": {
+                entry_b["id"]: {"": "kept", "2030-01-01T00:00:00→": "ghost-range"},
+                "00000000-0000-0000-0000-000000000000": {"": "ghost-uid"},
+            },
+        }},
+    )
+    entries = http_client.get(f"/api/databases/{db_id}/entries").json()
+    row = next(e for e in entries if e["id"] == entry_a["id"])
+    val = row["values"].get(schema["id"])
+    assert val["nuancePool"] == {entry_b["id"]: {"": "kept"}}
+
+
+def test_nuance_pool_mirrored_on_bilateral(http_client):
+    """The nuance label is mirrored onto the bilateral partner's value."""
+    db_a = _create_database(http_client)
+    db_b = _create_database(http_client)
+    schema = _create_relation_schema(
+        http_client, db_a, db_b,
+        name="Linked", direction="bilateral", mirror_name="Linked Back",
+    )
+    http_client.patch(
+        f"/api/databases/{db_a}/schemas/{schema['id']}",
+        json={"config": {**schema["config"], "hasTimeline": True}},
+    )
+    entry_a = _create_entry(http_client, db_a)
+    entry_b = _create_entry(http_client, db_b)
+
+    http_client.put(
+        f"/api/databases/{db_a}/entries/{entry_a['id']}/values/{schema['id']}",
+        json={"value": {
+            "relationPool": {entry_b["id"]: [""]},
+            "nuancePool": {entry_b["id"]: {"": "successfully"}},
+        }},
+    )
+
+    schemas_b = http_client.get(f"/api/databases/{db_b}/schemas").json()
+    mirror = next(s for s in schemas_b if s["name"] == "Linked Back")
+    entries_b = http_client.get(f"/api/databases/{db_b}/entries").json()
+    row_b = next(e for e in entries_b if e["id"] == entry_b["id"])
+    val_b = row_b["values"].get(mirror["id"])
+    assert val_b["nuancePool"] == {entry_a["id"]: {"": "successfully"}}
+    assert val_b["_timeline"][""]["nuances"] == {entry_a["id"]: "successfully"}
+
+
+def test_flat_nuance_mirrored_on_bilateral(http_client):
+    """For non-timeline bilateral relations, flat nuances mirror too."""
+    db_a = _create_database(http_client)
+    db_b = _create_database(http_client)
+    schema = _create_relation_schema(
+        http_client, db_a, db_b,
+        name="Linked", direction="bilateral", mirror_name="Linked Back",
+    )
+    entry_a = _create_entry(http_client, db_a)
+    entry_b = _create_entry(http_client, db_b)
+
+    http_client.put(
+        f"/api/databases/{db_a}/entries/{entry_a['id']}/values/{schema['id']}",
+        json={"value": {
+            "related_ids": [entry_b["id"]],
+            "nuances": {entry_b["id"]: "reluctantly"},
+        }},
+    )
+
+    schemas_b = http_client.get(f"/api/databases/{db_b}/schemas").json()
+    mirror = next(s for s in schemas_b if s["name"] == "Linked Back")
+    entries_b = http_client.get(f"/api/databases/{db_b}/entries").json()
+    row_b = next(e for e in entries_b if e["id"] == entry_b["id"])
+    val_b = row_b["values"].get(mirror["id"])
+    assert val_b["related_ids"] == [entry_a["id"]]
+    assert val_b["nuances"] == {entry_a["id"]: "reluctantly"}
+
+
+def test_flat_nuance_migrated_to_pool_on_timeline_enable(http_client):
+    """Enabling hasTimeline carries a flat nuance into nuancePool under ''."""
+    db_id = _create_database(http_client)
+    schema = _create_relation_schema(
+        http_client, db_id, db_id, name="Links", direction="unilateral",
+    )
+    entry_a = _create_entry(http_client, db_id)
+    entry_b = _create_entry(http_client, db_id)
+
+    http_client.put(
+        f"/api/databases/{db_id}/entries/{entry_a['id']}/values/{schema['id']}",
+        json={"value": {
+            "related_ids": [entry_b["id"]],
+            "nuances": {entry_b["id"]: "successfully"},
+        }},
+    )
+    http_client.patch(
+        f"/api/databases/{db_id}/schemas/{schema['id']}",
+        json={"config": {**schema["config"], "hasTimeline": True}},
+    )
+
+    entries = http_client.get(f"/api/databases/{db_id}/entries").json()
+    row = next(e for e in entries if e["id"] == entry_a["id"])
+    val = row["values"].get(schema["id"])
+    assert val["relationPool"] == {entry_b["id"]: [""]}
+    assert val["nuancePool"] == {entry_b["id"]: {"": "successfully"}}
 
 
 def test_pool_to_timeline_empty_range_round_trip(http_client):

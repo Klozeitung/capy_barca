@@ -1216,3 +1216,64 @@ def test_rollup_over_relation_formula_resolves_chips_and_skips_empty(db, workspa
     assert len(result) == 1
     assert result[0]["title"] == "Vyrenell"
     assert result[0]["id"] == str(vyrenell.id)
+
+
+def test_rollup_over_timeline_relation_target_resolves_members(db, database_block, entry):
+    """Regression: a rollup whose TARGET column is a timeline relation must
+    resolve the related IDs from the last ``_timeline`` slot.
+
+    Previously ``_compute_rollup`` called ``_extract_scalar`` without the target
+    column's config, so a timeline relation target — whose ids live inside
+    ``_timeline`` slots, not at the root ``related_ids`` — came back empty,
+    while flat relation targets worked.
+    """
+    org = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
+    org.content = {"title": "ACME GmbH"}
+    member = repo.create_block(db, type="page", position=3.0, parent_id=database_block.id)
+    member.content = {"title": "Lyz"}
+    db.commit()
+
+    rel = repo.create_schema(
+        db, database_id=database_block.id, name="Organisation", type="relation",
+        position=1.0, config={"target_database_id": str(database_block.id)},
+    )
+    members = repo.create_schema(
+        db, database_id=database_block.id, name="Members", type="relation",
+        position=2.0,
+        config={"target_database_id": str(database_block.id), "hasTimeline": True},
+    )
+    roll = repo.create_schema(
+        db, database_id=database_block.id, name="Org members", type="rollup",
+        position=3.0,
+        config={
+            "relation_schema_id": str(rel.id),
+            "rollup_schema_id": str(members.id),
+            "function": "show_original",
+        },
+    )
+    db.commit()
+
+    # char -> org (flat path relation)
+    repo.upsert_value(
+        db, page_id=entry.id, schema_id=rel.id,
+        value={"related_ids": [str(org.id)]},
+    )
+    # org.Members -> member, stored as a timeline value (ids only inside the slot)
+    repo.upsert_value(
+        db, page_id=org.id, schema_id=members.id,
+        value={
+            "relationPool": {str(member.id): ["2024-01-01T00:00:00→"]},
+            "_timeline": {"2024-01-01T00:00:00→": {"related_ids": [str(member.id)]}},
+        },
+    )
+    db.commit()
+
+    compute_all_for_entry(db, database_block.id, entry.id)
+    db.commit()
+
+    pv = repo.get_value(db, entry.id, roll.id)
+    assert pv is not None
+    result = pv.value.get("result")
+    assert isinstance(result, list) and len(result) == 1
+    assert result[0]["id"] == str(member.id)
+    assert result[0]["title"] == "Lyz"

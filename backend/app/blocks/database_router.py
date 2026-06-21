@@ -473,6 +473,7 @@ def _sync_bilateral_relation(
     entry_id: uuid.UUID,
     new_related_ids: list[str],
     old_related_ids: list[str],
+    new_nuances: Optional[dict] = None,
 ) -> None:
     """
     Maintain the mirror side of a bilateral relation property.
@@ -490,9 +491,16 @@ def _sync_bilateral_relation(
         The ``related_ids`` list that was just stored (strings).
     old_related_ids:
         The ``related_ids`` list that existed *before* this write (strings).
+    new_nuances:
+        Optional ``{ uid: label }`` map from the source value.  The nuance is a
+        shared property of the pairing, so the label the source recorded for a
+        target is mirrored onto the target's value for *entry_id*.  Per-side
+        framing (affixes / orientation) lives in each schema's config and is
+        applied at render time, not stored here.
     """
     config = schema.config or {}
     direction = config.get("direction")
+    src_nuances: dict = new_nuances or {}
 
     # bilateral_self: the mirror IS this schema — entries of the same property
     # in the same database point back at entry_id symmetrically.
@@ -531,15 +539,27 @@ def _sync_bilateral_relation(
             continue
         pv = repo.get_value(db, rid, mirror_schema.id)
         current: list[str] = []
+        current_nuances: dict = {}
         if pv and pv.value:
             current = list(_extract_related_ids_now(pv.value))
+            current_nuances = dict(pv.value.get("nuances") or {})
         if entry_id_str not in current:
             current.append(entry_id_str)
+        label = src_nuances.get(rid_str)
+        if label:
+            current_nuances[entry_id_str] = label
+        else:
+            current_nuances.pop(entry_id_str, None)
+        # Keep only nuances whose uid is still linked.
+        current_nuances = {u: l for u, l in current_nuances.items() if u in current}
+        value: dict = {"related_ids": current}
+        if current_nuances:
+            value["nuances"] = current_nuances
         repo.upsert_value(
             db,
             page_id=rid,
             schema_id=mirror_schema.id,
-            value={"related_ids": current},
+            value=value,
         )
 
     for rid_str in removed:
@@ -552,12 +572,21 @@ def _sync_bilateral_relation(
             current = [
                 i for i in _extract_related_ids_now(pv.value) if i != entry_id_str
             ]
-            repo.upsert_value(
-                db,
-                page_id=rid,
-                schema_id=mirror_schema.id,
-                value={"related_ids": current} if current else None,
-            )
+            current_nuances = {
+                u: l for u, l in (pv.value.get("nuances") or {}).items()
+                if u in current
+            }
+            if current:
+                value = {"related_ids": current}
+                if current_nuances:
+                    value["nuances"] = current_nuances
+                repo.upsert_value(
+                    db, page_id=rid, schema_id=mirror_schema.id, value=value,
+                )
+            else:
+                repo.upsert_value(
+                    db, page_id=rid, schema_id=mirror_schema.id, value=None,
+                )
 
 
 def _sync_parent_item(
@@ -829,7 +858,7 @@ def _parse_pool_range(range_str: str) -> tuple[Optional[str], Optional[str]]:
     return start, end
 
 
-def _pool_to_timeline(pool: dict) -> dict:
+def _pool_to_timeline(pool: dict, nuance_pool: Optional[dict] = None) -> dict:
     """
     Compute the ``_timeline`` dict from a ``relationPool``.
 
@@ -846,11 +875,33 @@ def _pool_to_timeline(pool: dict) -> dict:
       computed slot.  The ``""`` sentinel is never emitted alongside bounded
       slots (the spec prohibits mixing).
     * Invalid or unparseable timestamps are skipped silently.
+
+    Nuance
+    ------
+    ``nuance_pool`` is an optional ``{ uid: { range_str: label } }`` map that
+    runs parallel to *pool*.  When supplied, each computed slot gains a
+    ``nuances`` sub-dict mapping the UIDs active in that slot to their nuance
+    label for the matching range.  A UID active via its always-valid (``""``)
+    range carries the label registered under ``""``; if the same UID is also
+    bounded with a different label, the always-valid label wins (mirroring the
+    related_ids dedup, which lists the always-valid UID first).  UIDs with no
+    label are omitted, and a slot with no nuanced UID carries no ``nuances``
+    key — so the output is byte-identical to the nuance-free form whenever
+    *nuance_pool* is empty.
     """
     from datetime import datetime as _DT, timedelta as _TD
 
     if not pool:
         return {}
+
+    np_map: dict = nuance_pool or {}
+
+    def _nuance_for(uid: str, range_str: str) -> Optional[str]:
+        ranges = np_map.get(uid)
+        if not isinstance(ranges, dict):
+            return None
+        label = ranges.get(range_str)
+        return label or None
 
     def _parse_ts(ts: str) -> Optional[_DT]:
         try:
@@ -863,13 +914,17 @@ def _pool_to_timeline(pool: dict) -> dict:
 
     # ── Separate always-valid from time-bounded ranges ────────────────────────
     always_uids: list[str] = []
-    parsed: list[tuple[str, Optional[str], Optional[str]]] = []
+    always_nuance: dict[str, str] = {}
+    parsed: list[tuple[str, Optional[str], Optional[str], str]] = []
 
     for uid, uid_ranges in pool.items():
         for r in (uid_ranges or []):
             if r == "":
                 if uid not in always_uids:
                     always_uids.append(uid)
+                lbl = _nuance_for(uid, "")
+                if lbl and uid not in always_nuance:
+                    always_nuance[uid] = lbl
             else:
                 s, e = _parse_pool_range(r)
                 # Skip entries whose timestamps cannot be parsed
@@ -877,17 +932,40 @@ def _pool_to_timeline(pool: dict) -> dict:
                     continue
                 if e is not None and _parse_ts(e) is None:
                     continue
-                parsed.append((uid, s, e))
+                parsed.append((uid, s, e, r))
+
+    def _build_slot(bounded_pairs: list[tuple[str, str]]) -> dict:
+        """Assemble a slot dict (related_ids + optional nuances) for a set of
+        (uid, range_str) pairs, with always-valid UIDs merged in front."""
+        bounded_uids: list[str] = []
+        for uid, _r in bounded_pairs:
+            if uid not in bounded_uids:
+                bounded_uids.append(uid)
+        related = always_uids + [u for u in bounded_uids if u not in always_uids]
+        nuances: dict[str, str] = dict(always_nuance)
+        for uid, r in bounded_pairs:
+            if uid in nuances:
+                continue
+            lbl = _nuance_for(uid, r)
+            if lbl:
+                nuances[uid] = lbl
+        slot: dict = {"related_ids": related}
+        if nuances:
+            slot["nuances"] = nuances
+        return slot
 
     # ── No bounded ranges → single always-valid slot (or empty) ──────────────
     if not parsed:
         if always_uids:
-            return {"": {"related_ids": always_uids}}
+            slot: dict = {"related_ids": list(always_uids)}
+            if always_nuance:
+                slot["nuances"] = dict(always_nuance)
+            return {"": slot}
         return {}
 
     # ── Sweepline over bounded ranges ─────────────────────────────────────────
     change_points: set[str] = set()
-    for _, s, e in parsed:
+    for _uid, s, e, _r in parsed:
         if s:
             change_points.add(s)
         if e:
@@ -897,47 +975,46 @@ def _pool_to_timeline(pool: dict) -> dict:
 
     if not change_points:
         if always_uids:
-            return {"": {"related_ids": always_uids}}
+            slot = {"related_ids": list(always_uids)}
+            if always_nuance:
+                slot["nuances"] = dict(always_nuance)
+            return {"": slot}
         return {}
 
     sorted_cps = sorted(change_points)
 
-    def _bounded_active_at(ts: str) -> list[str]:
-        result = []
-        for uid, s, e in parsed:
+    def _bounded_active_at(ts: str) -> list[tuple[str, str]]:
+        result: list[tuple[str, str]] = []
+        for uid, s, e, r in parsed:
             if s is not None and ts < s:
                 continue
             if e is not None and ts > e:
                 continue
-            result.append(uid)
+            result.append((uid, r))
         return result
-
-    def _merge_always(bounded: list[str]) -> list[str]:
-        """Merge always-valid UIDs in front, deduplicated."""
-        return always_uids + [u for u in bounded if u not in always_uids]
 
     timeline: dict = {}
 
     # Handle "until" ranges (start=None) — active before the first change-point
-    has_until = any(s is None for _, s, e in parsed)
+    has_until = any(s is None for _uid, s, e, _r in parsed)
     if has_until and sorted_cps:
         first_cp = sorted_cps[0]
         dt_first = _parse_ts(first_cp)
         if dt_first is not None:
             before_end = _fmt_ts(dt_first - _TD(seconds=1))
-            before_bounded = [
-                uid for uid, s, e in parsed
+            before_pairs = [
+                (uid, r) for uid, s, e, r in parsed
                 if s is None and (e is None or e >= before_end)
             ]
-            all_before = _merge_always(before_bounded)
-            if all_before:
-                timeline[f"→{before_end}"] = {"related_ids": all_before}
+            slot = _build_slot(before_pairs)
+            if slot["related_ids"]:
+                timeline[f"→{before_end}"] = slot
 
     n = len(sorted_cps)
     for i, cp in enumerate(sorted_cps):
-        bounded_active = _bounded_active_at(cp)
-        active = _merge_always(bounded_active)
-        if not active:
+        bounded_pairs = _bounded_active_at(cp)
+        slot = _build_slot(bounded_pairs)
+        if not slot["related_ids"]:
             continue
 
         if i < n - 1:
@@ -950,16 +1027,62 @@ def _pool_to_timeline(pool: dict) -> dict:
         else:
             # Last change-point: open if any bounded-active uid has no end,
             # or if there are always-valid uids (they never end).
+            bounded_uids_now = {u for u, _ in bounded_pairs}
             still_open = bool(always_uids) or any(
                 e is None
-                for uid, s, e in parsed
-                if uid in bounded_active and (s is None or s <= cp)
+                for uid, s, e, _r in parsed
+                if uid in bounded_uids_now and (s is None or s <= cp)
             )
             slot_key = f"{cp}→" if still_open else f"{cp}→{cp}"
 
-        timeline[slot_key] = {"related_ids": active}
+        timeline[slot_key] = slot
 
     return timeline
+
+
+def _sanitize_nuance_pool(raw: object, pool: dict) -> dict:
+    """
+    Coerce a client-supplied ``nuancePool`` into ``{ uid: { range_str: label } }``.
+
+    Only (uid, range) pairs that actually exist in *pool* and carry a non-empty
+    string label are kept.  Returns ``{}`` when nothing valid remains, so the
+    caller can omit the key entirely.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    valid_pairs = {
+        (uid, r) for uid, ranges in pool.items() for r in (ranges or [])
+    }
+    out: dict = {}
+    for uid, ranges in raw.items():
+        if not isinstance(ranges, dict):
+            continue
+        for r, label in ranges.items():
+            if (uid, r) not in valid_pairs:
+                continue
+            if not isinstance(label, str) or not label.strip():
+                continue
+            out.setdefault(uid, {})[r] = label
+    return out
+
+
+def _sanitize_flat_nuances(raw: object, related_ids: list[str]) -> dict:
+    """
+    Coerce a client-supplied flat ``nuances`` map into ``{ uid: label }``.
+
+    Only UIDs present in *related_ids* with a non-empty string label are kept.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    allowed = set(related_ids)
+    out: dict = {}
+    for uid, label in raw.items():
+        if uid not in allowed:
+            continue
+        if not isinstance(label, str) or not label.strip():
+            continue
+        out[uid] = label
+    return out
 
 
 _TS_RE_SIMPLE = None  # lazy-compiled below
@@ -1113,13 +1236,23 @@ def _migrate_relation_values_to_timeline(
         related_ids: list[str] = list(val.get("related_ids") or [])
         if not related_ids:
             continue
+        flat_nuances = _sanitize_flat_nuances(val.get("nuances"), related_ids)
         pool = {uid: [""] for uid in related_ids}
-        timeline = _pool_to_timeline(pool)
+        nuance_pool = {
+            uid: {"": flat_nuances[uid]}
+            for uid in related_ids
+            if flat_nuances.get(uid)
+        }
+        timeline = _pool_to_timeline(pool, nuance_pool)
+        value: dict = {"relationPool": pool}
+        if nuance_pool:
+            value["nuancePool"] = nuance_pool
+        value["_timeline"] = timeline
         repo.upsert_value(
             db,
             page_id=entry.id,
             schema_id=schema_id,
-            value={"relationPool": pool, "_timeline": timeline},
+            value=value,
         )
 
 
@@ -1153,6 +1286,7 @@ def _sync_bilateral_relation_timeline(
     entry_id: uuid.UUID,
     new_pool: dict,
     old_pool: dict,
+    new_nuance_pool: Optional[dict] = None,
 ) -> None:
     """
     Synchronise the mirror side of a bilateral timeline relation.
@@ -1176,11 +1310,18 @@ def _sync_bilateral_relation_timeline(
         The updated ``relationPool`` dict just sent by the client.
     old_pool:
         The ``relationPool`` dict that existed before this write.
+    new_nuance_pool:
+        Optional ``{ uid: { range_str: label } }`` map from the source value.
+        For each mirrored (uid, range) pair the source's label is copied onto
+        the mirror's ``nuancePool`` under ``{ entry_id: { range_str: label } }``
+        — the nuance value is shared; only per-side framing differs and that is
+        applied at render time from each schema's config.
     """
     if mirror_schema is None:
         return
 
     entry_id_str = str(entry_id)
+    src_nuance: dict = new_nuance_pool or {}
 
     # Build flat sets of (uid, range_str) pairs for diff
     old_pairs: set[tuple[str, str]] = {
@@ -1200,15 +1341,23 @@ def _sync_bilateral_relation_timeline(
         pv = repo.get_value(db, uid, mirror_schema.id)
         current_value = (pv.value if pv else None) or {}
         current_pool = dict(current_value.get("relationPool") or {})
+        current_nuance = {
+            k: dict(v) for k, v in (current_value.get("nuancePool") or {}).items()
+        }
         uid_ranges: list[str] = list(current_pool.get(entry_id_str) or [])
         if range_str not in uid_ranges:
             uid_ranges.append(range_str)
         current_pool[entry_id_str] = uid_ranges
-        new_timeline = _pool_to_timeline(current_pool)
-        repo.upsert_value(db, page_id=uid, schema_id=mirror_schema.id, value={
-            "relationPool": current_pool,
-            "_timeline": new_timeline,
-        })
+        # Mirror the source label for this (uid, range) onto the mirror pair.
+        label = (src_nuance.get(uid_str) or {}).get(range_str)
+        if label:
+            current_nuance.setdefault(entry_id_str, {})[range_str] = label
+        new_timeline = _pool_to_timeline(current_pool, current_nuance)
+        value: dict = {"relationPool": current_pool}
+        if current_nuance:
+            value["nuancePool"] = current_nuance
+        value["_timeline"] = new_timeline
+        repo.upsert_value(db, page_id=uid, schema_id=mirror_schema.id, value=value)
 
     for uid_str, range_str in removed:
         try:
@@ -1219,17 +1368,26 @@ def _sync_bilateral_relation_timeline(
         if not pv or not pv.value:
             continue
         current_pool = dict(pv.value.get("relationPool") or {})
+        current_nuance = {
+            k: dict(v) for k, v in (pv.value.get("nuancePool") or {}).items()
+        }
         uid_ranges = [r for r in (current_pool.get(entry_id_str) or []) if r != range_str]
         if uid_ranges:
             current_pool[entry_id_str] = uid_ranges
         else:
             current_pool.pop(entry_id_str, None)
+        # Drop the mirrored nuance for the removed (entry_id, range) pair.
+        if entry_id_str in current_nuance:
+            current_nuance[entry_id_str].pop(range_str, None)
+            if not current_nuance[entry_id_str]:
+                current_nuance.pop(entry_id_str, None)
         if current_pool:
-            new_timeline = _pool_to_timeline(current_pool)
-            repo.upsert_value(db, page_id=uid, schema_id=mirror_schema.id, value={
-                "relationPool": current_pool,
-                "_timeline": new_timeline,
-            })
+            new_timeline = _pool_to_timeline(current_pool, current_nuance)
+            value = {"relationPool": current_pool}
+            if current_nuance:
+                value["nuancePool"] = current_nuance
+            value["_timeline"] = new_timeline
+            repo.upsert_value(db, page_id=uid, schema_id=mirror_schema.id, value=value)
         else:
             repo.upsert_value(db, page_id=uid, schema_id=mirror_schema.id, value=None)
 
@@ -1513,6 +1671,39 @@ def update_schema(
                                 if mirror is not None:
                                     mirror_cfg = dict(mirror.config or {})
                                     mirror_cfg["hasTimeline"] = new_has_timeline
+                                    repo.update_schema(db, mirror, config=mirror_cfg)
+
+                        # Case D: nuance config changed → propagate to mirror schema.
+                        # Each side stores its own affixes/orientation at the top
+                        # level; the option set is shared.  The synced sub-object
+                        # holds the *other* side's framing, so when writing the
+                        # mirror we swap: the source's ``synced`` becomes the
+                        # mirror's own top-level framing, and the source's own
+                        # framing becomes the mirror's ``synced`` (so reopening the
+                        # modal on either side shows both sides correctly).
+                        if payload.config is not None and old_config.get("nuance") != new_config.get("nuance"):
+                            current_mirror_name = new_mirror_name or old_mirror_name
+                            if current_mirror_name:
+                                mirror = repo.get_schema_by_name(db, target_db_id, current_mirror_name)
+                                if mirror is not None:
+                                    src_nuance = new_config.get("nuance") or {}
+                                    mirror_cfg = dict(mirror.config or {})
+                                    if src_nuance.get("enabled"):
+                                        synced = src_nuance.get("synced") or {}
+                                        mirror_cfg["nuance"] = {
+                                            "enabled": True,
+                                            "options": src_nuance.get("options") or [],
+                                            "affix1": synced.get("affix1", ""),
+                                            "affix2": synced.get("affix2", ""),
+                                            "orientation": synced.get("orientation", "prepended"),
+                                            "synced": {
+                                                "affix1": src_nuance.get("affix1", ""),
+                                                "affix2": src_nuance.get("affix2", ""),
+                                                "orientation": src_nuance.get("orientation", "prepended"),
+                                            },
+                                        }
+                                    else:
+                                        mirror_cfg["nuance"] = {"enabled": False}
                                     repo.update_schema(db, mirror, config=mirror_cfg)
 
                         # Ensure the mirror schema exists (covers the edge case
@@ -1970,16 +2161,20 @@ async def duplicate_entry(
                 is_relation_timeline = bool((schema.config or {}).get("hasTimeline", False))
                 if is_relation_timeline:
                     new_pool = dict((pv.value or {}).get("relationPool") or {})
+                    new_nuance_pool = dict((pv.value or {}).get("nuancePool") or {})
                     mirror_schema = _get_mirror_schema(db, schema)
                     _sync_bilateral_relation_timeline(
-                        db, schema, mirror_schema, new_block.id, new_pool, old_pool={}
+                        db, schema, mirror_schema, new_block.id, new_pool, old_pool={},
+                        new_nuance_pool=new_nuance_pool,
                     )
                 else:
                     new_related_ids = list(_extract_related_ids_now(pv.value))
+                    new_flat_nuances = dict((pv.value or {}).get("nuances") or {})
                     # old_related_ids is empty: the duplicate is a fresh entry
                     # with no prior relations on the mirror side.
                     _sync_bilateral_relation(
-                        db, schema, new_block.id, new_related_ids, old_related_ids=[]
+                        db, schema, new_block.id, new_related_ids, old_related_ids=[],
+                        new_nuances=new_flat_nuances,
                     )
                 _raw_target = (schema.config or {}).get("target_database_id")
                 if _raw_target and str(_raw_target) != str(database_id):
@@ -2338,11 +2533,24 @@ async def upsert_value(
 
         if is_relation_timeline and payload.value is not None:
             new_pool = dict(payload.value.get("relationPool") or {})
-            computed_timeline = _pool_to_timeline(new_pool)
-            stored_value = {
-                "relationPool": new_pool,
-                "_timeline": computed_timeline,
-            }
+            new_nuance_pool = _sanitize_nuance_pool(
+                payload.value.get("nuancePool"), new_pool
+            )
+            computed_timeline = _pool_to_timeline(new_pool, new_nuance_pool)
+            stored_value = {"relationPool": new_pool}
+            if new_nuance_pool:
+                stored_value["nuancePool"] = new_nuance_pool
+            stored_value["_timeline"] = computed_timeline
+        elif is_relation and payload.value is not None:
+            # Flat relation: keep related_ids, sanitise the optional per-uid
+            # nuance map so unknown uids / blank labels never reach storage.
+            new_related_ids = list(payload.value.get("related_ids") or [])
+            flat_nuances = _sanitize_flat_nuances(
+                payload.value.get("nuances"), new_related_ids
+            )
+            stored_value = {"related_ids": new_related_ids}
+            if flat_nuances:
+                stored_value["nuances"] = flat_nuances
 
         repo.upsert_value(
             db, page_id=entry_id, schema_id=schema_id, value=stored_value
@@ -2355,14 +2563,18 @@ async def upsert_value(
         if is_bilateral and entry.type != "entry_template":
             if is_relation_timeline:
                 new_pool = dict((stored_value or {}).get("relationPool") or {})
+                new_nuance_pool = dict((stored_value or {}).get("nuancePool") or {})
                 mirror_schema = _get_mirror_schema(db, schema)
                 _sync_bilateral_relation_timeline(
-                    db, schema, mirror_schema, entry_id, new_pool, old_pool
+                    db, schema, mirror_schema, entry_id, new_pool, old_pool,
+                    new_nuance_pool=new_nuance_pool,
                 )
             else:
                 new_related_ids = _extract_related_ids_now(stored_value)
+                new_flat_nuances = dict((stored_value or {}).get("nuances") or {})
                 _sync_bilateral_relation(
-                    db, schema, entry_id, new_related_ids, old_related_ids
+                    db, schema, entry_id, new_related_ids, old_related_ids,
+                    new_nuances=new_flat_nuances,
                 )
 
         # ── parent_item sync ─────────────────────────────────────────────────
@@ -2642,14 +2854,18 @@ async def apply_entry_template(
                 is_relation_timeline = bool((schema.config or {}).get("hasTimeline", False))
                 if is_relation_timeline:
                     new_pool = dict((pv.value or {}).get("relationPool") or {})
+                    new_nuance_pool = dict((pv.value or {}).get("nuancePool") or {})
                     mirror_schema = _get_mirror_schema(db, schema)
                     _sync_bilateral_relation_timeline(
-                        db, schema, mirror_schema, entry_id, new_pool, old_pool={}
+                        db, schema, mirror_schema, entry_id, new_pool, old_pool={},
+                        new_nuance_pool=new_nuance_pool,
                     )
                 else:
                     new_related_ids = list(_extract_related_ids_now(pv.value))
+                    new_flat_nuances = dict((pv.value or {}).get("nuances") or {})
                     _sync_bilateral_relation(
-                        db, schema, entry_id, new_related_ids, old_related_ids=[]
+                        db, schema, entry_id, new_related_ids, old_related_ids=[],
+                        new_nuances=new_flat_nuances,
                     )
                 _raw_target = (schema.config or {}).get("target_database_id")
                 if _raw_target and str(_raw_target) != str(database_id):

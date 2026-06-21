@@ -822,6 +822,7 @@ def _compute_rollup(
     # Resolve rollup column type
     rollup_col_schema = id_to_schema.get(rollup_col_id) or repo.get_schema(db, rollup_col_id)
     col_type = rollup_col_schema.type if rollup_col_schema else "text"
+    rollup_col_config = rollup_col_schema.config if rollup_col_schema else None
 
     scalars: list[Any] = []
     for rid in active_related_ids:
@@ -829,7 +830,7 @@ def _compute_rollup(
             (pv for pv in related_map.get(rid, []) if pv.property_schema_id == rollup_col_id),
             None,
         )
-        scalars.append(_extract_scalar(col_type, pv.value if pv else None))
+        scalars.append(_extract_scalar(col_type, pv.value if pv else None, rollup_col_config))
 
     # A formula / rollup target column whose stored values carry relation=True
     # holds relation-entry IDs (resolved above into ID lists). Treat it like a
