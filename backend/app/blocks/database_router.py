@@ -261,6 +261,30 @@ class EntryQueryResponse(BaseModel):
     total: int
 
 
+class EntryTitleRequest(BaseModel):
+    """
+    POST body for the /entries/resolve-titles endpoint.
+
+    ids – entry IDs to resolve to lightweight descriptors.  IDs that do not
+          correspond to an active, non-template entry of the target database
+          are silently omitted from the response.
+    """
+    ids: list[uuid.UUID] = []
+
+
+class EntryTitleResponse(BaseModel):
+    """
+    Lightweight relation-target descriptor used to render relation chips.
+
+    Carries only what a chip needs (``id``, ``title``, ``database_id``); the
+    title is read from ``Block.content['title']`` and may be ``None`` for an
+    untitled entry.
+    """
+    id: uuid.UUID
+    title: Optional[str]
+    database_id: uuid.UUID
+
+
 # ─── Readonly-property helpers ────────────────────────────────────────────────
 
 
@@ -2013,6 +2037,60 @@ def query_entries(
         ],
         total=total,
     )
+
+
+@database_router.post(
+    "/{database_id}/entries/resolve-titles",
+    response_model=list[EntryTitleResponse],
+)
+def resolve_entry_titles(
+    database_id: uuid.UUID,
+    payload: EntryTitleRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Resolve a set of entry IDs to lightweight ``{id, title, database_id}``
+    descriptors for rendering relation chips.
+
+    Relation cells store only the target entry IDs.  Resolving their titles
+    from the paginated entry listing breaks down once a relation points past
+    the active display limit, because the limited page never contains the
+    linked entry (#27).  This endpoint loads exactly the requested IDs in a
+    single query, independent of any limit, so a chip renders regardless of the
+    target database's pagination position of its entry.
+
+    Only active, non-template entries that are direct children of
+    ``database_id`` are returned; unknown, trashed or foreign IDs are silently
+    omitted, which doubles as the soft-deleted-entry filter the relation cell
+    relied on before.
+
+    Permission
+    ----------
+    Non-admin users that do not have access to the database block receive an
+    empty list, mirroring the listing endpoints so relation chips never leak
+    titles from databases the user may not see.
+    """
+    _get_database_or_raise(db, database_id)
+    if not perm_repo.can_user_access(db, database_id, current_user):
+        return []
+    if not payload.ids:
+        return []
+    blocks = repo.list_blocks_by_ids(
+        db,
+        payload.ids,
+        parent_id=database_id,
+        state="active",
+        exclude_types=frozenset({"entry_template"}),
+    )
+    return [
+        EntryTitleResponse(
+            id=block.id,
+            title=(block.content or {}).get("title"),
+            database_id=database_id,
+        )
+        for block in blocks
+    ]
 
 
 @database_router.post(

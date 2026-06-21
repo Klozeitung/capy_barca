@@ -779,6 +779,52 @@ def list_children(
     return list(db.scalars(stmt).all())
 
 
+def list_blocks_by_ids(
+    db: Session,
+    block_ids: list[uuid.UUID],
+    *,
+    parent_id: Optional[uuid.UUID] = None,
+    state: Optional[str] = "active",
+    exclude_types: Optional[frozenset[str]] = None,
+) -> list[Block]:
+    """
+    Return the blocks whose IDs are in *block_ids*, in unspecified order.
+
+    Every requested block is loaded in a single query (no N+1); the optional
+    ``parent_id``, ``state`` and ``exclude_types`` filters are applied in SQL.
+    IDs that match no row (or are filtered out) are silently omitted from the
+    result.
+
+    This resolves a known set of entry IDs independently of any paginated
+    listing, which is what lets relation chips render even when the linked
+    entry sits past the target database's display limit.
+
+    Parameters
+    ----------
+    db:
+        Active database session.
+    block_ids:
+        UUIDs of the blocks to load. An empty list yields an empty result
+        without issuing a query.
+    parent_id:
+        When given, restrict the result to direct children of this block.
+    state:
+        Filter by block state. Pass ``None`` to return blocks of all states.
+    exclude_types:
+        Optional set of block type strings to exclude from the result.
+    """
+    if not block_ids:
+        return []
+    stmt = select(Block).where(Block.id.in_(block_ids))
+    if parent_id is not None:
+        stmt = stmt.where(Block.parent_id == parent_id)
+    if state is not None:
+        stmt = stmt.where(Block.state == state)
+    if exclude_types:
+        stmt = stmt.where(Block.type.not_in(exclude_types))
+    return list(db.scalars(stmt).all())
+
+
 def list_databases(db: Session) -> list[Block]:
     """
     Return all active blocks of type ``'database'``, ordered by position.

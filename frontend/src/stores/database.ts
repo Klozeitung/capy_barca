@@ -113,6 +113,21 @@ export interface DatabaseInfo {
   title: string | null
 }
 
+/**
+ * Lightweight relation-target descriptor returned by
+ * POST /api/databases/{id}/entries/resolve-titles.
+ *
+ * Relation cells store only the linked entry IDs; their chips need a title.
+ * Resolving titles from the paginated `entries` cache breaks once a relation
+ * points past a database's display limit, so these descriptors are fetched and
+ * cached separately, independently of any pagination (#27).
+ */
+export interface RelationTitle {
+  id: string
+  title: string | null
+  database_id: string
+}
+
 // ── View types ────────────────────────────────────────────────────────────────
 
 /**
@@ -412,6 +427,23 @@ export const useDatabaseStore = defineStore('database', () => {
   /** All database blocks available in the workspace (id + title). */
   const allDatabases = ref<DatabaseInfo[]>([])
 
+  /**
+   * Resolved relation-target descriptors keyed by entry id.
+   *
+   * Populated by ``resolveEntryTitles`` via POST /entries/resolve-titles and
+   * kept deliberately separate from ``entries`` so a target database's
+   * paginated display limit never drops a relation chip (#27).
+   */
+  const relationTitles = ref<Record<string, RelationTitle>>({})
+
+  /**
+   * Entry ids for which a resolve round-trip has completed (whether the entry
+   * was found or not). Lets relation cells distinguish "still loading" from
+   * "trashed / not a target", so unresolved chips are hidden only after the
+   * server has actually been asked.
+   */
+  const resolvedRelationIds = ref<Set<string>>(new Set())
+
   // ── All databases ─────────────────────────────────────────────────────────
 
   /**
@@ -524,6 +556,56 @@ export const useDatabaseStore = defineStore('database', () => {
     return result
   }
 
+  /**
+   * Resolve a set of relation-target entry ids to ``{id, title, database_id}``
+   * descriptors and cache them in ``relationTitles``.
+   *
+   * Only ids that are neither already resolved nor currently being resolved
+   * are requested, unless ``force`` is set (used after an inline edit to a
+   * linked entry so the chip label refreshes). Ids that the server does not
+   * return — trashed, foreign or unknown — are marked resolved but left out of
+   * ``relationTitles``, which is how a relation cell knows to drop the chip.
+   *
+   * Failures are swallowed; the attempted-marker is rolled back for ids that
+   * did not resolve so a transient error does not permanently blank a chip.
+   */
+  async function resolveEntryTitles(
+    databaseId: string,
+    ids: string[],
+    force = false,
+  ): Promise<void> {
+    if (ids.length === 0) return
+    const wanted = force
+      ? ids
+      : ids.filter(
+          (id) => !(id in relationTitles.value) && !resolvedRelationIds.value.has(id),
+        )
+    if (wanted.length === 0) return
+    // Mark up front so concurrent cells do not issue duplicate requests.
+    for (const id of wanted) resolvedRelationIds.value.add(id)
+    try {
+      const result = await apiClient.post<RelationTitle[]>(
+        `/api/databases/${databaseId}/entries/resolve-titles`,
+        { ids: wanted },
+      )
+      const returned = new Set(result.map((r) => r.id))
+      for (const r of result) {
+        relationTitles.value[r.id] = r
+      }
+      // On a forced refresh, drop descriptors for ids that no longer resolve
+      // (e.g. the entry was trashed since the last resolve).
+      if (force) {
+        for (const id of wanted) {
+          if (!returned.has(id)) delete relationTitles.value[id]
+        }
+      }
+    } catch {
+      for (const id of wanted) {
+        if (!(id in relationTitles.value)) resolvedRelationIds.value.delete(id)
+      }
+    }
+  }
+
   async function createEntry(databaseId: string): Promise<DatabaseEntry> {
     const entry = await apiClient.post<DatabaseEntry>(
       `/api/databases/${databaseId}/entries`,
@@ -612,11 +694,32 @@ export const useDatabaseStore = defineStore('database', () => {
     return entries.value[databaseId] ?? []
   }
 
+  /**
+   * Resolved title text for a related entry id, or ``null`` when the id has
+   * not (yet) resolved to an active entry. Untitled entries also resolve to
+   * ``null`` here (no title text), so callers should supply their own
+   * "untitled" fallback.
+   */
+  function getRelationTitle(id: string): string | null {
+    return relationTitles.value[id]?.title ?? null
+  }
+
+  /** True once a resolve round-trip has completed for *id* (found or not). */
+  function isRelationResolved(id: string): boolean {
+    return resolvedRelationIds.value.has(id)
+  }
+
+  /** True when *id* resolved to an active entry of its target database. */
+  function hasRelationEntry(id: string): boolean {
+    return id in relationTitles.value
+  }
+
   return {
     // State
     schemas,
     entries,
     allDatabases,
+    relationTitles,
 
     // Database list
     fetchAllDatabases,
@@ -636,5 +739,11 @@ export const useDatabaseStore = defineStore('database', () => {
     seedReadonlySchemas,
     upsertValue,
     getEntries,
+
+    // Relation-chip title resolution (#27)
+    resolveEntryTitles,
+    getRelationTitle,
+    isRelationResolved,
+    hasRelationEntry,
   }
 })

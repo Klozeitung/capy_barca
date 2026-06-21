@@ -157,6 +157,73 @@ def test_list_children_exclude_types_none_returns_all(db, workspace, database_bl
     assert any(c.id == template.id for c in children)
 
 
+# ─── list_blocks_by_ids ───────────────────────────────────────────────────────
+
+
+def test_list_blocks_by_ids_returns_requested_blocks(db, workspace, database_block):
+    b1 = repo.create_block(db, type="page", position=1.0, parent_id=database_block.id)
+    b2 = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
+    db.commit()
+    result = repo.list_blocks_by_ids(db, [b1.id, b2.id])
+    ids = {b.id for b in result}
+    assert ids == {b1.id, b2.id}
+
+
+def test_list_blocks_by_ids_empty_input_returns_empty(db):
+    assert repo.list_blocks_by_ids(db, []) == []
+
+
+def test_list_blocks_by_ids_omits_unknown_ids(db, database_block):
+    b1 = repo.create_block(db, type="page", position=1.0, parent_id=database_block.id)
+    db.commit()
+    result = repo.list_blocks_by_ids(db, [b1.id, uuid.uuid4()])
+    assert [b.id for b in result] == [b1.id]
+
+
+def test_list_blocks_by_ids_filters_by_parent(db, workspace, database_block):
+    """parent_id restricts the result to direct children of that block."""
+    inside = repo.create_block(db, type="page", position=1.0, parent_id=database_block.id)
+    outside = repo.create_block(db, type="page", position=2.0, parent_id=workspace.id)
+    db.commit()
+    result = repo.list_blocks_by_ids(
+        db, [inside.id, outside.id], parent_id=database_block.id
+    )
+    assert [b.id for b in result] == [inside.id]
+
+
+def test_list_blocks_by_ids_excludes_trash_by_default(db, database_block):
+    active = repo.create_block(db, type="page", position=1.0, parent_id=database_block.id)
+    trashed = repo.create_block(
+        db, type="page", position=2.0, parent_id=database_block.id, state="trash"
+    )
+    db.commit()
+    result = repo.list_blocks_by_ids(db, [active.id, trashed.id])
+    assert [b.id for b in result] == [active.id]
+
+
+def test_list_blocks_by_ids_includes_trash_when_state_is_none(db, database_block):
+    trashed = repo.create_block(
+        db, type="page", position=1.0, parent_id=database_block.id, state="trash"
+    )
+    db.commit()
+    result = repo.list_blocks_by_ids(db, [trashed.id], state=None)
+    assert [b.id for b in result] == [trashed.id]
+
+
+def test_list_blocks_by_ids_exclude_types_filters_out_entry_template(db, database_block):
+    entry = repo.create_block(db, type="page", position=1.0, parent_id=database_block.id)
+    template = repo.create_block(
+        db, type="entry_template", position=2.0, parent_id=database_block.id
+    )
+    db.commit()
+    result = repo.list_blocks_by_ids(
+        db,
+        [entry.id, template.id],
+        exclude_types=frozenset({"entry_template"}),
+    )
+    assert [b.id for b in result] == [entry.id]
+
+
 # ─── create_block ─────────────────────────────────────────────────────────────
 
 

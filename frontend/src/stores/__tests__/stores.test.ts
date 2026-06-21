@@ -801,6 +801,121 @@ describe('useDatabaseStore', () => {
     )
   })
 
+  // ── resolveEntryTitles (#27) ─────────────────────────────────────────────────
+
+  it('resolveEntryTitles posts missing ids and caches descriptors', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce([
+      { id: 'e1', title: 'Napoleon', database_id: 'db-1' },
+      { id: 'e2', title: null, database_id: 'db-1' },
+    ])
+
+    const store = useDatabaseStore()
+    await store.resolveEntryTitles('db-1', ['e1', 'e2'])
+
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/api/databases/db-1/entries/resolve-titles',
+      { ids: ['e1', 'e2'] },
+    )
+    expect(store.getRelationTitle('e1')).toBe('Napoleon')
+    expect(store.getRelationTitle('e2')).toBeNull() // resolved but untitled
+    expect(store.hasRelationEntry('e1')).toBe(true)
+    expect(store.hasRelationEntry('e2')).toBe(true)
+  })
+
+  it('resolveEntryTitles is a no-op for empty input', async () => {
+    const store = useDatabaseStore()
+    await store.resolveEntryTitles('db-1', [])
+    expect(apiClient.post).not.toHaveBeenCalled()
+  })
+
+  it('resolveEntryTitles skips already-resolved ids on the next call', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce([
+      { id: 'e1', title: 'A', database_id: 'db-1' },
+    ])
+
+    const store = useDatabaseStore()
+    await store.resolveEntryTitles('db-1', ['e1'])
+    await store.resolveEntryTitles('db-1', ['e1'])
+
+    expect(apiClient.post).toHaveBeenCalledTimes(1)
+  })
+
+  it('resolveEntryTitles only requests the still-missing ids', async () => {
+    vi.mocked(apiClient.post)
+      .mockResolvedValueOnce([{ id: 'e1', title: 'A', database_id: 'db-1' }])
+      .mockResolvedValueOnce([{ id: 'e2', title: 'B', database_id: 'db-1' }])
+
+    const store = useDatabaseStore()
+    await store.resolveEntryTitles('db-1', ['e1'])
+    await store.resolveEntryTitles('db-1', ['e1', 'e2'])
+
+    expect(apiClient.post).toHaveBeenLastCalledWith(
+      '/api/databases/db-1/entries/resolve-titles',
+      { ids: ['e2'] },
+    )
+  })
+
+  it('resolveEntryTitles marks unreturned ids resolved but without a descriptor', async () => {
+    // Server omits 'gone' (trashed / foreign) — it is resolved but not active.
+    vi.mocked(apiClient.post).mockResolvedValueOnce([
+      { id: 'e1', title: 'A', database_id: 'db-1' },
+    ])
+
+    const store = useDatabaseStore()
+    await store.resolveEntryTitles('db-1', ['e1', 'gone'])
+
+    expect(store.isRelationResolved('gone')).toBe(true)
+    expect(store.hasRelationEntry('gone')).toBe(false)
+    expect(store.getRelationTitle('gone')).toBeNull()
+  })
+
+  it('resolveEntryTitles with force re-requests already-resolved ids', async () => {
+    vi.mocked(apiClient.post)
+      .mockResolvedValueOnce([{ id: 'e1', title: 'Old', database_id: 'db-1' }])
+      .mockResolvedValueOnce([{ id: 'e1', title: 'New', database_id: 'db-1' }])
+
+    const store = useDatabaseStore()
+    await store.resolveEntryTitles('db-1', ['e1'])
+    await store.resolveEntryTitles('db-1', ['e1'], true)
+
+    expect(apiClient.post).toHaveBeenCalledTimes(2)
+    expect(store.getRelationTitle('e1')).toBe('New')
+  })
+
+  it('resolveEntryTitles with force drops descriptors no longer returned', async () => {
+    vi.mocked(apiClient.post)
+      .mockResolvedValueOnce([{ id: 'e1', title: 'A', database_id: 'db-1' }])
+      .mockResolvedValueOnce([]) // e1 trashed since last resolve
+
+    const store = useDatabaseStore()
+    await store.resolveEntryTitles('db-1', ['e1'])
+    expect(store.hasRelationEntry('e1')).toBe(true)
+
+    await store.resolveEntryTitles('db-1', ['e1'], true)
+    expect(store.hasRelationEntry('e1')).toBe(false)
+  })
+
+  it('resolveEntryTitles allows retry after a failed request', async () => {
+    vi.mocked(apiClient.post).mockRejectedValueOnce(new Error('network'))
+
+    const store = useDatabaseStore()
+    await store.resolveEntryTitles('db-1', ['e1'])
+    expect(store.isRelationResolved('e1')).toBe(false) // rolled back
+
+    vi.mocked(apiClient.post).mockResolvedValueOnce([
+      { id: 'e1', title: 'A', database_id: 'db-1' },
+    ])
+    await store.resolveEntryTitles('db-1', ['e1'])
+    expect(store.getRelationTitle('e1')).toBe('A')
+  })
+
+  it('relation-title getters are empty before any resolve', () => {
+    const store = useDatabaseStore()
+    expect(store.getRelationTitle('x')).toBeNull()
+    expect(store.isRelationResolved('x')).toBe(false)
+    expect(store.hasRelationEntry('x')).toBe(false)
+  })
+
   // ── fetchAllDatabases ────────────────────────────────────────────────────────
 
   it('fetchAllDatabases calls GET /api/databases and stores result', async () => {

@@ -11,6 +11,12 @@
  * background refresh runs; an explicit loading spinner is only shown when no
  * cached entries exist yet.
  *
+ * Chip titles, however, are resolved through the store's dedicated
+ * ``resolveEntryTitles`` path (POST /entries/resolve-titles), not from the
+ * paginated entry cache. This decouples chip rendering from a target
+ * database's display limit so a chip renders even when the linked entry sits
+ * past the first page of its database (#27).
+ *
  * Bilateral sync is performed server-side; the component only needs to emit
  * the updated ``related_ids`` for the current entry.
  *
@@ -24,7 +30,7 @@
  *      has been mutated since the last open. The loading spinner is shown
  *      only when no cached entries exist.
  */
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, onUnmounted, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useDatabaseStore, type PropertySchema, type DatabaseEntry, normalizeSelectOption, optionColorStyle } from '@/stores/database'
@@ -114,12 +120,22 @@ const timelineSlotGroups = computed<SlotGroup[]>(() => {
   })
 })
 
-/** Filter a set of IDs against the loaded active entries in target DB. */
+/**
+ * Whether a related id should render as a chip.
+ *
+ * Shown while still pending (no resolve round-trip yet) so the cell is never
+ * blank on first render, and once resolved only when the id maps to an active
+ * target entry. Ids that resolved to nothing (trashed / foreign) are hidden,
+ * replacing the previous "present in the paginated cache" filter that broke
+ * past the display limit (#27).
+ */
+function isRelationVisible(id: string): boolean {
+  return !dbStore.isRelationResolved(id) || dbStore.hasRelationEntry(id)
+}
+
+/** Filter a set of IDs to those that should render as chips. */
 function displayedIdsForGroup(ids: string[]): string[] {
-  const loaded = targetEntries.value
-  if (loaded.length === 0) return ids
-  const activeSet = new Set(loaded.map(e => e.id))
-  return ids.filter(id => activeSet.has(id))
+  return ids.filter(isRelationVisible)
 }
 
 // ── Derived ───────────────────────────────────────────────────────────────────
@@ -176,20 +192,26 @@ function nuanceStyle(label: string): Record<string, string> {
 const targetEntries = computed(() => dbStore.getEntries(targetDatabaseId.value))
 
 /**
- * IDs rendered as chips in the cell — a filtered subset of relatedIds that
- * are present in the active target-DB entry cache.
+ * IDs rendered as chips in the cell.
  *
- * fetchEntries (called on mount and on every picker open) only returns
- * active entries, so soft-deleted entries are automatically excluded once
- * the cache is warm.  While the cache is still empty we fall back to showing
- * all IDs so the cell is never blank on the very first render.
+ * Visibility is driven by the dedicated title resolver (see
+ * ``isRelationVisible``), not the paginated entry cache, so chips render
+ * regardless of where the linked entry sits in its target database (#27).
  */
-const displayedRelatedIds = computed<string[]>(() => {
-  const loaded = targetEntries.value
-  if (loaded.length === 0) return relatedIds.value
-  const activeSet = new Set(loaded.map((e) => e.id))
-  return relatedIds.value.filter((id) => activeSet.has(id))
-})
+const displayedRelatedIds = computed<string[]>(() =>
+  relatedIds.value.filter(isRelationVisible),
+)
+
+// Resolve chip titles whenever the linked ids or the target database change.
+// Runs immediately so labels are available on first render without loading the
+// entire target database; the resolver itself de-duplicates already-known ids.
+watch(
+  [relatedIds, targetDatabaseId],
+  ([ids, dbId]) => {
+    if (ids.length > 0) dbStore.resolveEntryTitles(dbId, ids)
+  },
+  { immediate: true },
+)
 
 // ── Picker state ──────────────────────────────────────────────────────────────
 
@@ -309,6 +331,12 @@ function isSelected(entryId: string): boolean {
 }
 
 function getEntryTitle(id: string): string {
+  // Prefer the dedicated relation-title resolver (#27); it is independent of
+  // the target database's display limit. Fall back to the paginated entry
+  // cache (covers freshly created entries before their resolve completes) and
+  // finally to the localized "untitled" label.
+  const resolved = dbStore.getRelationTitle(id)
+  if (resolved) return resolved
   const found = targetEntries.value.find(e => e.id === id)
   return (found?.content?.title as string | undefined) || t('main.untitled')
 }
@@ -393,15 +421,6 @@ async function createAndLink() {
   }
 }
 
-// ── Bootstrap ─────────────────────────────────────────────────────────────────
-
-onMounted(async () => {
-  // Pre-fetch so chip labels are available immediately if already linked.
-  if (relatedIds.value.length > 0 && targetEntries.value.length === 0) {
-    await dbStore.fetchEntries(targetDatabaseId.value)
-  }
-})
-
 // ── Side view ─────────────────────────────────────────────────────────────────
 
 /** ID of the related entry currently open in the side panel, or null. */
@@ -423,6 +442,9 @@ function closeSideView(): void {
 /** Re-fetch target entries after an edit so chips stay up to date. */
 async function onSideViewRefresh(): Promise<void> {
   await dbStore.fetchEntries(targetDatabaseId.value)
+  // Force-refresh resolved chip titles so an edited (or trashed) linked entry
+  // updates its chip immediately (#27).
+  await dbStore.resolveEntryTitles(targetDatabaseId.value, relatedIds.value, true)
 }
 </script>
 

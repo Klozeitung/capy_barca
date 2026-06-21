@@ -3085,3 +3085,116 @@ def test_query_entries_admin_bypasses_permission(http_client):
     resp = http_client.post(f"/api/databases/{db_id}/entries/query", json={})
     assert resp.status_code == 200
     assert resp.json()["total"] >= 1
+
+
+# ─── POST /api/databases/{id}/entries/resolve-titles (#27) ────────────────────
+
+
+def _resolve_titles(http_client, database_id, ids):
+    """Helper: POST to /entries/resolve-titles and assert 200."""
+    resp = http_client.post(
+        f"/api/databases/{database_id}/entries/resolve-titles",
+        json={"ids": [str(i) for i in ids]},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _set_title(http_client, entry_id, title):
+    http_client.patch(f"/api/blocks/{entry_id}", json={"content": {"title": title}})
+
+
+def test_resolve_titles_returns_200(http_client):
+    db_id = _create_database(http_client)
+    result = _resolve_titles(http_client, db_id, [])
+    assert result == []
+
+
+def test_resolve_titles_unknown_database_returns_404(http_client):
+    resp = http_client.post(
+        f"/api/databases/{uuid.uuid4()}/entries/resolve-titles",
+        json={"ids": []},
+    )
+    assert resp.status_code == 404
+
+
+def test_resolve_titles_resolves_requested_ids(http_client):
+    db_id = _create_database(http_client)
+    e1 = _create_entry(http_client, db_id)
+    e2 = _create_entry(http_client, db_id)
+    _set_title(http_client, e1["id"], "Napoleon")
+    _set_title(http_client, e2["id"], "Wellington")
+
+    result = _resolve_titles(http_client, db_id, [e1["id"], e2["id"]])
+    by_id = {r["id"]: r for r in result}
+    assert by_id[e1["id"]]["title"] == "Napoleon"
+    assert by_id[e2["id"]]["title"] == "Wellington"
+    assert by_id[e1["id"]]["database_id"] == db_id
+
+
+def test_resolve_titles_untitled_entry_returns_null_title(http_client):
+    db_id = _create_database(http_client)
+    e1 = _create_entry(http_client, db_id)
+    result = _resolve_titles(http_client, db_id, [e1["id"]])
+    assert len(result) == 1
+    assert result[0]["id"] == e1["id"]
+    assert result[0]["title"] is None
+
+
+def test_resolve_titles_omits_unknown_ids(http_client):
+    db_id = _create_database(http_client)
+    e1 = _create_entry(http_client, db_id)
+    result = _resolve_titles(http_client, db_id, [e1["id"], str(uuid.uuid4())])
+    assert [r["id"] for r in result] == [e1["id"]]
+
+
+def test_resolve_titles_omits_entries_from_other_database(http_client):
+    """IDs that belong to a different database are not resolved."""
+    db_a = _create_database(http_client)
+    db_b = _create_database(http_client)
+    a1 = _create_entry(http_client, db_a)
+    b1 = _create_entry(http_client, db_b)
+    result = _resolve_titles(http_client, db_a, [a1["id"], b1["id"]])
+    assert [r["id"] for r in result] == [a1["id"]]
+
+
+def test_resolve_titles_omits_trashed_entries(http_client):
+    """Soft-deleted entries are not resolved (chip drops automatically)."""
+    db_id = _create_database(http_client)
+    e1 = _create_entry(http_client, db_id)
+    e2 = _create_entry(http_client, db_id)
+    http_client.delete(f"/api/blocks/{e2['id']}")
+    result = _resolve_titles(http_client, db_id, [e1["id"], e2["id"]])
+    assert [r["id"] for r in result] == [e1["id"]]
+
+
+def test_resolve_titles_excludes_entry_templates(http_client):
+    """entry_template blocks must never be resolved as relation targets."""
+    db_id = _create_database(http_client)
+    real_entry = _create_entry(http_client, db_id)
+    template = _create_entry_template(http_client, db_id)
+    result = _resolve_titles(http_client, db_id, [real_entry["id"], template["id"]])
+    assert [r["id"] for r in result] == [real_entry["id"]]
+
+
+def test_resolve_titles_ignores_display_limit(http_client):
+    """
+    Regression for #27: a relation target beyond the query-endpoint display
+    limit must still resolve. The resolve-titles endpoint loads exactly the
+    requested ID regardless of how many entries precede it.
+    """
+    db_id = _create_database(http_client)
+    # Create more entries than a small query limit would return.
+    created = [_create_entry(http_client, db_id) for _ in range(5)]
+    last = created[-1]
+    _set_title(http_client, last["id"], "Beyond Limit")
+
+    # The paginated query with limit=2 does not contain the last entry...
+    page = _query(http_client, db_id, limit=2)
+    assert all(e["id"] != last["id"] for e in page["entries"])
+
+    # ...but resolve-titles returns it directly.
+    result = _resolve_titles(http_client, db_id, [last["id"]])
+    assert len(result) == 1
+    assert result[0]["id"] == last["id"]
+    assert result[0]["title"] == "Beyond Limit"
