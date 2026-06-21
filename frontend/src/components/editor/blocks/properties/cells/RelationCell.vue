@@ -27,11 +27,16 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
-import { useDatabaseStore, type PropertySchema, type DatabaseEntry } from '@/stores/database'
+import { useDatabaseStore, type PropertySchema, type DatabaseEntry, normalizeSelectOption, optionColorStyle } from '@/stores/database'
 import { useBlockStore } from '@/stores/blocks'
 import SideView from '@/components/main/SideView.vue'
 import TimelineEditor from './TimelineEditor.vue'
-import { resolveTimelineValue, getAllTimelineRelatedIds, getTimelineDisplayMode } from './cellUtils'
+import {
+  resolveTimelineValue,
+  getAllTimelineRelatedIds,
+  getTimelineDisplayMode,
+  getNuanceConfig,
+} from './cellUtils'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
@@ -76,6 +81,7 @@ interface SlotGroup {
   key: string
   period: string
   ids: string[]
+  nuances: Record<string, string>
 }
 
 function _formatPeriodKey(key: string): string {
@@ -103,6 +109,7 @@ const timelineSlotGroups = computed<SlotGroup[]>(() => {
       key: k,
       period: _formatPeriodKey(k),
       ids: (slot?.related_ids as string[] | undefined) ?? [],
+      nuances: (slot?.nuances as Record<string, string> | undefined) ?? {},
     }
   })
 })
@@ -132,6 +139,39 @@ const relatedIds = computed<string[]>(() => {
   }
   return (raw?.related_ids as string[] | undefined) ?? []
 })
+
+// ── Nuance ──────────────────────────────────────────────────────────────────
+//
+// Each relation schema carries its own nuance affixes / orientation in
+// ``config.nuance``; the chip is wrapped with an affix-bracketed label per the
+// orientation.  When nuance is active the chips stack one per line, matching
+// the per-relation line layout.  Absent config → bare chips, as before.
+
+const nuanceCfg = computed(() => getNuanceConfig(props.schema))
+
+/** Nuance map for the "last"/normal mode (resolved last slot, or flat value). */
+const currentNuances = computed<Record<string, string>>(() => {
+  const raw = props.entry.values[props.schema.id]
+  if (!raw) return {}
+  const val = hasTimeline.value && '_timeline' in raw ? resolveTimelineValue(raw) : raw
+  return (val?.nuances as Record<string, string> | undefined) ?? {}
+})
+
+/** True when this id has a non-empty nuance label in the given map. */
+function hasNuance(id: string, map: Record<string, string>): boolean {
+  return !!nuanceCfg.value && !!(map?.[id])
+}
+
+function nuanceLabel(id: string, map: Record<string, string>): string {
+  return map?.[id] ?? ''
+}
+
+/** Inline style for the nuance label chip, resolved from the shared options. */
+function nuanceStyle(label: string): Record<string, string> {
+  const opts = (nuanceCfg.value?.options ?? []).map(normalizeSelectOption)
+  const opt = opts.find(o => o.label === label)
+  return opt?.color ? optionColorStyle(opt.color) : {}
+}
 
 const targetEntries = computed(() => dbStore.getEntries(targetDatabaseId.value))
 
@@ -275,6 +315,37 @@ function getEntryTitle(id: string): string {
 
 // ── Mutations ─────────────────────────────────────────────────────────────────
 
+/**
+ * Emit a flat relation value, preserving per-uid nuances for still-linked
+ * entries.  Used only for non-timeline relations; timeline relations are
+ * edited through TimelineEditor and keep their pool/_timeline shape.
+ */
+function emitFlat(ids: string[], nuances: Record<string, string>) {
+  if (ids.length === 0) {
+    emit('change', null)
+    return
+  }
+  const cleaned: Record<string, string> = {}
+  for (const id of ids) {
+    if (nuances[id]) cleaned[id] = nuances[id]
+  }
+  const value: Record<string, unknown> = { related_ids: ids }
+  if (Object.keys(cleaned).length > 0) value.nuances = cleaned
+  emit('change', value)
+}
+
+/** Nuance is editable inline only for flat relations (timeline → TimelineEditor). */
+const nuanceEditable = computed(() => !!nuanceCfg.value && !hasTimeline.value)
+
+/** Set or clear the nuance label of a linked entry on a flat relation. */
+function setFlatNuance(uid: string, label: string) {
+  const ids = [...relatedIds.value]
+  const nuances = { ...currentNuances.value }
+  if (label) nuances[uid] = label
+  else delete nuances[uid]
+  emitFlat(ids, nuances)
+}
+
 function toggleEntry(entryId: string) {
   const current = [...relatedIds.value]
   const idx = current.indexOf(entryId)
@@ -283,13 +354,21 @@ function toggleEntry(entryId: string) {
   } else {
     current.splice(idx, 1)
   }
-  emit('change', current.length > 0 ? { related_ids: current } : null)
+  if (!hasTimeline.value) {
+    emitFlat(current, currentNuances.value)
+  } else {
+    emit('change', current.length > 0 ? { related_ids: current } : null)
+  }
 }
 
 function removeRelated(entryId: string, event: MouseEvent) {
   event.stopPropagation()
   const updated = relatedIds.value.filter(id => id !== entryId)
-  emit('change', updated.length > 0 ? { related_ids: updated } : null)
+  if (!hasTimeline.value) {
+    emitFlat(updated, currentNuances.value)
+  } else {
+    emit('change', updated.length > 0 ? { related_ids: updated } : null)
+  }
 }
 
 /**
@@ -358,12 +437,24 @@ async function onSideViewRefresh(): Promise<void> {
           class="rel-cell__timeline-slot"
         >
           <span class="rel-cell__slot-label">{{ group.period }}</span>
-          <div class="rel-cell__slot-chips" :class="{ 'rel-cell__slot-chips--stack': wrapContent }">
+          <div
+            class="rel-cell__slot-chips"
+            :class="{ 'rel-cell__slot-chips--stack': wrapContent || !!nuanceCfg }"
+          >
             <span
               v-for="id in displayedIdsForGroup(group.ids)"
               :key="id"
               class="rel-cell__tag"
+              :class="{ 'rel-cell__tag--nuanced': hasNuance(id, group.nuances) }"
             >
+              <span
+                v-if="hasNuance(id, group.nuances) && nuanceCfg?.orientation === 'prepended'"
+                class="rel-cell__nuance"
+              >
+                <span v-if="nuanceCfg?.affix1" class="rel-cell__affix">{{ nuanceCfg?.affix1 }}</span>
+                <span class="rel-cell__nuance-label" :style="nuanceStyle(nuanceLabel(id, group.nuances))">{{ nuanceLabel(id, group.nuances) }}</span>
+                <span v-if="nuanceCfg?.affix2" class="rel-cell__affix">{{ nuanceCfg?.affix2 }}</span>
+              </span>
               <span
                 class="rel-cell__tag-open"
                 :title="t('db.relation.openEntry')"
@@ -371,6 +462,14 @@ async function onSideViewRefresh(): Promise<void> {
               >
                 <Icon icon="mdi:file-outline" width="10" height="10" class="rel-cell__tag-icon" />
                 <span class="rel-cell__tag-text">{{ getEntryTitle(id) }}</span>
+              </span>
+              <span
+                v-if="hasNuance(id, group.nuances) && nuanceCfg?.orientation === 'appended'"
+                class="rel-cell__nuance"
+              >
+                <span v-if="nuanceCfg?.affix1" class="rel-cell__affix">{{ nuanceCfg?.affix1 }}</span>
+                <span class="rel-cell__nuance-label" :style="nuanceStyle(nuanceLabel(id, group.nuances))">{{ nuanceLabel(id, group.nuances) }}</span>
+                <span v-if="nuanceCfg?.affix2" class="rel-cell__affix">{{ nuanceCfg?.affix2 }}</span>
               </span>
             </span>
             <span v-if="group.ids.length === 0" class="rel-cell__slot-empty">—</span>
@@ -389,12 +488,31 @@ async function onSideViewRefresh(): Promise<void> {
 
     <!-- "last" / normal mode: flat tag strip -->
     <template v-else>
-      <div class="rel-cell__tags" :class="{ 'rel-cell__tags--stack': wrapContent }">
+      <div class="rel-cell__tags" :class="{ 'rel-cell__tags--stack': wrapContent || !!nuanceCfg }">
         <span
           v-for="id in displayedRelatedIds"
           :key="id"
           class="rel-cell__tag"
+          :class="{ 'rel-cell__tag--nuanced': nuanceEditable || hasNuance(id, currentNuances) }"
         >
+          <span
+            v-if="(nuanceEditable || hasNuance(id, currentNuances)) && nuanceCfg?.orientation === 'prepended'"
+            class="rel-cell__nuance"
+          >
+            <span v-if="nuanceCfg?.affix1" class="rel-cell__affix">{{ nuanceCfg?.affix1 }}</span>
+            <select
+              v-if="nuanceEditable"
+              class="rel-cell__nuance-select"
+              :value="currentNuances[id] ?? ''"
+              @click.stop
+              @change="setFlatNuance(id, ($event.target as HTMLSelectElement).value)"
+            >
+              <option value="">{{ t('db.timeline.nuanceNone') }}</option>
+              <option v-for="opt in (nuanceCfg?.options ?? [])" :key="opt.label" :value="opt.label">{{ opt.label }}</option>
+            </select>
+            <span v-else class="rel-cell__nuance-label" :style="nuanceStyle(nuanceLabel(id, currentNuances))">{{ nuanceLabel(id, currentNuances) }}</span>
+            <span v-if="nuanceCfg?.affix2" class="rel-cell__affix">{{ nuanceCfg?.affix2 }}</span>
+          </span>
           <span
             class="rel-cell__tag-open"
             :title="t('db.relation.openEntry')"
@@ -402,6 +520,24 @@ async function onSideViewRefresh(): Promise<void> {
           >
             <Icon icon="mdi:file-outline" width="10" height="10" class="rel-cell__tag-icon" />
             <span class="rel-cell__tag-text">{{ getEntryTitle(id) }}</span>
+          </span>
+          <span
+            v-if="(nuanceEditable || hasNuance(id, currentNuances)) && nuanceCfg?.orientation === 'appended'"
+            class="rel-cell__nuance"
+          >
+            <span v-if="nuanceCfg?.affix1" class="rel-cell__affix">{{ nuanceCfg?.affix1 }}</span>
+            <select
+              v-if="nuanceEditable"
+              class="rel-cell__nuance-select"
+              :value="currentNuances[id] ?? ''"
+              @click.stop
+              @change="setFlatNuance(id, ($event.target as HTMLSelectElement).value)"
+            >
+              <option value="">{{ t('db.timeline.nuanceNone') }}</option>
+              <option v-for="opt in (nuanceCfg?.options ?? [])" :key="opt.label" :value="opt.label">{{ opt.label }}</option>
+            </select>
+            <span v-else class="rel-cell__nuance-label" :style="nuanceStyle(nuanceLabel(id, currentNuances))">{{ nuanceLabel(id, currentNuances) }}</span>
+            <span v-if="nuanceCfg?.affix2" class="rel-cell__affix">{{ nuanceCfg?.affix2 }}</span>
           </span>
           <button
             class="rel-cell__tag-remove"
@@ -872,5 +1008,46 @@ async function onSideViewRefresh(): Promise<void> {
 
 .rel-cell__picker-close:hover {
   color: var(--color-text);
+}
+
+/* ── Relation nuance ───────────────────────────────────────────────────────── */
+/* Nuanced relations render one per line: chip plus an affix-bracketed label,
+ * ordered by the schema's orientation. */
+.rel-cell__tag--nuanced {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.rel-cell__nuance {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.rel-cell__affix {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.rel-cell__nuance-label {
+  font-size: 0.75rem;
+  line-height: 1.2;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--color-surface-2, rgba(127, 127, 127, 0.16));
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+.rel-cell__nuance-select {
+  font-size: 0.75rem;
+  line-height: 1.2;
+  padding: 1px 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  max-width: 140px;
 }
 </style>

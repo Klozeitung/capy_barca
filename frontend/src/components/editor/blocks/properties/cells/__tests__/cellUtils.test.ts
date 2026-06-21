@@ -129,3 +129,103 @@ describe('displayValue – timeline scalar export ("all" mode) is unaffected', (
     )
   })
 })
+
+// ── Relation nuance ───────────────────────────────────────────────────────────
+
+import {
+  getNuanceConfig,
+  nuanceLabelFor,
+  formatNuancedRelation,
+  type NuanceConfig,
+} from '../cellUtils'
+
+function nuanceConfig(over: Partial<NuanceConfig> = {}): NuanceConfig {
+  return { enabled: true, options: [], affix1: '', affix2: '', orientation: 'prepended', ...over }
+}
+
+describe('getNuanceConfig', () => {
+  it('returns null when nuance is absent or disabled', () => {
+    expect(getNuanceConfig(relationSchema())).toBeNull()
+    expect(getNuanceConfig(relationSchema({ nuance: { enabled: false } }))).toBeNull()
+  })
+
+  it('reads affixes and orientation, defaulting orientation to prepended', () => {
+    const cfg = getNuanceConfig(relationSchema({
+      nuance: { enabled: true, affix1: 'as', affix2: 'of', orientation: 'appended' },
+    }))
+    expect(cfg).toMatchObject({ affix1: 'as', affix2: 'of', orientation: 'appended' })
+
+    const cfg2 = getNuanceConfig(relationSchema({ nuance: { enabled: true } }))
+    expect(cfg2?.orientation).toBe('prepended')
+  })
+})
+
+describe('formatNuancedRelation', () => {
+  const cfg = nuanceConfig
+
+  it('returns the bare title when there is no label or no config', () => {
+    expect(formatNuancedRelation('Torik', '', cfg())).toBe('Torik')
+    expect(formatNuancedRelation('Torik', 'lead', null)).toBe('Torik')
+  })
+
+  it('prepends the nuance group before the title (prepended)', () => {
+    expect(formatNuancedRelation('Großmeister', 'erfolgreich', cfg())).toBe('erfolgreich Großmeister')
+    expect(
+      formatNuancedRelation('Großmeister', 'erfolgreich', cfg({ affix1: 'als', affix2: 'gewählt' })),
+    ).toBe('als erfolgreich gewählt Großmeister')
+  })
+
+  it('appends the nuance group after the title (appended)', () => {
+    expect(
+      formatNuancedRelation('Großmeister', 'erfolgreich', cfg({ orientation: 'appended', affix1: 'als', affix2: 'bestätigt' })),
+    ).toBe('Großmeister als erfolgreich bestätigt')
+  })
+})
+
+describe('nuanceLabelFor', () => {
+  it('reads the label for a related id, empty when missing', () => {
+    const slot = { related_ids: ['a'], nuances: { a: 'lead' } }
+    expect(nuanceLabelFor(slot, 'a')).toBe('lead')
+    expect(nuanceLabelFor(slot, 'b')).toBe('')
+    expect(nuanceLabelFor(null, 'a')).toBe('')
+  })
+})
+
+describe('displayValue – nuanced timeline relation', () => {
+  it('renders the nuance group in an always-valid slot ("all" mode)', () => {
+    const schema = relationSchema({ nuance: nuanceConfig() })
+    const value = { _timeline: { '': { related_ids: ['torik-id'], nuances: { 'torik-id': 'erfolgreich' } } } }
+    expect(displayValue(entryWithPartner(value), schema, undefined, resolveTitle)).toBe('erfolgreich Torik')
+  })
+
+  it('renders nuance per related entry within a bounded slot', () => {
+    const schema = relationSchema({ nuance: nuanceConfig({ orientation: 'appended', affix2: 'gewählt' }) })
+    const value = {
+      _timeline: {
+        '2136-08-14T17:13:00→2137-05-04T00:00:00': {
+          related_ids: ['torik-id', 'irena-id'],
+          nuances: { 'torik-id': 'erfolgreich' },
+        },
+      },
+    }
+    expect(displayValue(entryWithPartner(value), schema, undefined, resolveTitle)).toBe(
+      '2136-08-14 → 2137-05-04: Torik erfolgreich gewählt, Irena',
+    )
+  })
+})
+
+describe('displayValue – nuanced flat relation ("last" mode)', () => {
+  it('renders the nuance group for a non-timeline relation', () => {
+    const schema: PropertySchema = {
+      id: 'schema-partner',
+      database_id: 'db-1',
+      name: 'Partner',
+      type: 'relation',
+      config: { target_database_id: 'db-1', nuance: nuanceConfig() },
+      position: 0,
+      group: 'Standard',
+    }
+    const value = { related_ids: ['torik-id'], nuances: { 'torik-id': 'erfolgreich' } }
+    expect(displayValue(entryWithPartner(value), schema, undefined, resolveTitle)).toBe('erfolgreich Torik')
+  })
+})

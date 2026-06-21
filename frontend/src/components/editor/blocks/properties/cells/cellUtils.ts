@@ -83,6 +83,72 @@ export function getAllTimelineRelatedIds(raw: Record<string, unknown> | null): s
   return (raw.related_ids as string[] | undefined) ?? []
 }
 
+// ── Relation nuance ───────────────────────────────────────────────────────────
+
+export type NuanceOrientation = 'prepended' | 'appended'
+
+export interface NuanceConfig {
+  enabled: boolean
+  options: Array<{ label: string; color?: string }>
+  affix1: string
+  affix2: string
+  orientation: NuanceOrientation
+}
+
+/**
+ * Read a relation schema's own nuance config, or ``null`` when nuance is not
+ * enabled.  Each schema (base and bilateral mirror) carries its own affixes and
+ * orientation; the option set is shared across both sides.  Absent config means
+ * the relation renders exactly as before.
+ */
+export function getNuanceConfig(schema: PropertySchema): NuanceConfig | null {
+  const raw = schema.config?.nuance as Record<string, unknown> | undefined
+  if (!raw || raw.enabled !== true) return null
+  const orientation: NuanceOrientation =
+    raw.orientation === 'appended' ? 'appended' : 'prepended'
+  return {
+    enabled: true,
+    options: (raw.options as Array<{ label: string; color?: string }> | undefined) ?? [],
+    affix1: typeof raw.affix1 === 'string' ? raw.affix1 : '',
+    affix2: typeof raw.affix2 === 'string' ? raw.affix2 : '',
+    orientation,
+  }
+}
+
+/**
+ * Read the nuance label stored for a single linked entry within a resolved
+ * value or timeline slot.  Returns ``''`` when none is present.
+ */
+export function nuanceLabelFor(
+  slotOrValue: Record<string, unknown> | null,
+  relatedId: string,
+): string {
+  if (!slotOrValue) return ''
+  const map = slotOrValue.nuances as Record<string, string> | undefined
+  const label = map?.[relatedId]
+  return typeof label === 'string' ? label : ''
+}
+
+/**
+ * Compose the plain-text form of one (optionally) nuanced relation:
+ * the affixes bracket the label, and the chip title sits before or after that
+ * group per the schema's orientation.  With no label (or no nuance config) the
+ * bare title is returned, so non-nuanced relations are unaffected.
+ */
+export function formatNuancedRelation(
+  title: string,
+  label: string,
+  nuance: NuanceConfig | null,
+): string {
+  if (!nuance || !label) return title
+  const group = [nuance.affix1, label, nuance.affix2]
+    .map(s => s.trim())
+    .filter(Boolean)
+    .join(' ')
+  if (!group) return title
+  return nuance.orientation === 'appended' ? `${title} ${group}` : `${group} ${title}`
+}
+
 // ── Value accessor ────────────────────────────────────────────────────────────
 
 export function getCellValue(
@@ -347,6 +413,7 @@ export function displayValue(
   if (raw === null || raw === undefined) return ''
 
   const mode = schema.config?.hasTimeline ? getTimelineDisplayMode(schema) : 'last'
+  const nuanceCfg = getNuanceConfig(schema)
 
   // ── "all" mode ────────────────────────────────────────────────────────────
   if (mode === 'all' && schema.config?.hasTimeline && '_timeline' in raw) {
@@ -370,7 +437,8 @@ export function displayValue(
         return ids
           .map(id => {
             const title = resolveEntryTitle?.(id)
-            return title && title.trim() ? title : id
+            const base = title && title.trim() ? title : id
+            return formatNuancedRelation(base, nuanceLabelFor(slot, id), nuanceCfg)
           })
           .filter(Boolean)
           .join(', ')
@@ -470,7 +538,8 @@ export function displayValue(
       return ids
         .map(id => {
           const title = resolveEntryTitle?.(id)
-          return title && title.trim() ? title : id
+          const base = title && title.trim() ? title : id
+          return formatNuancedRelation(base, nuanceLabelFor(val, id), nuanceCfg)
         })
         .join(', ')
     }

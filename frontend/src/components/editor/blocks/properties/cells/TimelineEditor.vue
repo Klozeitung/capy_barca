@@ -36,7 +36,7 @@ import {
   normalizeSelectOption,
   optionColorStyle,
 } from '@/stores/database'
-import { getRawCellValue, getTimelineDisplayMode, type TimelineDisplayMode } from './cellUtils'
+import { getRawCellValue, getTimelineDisplayMode, getNuanceConfig, type TimelineDisplayMode } from './cellUtils'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
@@ -200,6 +200,36 @@ const pool = ref<PoolEntry[]>([])
 const newPoolUid = ref('')
 const newPoolStartTs = ref('')
 const newPoolEndTs = ref('')
+const newPoolNuance = ref('')
+
+// ── Nuance (per uid × range) ──────────────────────────────────────────────────
+
+const nuanceCfg = computed(() => getNuanceConfig(props.schema))
+
+function initNuancePool(): Record<string, Record<string, string>> {
+  const raw = getRawCellValue(props.entry, props.schema.id)
+  const np = raw?.nuancePool as Record<string, Record<string, string>> | undefined
+  if (!np) return {}
+  const out: Record<string, Record<string, string>> = {}
+  for (const [uid, ranges] of Object.entries(np)) out[uid] = { ...ranges }
+  return out
+}
+
+const nuancePool = ref<Record<string, Record<string, string>>>({})
+
+function nuanceValue(uid: string, range: string): string {
+  return nuancePool.value[uid]?.[range] ?? ''
+}
+
+function setNuance(uid: string, range: string, label: string): void {
+  if (label) {
+    if (!nuancePool.value[uid]) nuancePool.value[uid] = {}
+    nuancePool.value[uid][range] = label
+  } else if (nuancePool.value[uid]) {
+    delete nuancePool.value[uid][range]
+    if (Object.keys(nuancePool.value[uid]).length === 0) delete nuancePool.value[uid]
+  }
+}
 
 const targetEntries = computed(() => {
   const targetDbId = (props.schema.config?.target_database_id as string | undefined)
@@ -236,16 +266,20 @@ function addPoolRange() {
   } else {
     pool.value.push({ uid: newPoolUid.value, ranges: [range] })
   }
+  if (newPoolNuance.value) setNuance(newPoolUid.value, range, newPoolNuance.value)
   newPoolStartTs.value = ''
   newPoolEndTs.value = ''
+  newPoolNuance.value = ''
 }
 
 function removePoolRange(uid: string, range: string) {
   const entry = pool.value.find(e => e.uid === uid)
   if (!entry) return
   entry.ranges = entry.ranges.filter(r => r !== range)
+  setNuance(uid, range, '')
   if (entry.ranges.length === 0) {
     pool.value = pool.value.filter(e => e.uid !== uid)
+    delete nuancePool.value[uid]
   }
 }
 
@@ -348,10 +382,23 @@ async function save() {
 
     if (isRelation.value) {
       const poolObj: Record<string, string[]> = {}
+      const nuanceObj: Record<string, Record<string, string>> = {}
       for (const entry of pool.value) {
-        if (entry.ranges.length > 0) poolObj[entry.uid] = [...entry.ranges]
+        if (entry.ranges.length === 0) continue
+        poolObj[entry.uid] = [...entry.ranges]
+        const perRange: Record<string, string> = {}
+        for (const r of entry.ranges) {
+          const lbl = nuancePool.value[entry.uid]?.[r]
+          if (lbl) perRange[r] = lbl
+        }
+        if (Object.keys(perRange).length > 0) nuanceObj[entry.uid] = perRange
       }
-      value = Object.keys(poolObj).length > 0 ? { relationPool: poolObj } : null
+      if (Object.keys(poolObj).length > 0) {
+        value = { relationPool: poolObj }
+        if (Object.keys(nuanceObj).length > 0) value.nuancePool = nuanceObj
+      } else {
+        value = null
+      }
     } else {
       const timeline: Record<string, unknown> = {}
       for (const slot of slots.value) {
@@ -415,6 +462,7 @@ function onDocumentClick(event: MouseEvent) {
 onMounted(async () => {
   if (isRelation.value) {
     pool.value = initPool()
+    nuancePool.value = initNuancePool()
     const tid = targetDbId()
     if (targetEntries.value.length === 0) {
       await dbStore.fetchEntries(tid)
@@ -618,6 +666,10 @@ onUnmounted(() => {
                 class="te__pool-range-row"
               >
                 <code class="te__pool-range-key">{{ range || t('db.timeline.alwaysValid') }}</code>
+                <span
+                  v-if="nuanceCfg && nuanceValue(entry.uid, range)"
+                  class="te__pool-nuance-tag"
+                >{{ nuanceValue(entry.uid, range) }}</span>
                 <button
                   class="te__delete-btn"
                   @click="removePoolRange(entry.uid, range)"
@@ -661,6 +713,17 @@ onUnmounted(() => {
                   type="datetime-local"
                   class="te__ts-input"
                 />
+              </div>
+              <div v-if="nuanceCfg" class="te__pool-range-field">
+                <span class="te__range-label">{{ t('db.timeline.nuance') }}</span>
+                <select v-model="newPoolNuance" class="te__pool-nuance">
+                  <option value="">{{ t('db.timeline.nuanceNone') }}</option>
+                  <option
+                    v-for="opt in nuanceCfg.options"
+                    :key="opt.label"
+                    :value="opt.label"
+                  >{{ opt.label }}</option>
+                </select>
               </div>
               <button class="te__add-pool-btn" @click="addPoolRange" :title="t('db.timeline.poolAdd')">
                 <Icon icon="mdi:plus" width="13" height="13" />
@@ -994,4 +1057,21 @@ onUnmounted(() => {
 }
 .te__btn--primary:hover { opacity: 0.88; }
 .te__btn--primary:disabled { opacity: 0.5; cursor: default; }
+
+/* ── Nuance (creation select + read-only tag on existing rows) ─────────────── */
+.te__pool-nuance {
+  padding: 3px 6px;
+  font-size: 0.8rem;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.te__pool-nuance-tag {
+  font-size: 0.72rem;
+  font-style: italic;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
 </style>

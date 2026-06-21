@@ -110,6 +110,28 @@ const mirrorPropertyName = ref<string>(
   (props.schema.config?.mirror_property_name as string | undefined) ?? '',
 )
 
+// relation nuance (irreversible once enabled, mirroring the hasTimeline gate).
+// Each schema stores its own affixes/orientation at the top level; for bilateral
+// relations the synched side's framing is held under ``synced`` so the backend
+// can propagate it to the mirror schema and the modal can show both sides.
+type NuanceOrientationT = 'prepended' | 'appended'
+const _nuanceCfg = (props.schema.config?.nuance as Record<string, unknown> | undefined) ?? {}
+const _nuanceSynced = (_nuanceCfg.synced as Record<string, unknown> | undefined) ?? {}
+const nuanceEnabled = ref<boolean>(_nuanceCfg.enabled === true)
+const nuanceOrientation = ref<NuanceOrientationT>(_nuanceCfg.orientation === 'appended' ? 'appended' : 'prepended')
+const nuanceAffix1 = ref<string>((_nuanceCfg.affix1 as string | undefined) ?? '')
+const nuanceAffix2 = ref<string>((_nuanceCfg.affix2 as string | undefined) ?? '')
+const nuanceSyncedOrientation = ref<NuanceOrientationT>(_nuanceSynced.orientation === 'appended' ? 'appended' : 'prepended')
+const nuanceSyncedAffix1 = ref<string>((_nuanceSynced.affix1 as string | undefined) ?? '')
+const nuanceSyncedAffix2 = ref<string>((_nuanceSynced.affix2 as string | undefined) ?? '')
+const nuanceOptions = ref<SelectOption[]>(
+  ((_nuanceCfg.options as (string | SelectOption)[] | undefined) ?? []).map(normalizeSelectOption),
+)
+const newNuanceOption = ref('')
+
+const isBilateralRelation = computed(() => relationDirection.value === 'bilateral')
+const nuanceLocked = computed(() => (props.schema.config?.nuance as Record<string, unknown> | undefined)?.enabled === true)
+
 // id
 const idPrefix = ref<string>(
   (props.schema.config?.prefix as string | undefined) ?? '',
@@ -675,6 +697,24 @@ async function save() {
             : null,
         hasTimeline: hasTimeline.value,
         wrapContent: wrapContent.value,
+        nuance: nuanceEnabled.value
+          ? {
+              enabled: true,
+              options: nuanceOptions.value,
+              affix1: nuanceAffix1.value.slice(0, 20),
+              affix2: nuanceAffix2.value.slice(0, 20),
+              orientation: nuanceOrientation.value,
+              ...(relationDirection.value === 'bilateral'
+                ? {
+                    synced: {
+                      affix1: nuanceSyncedAffix1.value.slice(0, 20),
+                      affix2: nuanceSyncedAffix2.value.slice(0, 20),
+                      orientation: nuanceSyncedOrientation.value,
+                    },
+                  }
+                : {}),
+            }
+          : { enabled: false },
       }
       break
     case 'formula':
@@ -736,6 +776,26 @@ function moveOption(index: number, direction: -1 | 1) {
   const target = index + direction
   if (target < 0 || target >= selectOptions.value.length) return
   const arr = selectOptions.value
+  ;[arr[index], arr[target]] = [arr[target], arr[index]]
+}
+
+// ── Nuance option management (recycles the select-option editor) ──────────────
+
+function addNuanceOption() {
+  const trimmed = newNuanceOption.value.trim()
+  if (!trimmed || nuanceOptions.value.some(o => o.label === trimmed)) return
+  nuanceOptions.value.push({ label: trimmed })
+  newNuanceOption.value = ''
+}
+
+function removeNuanceOption(index: number) {
+  nuanceOptions.value.splice(index, 1)
+}
+
+function moveNuanceOption(index: number, direction: -1 | 1) {
+  const target = index + direction
+  if (target < 0 || target >= nuanceOptions.value.length) return
+  const arr = nuanceOptions.value
   ;[arr[index], arr[target]] = [arr[target], arr[index]]
 }
 </script>
@@ -958,6 +1018,116 @@ function moveOption(index: number, direction: -1 | 1) {
               {{ t('db.settings.wrapContent') }}
             </label>
             <p class="psm__hint">{{ t('db.settings.wrapContentHint') }}</p>
+          </div>
+
+          <!-- Nuanced property (irreversible once enabled) -->
+          <div class="psm__field">
+            <label class="psm__check-label" :class="{ 'psm__check-label--disabled': nuanceLocked }">
+              <input
+                type="checkbox"
+                v-model="nuanceEnabled"
+                class="psm__checkbox"
+                :disabled="nuanceLocked"
+              />
+              {{ t('db.settings.nuanceEnable') }}
+            </label>
+            <p class="psm__hint">{{ t('db.settings.nuanceHint') }}</p>
+            <p v-if="nuanceLocked" class="psm__hint psm__hint--warning">
+              {{ t('db.settings.nuanceLocked') }}
+            </p>
+
+            <template v-if="nuanceEnabled">
+              <label class="psm__label psm__nuance-sublabel">{{ t('db.settings.nuanceThisProperty') }}</label>
+              <div class="psm__nuance-orient">
+                <button
+                  type="button"
+                  class="psm__nuance-orient-btn"
+                  :class="{ 'psm__nuance-orient-btn--active': nuanceOrientation === 'prepended' }"
+                  @click="nuanceOrientation = 'prepended'"
+                >{{ t('db.settings.nuancePrepended') }}</button>
+                <button
+                  type="button"
+                  class="psm__nuance-orient-btn"
+                  :class="{ 'psm__nuance-orient-btn--active': nuanceOrientation === 'appended' }"
+                  @click="nuanceOrientation = 'appended'"
+                >{{ t('db.settings.nuanceAppended') }}</button>
+              </div>
+              <div class="psm__nuance-row">
+                <input v-model="nuanceAffix1" maxlength="20" class="psm__input psm__nuance-affix" :placeholder="t('db.settings.nuanceAffix')" />
+                <span class="psm__nuance-word">{{ t('db.settings.nuanceWord') }}</span>
+                <input v-model="nuanceAffix2" maxlength="20" class="psm__input psm__nuance-affix" :placeholder="t('db.settings.nuanceAffix')" />
+              </div>
+
+              <template v-if="isBilateralRelation">
+                <label class="psm__label psm__nuance-sublabel">{{ t('db.settings.nuanceSynchedProperty') }}</label>
+                <div class="psm__nuance-orient">
+                  <button
+                    type="button"
+                    class="psm__nuance-orient-btn"
+                    :class="{ 'psm__nuance-orient-btn--active': nuanceSyncedOrientation === 'prepended' }"
+                    @click="nuanceSyncedOrientation = 'prepended'"
+                  >{{ t('db.settings.nuancePrepended') }}</button>
+                  <button
+                    type="button"
+                    class="psm__nuance-orient-btn"
+                    :class="{ 'psm__nuance-orient-btn--active': nuanceSyncedOrientation === 'appended' }"
+                    @click="nuanceSyncedOrientation = 'appended'"
+                  >{{ t('db.settings.nuanceAppended') }}</button>
+                </div>
+                <div class="psm__nuance-row">
+                  <input v-model="nuanceSyncedAffix1" maxlength="20" class="psm__input psm__nuance-affix" :placeholder="t('db.settings.nuanceAffix')" />
+                  <span class="psm__nuance-word">{{ t('db.settings.nuanceWord') }}</span>
+                  <input v-model="nuanceSyncedAffix2" maxlength="20" class="psm__input psm__nuance-affix" :placeholder="t('db.settings.nuanceAffix')" />
+                </div>
+              </template>
+
+              <label class="psm__label psm__nuance-sublabel">{{ t('db.settings.nuanceOptions') }}</label>
+              <div class="psm__options-list">
+                <div
+                  v-for="(opt, idx) in nuanceOptions"
+                  :key="idx"
+                  class="psm__option-row"
+                >
+                  <Icon icon="mdi:drag-horizontal-variant" width="14" height="14" class="psm__option-drag" />
+                  <span class="psm__option-chip" :style="optionColorStyle(opt.color)">{{ opt.label }}</span>
+                  <div class="psm__color-dots">
+                    <button
+                      v-for="c in SELECT_OPTION_COLORS"
+                      :key="c.key"
+                      class="psm__color-dot"
+                      :class="{ 'psm__color-dot--active': (opt.color ?? 'default') === c.key }"
+                      :style="optionColorStyle(c.key)"
+                      :title="c.label"
+                      type="button"
+                      @click="opt.color = c.key"
+                    />
+                  </div>
+                  <button class="psm__option-move" :disabled="idx === 0" @click="moveNuanceOption(idx, -1)">
+                    <Icon icon="mdi:chevron-up" width="13" height="13" />
+                  </button>
+                  <button class="psm__option-move" :disabled="idx === nuanceOptions.length - 1" @click="moveNuanceOption(idx, 1)">
+                    <Icon icon="mdi:chevron-down" width="13" height="13" />
+                  </button>
+                  <button class="psm__option-remove" @click="removeNuanceOption(idx)">
+                    <Icon icon="mdi:close" width="13" height="13" />
+                  </button>
+                </div>
+                <div v-if="nuanceOptions.length === 0" class="psm__options-empty">
+                  {{ t('db.settings.selectOptionsEmpty') }}
+                </div>
+              </div>
+              <div class="psm__option-add-row">
+                <input
+                  v-model="newNuanceOption"
+                  class="psm__option-input"
+                  :placeholder="t('db.settings.selectOptionPlaceholder')"
+                  @keydown.enter.prevent="addNuanceOption"
+                />
+                <button class="psm__option-add-btn" @click="addNuanceOption">
+                  <Icon icon="mdi:plus" width="15" height="15" />
+                </button>
+              </div>
+            </template>
           </div>
         </template>
 
@@ -1941,5 +2111,51 @@ function moveOption(index: number, direction: -1 | 1) {
 .psm__readonly-icon {
   flex-shrink: 0;
   opacity: 0.6;
+}
+
+/* ── Relation nuance ───────────────────────────────────────────────────────── */
+.psm__nuance-sublabel {
+  margin-top: 10px;
+}
+
+.psm__nuance-orient {
+  display: inline-flex;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.psm__nuance-orient-btn {
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  background: transparent;
+  color: var(--color-text-muted);
+  border: none;
+  cursor: pointer;
+}
+
+.psm__nuance-orient-btn--active {
+  background: var(--color-accent, #4663ac);
+  color: #fff;
+}
+
+.psm__nuance-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.psm__nuance-affix {
+  flex: 1;
+  min-width: 0;
+}
+
+.psm__nuance-word {
+  font-size: 0.8rem;
+  font-style: italic;
+  color: var(--color-text-muted);
+  white-space: nowrap;
 }
 </style>
