@@ -2006,15 +2006,18 @@ def query_entries(
     for s in payload.sorts:
         if s.schema_id == '__name__':
             schema_type = None
+            schema_config = None
         else:
             schema = schema_map.get(s.schema_id)
             if schema is None:
                 continue
             schema_type = schema.type
+            schema_config = schema.config
         resolved_sorts.append(
             repo.SortDescriptor(
                 schema_id=s.schema_id,
                 schema_type=schema_type,
+                schema_config=schema_config,
                 direction=s.direction,
             )
         )

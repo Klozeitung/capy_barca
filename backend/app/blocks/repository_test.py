@@ -809,6 +809,79 @@ def test_query_entries_sort_by_number_schema(db, workspace, database_block):
     assert entries[2].id == e1.id
 
 
+def test_query_entries_sort_by_rollup_earliest_date(db, workspace, database_block):
+    """
+    Sorting by a rollup column whose function is ``earliest_date`` must order
+    rows chronologically by the ISO date string stored under ``result``.
+
+    Regression guard: before the dedicated rollup sort branch the generic text
+    fallback looked up a non-existent key, so every row sorted as NULL and the
+    column was effectively unsorted.
+    """
+    schema = repo.create_schema(
+        db, database_id=database_block.id, name="Birthday",
+        type="rollup", position=1.0,
+        config={"function": "earliest_date"},
+    )
+    db.commit()
+    e1 = _make_entry(db, database_block, position=1.0)
+    e2 = _make_entry(db, database_block, position=2.0)
+    e3 = _make_entry(db, database_block, position=3.0)
+    # Rollup values are readonly via the API but writable at the repository layer.
+    repo.upsert_value(db, page_id=e1.id, schema_id=schema.id,
+                      value={"result": "1990-06-15", "function": "earliest_date"})
+    repo.upsert_value(db, page_id=e2.id, schema_id=schema.id,
+                      value={"result": "1980-01-02", "function": "earliest_date"})
+    repo.upsert_value(db, page_id=e3.id, schema_id=schema.id,
+                      value={"result": "1985-12-31", "function": "earliest_date"})
+    db.commit()
+
+    s = repo.SortDescriptor(
+        schema_id=str(schema.id), schema_type="rollup",
+        schema_config={"function": "earliest_date"}, direction="asc",
+    )
+    entries, _ = repo.query_entries(db, database_block.id, [], [s])
+    assert [e.id for e in entries] == [e2.id, e3.id, e1.id]
+
+    s_desc = repo.SortDescriptor(
+        schema_id=str(schema.id), schema_type="rollup",
+        schema_config={"function": "earliest_date"}, direction="desc",
+    )
+    entries_desc, _ = repo.query_entries(db, database_block.id, [], [s_desc])
+    assert [e.id for e in entries_desc] == [e1.id, e3.id, e2.id]
+
+
+def test_query_entries_sort_by_numeric_rollup_orders_numerically(db, workspace, database_block):
+    """
+    A numeric rollup (e.g. ``sum``) must sort by numeric value, not by the
+    lexicographic order of the stringified number (which would place 100
+    before 20).
+    """
+    schema = repo.create_schema(
+        db, database_id=database_block.id, name="Total",
+        type="rollup", position=1.0,
+        config={"function": "sum"},
+    )
+    db.commit()
+    e1 = _make_entry(db, database_block, position=1.0)
+    e2 = _make_entry(db, database_block, position=2.0)
+    e3 = _make_entry(db, database_block, position=3.0)
+    repo.upsert_value(db, page_id=e1.id, schema_id=schema.id,
+                      value={"result": 100, "function": "sum"})
+    repo.upsert_value(db, page_id=e2.id, schema_id=schema.id,
+                      value={"result": 20, "function": "sum"})
+    repo.upsert_value(db, page_id=e3.id, schema_id=schema.id,
+                      value={"result": 90, "function": "sum"})
+    db.commit()
+
+    s = repo.SortDescriptor(
+        schema_id=str(schema.id), schema_type="rollup",
+        schema_config={"function": "sum"}, direction="asc",
+    )
+    entries, _ = repo.query_entries(db, database_block.id, [], [s])
+    assert [e.id for e in entries] == [e2.id, e3.id, e1.id]
+
+
 def test_query_entries_pagination_limit(db, database_block):
     for i in range(5):
         _make_entry(db, database_block, f"Entry {i}", position=float(i))

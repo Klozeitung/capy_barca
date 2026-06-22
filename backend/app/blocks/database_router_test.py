@@ -1856,6 +1856,49 @@ def test_query_entries_sort_by_number_schema_desc(http_client):
     assert ids[-1] == e1["id"]
 
 
+def test_query_entries_sort_by_rollup_earliest_date(http_client):
+    """
+    End-to-end: a rollup column aggregating the earliest date of a related
+    database's date column must be sortable chronologically via /entries/query.
+    """
+    db_a = _create_database(http_client)
+    db_b = _create_database(http_client)
+
+    rel = _create_relation_schema(http_client, db_a, db_b, name="Events", direction="unilateral")
+    date_col = _create_schema(http_client, db_b, name="When", type_="date")
+    birthday = _create_rollup_schema(
+        http_client, db_a, "Birthday", rel["id"], date_col["id"], "earliest_date"
+    )
+
+    a1 = _create_entry(http_client, db_a)
+    a2 = _create_entry(http_client, db_a)
+    a3 = _create_entry(http_client, db_a)
+    b1 = _create_entry(http_client, db_b)
+    b2 = _create_entry(http_client, db_b)
+    b3 = _create_entry(http_client, db_b)
+
+    _upsert_value(http_client, db_b, b1["id"], date_col["id"], {"start": "1990-06-15", "end": ""})
+    _upsert_value(http_client, db_b, b2["id"], date_col["id"], {"start": "1980-01-02", "end": ""})
+    _upsert_value(http_client, db_b, b3["id"], date_col["id"], {"start": "1985-12-31", "end": ""})
+
+    _upsert_value(http_client, db_a, a1["id"], rel["id"], {"related_ids": [b1["id"]]})
+    _upsert_value(http_client, db_a, a2["id"], rel["id"], {"related_ids": [b2["id"]]})
+    _upsert_value(http_client, db_a, a3["id"], rel["id"], {"related_ids": [b3["id"]]})
+
+    result = _query(http_client, db_a, sorts=[
+        {"schema_id": birthday["id"], "direction": "asc"}
+    ])
+    ids = [e["id"] for e in result["entries"]]
+    # a2 (1980) < a3 (1985) < a1 (1990)
+    assert ids == [a2["id"], a3["id"], a1["id"]]
+
+    result_desc = _query(http_client, db_a, sorts=[
+        {"schema_id": birthday["id"], "direction": "desc"}
+    ])
+    ids_desc = [e["id"] for e in result_desc["entries"]]
+    assert ids_desc == [a1["id"], a3["id"], a2["id"]]
+
+
 def test_query_entries_pagination_limit(http_client):
     db_id = _create_database(http_client)
     for _ in range(5):

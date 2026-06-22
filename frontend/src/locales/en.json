@@ -558,6 +558,9 @@
       "migrateWarning": "The existing value will become a permanent 'always valid' entry.",
       "disableBlocked": "Cannot disable: remove all but one timeline entry first.",
       "poolUuid": "Linked entry",
+      "poolSearchPlaceholder": "Search or create…",
+      "poolCreate": "Create & link \"{query}\"",
+      "poolNoEntries": "No entries available",
       "poolRange": "Active range (e.g. 2024-01-01T00:00:00→)",
       "poolAdd": "Add link",
       "poolRemove": "Remove",
@@ -718,7 +721,8 @@
     "databasesRollupBadge": "Rollup properties can show a small function badge (e.g. ERL for earliest date) in front of the value. It is off by default and can be enabled per property in the rollup settings.",
     "databasesChipWrap": "By default, relation and rollup chips flow inline and wrap as needed within the column. Enable \"Wrap chips\" in the property settings to place each chip on its own line.",
     "databasesNuance": "Relation properties can be made \"nuanced\": each link is qualified with a chosen descriptor (e.g. \"successfully Grandmaster\"), shown before or after the chip with optional surrounding text. On a timeline, the nuance can differ per period. Enabling nuance is irreversible, and for bilateral relations each side has its own wording.",
-    "databasesGroups": "Properties in the entry side panel can be organised into groups: use \"New group\" to add one, drag properties between groups, double-click a group name to rename it, and delete a custom group via its trash icon — its properties move back to the Standard group rather than being deleted."
+    "databasesGroups": "Properties in the entry side panel can be organised into groups: use \"New group\" to add one, drag properties between groups, double-click a group name to rename it, and delete a custom group via its trash icon — its properties move back to the Standard group rather than being deleted.",
+    "databasesTimelineSearch": "When linking entries on a timeline relation, the linked entry is chosen through a search field rather than a long dropdown: type to filter the target database, and if no match exists, pick \"Create & link\" to create a new entry with that title and link it in one step."
   },
   "synchedBlock": {
     "originLabel": "Synced",

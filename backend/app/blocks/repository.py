@@ -60,10 +60,14 @@ class SortDescriptor:
 
     schema_id   – '__name__' for the title column, or a schema UUID string.
     schema_type – schema.type, or None for the name column.
+    schema_config – schema.config dict (needed to read a rollup's aggregation
+                    function so its result is sorted with the correct datatype),
+                    or None.
     direction   – 'asc' or 'desc'.
     """
     schema_id: str
     schema_type: Optional[str]
+    schema_config: Optional[dict] = None
     direction: str = 'asc'
 
 
@@ -149,6 +153,19 @@ def _ref_date_iso(
         return (today + timedelta(days=offset)).isoformat()
     # 'exact' or absent: use the value string directly
     return value if value else None
+
+
+# Rollup aggregation functions whose ``result`` is a numeric scalar. Sorting a
+# rollup column by one of these must cast ``result`` to a float so that values
+# order numerically (10 < 20 < 100) rather than lexicographically. Every other
+# rollup function yields a date string, raw scalar, list, or map and is sorted
+# as text, where ISO-8601 date strings still order chronologically. Kept in
+# sync with the rollup function catalogue in app/blocks/computed.py.
+_NUMERIC_ROLLUP_FUNCTIONS: frozenset[str] = frozenset({
+    'count', 'count_values', 'count_empty', 'count_not_empty', 'count_unique',
+    'percent_empty', 'percent_not_empty', 'percent_checked', 'percent_unchecked',
+    'checked', 'sum', 'avg', 'median', 'min', 'max', 'range',
+})
 
 
 def _value_key(schema_type: str) -> str:
@@ -666,6 +683,18 @@ def query_entries(
             # by the date filter branch so that sort and filter behave consistently.
             date_key = 'start' if schema_type == 'date' else 'datetime'
             val_expr = PV.value[date_key].as_string()
+        elif schema_type == 'rollup':
+            # Rollup values store their aggregate under the 'result' key (see
+            # app/blocks/computed.py); the generic text fallback would look up a
+            # non-existent key and yield NULL for every row, leaving the column
+            # effectively unsorted. Numeric aggregations are cast to float so
+            # they order numerically; date and raw-value aggregations sort as
+            # text, where ISO-8601 date strings still order chronologically.
+            rollup_fn = (s.schema_config or {}).get('function', '')
+            if rollup_fn in _NUMERIC_ROLLUP_FUNCTIONS:
+                val_expr = PV.value['result'].as_float()
+            else:
+                val_expr = PV.value['result'].as_string()
         else:
             val_expr = PV.value[_value_key(schema_type)].as_string()
 

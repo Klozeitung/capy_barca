@@ -537,6 +537,9 @@
       "migrateWarning": "Der bestehende Wert wird als dauerhaft gültiger Eintrag übernommen.",
       "disableBlocked": "Deaktivierung nicht möglich: Bitte zuerst alle bis auf einen Timeline-Eintrag entfernen.",
       "poolUuid": "Verknüpfter Eintrag",
+      "poolSearchPlaceholder": "Suchen oder erstellen…",
+      "poolCreate": "\"{query}\" erstellen & verknüpfen",
+      "poolNoEntries": "Keine Einträge vorhanden",
       "poolRange": "Aktiver Zeitraum (z.B. 2024-01-01T00:00:00→)",
       "poolAdd": "Verknüpfung hinzufügen",
       "poolRemove": "Entfernen",
@@ -696,7 +699,8 @@
     "databasesRollupBadge": "Rollup-Eigenschaften können ein kleines Funktions-Badge (z. B. ERL für frühestes Datum) vor dem Wert anzeigen. Es ist standardmäßig aus und kann je Eigenschaft in den Rollup-Einstellungen aktiviert werden.",
     "databasesChipWrap": "Standardmäßig fließen Relation- und Rollup-Chips nebeneinander und brechen bei Bedarf innerhalb der Spalte um. Aktiviere \"Chips umbrechen\" in den Eigenschafts-Einstellungen, um jeden Chip in eine eigene Zeile zu setzen.",
     "databasesNuance": "Relation-Eigenschaften können \"nuanciert\" werden: Jede Verknüpfung wird mit einem gewählten Zusatz versehen (z. B. \"erfolgreich Großmeister\"), der mit optionalem Text vor oder nach dem Chip steht. In einer Timeline kann die Nuance je Zeitraum variieren. Das Aktivieren ist unwiderruflich, und bei bilateralen Relationen hat jede Seite ihre eigene Formulierung.",
-    "databasesGroups": "Eigenschaften im Eintrags-Seitenpanel lassen sich in Gruppen organisieren: Mit \"Neue Gruppe\" legst du eine an, ziehst Eigenschaften zwischen Gruppen, benennst eine Gruppe per Doppelklick auf den Namen um und löschst eine eigene Gruppe über das Papierkorb-Symbol — ihre Eigenschaften wandern dann zurück in die Gruppe Standard, statt gelöscht zu werden."
+    "databasesGroups": "Eigenschaften im Eintrags-Seitenpanel lassen sich in Gruppen organisieren: Mit \"Neue Gruppe\" legst du eine an, ziehst Eigenschaften zwischen Gruppen, benennst eine Gruppe per Doppelklick auf den Namen um und löschst eine eigene Gruppe über das Papierkorb-Symbol — ihre Eigenschaften wandern dann zurück in die Gruppe Standard, statt gelöscht zu werden.",
+    "databasesTimelineSearch": "Beim Verknüpfen von Einträgen in einer Timeline-Relation wird der verknüpfte Eintrag über ein Suchfeld statt einer langen Dropdownliste gewählt: Tippe, um die Ziel-Datenbank zu filtern; gibt es keinen Treffer, wähle \"Erstellen & verknüpfen\", um in einem Schritt einen neuen Eintrag mit diesem Titel anzulegen und zu verknüpfen."
   },
   "synchedBlock": {
     "originLabel": "Synced",

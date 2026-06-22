@@ -26,7 +26,7 @@
  * Positioning: Teleported to <body> and anchored below the triggering element
  * via an anchor rect passed as a prop.
  */
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import {
@@ -36,6 +36,7 @@ import {
   normalizeSelectOption,
   optionColorStyle,
 } from '@/stores/database'
+import { useBlockStore } from '@/stores/blocks'
 import { getRawCellValue, getTimelineDisplayMode, getNuanceConfig, type TimelineDisplayMode } from './cellUtils'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
@@ -56,6 +57,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const dbStore = useDatabaseStore()
+const blockStore = useBlockStore()
 
 // ── Display mode ──────────────────────────────────────────────────────────────
 
@@ -246,6 +248,114 @@ function entryTitle(uid: string): string {
   return (e?.content?.title as string | undefined) || uid.slice(0, 8) + '…'
 }
 
+// ── Pool entry picker (search + create-if-missing) ────────────────────────────
+//
+// Replaces the former <select> dropdown for choosing the linked entry. Mirrors
+// the search-and-create pattern used by RelationCell: the field filters the
+// target database's entries live and, when the query matches no existing
+// title, offers a "create & link" action that creates a new entry on the fly.
+
+const poolSearchEl = ref<HTMLInputElement | null>(null)
+const poolComboEl = ref<HTMLElement | null>(null)
+const poolSearchQuery = ref('')
+const poolPickerOpen = ref(false)
+const poolActiveIndex = ref(-1)
+const isCreatingPoolEntry = ref(false)
+
+const filteredPoolEntries = computed<DatabaseEntry[]>(() => {
+  const q = poolSearchQuery.value.trim().toLowerCase()
+  if (!q) return targetEntries.value
+  return targetEntries.value.filter(e =>
+    ((e.content?.title as string | undefined) ?? '').toLowerCase().includes(q),
+  )
+})
+
+const showCreatePoolEntry = computed(() => {
+  const q = poolSearchQuery.value.trim()
+  if (!q) return false
+  // Offer "create" only when the query matches no existing entry title exactly.
+  return !targetEntries.value.some(
+    e => ((e.content?.title as string | undefined) ?? '').toLowerCase() === q.toLowerCase(),
+  )
+})
+
+watch(filteredPoolEntries, () => { poolActiveIndex.value = -1 })
+
+function poolItemCount(): number {
+  return filteredPoolEntries.value.length + (showCreatePoolEntry.value ? 1 : 0)
+}
+
+function onPoolKeyNav(e: KeyboardEvent) {
+  const count = poolItemCount()
+  if (count === 0) return
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    poolActiveIndex.value = (poolActiveIndex.value + 1) % count
+    scrollPoolActiveIntoView()
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    poolActiveIndex.value = (poolActiveIndex.value - 1 + count) % count
+    scrollPoolActiveIntoView()
+  }
+}
+
+function scrollPoolActiveIntoView() {
+  nextTick(() => {
+    const el = poolComboEl.value?.querySelector<HTMLElement>('[data-nav-active="true"]')
+    el?.scrollIntoView({ block: 'nearest' })
+  })
+}
+
+function openPoolPicker() {
+  poolPickerOpen.value = true
+}
+
+function closePoolPicker() {
+  poolPickerOpen.value = false
+  poolActiveIndex.value = -1
+}
+
+/** Commit an existing target entry as the linked-entry selection. */
+function selectPoolUid(entry: DatabaseEntry) {
+  newPoolUid.value = entry.id
+  poolSearchQuery.value = (entry.content?.title as string | undefined) || t('main.untitled')
+  closePoolPicker()
+}
+
+/**
+ * Create a new entry in the target database with the search query as its title,
+ * then select it as the linked entry. Bilateral sync is handled server-side on
+ * save via the existing upsert flow.
+ */
+async function createAndSelectPoolEntry() {
+  const title = poolSearchQuery.value.trim()
+  if (!title || isCreatingPoolEntry.value) return
+  isCreatingPoolEntry.value = true
+  try {
+    const newEntry = await dbStore.createEntry(targetDbId())
+    await blockStore.updateBlock(newEntry.id, { content: { title } })
+    await dbStore.fetchEntries(targetDbId())
+    newPoolUid.value = newEntry.id
+    poolSearchQuery.value = title
+    closePoolPicker()
+  } finally {
+    isCreatingPoolEntry.value = false
+  }
+}
+
+/** Enter on the search field: pick the focused row, else create when offered. */
+function onPoolSearchEnter() {
+  if (poolActiveIndex.value >= 0) {
+    if (poolActiveIndex.value < filteredPoolEntries.value.length) {
+      selectPoolUid(filteredPoolEntries.value[poolActiveIndex.value])
+    } else {
+      createAndSelectPoolEntry()
+    }
+  } else if (showCreatePoolEntry.value) {
+    createAndSelectPoolEntry()
+  }
+}
+
 function buildPoolRangeStr(): string {
   const ns = newPoolStartTs.value.trim()
   const ne = newPoolEndTs.value.trim()
@@ -267,6 +377,8 @@ function addPoolRange() {
     pool.value.push({ uid: newPoolUid.value, ranges: [range] })
   }
   if (newPoolNuance.value) setNuance(newPoolUid.value, range, newPoolNuance.value)
+  newPoolUid.value = ''
+  poolSearchQuery.value = ''
   newPoolStartTs.value = ''
   newPoolEndTs.value = ''
   newPoolNuance.value = ''
@@ -457,6 +569,18 @@ function onDocumentClick(event: MouseEvent) {
   emit('close')
 }
 
+/**
+ * Clicks inside the panel are stopped from reaching the document listener, so
+ * the pool entry picker needs its own dismissal: any in-panel click that lands
+ * outside the combobox closes the dropdown. The combobox stops propagation on
+ * its own clicks, so this handler only fires for clicks elsewhere in the panel.
+ */
+function onPanelClick(event: MouseEvent) {
+  if (!poolPickerOpen.value) return
+  if (poolComboEl.value?.contains(event.target as Node)) return
+  closePoolPicker()
+}
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 onMounted(async () => {
@@ -488,7 +612,7 @@ onUnmounted(() => {
       ref="panelEl"
       class="te"
       :style="panelStyle"
-      @click.stop
+      @click.stop="onPanelClick"
     >
       <!-- Header -->
       <div class="te__header">
@@ -686,16 +810,64 @@ onUnmounted(() => {
 
           <!-- Add pool range -->
           <div class="te__pool-add">
-            <select v-model="newPoolUid" class="te__pool-select">
-              <option value="">{{ t('db.timeline.poolUuid') }}</option>
-              <option
-                v-for="e in targetEntries"
-                :key="e.id"
-                :value="e.id"
-              >
-                {{ (e.content?.title as string | undefined) || t('main.untitled') }}
-              </option>
-            </select>
+            <div ref="poolComboEl" class="te__pool-combobox" @click.stop>
+              <div class="te__pool-search-wrap">
+                <Icon icon="mdi:magnify" width="13" height="13" class="te__pool-search-icon" />
+                <input
+                  ref="poolSearchEl"
+                  v-model="poolSearchQuery"
+                  class="te__pool-search"
+                  :placeholder="t('db.timeline.poolSearchPlaceholder')"
+                  @focus="openPoolPicker"
+                  @input="openPoolPicker"
+                  @keydown.up.prevent="onPoolKeyNav"
+                  @keydown.down.prevent="onPoolKeyNav"
+                  @keydown.enter.prevent="onPoolSearchEnter"
+                />
+              </div>
+
+              <div v-if="poolPickerOpen" class="te__pool-results">
+                <button
+                  v-for="(e, i) in filteredPoolEntries"
+                  :key="e.id"
+                  class="te__pool-result"
+                  :class="{
+                    'te__pool-result--selected': e.id === newPoolUid,
+                    'te__pool-result--focused': poolActiveIndex === i,
+                  }"
+                  :data-nav-active="poolActiveIndex === i || undefined"
+                  @click="selectPoolUid(e)"
+                  @mouseenter="poolActiveIndex = i"
+                >
+                  <Icon
+                    :icon="e.id === newPoolUid ? 'mdi:check-circle' : 'mdi:circle-outline'"
+                    width="13"
+                    height="13"
+                  />
+                  {{ (e.content?.title as string | undefined) || t('main.untitled') }}
+                </button>
+
+                <div
+                  v-if="filteredPoolEntries.length === 0 && !showCreatePoolEntry"
+                  class="te__pool-results-empty"
+                >
+                  {{ t('db.timeline.poolNoEntries') }}
+                </div>
+
+                <button
+                  v-if="showCreatePoolEntry"
+                  class="te__pool-result te__pool-result--create"
+                  :class="{ 'te__pool-result--focused': poolActiveIndex === filteredPoolEntries.length }"
+                  :data-nav-active="poolActiveIndex === filteredPoolEntries.length || undefined"
+                  :disabled="isCreatingPoolEntry"
+                  @click="createAndSelectPoolEntry"
+                  @mouseenter="poolActiveIndex = filteredPoolEntries.length"
+                >
+                  <Icon icon="mdi:plus-circle-outline" width="13" height="13" />
+                  {{ t('db.timeline.poolCreate', { query: poolSearchQuery.trim() }) }}
+                </button>
+              </div>
+            </div>
             <div class="te__pool-range-inputs">
               <div class="te__pool-range-field">
                 <span class="te__range-label">{{ t('db.timeline.start') }}</span>
@@ -992,15 +1164,94 @@ onUnmounted(() => {
   padding: 8px 10px;
   border-top: 1px solid var(--color-border);
 }
-.te__pool-select {
+.te__pool-combobox {
+  position: relative;
   width: 100%;
+}
+.te__pool-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   background: var(--color-bg);
   border: 1px solid var(--color-border);
   border-radius: 4px;
-  padding: 5px 6px;
+  padding: 5px 8px;
+  transition: border-color 0.12s;
+}
+.te__pool-search-wrap:focus-within {
+  border-color: var(--color-accent);
+}
+.te__pool-search-icon {
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+.te__pool-search {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
   font-size: 0.78rem;
   color: var(--color-text);
-  outline: none;
+  min-width: 0;
+}
+.te__pool-search::placeholder {
+  color: var(--color-text-muted);
+}
+.te__pool-results {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  z-index: 1;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.te__pool-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--color-text);
+  text-align: left;
+  width: 100%;
+  transition: background 0.1s;
+}
+.te__pool-result:hover,
+.te__pool-result--focused {
+  background: var(--color-hover);
+}
+.te__pool-result--selected {
+  color: var(--color-accent);
+}
+.te__pool-result--create {
+  border-top: 1px solid var(--color-border);
+  color: var(--color-accent);
+  margin-top: 2px;
+  padding-top: 7px;
+}
+.te__pool-result--create:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.te__pool-results-empty {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  text-align: center;
+  padding: 8px;
+  font-style: italic;
 }
 .te__pool-range-inputs {
   display: flex;

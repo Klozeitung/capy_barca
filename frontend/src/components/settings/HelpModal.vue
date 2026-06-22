@@ -268,6 +268,7 @@ const permissionModes = [
                 <p class="hm__permissions-note">{{ t('help.databasesChipWrap') }}</p>
                 <p class="hm__permissions-note">{{ t('help.databasesNuance') }}</p>
                 <p class="hm__permissions-note">{{ t('help.databasesGroups') }}</p>
+                <p class="hm__permissions-note">{{ t('help.databasesTimelineSearch') }}</p>
               </div>
             </template>
 
