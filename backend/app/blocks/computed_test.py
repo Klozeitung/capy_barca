@@ -854,6 +854,78 @@ def test_extract_scalar_relation_no_timeline_config():
     assert result == ["uuid-y"]
 
 
+# _extract_scalar: timeline-aware value-bearing scalars (#4)
+
+def test_extract_scalar_text_timeline_last_slot():
+    # A timelined text column stores its payload inside _timeline slots; the
+    # last (chronologically newest) slot must be surfaced, not None.
+    val = {"_timeline": {
+        "→1999-12-31T23:59:59": {"text": "Test 1"},
+        "2000-01-01T00:00:00→": {"text": "Test 2"},
+    }}
+    assert _extract_scalar("text", val) == "Test 2"
+
+
+def test_extract_scalar_text_timeline_always_valid_slot():
+    # The always-valid singleton ("" key) is the sole, current slot.
+    val = {"_timeline": {"": {"text": "Test 3"}}}
+    assert _extract_scalar("text", val) == "Test 3"
+
+
+def test_extract_scalar_text_timeline_empty():
+    # An empty _timeline resolves to no slot -> None.
+    assert _extract_scalar("text", {"_timeline": {}}) is None
+
+
+def test_extract_scalar_text_flat_empty_string_preserved():
+    # Regression guard for the "text" key fallback: an explicit empty string
+    # must stay "" and never fall through to "value".
+    assert _extract_scalar("text", {"text": ""}) == ""
+
+
+def test_extract_scalar_email_timeline_value_key():
+    # Timelined email/phone/url slots store the payload under "value".
+    val = {"_timeline": {"": {"value": "a@b.c"}}}
+    assert _extract_scalar("email", val) == "a@b.c"
+
+
+def test_extract_scalar_number_timeline_last_slot():
+    val = {"_timeline": {
+        "2023-01-01T00:00:00→2023-12-31T23:59:59": {"number": 99},
+        "2024-01-01T00:00:00→": {"number": 5},
+    }}
+    assert _extract_scalar("number", val) == 5
+
+
+def test_extract_scalar_checkbox_timeline_last_slot():
+    val = {"_timeline": {"": {"checked": True}}}
+    assert _extract_scalar("checkbox", val) is True
+
+
+def test_extract_scalar_select_timeline_last_slot():
+    val = {"_timeline": {"": {"option": "Geburt"}}}
+    assert _extract_scalar("select", val) == "Geburt"
+
+
+def test_extract_scalar_date_timeline_last_slot():
+    val = {"_timeline": {"": {"start": "2025-01-01", "end": "2025-01-31"}}}
+    assert _extract_scalar("date", val) == {"start": "2025-01-01", "end": "2025-01-31"}
+
+
+# _extract_scalar: parent_item / sub_item (hierarchy mirrors, related-id shape)
+
+def test_extract_scalar_parent_item_returns_ids():
+    assert _extract_scalar("parent_item", {"related_ids": ["p1"]}) == ["p1"]
+
+
+def test_extract_scalar_sub_item_returns_ids():
+    assert _extract_scalar("sub_item", {"related_ids": ["c1", "c2"]}) == ["c1", "c2"]
+
+
+def test_extract_scalar_parent_item_empty():
+    assert _extract_scalar("parent_item", {"related_ids": []}) == []
+
+
 # ─── _aggregate: checked ──────────────────────────────────────────────────────
 
 
@@ -1277,3 +1349,157 @@ def test_rollup_over_timeline_relation_target_resolves_members(db, database_bloc
     assert isinstance(result, list) and len(result) == 1
     assert result[0]["id"] == str(member.id)
     assert result[0]["title"] == "Lyz"
+
+
+def test_rollup_over_timeline_text_show_original(db, database_block, entry):
+    """Regression (#4): show_original over a TIMELINED text column must surface
+    the last-slot text, not the "—" placeholder.
+
+    Timelined text stores its payload inside ``_timeline`` slots; previously
+    ``_extract_scalar`` read only the root ``text`` key and returned None for
+    every related entry, so the rollup rendered a dash per row.
+    """
+    target = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
+    target.content = {"title": "A1"}
+    db.commit()
+
+    rel = repo.create_schema(
+        db, database_id=database_block.id, name="Rel", type="relation",
+        position=1.0, config={"target_database_id": str(database_block.id)},
+    )
+    note = repo.create_schema(
+        db, database_id=database_block.id, name="Note", type="text",
+        position=2.0, config={"hasTimeline": True},
+    )
+    roll = repo.create_schema(
+        db, database_id=database_block.id, name="Note rollup", type="rollup",
+        position=3.0, config={
+            "relation_schema_id": str(rel.id),
+            "rollup_schema_id": str(note.id),
+            "function": "show_original",
+        },
+    )
+    db.commit()
+
+    # entry -> target (flat relation)
+    repo.upsert_value(
+        db, page_id=entry.id, schema_id=rel.id,
+        value={"related_ids": [str(target.id)]},
+    )
+    # target.Note: two timelined slots; the later slot ("Test 2") is last state.
+    repo.upsert_value(
+        db, page_id=target.id, schema_id=note.id,
+        value={"_timeline": {
+            "→1999-12-31T23:59:59": {"text": "Test 1"},
+            "2000-01-01T00:00:00→": {"text": "Test 2"},
+        }},
+    )
+    db.commit()
+
+    compute_all_for_entry(db, database_block.id, entry.id)
+    db.commit()
+
+    pv = repo.get_value(db, entry.id, roll.id)
+    assert pv is not None
+    assert pv.value.get("result") == ["Test 2"]
+
+
+def test_rollup_over_timeline_number_sum(db, database_block, entry):
+    """A numeric aggregation (sum) over a TIMELINED number column must read the
+    current last-slot value for every related entry, not None.
+
+    Covers both the always-valid ("" key) slot and a bounded-then-open
+    timeline, confirming the generalisation beyond text/show_original.
+    """
+    t1 = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
+    t1.content = {"title": "T1"}
+    t2 = repo.create_block(db, type="page", position=3.0, parent_id=database_block.id)
+    t2.content = {"title": "T2"}
+    db.commit()
+
+    rel = repo.create_schema(
+        db, database_id=database_block.id, name="Rel", type="relation",
+        position=1.0, config={"target_database_id": str(database_block.id)},
+    )
+    amount = repo.create_schema(
+        db, database_id=database_block.id, name="Amount", type="number",
+        position=2.0, config={"hasTimeline": True},
+    )
+    roll = repo.create_schema(
+        db, database_id=database_block.id, name="Total", type="rollup",
+        position=3.0, config={
+            "relation_schema_id": str(rel.id),
+            "rollup_schema_id": str(amount.id),
+            "function": "sum",
+        },
+    )
+    db.commit()
+
+    repo.upsert_value(
+        db, page_id=entry.id, schema_id=rel.id,
+        value={"related_ids": [str(t1.id), str(t2.id)]},
+    )
+    repo.upsert_value(
+        db, page_id=t1.id, schema_id=amount.id,
+        value={"_timeline": {"": {"number": 10}}},
+    )
+    repo.upsert_value(
+        db, page_id=t2.id, schema_id=amount.id,
+        value={"_timeline": {
+            "2023-01-01T00:00:00→2023-12-31T23:59:59": {"number": 99},
+            "2024-01-01T00:00:00→": {"number": 5},
+        }},
+    )
+    db.commit()
+
+    compute_all_for_entry(db, database_block.id, entry.id)
+    db.commit()
+
+    pv = repo.get_value(db, entry.id, roll.id)
+    assert pv is not None
+    # 10 (always) + 5 (last slot, not 99) = 15
+    assert pv.value.get("result") == 15.0
+
+
+def test_rollup_over_date_show_original_emits_iso_string(db, database_block, entry):
+    """show_original over a date column must emit a canonical ISO string, not
+    the {"start", "end"} dict (which the frontend renders as "[object Object]").
+    """
+    target = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
+    target.content = {"title": "D1"}
+    db.commit()
+
+    rel = repo.create_schema(
+        db, database_id=database_block.id, name="Rel", type="relation",
+        position=1.0, config={"target_database_id": str(database_block.id)},
+    )
+    when = repo.create_schema(
+        db, database_id=database_block.id, name="When", type="date",
+        position=2.0, config={},
+    )
+    roll = repo.create_schema(
+        db, database_id=database_block.id, name="When rollup", type="rollup",
+        position=3.0, config={
+            "relation_schema_id": str(rel.id),
+            "rollup_schema_id": str(when.id),
+            "function": "show_original",
+        },
+    )
+    db.commit()
+
+    repo.upsert_value(
+        db, page_id=entry.id, schema_id=rel.id,
+        value={"related_ids": [str(target.id)]},
+    )
+    repo.upsert_value(
+        db, page_id=target.id, schema_id=when.id,
+        value={"start": "2025-01-01", "end": None},
+    )
+    db.commit()
+
+    compute_all_for_entry(db, database_block.id, entry.id)
+    db.commit()
+
+    pv = repo.get_value(db, entry.id, roll.id)
+    assert pv is not None
+    assert pv.value.get("result") == ["2025-01-01"]

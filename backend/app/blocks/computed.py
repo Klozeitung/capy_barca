@@ -276,13 +276,40 @@ def _extract_scalar(schema_type: str, value: Optional[dict], config: Optional[di
     Extract a single scalar from a PropertyValue JSONB dict.
 
     The optional *config* parameter is used for timeline-aware relation
-    extraction: when ``config.hasTimeline`` is true, the scalar is taken
+    extraction: when ``config.hasTimeline`` is true, the related IDs are taken
     from the last ``_timeline`` slot rather than the root ``related_ids``.
+
+    For value-bearing scalar columns (text, email, phone, url, number,
+    checkbox, select, date) the extraction is also timeline-aware: when the
+    stored value carries a ``_timeline`` key, the last slot's payload is used,
+    matching the documented "default to last state" behaviour for timelined
+    properties.
     """
     if value is None:
         return None
+
+    # Timeline-aware scalar extraction (#4). Timelined text / email / phone /
+    # url / number / checkbox / select / date columns store their per-period
+    # payload inside ``_timeline`` slots rather than at the root. Mirroring the
+    # documented "default to last state" behaviour for timelined properties
+    # (see README), resolve the last slot and extract the scalar from it.
+    # Relation-style columns keep their own timeline-aware branch below;
+    # formula / rollup values never carry a ``_timeline`` key.
+    if schema_type in (
+        "text", "email", "phone", "url",
+        "number", "checkbox", "select", "date",
+    ) and "_timeline" in value:
+        slot = _last_timeline_slot(value.get("_timeline") or {})
+        value = slot if slot is not None else {}
+
     if schema_type in ("text", "email", "phone", "url"):
-        return value.get("text")
+        # Flat text stores its payload under "text"; timelined email / phone /
+        # url slots store it under "value" (see TimelineEditor.buildEmptyValue).
+        # Prefer the explicit "text" key — preserving empty strings — and fall
+        # back to "value" so both storage shapes resolve correctly.
+        if "text" in value:
+            return value.get("text")
+        return value.get("value")
     if schema_type == "number":
         return value.get("number")
     if schema_type == "checkbox":
@@ -312,10 +339,12 @@ def _extract_scalar(schema_type: str, value: Optional[dict], config: Optional[di
         return {"start": value.get("start"), "end": value.get("end")}
     if schema_type == "id":
         return value.get("id_value")
-    if schema_type == "relation":
+    if schema_type in ("relation", "parent_item", "sub_item"):
         # Return the list of related entry IDs so empty() can check whether
-        # any entries are actually linked.  Timeline-aware: if hasTimeline is
-        # set the current (last-slot) list is returned.
+        # any entries are actually linked.  ``relation`` may be timeline-aware
+        # (if hasTimeline is set the current last-slot list is returned);
+        # ``parent_item`` / ``sub_item`` are the hierarchy mirrors and store a
+        # flat ``related_ids`` list (config locked, never timelined).
         has_timeline = (config or {}).get("hasTimeline", False)
         if has_timeline and "_timeline" in value:
             slot = _last_timeline_slot(value.get("_timeline") or {})
@@ -870,6 +899,19 @@ def _compute_rollup(
         else:  # last_value
             result = entries[-1] if entries else None
         _store(result, extra={"relation": True})
+        return
+
+    # Date columns yield {"start", "end"} dicts (needed by the date
+    # aggregations below and by formulas). The raw-display functions, however,
+    # must emit canonical ISO strings the frontend can format — a dict would
+    # render as "[object Object]". Convert each date scalar to its start
+    # (falling back to end) ISO string before aggregating.
+    if col_type == "date" and function in _RAW_DISPLAY_FUNCTIONS:
+        iso_scalars = [
+            (sc.get("start") or sc.get("end")) if isinstance(sc, dict) else sc
+            for sc in scalars
+        ]
+        _store(_aggregate(iso_scalars, function))
         return
 
     _store(_aggregate(scalars, function))
