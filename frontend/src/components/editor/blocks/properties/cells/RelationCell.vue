@@ -479,7 +479,7 @@ async function onSideViewRefresh(): Promise<void> {
               </span>
               <span
                 class="rel-cell__tag-open"
-                :title="t('db.relation.openEntry')"
+                :title="getEntryTitle(id)"
                 @click.stop="openRelatedEntry(id)"
               >
                 <Icon icon="mdi:file-outline" width="10" height="10" class="rel-cell__tag-icon" />
@@ -537,7 +537,7 @@ async function onSideViewRefresh(): Promise<void> {
           </span>
           <span
             class="rel-cell__tag-open"
-            :title="t('db.relation.openEntry')"
+            :title="getEntryTitle(id)"
             @click.stop="openRelatedEntry(id)"
           >
             <Icon icon="mdi:file-outline" width="10" height="10" class="rel-cell__tag-icon" />

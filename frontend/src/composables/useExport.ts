@@ -21,6 +21,21 @@ interface OrderedColumn {
   schema: PropertySchema | null
 }
 
+/**
+ * Build the CSV column header for a property. When a (trimmed) description is
+ * present it is appended in a bracketed marker so the exported header carries
+ * the description inline, e.g. ``Name [Description: ...]``. The marker label is
+ * passed in so it can be sourced from i18n at the call site.
+ */
+export function buildCsvHeader(
+  name: string,
+  description: string,
+  descriptionPrefix: string,
+): string {
+  const trimmed = (description ?? '').trim()
+  return trimmed ? `${name} [${descriptionPrefix}: ${trimmed}]` : name
+}
+
 export function useExport(options: {
   orderedColumns:           ComputedRef<OrderedColumn[]>
   filteredAndSortedEntries: ComputedRef<DatabaseEntry[]>
@@ -77,9 +92,12 @@ export function useExport(options: {
     return (id: string) => titleMap.get(id) ?? ''
   }
 
-  async function getExportData(): Promise<{ headers: string[]; rows: string[][] }> {
+  async function getExportData(): Promise<{ headers: string[]; descriptions: string[]; rows: string[][] }> {
     const cols    = orderedColumns.value
     const headers = cols.map(c => c.schema ? c.schema.name : nameColLabel)
+    const descriptions = cols.map(c =>
+      (c.schema?.config?.description as string | undefined)?.trim() ?? ''
+    )
 
     // Pre-warm the resolvers used by displayValue for relation and user columns.
     await usersStore.loadUsers()
@@ -92,7 +110,7 @@ export function useExport(options: {
           : (entry.content?.title as string | undefined) ?? ''
       )
     )
-    return { headers, rows }
+    return { headers, descriptions, rows }
   }
 
   function dbFilename(): string {
@@ -116,9 +134,11 @@ export function useExport(options: {
   // ── Exports ─────────────────────────────────────────────────────────────────
 
   async function exportCSV(): Promise<void> {
-    const { headers, rows } = await getExportData()
+    const { headers, descriptions, rows } = await getExportData()
+    const descriptionPrefix = t('db.export.descriptionPrefix')
+    const headerRow = headers.map((h, i) => buildCsvHeader(h, descriptions[i] ?? '', descriptionPrefix))
     const escape = (s: string) => `"${s.replace(/"/g, '""')}"`
-    const lines  = [headers, ...rows].map((row) => row.map(escape).join(','))
+    const lines  = [headerRow, ...rows].map((row) => row.map(escape).join(','))
     _downloadBlob(lines.join('\r\n'), `${dbFilename()}.csv`, 'text/csv;charset=utf-8;')
     showExportMenu.value = false
   }
@@ -156,9 +176,18 @@ export function useExport(options: {
   }
 
   async function exportPDF(): Promise<void> {
-    const { headers, rows } = await getExportData()
+    const { headers, descriptions, rows } = await getExportData()
     const safeHeaders = headers.map(_pdfSafe)
     const safeRows    = rows.map(row => row.map(_pdfSafe))
+
+    // Optional description row, inserted directly beneath the header. Only added
+    // when at least one column carries a description; rendered 1pt smaller than
+    // the body text and in a dimmed, italic colour.
+    const safeDescriptions = descriptions.map(d => _pdfSafe(d))
+    const hasDescriptions  = safeDescriptions.some(d => d !== '')
+    const body                = hasDescriptions ? [safeDescriptions, ...safeRows] : safeRows
+    const descriptionRowIndex = hasDescriptions ? 0 : -1
+
     const doc      = new jsPDF({ orientation: 'landscape' })
     const title    = ((block.value?.content?.title as string | undefined) ?? t('main.untitled')).trim()
     const viewName = activeView.value?.name ?? ''
@@ -166,11 +195,22 @@ export function useExport(options: {
     doc.text(_pdfSafe(viewName ? `${title} \u2013 ${viewName}` : title), 14, 15)
     autoTable(doc, {
       head:               [safeHeaders],
-      body:               safeRows,
+      body,
       startY:             22,
       styles:             { fontSize: 8, cellPadding: 3 },
       headStyles:         { fillColor: [55, 55, 55], textColor: 255, fontStyle: 'bold' },
       alternateRowStyles: { fillColor: [248, 248, 248] },
+      // Style the description sub-row: 3pt smaller, dimmed, italic, plain white
+      // background so the alternating row shading does not tint it. The hook
+      // param is contextually typed as CellHookData by jspdf-autotable.
+      didParseCell: (data) => {
+        if (data.section === 'body' && data.row.index === descriptionRowIndex) {
+          data.cell.styles.fontSize  = 7
+          data.cell.styles.textColor = [150, 150, 150]
+          data.cell.styles.fontStyle = 'italic'
+          data.cell.styles.fillColor = [255, 255, 255]
+        }
+      },
     })
     doc.save(`${dbFilename()}.pdf`)
     showExportMenu.value = false

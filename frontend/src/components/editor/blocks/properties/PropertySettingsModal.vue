@@ -24,6 +24,10 @@
  * parent_item – name only (sub-item pair system hint)
  * sub_item     – name only (sub-item pair system hint, backend-managed)
  *
+ * All types additionally expose an optional free-text *description* (stored at
+ * config.description), surfaced as a column-header tooltip and embedded in the
+ * CSV / PDF exports.
+ *
  * Config JSONB shapes per type
  * ----------------------------
  * number:   { format: 'plain' | 'euro' }
@@ -61,6 +65,12 @@ const nameEl = ref<HTMLInputElement | null>(null)
 const name = ref(props.schema.name)
 const nameError = ref('')
 const isSaving = ref(false)
+
+// description (all types) — free text, shown as the column-header tooltip and
+// embedded in CSV / PDF exports. Persisted at config.description.
+const description = ref<string>(
+  (props.schema.config?.description as string | undefined) ?? '',
+)
 
 // group (#21) – wird im Sidepanel über drag and drop gesetzt, hier nur für reference
 // const group = ref<string>(props.schema.group ?? 'Standard')
@@ -745,6 +755,26 @@ async function save() {
       config = { ...(props.schema.config ?? {}), hasTimeline: hasTimeline.value }
   }
 
+  // Preserve a user-set column icon (config.icon). Several types above rebuild
+  // their config object from scratch, which would otherwise drop the icon. The
+  // modal never edits the icon, so it is always carried over from the existing
+  // schema config when present.
+  const existingIcon = props.schema.config?.icon as string | undefined
+  if (existingIcon && config && typeof config === 'object') {
+    config = { ...config, icon: existingIcon }
+  }
+
+  // Description (all types): the per-type config objects above are rebuilt from
+  // scratch, so the free-text description must be (re)applied here regardless of
+  // type. An empty description is stripped so we never persist empty strings.
+  const trimmedDescription = description.value.trim()
+  if (trimmedDescription) {
+    config = { ...(config ?? {}), description: trimmedDescription }
+  } else if (config && typeof config === 'object' && 'description' in config) {
+    const { description: _omittedDescription, ...restConfig } = config as Record<string, unknown>
+    config = restConfig
+  }
+
   try {
     await dbStore.updateSchema(props.databaseId, props.schema.id, {
       name: trimmedName,
@@ -828,6 +858,19 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
             @keydown.escape.prevent="emit('close')"
           />
           <span v-if="nameError" class="psm__error">{{ nameError }}</span>
+        </div>
+
+        <!-- Description (all types) -->
+        <div class="psm__field">
+          <label class="psm__label">{{ t('db.settings.descriptionLabel') }}</label>
+          <textarea
+            v-model="description"
+            class="psm__input psm__textarea"
+            :placeholder="t('db.settings.descriptionPlaceholder')"
+            rows="2"
+            @keydown.escape.prevent="emit('close')"
+          />
+          <p class="psm__hint">{{ t('db.settings.descriptionHint') }}</p>
         </div>
 
         <!-- Group (#21) – wird im Sidepanel über drag and drop gesetzt, hier nur für reference
@@ -1513,6 +1556,13 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
 
 .psm__input--error {
   border-color: #e05555;
+}
+
+.psm__textarea {
+  resize: vertical;
+  min-height: 56px;
+  font-family: inherit;
+  line-height: 1.4;
 }
 
 .psm__error {

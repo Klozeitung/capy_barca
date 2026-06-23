@@ -266,6 +266,7 @@ const permissionModes = [
                 <p class="hm__permissions-intro">{{ t('help.databasesDateOverride') }}</p>
                 <p class="hm__permissions-note">{{ t('help.databasesRollupBadge') }}</p>
                 <p class="hm__permissions-note">{{ t('help.databasesChipWrap') }}</p>
+                <p class="hm__permissions-note">{{ t('help.databasesDescription') }}</p>
                 <p class="hm__permissions-note">{{ t('help.databasesNuance') }}</p>
                 <p class="hm__permissions-note">{{ t('help.databasesGroups') }}</p>
                 <p class="hm__permissions-note">{{ t('help.databasesTimelineSearch') }}</p>

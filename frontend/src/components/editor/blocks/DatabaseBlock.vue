@@ -136,7 +136,7 @@ const hasMore = computed(() => totalEntries.value > displayedEntries.value.lengt
 
 // ── Limit-hint tooltip (teleported to body to avoid overflow clipping) ────────
 
-interface TipState { text: string; x: number; y: number; visible: boolean }
+interface TipState { text: string; subtext?: string; variant?: 'plain' | 'rich'; x: number; y: number; visible: boolean }
 
 const tip = ref<TipState>({ text: '', x: 0, y: 0, visible: false })
 let _tipTimer: ReturnType<typeof setTimeout> | null = null
@@ -147,6 +147,28 @@ function showTip(e: MouseEvent, text: string): void {
   if (_tipTimer) clearTimeout(_tipTimer)
   _tipTimer = setTimeout(() => {
     tip.value = { text, x: rect.left + rect.width / 2, y: rect.top, visible: true }
+  }, 180)
+}
+
+/**
+ * Column-header tooltip: shows the property name plus its free-text
+ * description (config.description) as an italic second line when present.
+ * Uses the shared db__tip element so a description can be styled distinctly
+ * from the name — something a native title attribute cannot do.
+ */
+function showColumnTip(e: MouseEvent, schema: PropertySchema): void {
+  const description = (schema.config?.description as string | undefined)?.trim()
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  if (_tipTimer) clearTimeout(_tipTimer)
+  _tipTimer = setTimeout(() => {
+    tip.value = {
+      text: schema.name,
+      subtext: description || undefined,
+      variant: 'rich',
+      x: rect.left + rect.width / 2,
+      y: rect.top,
+      visible: true,
+    }
   }, 180)
 }
 
@@ -1820,7 +1842,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                     @dragend="onColDragEnd"
                   >
                     <div class="db__th-inner">
-                      <span class="db__th-label" :title="col.schema!.name">
+                      <span class="db__th-label">
                         <div class="db__th-icon-wrap">
                           <button
                             class="db__th-icon-btn"
@@ -1837,7 +1859,12 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                             @close="schemaIconPickerKey = null"
                           />
                         </div>
-                        <span class="db__th-name" @click="openSettings(col.schema!)">{{ col.schema!.name }}</span>
+                        <span
+                          class="db__th-name"
+                          @click="openSettings(col.schema!)"
+                          @mouseenter="showColumnTip($event, col.schema!)"
+                          @mouseleave="hideTip"
+                        >{{ col.schema!.name }}</span>
                       </span>
                       <template v-if="deletingSchemaId === col.key">
                         <button class="db__th-btn db__th-btn--confirm" :title="t('db.deleteColumnConfirm')" @click.stop="confirmDeleteSchema(col.key)">
@@ -2358,8 +2385,9 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
       <div
         v-if="tip.visible"
         class="db__tip"
+        :class="{ 'db__tip--rich': tip.variant === 'rich' }"
         :style="{ left: tip.x + 'px', top: tip.y + 'px' }"
-      >{{ tip.text }}</div>
+      ><span class="db__tip-text">{{ tip.text }}</span><span v-if="tip.subtext" class="db__tip-subtext">{{ tip.subtext }}</span></div>
     </Teleport>
   </div>
 </template>
@@ -2452,6 +2480,32 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
   border-radius: 5px;
   pointer-events: none;
   z-index: 9999;
+}
+
+.db__tip-subtext {
+  display: block;
+  margin-top: 2px;
+  font-style: italic;
+  opacity: 0.8;
+}
+
+/*
+ * Rich variant (column-header tooltip). The base db__tip is an inverted
+ * light-on-dark hint; for the larger, multi-line header tooltip that reads as
+ * an out-of-place light block in CapyBarca's dark theme, so this variant uses
+ * the app's elevated-surface colours instead.
+ */
+.db__tip--rich {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  text-align: left;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+.db__tip--rich .db__tip-subtext {
+  color: var(--color-text-muted);
+  opacity: 1;
 }
 
 /* ── Load-more bar ───────────────────────────────────────────────────────── */
