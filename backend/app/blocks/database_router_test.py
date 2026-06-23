@@ -3278,3 +3278,111 @@ def test_resolve_titles_ignores_display_limit(http_client):
     assert len(result) == 1
     assert result[0]["id"] == last["id"]
     assert result[0]["title"] == "Beyond Limit"
+
+
+# ─── Formula prop() reference rename on property rename ───────────────────────
+
+
+def test_rename_property_rewrites_formula_reference(http_client):
+    """Renaming a property must rewrite prop('Old') -> prop('New') in dependent
+    formulas, so the reference is not orphaned and the column does not go blank.
+    """
+    db_id = _create_database(http_client)
+    price = _create_number_schema(http_client, db_id, "Price")
+    _create_formula_schema(http_client, db_id, "Double", "prop('Price') * 2")
+    entry = _create_entry(http_client, db_id)
+    _upsert_value(http_client, db_id, entry["id"], price["id"], {"number": 5})
+
+    # Rename the referenced property.
+    resp = http_client.patch(
+        f"/api/databases/{db_id}/schemas/{price['id']}",
+        json={"name": "Unit Price"},
+    )
+    assert resp.status_code == 200
+
+    # The formula's stored expression must now reference the new name.
+    formula = next(
+        s for s in http_client.get(f"/api/databases/{db_id}/schemas").json()
+        if s["type"] == "formula"
+    )
+    assert formula["config"]["expression"] == "prop('Unit Price') * 2"
+
+    # And the reference must still resolve: changing the renamed property's
+    # value recomputes the formula through the new name (would be empty if the
+    # reference were still orphaned).
+    _upsert_value(http_client, db_id, entry["id"], price["id"], {"number": 7})
+    entries = http_client.get(f"/api/databases/{db_id}/entries").json()
+    row = next(e for e in entries if e["id"] == entry["id"])
+    assert row["values"][formula["id"]]["result"] == pytest.approx(14.0)
+
+
+def test_rename_property_recomputes_dependent_formula_immediately(http_client):
+    """After the rename — with no further value edit — the dependent formula
+    column is recomputed in the same request, so it stays populated.
+    """
+    db_id = _create_database(http_client)
+    price = _create_number_schema(http_client, db_id, "Price")
+    _create_formula_schema(http_client, db_id, "Double", "prop('Price') * 2")
+    entry = _create_entry(http_client, db_id)
+    _upsert_value(http_client, db_id, entry["id"], price["id"], {"number": 5})
+
+    formula = next(
+        s for s in http_client.get(f"/api/databases/{db_id}/schemas").json()
+        if s["type"] == "formula"
+    )
+
+    resp = http_client.patch(
+        f"/api/databases/{db_id}/schemas/{price['id']}",
+        json={"name": "Unit Price"},
+    )
+    assert resp.status_code == 200
+
+    entries = http_client.get(f"/api/databases/{db_id}/entries").json()
+    row = next(e for e in entries if e["id"] == entry["id"])
+    assert row["values"][formula["id"]]["result"] == pytest.approx(10.0)
+
+
+def test_rename_property_leaves_matching_string_literal_untouched(http_client):
+    """Only the prop() argument is rewritten; a string literal that merely
+    equals the old name must be preserved.
+    """
+    db_id = _create_database(http_client)
+    status = _create_schema(http_client, db_id, name="Status", type_="text")
+    _create_formula_schema(
+        http_client, db_id, "Label",
+        "if(prop('Status') == 'Status', 'a', 'b')",
+    )
+
+    resp = http_client.patch(
+        f"/api/databases/{db_id}/schemas/{status['id']}",
+        json={"name": "Phase"},
+    )
+    assert resp.status_code == 200
+
+    formula = next(
+        s for s in http_client.get(f"/api/databases/{db_id}/schemas").json()
+        if s["type"] == "formula"
+    )
+    assert formula["config"]["expression"] == "if(prop('Phase') == 'Status', 'a', 'b')"
+
+
+def test_rename_unreferenced_property_leaves_formula_unchanged(http_client):
+    """Renaming a property that no formula references must not alter any
+    formula expression.
+    """
+    db_id = _create_database(http_client)
+    _create_number_schema(http_client, db_id, "Price")
+    other = _create_number_schema(http_client, db_id, "Other")
+    _create_formula_schema(http_client, db_id, "Double", "prop('Price') * 2")
+
+    resp = http_client.patch(
+        f"/api/databases/{db_id}/schemas/{other['id']}",
+        json={"name": "Renamed Other"},
+    )
+    assert resp.status_code == 200
+
+    formula = next(
+        s for s in http_client.get(f"/api/databases/{db_id}/schemas").json()
+        if s["type"] == "formula"
+    )
+    assert formula["config"]["expression"] == "prop('Price') * 2"

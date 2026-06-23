@@ -1306,6 +1306,86 @@ def extract_prop_names(expression: str) -> list[str]:
     return names
 
 
+def _string_literal_end(src: str, start: int) -> int:
+    """
+    Return the index just past the closing quote of the string literal that
+    begins at *start* (the opening-quote index), honouring backslash escapes —
+    mirroring the scanning rules of :func:`_lex`.
+    """
+    quote = src[start]
+    j = start + 1
+    n = len(src)
+    while j < n and src[j] != quote:
+        j += 2 if (src[j] == "\\" and j + 1 < n) else 1
+    return j + 1  # past the closing quote
+
+
+def _encode_string_literal(value: str, quote: str) -> str:
+    """
+    Encode *value* as a quoted string literal delimited by *quote*, escaping the
+    backslash, the quote character, and the control characters the lexer maps,
+    so the result re-lexes back to *value*.
+    """
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace(quote, "\\" + quote)
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+        .replace("\r", "\\r")
+    )
+    return f"{quote}{escaped}{quote}"
+
+
+def rename_prop_in_expression(expression: str, old_name: str, new_name: str) -> str:
+    """
+    Return *expression* with every ``prop("old_name")`` reference rewritten to
+    use *new_name*, leaving all other string literals and the surrounding
+    formatting untouched.
+
+    Only a string literal that sits immediately after a ``prop`` identifier and
+    its opening parenthesis is rewritten, so a literal that merely happens to
+    equal *old_name* elsewhere — e.g. a compared value ``== "old_name"`` — is
+    left alone. Matching is exact (case- and whitespace-sensitive), mirroring
+    how ``prop()`` resolves names at evaluation time.
+
+    The original quote character and the rest of the source are preserved;
+    *new_name* is re-encoded for that quote. A malformed expression that no
+    longer lexes is returned unchanged, so a property rename can never fail
+    because of a pre-existing broken formula.
+    """
+    if old_name == new_name or not expression:
+        return expression
+    try:
+        tokens = _lex(expression)
+    except FormulaError:
+        return expression
+
+    # Collect (start, end, replacement) spans for matching prop() string args.
+    spans: list[tuple[int, int, str]] = []
+    for i in range(len(tokens) - 2):
+        name_tok, lparen_tok, str_tok = tokens[i], tokens[i + 1], tokens[i + 2]
+        if (
+            name_tok.type is TT.IDENT
+            and name_tok.value == "prop"
+            and lparen_tok.type is TT.LPAREN
+            and str_tok.type is TT.STRING
+            and str_tok.value == old_name
+        ):
+            start = str_tok.pos
+            end = _string_literal_end(expression, start)
+            quote = expression[start]
+            spans.append((start, end, _encode_string_literal(new_name, quote)))
+
+    if not spans:
+        return expression
+
+    # Splice from right to left so earlier positions stay valid.
+    out = expression
+    for start, end, literal in sorted(spans, key=lambda s: s[0], reverse=True):
+        out = out[:start] + literal + out[end:]
+    return out
+
+
 def validate_syntax(expression: str) -> None:
     """
     Parse *expression* without evaluating it, then verify that every function

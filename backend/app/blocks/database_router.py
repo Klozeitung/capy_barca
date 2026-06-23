@@ -109,7 +109,7 @@ from app.blocks.computed import (
     compute_same_db_rollup_dependents,
     has_any_cycle,
 )
-from app.blocks.formula_engine import FormulaError, validate_syntax
+from app.blocks.formula_engine import FormulaError, rename_prop_in_expression, validate_syntax
 from app.blocks.router import get_db
 from app.blocks.service import BlockConflict, BlockNotFound
 from app.permissions import repository as perm_repo
@@ -1636,8 +1636,37 @@ def update_schema(
         if payload.group is not None:
             updated.group = payload.group
 
-        # Re-evaluate all entries when computed config changes
-        if effective_type in ("formula", "rollup") and payload.config is not None:
+        # ── Formula prop() reference rename ──────────────────────────────────
+        #
+        # Formulas reference properties by name (prop("Name")), so renaming a
+        # property would orphan every prop("OldName") reference: it silently
+        # resolves to empty and the dependent formula column goes blank.
+        # Mirroring the bilateral mirror-name back-pointer handling below,
+        # rewrite the references in every formula schema of this database to the
+        # new name. Rollups are unaffected — they reference their columns by ID,
+        # not by name. Runs before the recompute pass so the corrected
+        # expressions are the ones evaluated.
+        rewrote_formula = False
+        if payload.name is not None and updated.name != old_name:
+            for sch in repo.list_schemas(db, database_id):
+                if sch.type != "formula":
+                    continue
+                cfg = dict(sch.config or {})
+                expr = cfg.get("expression")
+                if not isinstance(expr, str) or not expr:
+                    continue
+                new_expr = rename_prop_in_expression(expr, old_name, updated.name)
+                if new_expr != expr:
+                    cfg["expression"] = new_expr
+                    repo.update_schema(db, sch, config=cfg)
+                    rewrote_formula = True
+
+        # Re-evaluate all entries when the edited schema's computed config
+        # changes, or when a rename rewrote prop() references in dependent
+        # formulas (so those columns refill with the corrected references).
+        if (
+            effective_type in ("formula", "rollup") and payload.config is not None
+        ) or rewrote_formula:
             entries = repo.list_children(
                 db, database_id, state="active",
                 exclude_types=frozenset({"entry_template"}),

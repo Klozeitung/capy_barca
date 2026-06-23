@@ -14,6 +14,7 @@ from app.blocks.formula_engine import (
     FormulaResult,
     evaluate,
     extract_prop_names,
+    rename_prop_in_expression,
     validate_syntax,
 )
 
@@ -1742,3 +1743,81 @@ def test_at_non_list_first_arg_raises():
 
 def test_at_validate_syntax_accepted():
     validate_syntax("at(prop('Dates'), 0)")
+
+# ─── rename_prop_in_expression ────────────────────────────────────────────────
+
+
+def test_rename_prop_basic_double_quote():
+    assert rename_prop_in_expression('prop("Old") + 1', "Old", "New") == 'prop("New") + 1'
+
+
+def test_rename_prop_basic_single_quote_preserved():
+    assert rename_prop_in_expression("prop('Old') + 1", "Old", "New") == "prop('New') + 1"
+
+
+def test_rename_prop_multiple_occurrences():
+    expr = 'prop("Old") + prop("Old") * prop("Other")'
+    assert (
+        rename_prop_in_expression(expr, "Old", "New")
+        == 'prop("New") + prop("New") * prop("Other")'
+    )
+
+
+def test_rename_prop_leaves_unrelated_string_literals_untouched():
+    # A compared value that merely equals the old name must NOT be rewritten —
+    # only the prop() argument is. This is the whole point of token-based rename.
+    expr = 'if(prop("Status") == "Status", "Status", prop("Other"))'
+    assert (
+        rename_prop_in_expression(expr, "Status", "Phase")
+        == 'if(prop("Phase") == "Status", "Status", prop("Other"))'
+    )
+
+
+def test_rename_prop_no_match_returns_unchanged():
+    expr = 'prop("Other") + 1'
+    assert rename_prop_in_expression(expr, "Old", "New") == expr
+
+
+def test_rename_prop_identity_when_names_equal():
+    expr = 'prop("Name")'
+    assert rename_prop_in_expression(expr, "Name", "Name") == expr
+
+
+def test_rename_prop_preserves_surrounding_formatting():
+    expr = "if(  prop('Old')  >= 45 , 'x', 'y' )"
+    assert (
+        rename_prop_in_expression(expr, "Old", "New")
+        == "if(  prop('New')  >= 45 , 'x', 'y' )"
+    )
+
+
+def test_rename_prop_name_with_spaces_and_parens():
+    expr = 'prop("Geschlecht") == "Weiblich"'
+    assert (
+        rename_prop_in_expression(expr, "Geschlecht", "Geschlecht (Biologisch)")
+        == 'prop("Geschlecht (Biologisch)") == "Weiblich"'
+    )
+
+
+def test_rename_prop_new_name_with_quote_is_escaped_and_relexes():
+    # A new name containing the same quote char must be escaped so the result
+    # still lexes back to that exact name.
+    out = rename_prop_in_expression('prop("Old")', "Old", 'A "B" C')
+    assert extract_prop_names(out) == ['A "B" C']
+
+
+def test_rename_prop_malformed_expression_returned_unchanged():
+    # An expression that no longer lexes (unterminated string) is left as-is so
+    # a rename never fails on a pre-existing broken formula.
+    expr = 'prop("Old'
+    assert rename_prop_in_expression(expr, "Old", "New") == expr
+
+
+def test_rename_prop_empty_expression():
+    assert rename_prop_in_expression("", "Old", "New") == ""
+
+
+def test_rename_prop_result_still_evaluates():
+    # End-to-end: after rename the formula resolves against the new context key.
+    out = rename_prop_in_expression("prop('Old') + 5", "Old", "New")
+    assert ev(out, {"New": 10}) == 15
