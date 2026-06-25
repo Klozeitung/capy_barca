@@ -119,9 +119,44 @@ const isLoading = ref(true)
 const displayedEntries = ref<DatabaseEntry[]>([])
 const totalEntries     = ref(0)
 
-// filteredAndSortedEntries is an alias kept so the rest of the template
-// and the useExport composable work without renaming.
-const filteredAndSortedEntries = computed<DatabaseEntry[]>(() => displayedEntries.value)
+// ── Name search (#31) ─────────────────────────────────────────────────────────
+
+// A magnifier toggle in the toolbar expands into a text field that filters the
+// rendered entries by name (case-insensitive substring match). It narrows only
+// what is already loaded; the load-more bar still reflects the full server set.
+const nameSearchActive = ref(false)
+const nameSearchQuery  = ref('')
+const searchInputEl    = ref<HTMLInputElement | null>(null)
+
+// filteredAndSortedEntries is the single source the table, calendar, agenda,
+// aggregations and export all render from. Applying the name filter here keeps
+// every consumer consistent with what the user actually sees.
+const filteredAndSortedEntries = computed<DatabaseEntry[]>(() => {
+  const q = nameSearchQuery.value.trim().toLowerCase()
+  if (!q) return displayedEntries.value
+  return displayedEntries.value.filter((e) =>
+    ((e.content?.title as string | undefined) ?? '').toLowerCase().includes(q),
+  )
+})
+
+function toggleNameSearch(): void {
+  nameSearchActive.value = !nameSearchActive.value
+  if (nameSearchActive.value) {
+    nextTick(() => searchInputEl.value?.focus())
+  } else {
+    nameSearchQuery.value = ''
+  }
+}
+
+function clearNameSearch(): void {
+  nameSearchQuery.value = ''
+  nextTick(() => searchInputEl.value?.focus())
+}
+
+function onSearchBlur(): void {
+  // Collapse the field automatically when left empty so it does not linger.
+  if (!nameSearchQuery.value.trim()) nameSearchActive.value = false
+}
 
 // ── Display limit (load-more pagination) ─────────────────────────────────────
 
@@ -1720,28 +1755,61 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
         </div>
 
         <div class="db__toolbar-right">
+          <!-- Name search (#31) -->
+          <div class="db__toolbar-item">
+            <button
+              v-if="!nameSearchActive"
+              class="db__toolbar-btn db__toolbar-btn--icon"
+              @mouseenter="showTip($event, t('db.search.open'))"
+              @mouseleave="hideTip"
+              @click.stop="hideTip(); toggleNameSearch()"
+            >
+              <Icon icon="mdi:magnify" width="14" height="14" />
+            </button>
+            <div v-else class="db__search-field">
+              <Icon icon="mdi:magnify" width="14" height="14" class="db__search-icon" />
+              <input
+                ref="searchInputEl"
+                v-model="nameSearchQuery"
+                type="text"
+                class="db__search-input"
+                :placeholder="t('db.search.placeholder')"
+                @keydown.escape="toggleNameSearch()"
+                @blur="onSearchBlur"
+              />
+              <button
+                class="db__search-clear"
+                :title="t('db.search.clear')"
+                @mousedown.prevent
+                @click.stop="clearNameSearch()"
+              >
+                <Icon icon="mdi:close" width="13" height="13" />
+              </button>
+            </div>
+          </div>
+
           <!-- New entry (table view only) -->
           <div v-if="!activeView || activeView.viewType === 'table'" class="db__toolbar-item">
             <button
-              class="db__toolbar-btn db__toolbar-btn--new-entry"
+              class="db__toolbar-btn db__toolbar-btn--new-entry db__toolbar-btn--icon"
               :disabled="isAddingRow"
-              @mouseenter="hasMore ? showTip($event, t('db.addRowLimitHint')) : undefined"
+              @mouseenter="showTip($event, hasMore ? t('db.addRowLimitHint') : t('db.addRow'))"
               @mouseleave="hideTip"
-              @click.stop="addRow()"
+              @click.stop="hideTip(); addRow()"
             >
               <Icon icon="mdi:plus" width="14" height="14" />
-              {{ t('db.addRow') }}
             </button>
           </div>
 
           <!-- Export -->
           <div class="db__toolbar-item">
             <button
-              class="db__toolbar-btn"
-              @click.stop="showExportMenu = !showExportMenu; showFilterPanel = false; showSortPanel = false"
+              class="db__toolbar-btn db__toolbar-btn--icon"
+              @mouseenter="showTip($event, t('db.export.title'))"
+              @mouseleave="hideTip"
+              @click.stop="hideTip(); showExportMenu = !showExportMenu; showFilterPanel = false; showSortPanel = false"
             >
-              <Icon icon="mdi:download-outline" width="14" height="14" />
-              {{ t('db.export.title') }}
+              <Icon icon="mdi:tray-arrow-up" width="14" height="14" />
             </button>
             <div v-if="showExportMenu" class="db__panel db__panel--right" @click.stop>
               <template v-if="isCalendarView">
@@ -2463,6 +2531,59 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
 
 .db__row--sub-item:hover > td {
   background: var(--color-hover);
+}
+
+/* ── Name search (#31) ───────────────────────────────────────────────────── */
+.db__toolbar-btn--icon {
+  padding: 4px 6px;
+}
+
+.db__search-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: var(--color-bg);
+}
+
+.db__search-icon {
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.db__search-input {
+  border: none;
+  background: transparent;
+  outline: none;
+  color: var(--color-text);
+  font-size: 0.8125rem;
+  width: 150px;
+  padding: 2px 0;
+}
+
+.db__search-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.db__search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  border-radius: 4px;
+  padding: 2px;
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+}
+
+.db__search-clear:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
 }
 
 /* ── Limit-hint tooltip (teleported) ────────────────────────────────────── */

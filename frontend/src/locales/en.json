@@ -404,6 +404,8 @@
       "system": "System",
       "show": "Show column",
       "hide": "Hide column",
+      "shownGroupLabel": "Shown",
+      "hiddenGroupLabel": "Hidden",
       "sectionGrouping": "Grouping",
       "groupByProperty": "Group by",
       "groupByNone": "— No grouping —",
@@ -546,6 +548,11 @@
     "addRowShort": "New",
     "loadMoreInfo": "Showing {shown} of {total}",
     "addRowLimitHint": "View is at load limit — new entry may not be visible. Use filters or load more entries first.",
+    "search": {
+      "open": "Search by name",
+      "placeholder": "Filter by name…",
+      "clear": "Clear search"
+    },
     "timeline": {
       "title": "Timeline",
       "addSlot": "Add entry",
@@ -727,7 +734,9 @@
     "databasesDescription": "Any property can carry a free-text description in its settings. It appears as a tooltip when you hover the column header, is appended to the column name in CSV exports, and is rendered as a dimmed sub-row beneath the header in PDF exports.",
     "databasesNuance": "Relation properties can be made \"nuanced\": each link is qualified with a chosen descriptor (e.g. \"successfully Grandmaster\"), shown before or after the chip with optional surrounding text. On a timeline, the nuance can differ per period. Enabling nuance is irreversible, and for bilateral relations each side has its own wording.",
     "databasesGroups": "Properties in the entry side panel can be organised into groups: use \"New group\" to add one, drag properties between groups, double-click a group name to rename it, and delete a custom group via its trash icon — its properties move back to the Standard group rather than being deleted.",
-    "databasesTimelineSearch": "When linking entries on a timeline relation, the linked entry is chosen through a search field rather than a long dropdown: type to filter the target database, and if no match exists, pick \"Create & link\" to create a new entry with that title and link it in one step."
+    "databasesTimelineSearch": "When linking entries on a timeline relation, the linked entry is chosen through a search field rather than a long dropdown: type to filter the target database, and if no match exists, pick \"Create & link\" to create a new entry with that title and link it in one step.",
+    "databasesNameSearch": "In the table toolbar, the magnifier icon reveals a search field that filters the shown entries by name — a substring match, not an exact one. The cross at the right of the field clears the search. The filter applies to the entries already loaded; the \"showing x of y\" indicator is unaffected.",
+    "databasesPropertyVisibilityOrder": "In View Settings under \"Manage properties\", properties are sorted alphabetically and split into two groups: shown ones on top, hidden ones below. Hidden properties are dimmed, and the eye icon toggles visibility per property."
   },
   "synchedBlock": {
     "originLabel": "Synced",

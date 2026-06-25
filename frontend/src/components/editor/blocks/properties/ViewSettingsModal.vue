@@ -26,6 +26,7 @@ import { useI18n } from 'vue-i18n'
 import type { DatabaseView, PropertySchema, ViewType } from '@/stores/database'
 import { useDatabaseStore, clampFrozenColumns, MAX_FROZEN_COLUMNS } from '@/stores/database'
 import { getPropertyTypeIcon, isReadonlyPropertyType } from '@/stores/propertyTypes'
+import { orderAndSplitColumns } from './viewSettingsHelpers'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
@@ -212,6 +213,15 @@ const allColumns = computed(() => [
   })),
 ])
 
+/**
+ * Columns sorted alphabetically by name and split into a visible group and a
+ * hidden group (#29). The split is reactive to ``hidden`` so toggling a
+ * property immediately moves its row between the two groups.
+ */
+const orderedColumns = computed(() =>
+  orderAndSplitColumns(allColumns.value, hidden.value),
+)
+
 function isVisible(key: string): boolean {
   return !hidden.value.has(key)
 }
@@ -388,8 +398,17 @@ function hideAll() {
             </div>
 
             <ul class="vsm__prop-list">
+              <!-- Shown group label (only when something is hidden) -->
               <li
-                v-for="col in allColumns"
+                v-if="orderedColumns.hidden.length > 0"
+                class="vsm__prop-group-label"
+              >
+                {{ t('db.viewSettings.shownGroupLabel') }}
+              </li>
+
+              <!-- Visible columns, in table order -->
+              <li
+                v-for="col in orderedColumns.visible"
                 :key="col.key"
                 class="vsm__prop-row"
                 :class="{ 'vsm__prop-row--readonly': col.isReadonly }"
@@ -416,6 +435,40 @@ function hideAll() {
                 <span v-else class="vsm__toggle-always">
                   <Icon icon="mdi:eye-outline" width="15" height="15" />
                 </span>
+              </li>
+
+              <!-- Hidden group label -->
+              <li
+                v-if="orderedColumns.hidden.length > 0"
+                class="vsm__prop-group-label vsm__prop-group-label--hidden"
+              >
+                {{ t('db.viewSettings.hiddenGroupLabel') }}
+              </li>
+
+              <!-- Hidden columns, in table order, dimmed as a "not shown" indicator -->
+              <li
+                v-for="col in orderedColumns.hidden"
+                :key="col.key"
+                class="vsm__prop-row vsm__prop-row--hidden"
+                :class="{ 'vsm__prop-row--readonly': col.isReadonly }"
+              >
+                <Icon :icon="col.icon" width="14" height="14" class="vsm__prop-icon" />
+                <span class="vsm__prop-name">{{ col.name }}</span>
+                <span v-if="col.isReadonly" class="vsm__prop-badge">
+                  {{ t('db.viewSettings.system') }}
+                </span>
+                <button
+                  class="vsm__toggle"
+                  :class="{ 'vsm__toggle--on': isVisible(col.key) }"
+                  :title="isVisible(col.key) ? t('db.viewSettings.hide') : t('db.viewSettings.show')"
+                  @click="toggleColumn(col.key)"
+                >
+                  <Icon
+                    :icon="isVisible(col.key) ? 'mdi:eye-outline' : 'mdi:eye-off-outline'"
+                    width="15"
+                    height="15"
+                  />
+                </button>
               </li>
             </ul>
           </template>
@@ -673,6 +726,30 @@ function hideAll() {
 
 .vsm__prop-row--readonly {
   background: var(--color-surface);
+}
+
+/* "Not shown" indicator: hidden properties are dimmed (#29). */
+.vsm__prop-row--hidden {
+  opacity: 0.5;
+}
+
+.vsm__prop-row--hidden:hover {
+  opacity: 0.8;
+}
+
+/* Group separators inside the property list (#29). */
+.vsm__prop-group-label {
+  list-style: none;
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  padding: 6px 2px 2px;
+}
+
+.vsm__prop-group-label--hidden {
+  margin-top: 6px;
 }
 
 .vsm__prop-icon {

@@ -270,6 +270,8 @@ const permissionModes = [
                 <p class="hm__permissions-note">{{ t('help.databasesNuance') }}</p>
                 <p class="hm__permissions-note">{{ t('help.databasesGroups') }}</p>
                 <p class="hm__permissions-note">{{ t('help.databasesTimelineSearch') }}</p>
+                <p class="hm__permissions-note">{{ t('help.databasesNameSearch') }}</p>
+                <p class="hm__permissions-note">{{ t('help.databasesPropertyVisibilityOrder') }}</p>
               </div>
             </template>
 
