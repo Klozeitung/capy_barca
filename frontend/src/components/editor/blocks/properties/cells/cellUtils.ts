@@ -31,8 +31,15 @@ export const vFocus: Directive = {
 
 export type TimelineDisplayMode = 'last' | 'all' | 'now' | 'custom'
 
+/**
+ * Read the persisted timeline display mode from a schema.
+ *
+ * Timelined properties default to ``'all'`` (showing every slot as a period →
+ * value row) when no explicit mode has been chosen; an explicit
+ * ``config.timelineDisplayMode`` always takes precedence.
+ */
 export function getTimelineDisplayMode(schema: PropertySchema): TimelineDisplayMode {
-  return (schema.config?.timelineDisplayMode as TimelineDisplayMode | undefined) ?? 'last'
+  return (schema.config?.timelineDisplayMode as TimelineDisplayMode | undefined) ?? 'all'
 }
 
 // ── Timeline resolution ───────────────────────────────────────────────────────
@@ -319,12 +326,27 @@ export function formatSlotScalar(slotVal: Record<string, unknown>, schema: Prope
   }
 }
 
-export function formatPeriodKey(key: string): string {
+/**
+ * Render a timeline period key as a human-readable boundary label.
+ *
+ * Each boundary timestamp is formatted with the user's global date-format
+ * preference: the period brackets describe *when* a slot is valid and are not
+ * tied to a date-property schema, so no per-property override applies. The time
+ * component is shown only when it is present AND not midnight, matching
+ * ``formatCanonicalDate`` — all-day boundaries render as a plain date while
+ * genuinely timed ones keep their HH:MM.
+ *
+ * ``userFormat`` may be supplied explicitly (e.g. for deterministic exports or
+ * tests); otherwise it is read from the auth store, falling back to
+ * ``FALLBACK_DATE_FORMAT`` when no preference is available.
+ */
+export function formatPeriodKey(key: string, userFormat?: string): string {
   if (key === '') return '∞'
-  const shorten = (ts: string) => ts.slice(0, 10)
-  if (key.startsWith('→')) return `→ ${shorten(key.slice(1))}`
+  const fmt = (userFormat ?? currentUserDateFormat()) || FALLBACK_DATE_FORMAT
+  const boundary = (ts: string) => formatCanonicalDate(ts, fmt)
+  if (key.startsWith('→')) return `→ ${boundary(key.slice(1))}`
   const [s, e] = key.split('→')
-  return e ? `${shorten(s)} → ${shorten(e)}` : `${shorten(s)} →`
+  return e ? `${boundary(s)} → ${boundary(e)}` : `${boundary(s)} →`
 }
 
 const ROLLUP_PERCENT_FUNCTIONS = new Set([

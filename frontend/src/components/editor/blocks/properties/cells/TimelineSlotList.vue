@@ -94,29 +94,32 @@ const rows = computed<SlotRow[]>(() => {
 </template>
 
 <style scoped>
+/*
+ * Two-column grid shared across all rows: the period column sizes to the widest
+ * label (max-content) so every value/chip column starts at the same x. Each row
+ * uses display: contents to contribute its period + value directly as grid
+ * items. align-content centres the whole block within the cell's min-height.
+ */
 .tsl {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 7px;
+  row-gap: 2px;
   padding: 5px 12px;
   width: 100%;
   min-height: 36px;
-  justify-content: center;
+  align-content: center;
+  align-items: center;
 }
 
 .tsl__row {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 18px;
+  display: contents;
 }
 
 .tsl__period {
   font-size: 0.68rem;
   color: var(--color-text-muted);
   white-space: nowrap;
-  flex-shrink: 0;
-  min-width: 130px;
 }
 
 .tsl__value {
@@ -132,6 +135,7 @@ const rows = computed<SlotRow[]>(() => {
   flex-wrap: wrap;
   gap: 3px;
   align-items: center;
+  min-width: 0;
 }
 
 .tsl__chip {
@@ -152,5 +156,6 @@ const rows = computed<SlotRow[]>(() => {
 
 .tsl__empty--block {
   padding: 0;
+  grid-column: 1 / -1;
 }
 </style>

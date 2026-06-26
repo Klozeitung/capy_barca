@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { displayValue } from '../cellUtils'
+import { displayValue, formatPeriodKey, getTimelineDisplayMode } from '../cellUtils'
 import type { DatabaseEntry, PropertySchema } from '@/stores/database'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -54,7 +54,7 @@ describe('displayValue – timeline relation export ("all" mode)', () => {
     }
     expect(
       displayValue(entryWithPartner(value), relationSchema(), undefined, resolveTitle),
-    ).toBe('2136-08-14 → 2137-05-04: Torik · 2143-01-29 → 2174-09-01: Irena')
+    ).toBe('14.08.2136 17:13 → 04.05.2137: Torik · 29.01.2143 → 01.09.2174: Irena')
   })
 
   it('renders an always-valid ("") slot as names only, without a period', () => {
@@ -92,7 +92,7 @@ describe('displayValue – timeline relation export ("all" mode)', () => {
     }
     expect(
       displayValue(entryWithPartner(value), relationSchema(), undefined, resolveTitle),
-    ).toBe('2136-08-14 → 2137-05-04: Torik · 2138-01-01 → 2139-01-01')
+    ).toBe('14.08.2136 17:13 → 04.05.2137: Torik · 01.01.2138 → 01.01.2139')
   })
 })
 
@@ -125,7 +125,7 @@ describe('displayValue – timeline scalar export ("all" mode) is unaffected', (
       },
     }
     expect(displayValue(entry, schema)).toBe(
-      '1996-06-27 → 2019-08-22: Aktiv · 2019-08-22 → 2020-01-30: Nonexistent',
+      '27.06.1996 → 22.08.2019: Aktiv · 22.08.2019 → 30.01.2020: Nonexistent',
     )
   })
 })
@@ -209,7 +209,7 @@ describe('displayValue – nuanced timeline relation', () => {
       },
     }
     expect(displayValue(entryWithPartner(value), schema, undefined, resolveTitle)).toBe(
-      '2136-08-14 → 2137-05-04: Torik erfolgreich gewählt, Irena',
+      '14.08.2136 17:13 → 04.05.2137: Torik erfolgreich gewählt, Irena',
     )
   })
 })
@@ -227,5 +227,86 @@ describe('displayValue – nuanced flat relation ("last" mode)', () => {
     }
     const value = { related_ids: ['torik-id'], nuances: { 'torik-id': 'erfolgreich' } }
     expect(displayValue(entryWithPartner(value), schema, undefined, resolveTitle)).toBe('erfolgreich Torik')
+  })
+})
+
+// ── formatPeriodKey ───────────────────────────────────────────────────────────
+//
+// Timeline period boundaries must honour the user's date-format preference
+// instead of the previous hard-coded ISO ``slice(0, 10)``. The format is read
+// from the auth store; an explicit token can be passed for deterministic tests.
+// Outside an active Pinia instance the store read is guarded and degrades to
+// the DD.MM.YYYY fallback.
+
+describe('formatPeriodKey', () => {
+  it('renders the always-valid key as the infinity sentinel', () => {
+    expect(formatPeriodKey('')).toBe('∞')
+    expect(formatPeriodKey('', 'YYYY-MM-DD')).toBe('∞')
+  })
+
+  it('formats both boundaries with an explicit user format', () => {
+    expect(
+      formatPeriodKey('2136-08-14T00:00:00→2137-05-04T00:00:00', 'DD.MM.YYYY'),
+    ).toBe('14.08.2136 → 04.05.2137')
+    expect(
+      formatPeriodKey('2136-08-14T00:00:00→2137-05-04T00:00:00', 'YYYY-MM-DD'),
+    ).toBe('2136-08-14 → 2137-05-04')
+    expect(
+      formatPeriodKey('2136-08-14T00:00:00→2137-05-04T00:00:00', 'MM.DD.YYYY'),
+    ).toBe('08.14.2136 → 05.04.2137')
+  })
+
+  it('shows the time component only when it is not midnight', () => {
+    expect(
+      formatPeriodKey('2136-08-14T17:13:00→2137-05-04T00:00:00', 'DD.MM.YYYY'),
+    ).toBe('14.08.2136 17:13 → 04.05.2137')
+  })
+
+  it('renders an open-ended (since) range', () => {
+    expect(formatPeriodKey('2136-08-14T00:00:00→', 'DD.MM.YYYY')).toBe('14.08.2136 →')
+    expect(formatPeriodKey('2136-08-14T17:13:00→', 'DD.MM.YYYY')).toBe('14.08.2136 17:13 →')
+  })
+
+  it('renders an until range', () => {
+    expect(formatPeriodKey('→2137-05-04T00:00:00', 'DD.MM.YYYY')).toBe('→ 04.05.2137')
+    expect(formatPeriodKey('→2137-05-04T09:30:00', 'YYYY-MM-DD')).toBe('→ 2137-05-04 09:30')
+  })
+
+  it('falls back to DD.MM.YYYY when no user format is available', () => {
+    expect(
+      formatPeriodKey('2136-08-14T00:00:00→2137-05-04T00:00:00'),
+    ).toBe('14.08.2136 → 04.05.2137')
+  })
+})
+
+// ── getTimelineDisplayMode ─────────────────────────────────────────────────────
+//
+// Timelined properties default to "all" (every slot shown as a period → value
+// row). An explicit config.timelineDisplayMode always wins. The "last"/non-set
+// distinction matters because the cells gate their slot-list rendering on the
+// resolved mode being exactly 'all'.
+
+describe('getTimelineDisplayMode', () => {
+  function schemaWith(config: Record<string, unknown>): PropertySchema {
+    return {
+      id: 'schema-x',
+      database_id: 'db-1',
+      name: 'X',
+      type: 'text',
+      config,
+      position: 0,
+      group: 'Standard',
+    }
+  }
+
+  it('defaults to "all" when no display mode is set', () => {
+    expect(getTimelineDisplayMode(schemaWith({ hasTimeline: true }))).toBe('all')
+    expect(getTimelineDisplayMode(schemaWith({}))).toBe('all')
+  })
+
+  it('respects an explicit mode', () => {
+    expect(getTimelineDisplayMode(schemaWith({ timelineDisplayMode: 'last' }))).toBe('last')
+    expect(getTimelineDisplayMode(schemaWith({ timelineDisplayMode: 'all' }))).toBe('all')
+    expect(getTimelineDisplayMode(schemaWith({ timelineDisplayMode: 'now' }))).toBe('now')
   })
 })

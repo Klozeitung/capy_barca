@@ -42,6 +42,7 @@ import {
   getAllTimelineRelatedIds,
   getTimelineDisplayMode,
   getNuanceConfig,
+  formatPeriodKey,
 } from './cellUtils'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
@@ -90,14 +91,6 @@ interface SlotGroup {
   nuances: Record<string, string>
 }
 
-function _formatPeriodKey(key: string): string {
-  if (key === '') return '∞'
-  const short = (ts: string) => ts.slice(0, 10)
-  if (key.startsWith('→')) return `→ ${short(key.slice(1))}`
-  const [s, e] = key.split('→')
-  return e ? `${short(s)} → ${short(e)}` : `${short(s)} →`
-}
-
 const timelineSlotGroups = computed<SlotGroup[]>(() => {
   if (!hasTimeline.value || timelineDisplayMode.value !== 'all') return []
   const raw = props.entry.values[props.schema.id]
@@ -113,7 +106,7 @@ const timelineSlotGroups = computed<SlotGroup[]>(() => {
     const slot = timeline[k] as Record<string, unknown> | null
     return {
       key: k,
-      period: _formatPeriodKey(k),
+      period: formatPeriodKey(k),
       ids: (slot?.related_ids as string[] | undefined) ?? [],
       nuances: (slot?.nuances as Record<string, string> | undefined) ?? {},
     }
@@ -721,6 +714,10 @@ async function onSideViewRefresh(): Promise<void> {
   color: var(--color-text-muted);
   flex-shrink: 0;
   transition: border-color 0.1s, color 0.1s;
+  /* In the "all" mode grid the button is a direct grid item; keep it on its
+   * own row spanning both columns, anchored to the start. */
+  grid-column: 1 / -1;
+  justify-self: start;
 }
 .rel-cell__timeline-btn:hover {
   border-color: var(--color-accent);
@@ -728,27 +725,30 @@ async function onSideViewRefresh(): Promise<void> {
 }
 
 /* ── Timeline "all" mode ─────────────────────────────────────────────────── */
+/*
+ * Two-column grid shared across all slot rows: the first column sizes to the
+ * widest period label (max-content), so every chip column starts at the same x
+ * regardless of how long an individual period label is. Each slot uses
+ * display: contents to contribute its label + chips directly as grid items.
+ */
 .rel-cell__timeline-list {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 6px;
+  row-gap: 3px;
   padding: 4px 8px;
+  align-items: start;
 }
 
 .rel-cell__timeline-slot {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  min-height: 20px;
+  display: contents;
 }
 
 .rel-cell__slot-label {
   font-size: 0.68rem;
   color: var(--color-text-muted);
   white-space: nowrap;
-  flex-shrink: 0;
   padding-top: 2px;
-  min-width: 140px;
 }
 
 .rel-cell__slot-chips {
@@ -756,8 +756,8 @@ async function onSideViewRefresh(): Promise<void> {
   flex-wrap: wrap;
   gap: 3px;
   align-items: center;
-  flex: 1;
   min-width: 0;
+  min-height: 20px;
 }
 
 /* wrapContent enabled: one chip per line within the slot. */

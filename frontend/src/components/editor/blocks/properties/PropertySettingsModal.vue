@@ -764,6 +764,21 @@ async function save() {
     config = { ...config, icon: existingIcon }
   }
 
+  // Preserve the timeline display mode (config.timelineDisplayMode). It is set
+  // via the TimelineEditor, never edited in this modal, but the per-type config
+  // rebuilds above (number / date / select / relation) drop it. Carry it over
+  // whenever the property still has a timeline so saving unrelated settings here
+  // never resets the display mode back to its default.
+  const existingDisplayMode = props.schema.config?.timelineDisplayMode as string | undefined
+  if (
+    existingDisplayMode &&
+    config &&
+    typeof config === 'object' &&
+    (config as Record<string, unknown>).hasTimeline === true
+  ) {
+    config = { ...config, timelineDisplayMode: existingDisplayMode }
+  }
+
   // Description (all types): the per-type config objects above are rebuilt from
   // scratch, so the free-text description must be (re)applied here regardless of
   // type. An empty description is stripped so we never persist empty strings.
