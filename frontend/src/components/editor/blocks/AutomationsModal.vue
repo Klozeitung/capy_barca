@@ -45,7 +45,7 @@ import {
   type AutomationTrigger,
   type AutomationAction,
 } from '@/stores/automations'
-import { useDatabaseStore, type PropertySchema, type FilterOperator, type ViewFilter, type DateFilterMode } from '@/stores/database'
+import { useDatabaseStore, type PropertySchema, type FilterOperator, type ViewFilter, type DateFilterMode, type DatabaseEntry } from '@/stores/database'
 import { getOperatorsForSchemaId, filterNeedsValue } from '@/composables/useFilterPanel'
 import { apiClient } from '@/api/client'
 import FilterConditionRow from './subcomponents/FilterConditionRow.vue'
@@ -314,6 +314,22 @@ function setActionFilterMode(actionIdx: number, mode: 'all' | 'where' | 'trigger
 
 function actionFilterSchemas(dbId: string): PropertySchema[] {
   return dbStore.getSchemas(dbId).filter(s => s.type !== 'sub_item')
+}
+
+// Entries of the action's target database, loaded lazily and passed to the
+// shared filter row. They are only needed so a formula column's result type can
+// be inferred (which unlocks the correct operator set, e.g. date operators for a
+// formula that returns a date). Mirrors the relation-entry cache pattern.
+const actionFilterEntries = ref<Record<string, DatabaseEntry[]>>({})
+
+function getActionFilterEntries(dbId: string): DatabaseEntry[] {
+  if (!dbId) return []
+  if (dbId in actionFilterEntries.value) return actionFilterEntries.value[dbId]
+  actionFilterEntries.value[dbId] = []
+  dbStore.fetchEntries(dbId).then((entries) => {
+    actionFilterEntries.value[dbId] = entries
+  })
+  return []
 }
 
 function _cond(actionIdx: number, groupIdx: number, condIdx: number): ViewFilter | undefined {
@@ -958,6 +974,7 @@ onMounted(async () => {
                         <FilterConditionRow
                           :filter="cond"
                           :schemas="actionFilterSchemas(action.targetDbId)"
+                          :displayed-entries="getActionFilterEntries(action.targetDbId)"
                           :name-col-key="NAME_COL_KEY"
                           :show-placeholder-option="true"
                           :placeholder-label="t('automations.action.pickProperty')"

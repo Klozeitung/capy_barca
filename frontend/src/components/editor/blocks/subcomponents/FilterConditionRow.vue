@@ -17,7 +17,7 @@
  * each host keeps its own visual identity while the structure and behaviour stay
  * unified. Defaults match the view FilterPanel's db__panel-* classes.
  */
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   useDatabaseStore,
@@ -107,8 +107,24 @@ function entryTitle(entry: DatabaseEntry): string {
 
 // ── Helpers threading props into the pure functions ───────────────────────────
 
+// Formula columns infer their result type from entry values. When a filter
+// empties the result set (e.g. an as-yet-incomplete 'between' range, or any
+// filter that legitimately matches nothing), displayedEntries goes empty and
+// the inference would collapse to 'text' — dropping date operators and breaking
+// the just-selected operator. We therefore keep the last non-empty entries and
+// infer from those, so the operator list and value widget stay stable.
+const lastNonEmptyEntries = ref<DatabaseEntry[]>([])
+watch(
+  () => props.displayedEntries,
+  (entries) => { if (entries && entries.length) lastNonEmptyEntries.value = entries },
+  { immediate: true },
+)
+const effectiveEntries = computed<DatabaseEntry[]>(
+  () => (props.displayedEntries.length ? props.displayedEntries : lastNonEmptyEntries.value),
+)
+
 function operators(schemaId: string): FilterOperator[] {
-  return getOperatorsForSchemaId(schemaId, props.schemas, props.displayedEntries, props.nameColKey)
+  return getOperatorsForSchemaId(schemaId, props.schemas, effectiveEntries.value, props.nameColKey)
 }
 
 function isNumberFilter(): boolean {
@@ -143,7 +159,7 @@ function isNumberFilter(): boolean {
   <template v-if="filterNeedsValue(filter.operator)">
 
     <!-- Date filter -->
-    <template v-if="isDateFilter(filter, schemas, displayedEntries, nameColKey)">
+    <template v-if="isDateFilter(filter, schemas, effectiveEntries, nameColKey)">
       <!-- 'between' shows two plain date pickers; no dateMode selector needed -->
       <template v-if="filterNeedsValue2(filter.operator)">
         <input
