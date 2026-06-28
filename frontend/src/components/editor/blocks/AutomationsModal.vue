@@ -45,9 +45,13 @@ import {
   type AutomationTrigger,
   type AutomationAction,
 } from '@/stores/automations'
-import { useDatabaseStore, type PropertySchema, type FilterOperator } from '@/stores/database'
+import { useDatabaseStore, type PropertySchema, type FilterOperator, type ViewFilter, type DateFilterMode } from '@/stores/database'
 import { getOperatorsForSchemaId, filterNeedsValue } from '@/composables/useFilterPanel'
 import { apiClient } from '@/api/client'
+import FilterConditionRow from './subcomponents/FilterConditionRow.vue'
+
+/** Sentinel schema id for the entry title ("Name") column, shared with the view filter. */
+const NAME_COL_KEY = '__name__'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
@@ -208,17 +212,10 @@ function cycleActorState(entry: FormActorEntry): void {
 
 // ── Action form state ─────────────────────────────────────────────────────────
 
-interface ActionFilterCondition {
-  _id:      string
-  schemaId: string
-  operator: FilterOperator
-  value:    string
-}
-
 interface ActionFilterGroup {
   _id:         string
   conjunction: 'and' | 'or'
-  conditions:  ActionFilterCondition[]
+  conditions:  ViewFilter[]
 }
 
 interface FormActionFilter {
@@ -243,12 +240,12 @@ function newFilterGroup(dbId: string): ActionFilterGroup {
   const schemaId    = firstSchema?.id ?? ''
   const schemas     = dbStore.getSchemas(dbId)
   const operator    = schemaId
-    ? (getOperatorsForSchemaId(schemaId, schemas, [], '__name__')[0] ?? 'eq') as FilterOperator
+    ? (getOperatorsForSchemaId(schemaId, schemas, [], NAME_COL_KEY)[0] ?? 'eq') as FilterOperator
     : 'eq' as FilterOperator
   return {
     _id:         crypto.randomUUID(),
     conjunction: 'and',
-    conditions:  [{ _id: crypto.randomUUID(), schemaId, operator, value: '' }],
+    conditions:  [{ id: crypto.randomUUID(), schemaId, operator, value: '' }],
   }
 }
 
@@ -319,72 +316,53 @@ function actionFilterSchemas(dbId: string): PropertySchema[] {
   return dbStore.getSchemas(dbId).filter(s => s.type !== 'sub_item')
 }
 
-function filterCondSchema(
-  action: FormActionItem,
-  groupIdx: number,
-  condIdx:  number,
-): PropertySchema | undefined {
-  const cond = action.filter.groups[groupIdx]?.conditions[condIdx]
-  if (!cond?.schemaId) return undefined
-  return dbStore.getSchemas(action.targetDbId).find(s => s.id === cond.schemaId)
+function _cond(actionIdx: number, groupIdx: number, condIdx: number): ViewFilter | undefined {
+  return formActions.value[actionIdx]?.filter.groups[groupIdx]?.conditions[condIdx]
 }
 
-function filterCondOperators(
-  actionIdx: number,
-  groupIdx:  number,
-  condIdx:   number,
-): FilterOperator[] {
-  const action = formActions.value[actionIdx]
-  const cond   = action.filter.groups[groupIdx]?.conditions[condIdx]
-  if (!cond) return ['eq']
-  return getOperatorsForSchemaId(
-    cond.schemaId, dbStore.getSchemas(action.targetDbId), [], '__name__',
-  ) as FilterOperator[]
-}
-
-function filterCondSelectOptions(
-  action:   FormActionItem,
-  groupIdx: number,
-  condIdx:  number,
-): { value: string; label: string }[] {
-  const schema = filterCondSchema(action, groupIdx, condIdx)
-  const opts   = schema?.config?.options
-  if (!Array.isArray(opts)) return []
-  return opts.map((o: { value?: string; label?: string }) => ({
-    value: o.value ?? '',
-    label: o.value ?? '',
-  }))
-}
-
-function onFilterCondSchemaChange(
-  actionIdx: number,
-  groupIdx:  number,
-  condIdx:   number,
-  event:     Event,
-): void {
-  const newSchemaId = (event.target as HTMLSelectElement).value
-  const action = formActions.value[actionIdx]
-  const cond   = action.filter.groups[groupIdx]?.conditions[condIdx]
+function onCondSchemaChange(actionIdx: number, groupIdx: number, condIdx: number, newSchemaId: string): void {
+  const cond = _cond(actionIdx, groupIdx, condIdx)
   if (!cond) return
   cond.schemaId = newSchemaId
   const ops = getOperatorsForSchemaId(
-    newSchemaId, dbStore.getSchemas(action.targetDbId), [], '__name__',
+    newSchemaId, dbStore.getSchemas(formActions.value[actionIdx].targetDbId), [], NAME_COL_KEY,
   )
-  cond.operator = (ops[0] ?? 'eq') as FilterOperator
-  cond.value    = ''
+  if (!ops.includes(cond.operator)) cond.operator = (ops[0] ?? 'eq') as FilterOperator
+  cond.value = ''
+  delete cond.value2
+  delete cond.dateMode
+  delete cond.dateOffset
 }
 
-function onFilterCondOperatorChange(
-  actionIdx: number,
-  groupIdx:  number,
-  condIdx:   number,
-  event:     Event,
-): void {
-  const newOp = (event.target as HTMLSelectElement).value as FilterOperator
-  const cond  = formActions.value[actionIdx]?.filter.groups[groupIdx]?.conditions[condIdx]
+function onCondOperatorChange(actionIdx: number, groupIdx: number, condIdx: number, op: FilterOperator): void {
+  const cond = _cond(actionIdx, groupIdx, condIdx)
   if (!cond) return
-  cond.operator = newOp
-  if (!filterNeedsValue(newOp)) cond.value = ''
+  cond.operator = op
+  if (!filterNeedsValue(op)) cond.value = ''
+  if (op !== 'between') delete cond.value2
+}
+
+function onCondValueChange(actionIdx: number, groupIdx: number, condIdx: number, value: string): void {
+  const cond = _cond(actionIdx, groupIdx, condIdx)
+  if (cond) cond.value = value
+}
+
+function onCondValue2Change(actionIdx: number, groupIdx: number, condIdx: number, value: string): void {
+  const cond = _cond(actionIdx, groupIdx, condIdx)
+  if (cond) cond.value2 = value
+}
+
+function onCondDateModeChange(actionIdx: number, groupIdx: number, condIdx: number, mode: DateFilterMode): void {
+  const cond = _cond(actionIdx, groupIdx, condIdx)
+  if (!cond) return
+  cond.dateMode   = mode
+  cond.value      = ''
+  cond.dateOffset = 0
+}
+
+function onCondDateOffsetChange(actionIdx: number, groupIdx: number, condIdx: number, offset: number): void {
+  const cond = _cond(actionIdx, groupIdx, condIdx)
+  if (cond) cond.dateOffset = isNaN(offset) ? 0 : offset
 }
 
 function addFilterCondition(actionIdx: number, groupIdx: number): void {
@@ -395,9 +373,9 @@ function addFilterCondition(actionIdx: number, groupIdx: number): void {
   const first    = actionFilterSchemas(action.targetDbId)[0]
   const schemaId = first?.id ?? ''
   const operator = schemaId
-    ? (getOperatorsForSchemaId(schemaId, schemas, [], '__name__')[0] ?? 'eq') as FilterOperator
+    ? (getOperatorsForSchemaId(schemaId, schemas, [], NAME_COL_KEY)[0] ?? 'eq') as FilterOperator
     : 'eq' as FilterOperator
-  group.conditions.push({ _id: crypto.randomUUID(), schemaId, operator, value: '' })
+  group.conditions.push({ id: crypto.randomUUID(), schemaId, operator, value: '' })
 }
 
 function removeFilterCondition(actionIdx: number, groupIdx: number, condIdx: number): void {
@@ -565,10 +543,13 @@ async function openEdit(id: string): Promise<void> {
               _id:         crypto.randomUUID(),
               conjunction: g.conjunction,
               conditions:  g.filters.map(f => ({
-                _id:      crypto.randomUUID(),
+                id:       crypto.randomUUID(),
                 schemaId: f.schemaId,
                 operator: f.operator as FilterOperator,
                 value:    f.value,
+                ...(f.value2     !== undefined ? { value2: f.value2 } : {}),
+                ...(f.dateMode   !== undefined ? { dateMode: f.dateMode as DateFilterMode } : {}),
+                ...(f.dateOffset !== undefined ? { dateOffset: f.dateOffset } : {}),
               })),
             })),
           }
@@ -666,6 +647,9 @@ async function saveForm(): Promise<void> {
             schemaId: c.schemaId,
             operator: c.operator,
             value:    c.value,
+            ...(c.value2     !== undefined && c.value2 !== '' ? { value2: c.value2 } : {}),
+            ...(c.dateMode   !== undefined ? { dateMode: c.dateMode } : {}),
+            ...(c.dateOffset !== undefined ? { dateOffset: c.dateOffset } : {}),
           })),
         }))
       : []
@@ -968,73 +952,29 @@ onMounted(async () => {
                     >
                       <div
                         v-for="(cond, ci) in group.conditions"
-                        :key="cond._id"
+                        :key="cond.id"
                         class="am__filter-condition"
                       >
-                        <!-- Property/schema picker -->
-                        <select
-                          :value="cond.schemaId"
-                          class="am__select am__select--grow"
-                          @change="onFilterCondSchemaChange(idx, gi, ci, $event)"
-                        >
-                          <option value="" disabled>{{ t('automations.action.pickProperty') }}</option>
-                          <option
-                            v-for="s in actionFilterSchemas(action.targetDbId)"
-                            :key="s.id"
-                            :value="s.id"
-                          >{{ s.name }}</option>
-                        </select>
-
-                        <!-- Operator picker -->
-                        <select
-                          :value="cond.operator"
-                          class="am__select am__select--op"
-                          @change="onFilterCondOperatorChange(idx, gi, ci, $event)"
-                        >
-                          <option
-                            v-for="op in filterCondOperators(idx, gi, ci)"
-                            :key="op"
-                            :value="op"
-                          >{{ t(`automations.action.filterOp.${op}`) }}</option>
-                        </select>
-
-                        <!-- Value input (only when operator requires a value) -->
-                        <template v-if="filterNeedsValue(cond.operator)">
-                          <select
-                            v-if="filterCondSchema(action, gi, ci)?.type === 'select'"
-                            v-model="cond.value"
-                            class="am__select am__select--grow"
-                          >
-                            <option value="">—</option>
-                            <option
-                              v-for="opt in filterCondSelectOptions(action, gi, ci)"
-                              :key="opt.value"
-                              :value="opt.value"
-                            >{{ opt.label }}</option>
-                          </select>
-                          <select
-                            v-else-if="filterCondSchema(action, gi, ci)?.type === 'checkbox'"
-                            v-model="cond.value"
-                            class="am__select"
-                          >
-                            <option value="true">{{ t('automations.action.checkboxTrue') }}</option>
-                            <option value="false">{{ t('automations.action.checkboxFalse') }}</option>
-                          </select>
-                          <input
-                            v-else-if="filterCondSchema(action, gi, ci)?.type === 'number'"
-                            v-model="cond.value"
-                            type="number"
-                            class="am__input am__input--short"
-                            :placeholder="t('automations.action.filterValuePlaceholder')"
-                          />
-                          <input
-                            v-else
-                            v-model="cond.value"
-                            type="text"
-                            class="am__input am__input--grow"
-                            :placeholder="t('automations.action.filterValuePlaceholder')"
-                          />
-                        </template>
+                        <FilterConditionRow
+                          :filter="cond"
+                          :schemas="actionFilterSchemas(action.targetDbId)"
+                          :name-col-key="NAME_COL_KEY"
+                          :show-placeholder-option="true"
+                          :placeholder-label="t('automations.action.pickProperty')"
+                          schema-select-class="am__select am__select--grow"
+                          operator-select-class="am__select am__select--op"
+                          value-select-class="am__select am__select--grow"
+                          short-select-class="am__select"
+                          value-input-class="am__input am__input--grow"
+                          number-input-class="am__input am__input--short"
+                          narrow-input-class="am__input am__input--short"
+                          @schema-change="(v: string) => onCondSchemaChange(idx, gi, ci, v)"
+                          @operator-change="(v: FilterOperator) => onCondOperatorChange(idx, gi, ci, v)"
+                          @value-change="(v: string) => onCondValueChange(idx, gi, ci, v)"
+                          @value2-change="(v: string) => onCondValue2Change(idx, gi, ci, v)"
+                          @date-mode-change="(v: DateFilterMode) => onCondDateModeChange(idx, gi, ci, v)"
+                          @date-offset-change="(v: number) => onCondDateOffsetChange(idx, gi, ci, v)"
+                        />
 
                         <!-- Remove condition -->
                         <button

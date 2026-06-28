@@ -2,9 +2,10 @@
 Tests for the automation engine.
 
 Pure unit tests cover the stateless helper functions (_matches, _render,
-_render_body, _matches_actor_filter, _matches_trigger, _extract_cell_string,
-_compare, _group_matches).  Integration tests use the in-memory SQLite database
-provided by the autouse ``isolated_db`` fixture in conftest.py.
+_render_body, _matches_actor_filter, _matches_trigger).  Integration tests use
+the in-memory SQLite database provided by the autouse ``isolated_db`` fixture
+in conftest.py, and exercise the bulk action handler (_handle_bulk_upsert_value),
+which delegates filtering to the shared repository query evaluator.
 
 Async engine functions are exercised via ``asyncio.run()`` — no external
 test runner plugin is required.
@@ -18,9 +19,7 @@ import pytest
 from app.automations.automations_engine import (
     TriggerEvent,
     _build_context,
-    _compare,
-    _extract_cell_string,
-    _group_matches,
+    _handle_bulk_upsert_value,
     _matches,
     _matches_actor_filter,
     _matches_trigger,
@@ -391,206 +390,6 @@ def test_matches_trigger_invalid_type_returns_false():
     assert _matches_trigger(42, _make_ev()) is False
 
 
-# ─── _extract_cell_string ─────────────────────────────────────────────────────
-
-
-def test_extract_cell_string_none():
-    assert _extract_cell_string(None) == ""
-
-
-def test_extract_cell_string_text():
-    assert _extract_cell_string({"text": "hello"}) == "hello"
-
-
-def test_extract_cell_string_option():
-    assert _extract_cell_string({"option": "Done"}) == "Done"
-
-
-def test_extract_cell_string_number_int():
-    assert _extract_cell_string({"number": 42}) == "42"
-
-
-def test_extract_cell_string_number_whole_float():
-    """Whole floats are normalised to integer strings (2.0 → '2')."""
-    assert _extract_cell_string({"number": 2.0}) == "2"
-
-
-def test_extract_cell_string_number_decimal_float():
-    assert _extract_cell_string({"number": 3.14}) == "3.14"
-
-
-def test_extract_cell_string_checked_true():
-    """Checkbox values are lowercased to match frontend option values."""
-    assert _extract_cell_string({"checked": True}) == "true"
-
-
-def test_extract_cell_string_checked_false():
-    assert _extract_cell_string({"checked": False}) == "false"
-
-
-def test_extract_cell_string_null_value():
-    assert _extract_cell_string({"text": None}) == ""
-
-
-def test_extract_cell_string_unknown_shape():
-    assert _extract_cell_string({"foo": "bar"}) == "{'foo': 'bar'}"
-
-
-def test_extract_cell_string_raw_string():
-    assert _extract_cell_string("plain") == "plain"
-
-
-# ─── _compare ────────────────────────────────────────────────────────────────
-
-
-def test_compare_eq_hit():
-    assert _compare("Done", "eq", "Done") is True
-
-
-def test_compare_eq_numeric_int_vs_float():
-    """Filter value "2" should match stored "2.0" via numeric comparison."""
-    assert _compare("2.0", "eq", "2") is True
-    assert _compare("2", "eq", "2.0") is True
-
-
-def test_compare_eq_numeric_mismatch():
-    assert _compare("2.5", "eq", "2") is False
-
-
-def test_compare_neq_numeric():
-    assert _compare("2.0", "neq", "3") is True
-    assert _compare("2.0", "neq", "2") is False
-
-
-def test_compare_eq_miss():
-    assert _compare("Done", "eq", "In Progress") is False
-
-
-def test_compare_neq():
-    assert _compare("Done", "neq", "In Progress") is True
-    assert _compare("Done", "neq", "Done") is False
-
-
-def test_compare_contains():
-    assert _compare("Hello World", "contains", "world") is True
-    assert _compare("Hello World", "contains", "xyz") is False
-
-
-def test_compare_not_contains():
-    assert _compare("Hello World", "not_contains", "xyz") is True
-    assert _compare("Hello World", "not_contains", "world") is False
-
-
-def test_compare_starts_with():
-    assert _compare("Hello World", "starts_with", "hello") is True
-    assert _compare("Hello World", "starts_with", "world") is False
-
-
-def test_compare_ends_with():
-    assert _compare("Hello World", "ends_with", "World") is True
-    assert _compare("Hello World", "ends_with", "Hello") is False
-
-
-def test_compare_is_empty():
-    assert _compare("", "is_empty", "") is True
-    assert _compare("x", "is_empty", "") is False
-
-
-def test_compare_is_not_empty():
-    assert _compare("x", "is_not_empty", "") is True
-    assert _compare("", "is_not_empty", "") is False
-
-
-def test_compare_gt():
-    assert _compare("10", "gt", "5") is True
-    assert _compare("5", "gt", "10") is False
-    assert _compare("abc", "gt", "1") is False  # non-numeric fails gracefully
-
-
-def test_compare_gte():
-    assert _compare("5", "gte", "5") is True
-    assert _compare("4", "gte", "5") is False
-
-
-def test_compare_lt():
-    assert _compare("3", "lt", "5") is True
-    assert _compare("5", "lt", "3") is False
-
-
-def test_compare_lte():
-    assert _compare("5", "lte", "5") is True
-    assert _compare("6", "lte", "5") is False
-
-
-def test_compare_unknown_operator_passes():
-    """Unknown operators pass through so future operators don't block updates."""
-    assert _compare("anything", "future_op", "value") is True
-
-
-# ─── _group_matches ──────────────────────────────────────────────────────────
-
-
-def test_group_matches_empty_filters_passes():
-    assert _group_matches({}, {"conjunction": "and", "filters": []}) is True
-
-
-def test_group_matches_and_all_pass():
-    group = {
-        "conjunction": "and",
-        "filters": [
-            {"schemaId": "s1", "operator": "eq",  "value": "Done"},
-            {"schemaId": "s2", "operator": "neq", "value": "Low"},
-        ],
-    }
-    ev = {"s1": {"text": "Done"}, "s2": {"text": "High"}}
-    assert _group_matches(ev, group) is True
-
-
-def test_group_matches_and_one_fails():
-    group = {
-        "conjunction": "and",
-        "filters": [
-            {"schemaId": "s1", "operator": "eq",  "value": "Done"},
-            {"schemaId": "s2", "operator": "eq",  "value": "Low"},
-        ],
-    }
-    ev = {"s1": {"text": "Done"}, "s2": {"text": "High"}}
-    assert _group_matches(ev, group) is False
-
-
-def test_group_matches_or_one_passes():
-    group = {
-        "conjunction": "or",
-        "filters": [
-            {"schemaId": "s1", "operator": "eq", "value": "Done"},
-            {"schemaId": "s1", "operator": "eq", "value": "Archived"},
-        ],
-    }
-    ev = {"s1": {"text": "Done"}}
-    assert _group_matches(ev, group) is True
-
-
-def test_group_matches_or_none_pass():
-    group = {
-        "conjunction": "or",
-        "filters": [
-            {"schemaId": "s1", "operator": "eq", "value": "Done"},
-            {"schemaId": "s1", "operator": "eq", "value": "Archived"},
-        ],
-    }
-    ev = {"s1": {"text": "In Progress"}}
-    assert _group_matches(ev, group) is False
-
-
-def test_group_matches_missing_schema_treats_as_empty():
-    """A schema not present in entry_values yields an empty string -> is_empty passes."""
-    group = {
-        "conjunction": "and",
-        "filters": [{"schemaId": "missing", "operator": "is_empty", "value": ""}],
-    }
-    assert _group_matches({}, group) is True
-
-
 # ─── _render ──────────────────────────────────────────────────────────────────
 
 
@@ -883,3 +682,306 @@ def test_receive_actor_filter_allows_matching_actor():
             mock_exec.assert_called_once()
             called_auto, _, _ = mock_exec.call_args[0]
             assert called_auto.id == auto.id
+
+
+# ─── _handle_bulk_upsert_value: setup helpers ─────────────────────────────────
+
+
+def _seed_database(db):
+    """Create a workspace root and an empty database block; return the database."""
+    from app.blocks.models import WORKSPACE_ROOT_ID, Block
+    from app.blocks import repository as repo
+
+    if db.get(Block, WORKSPACE_ROOT_ID) is None:
+        db.add(Block(id=WORKSPACE_ROOT_ID, type="workspace", position=0.0))
+        db.commit()
+    database = repo.create_block(
+        db, type="database", position=1.0, parent_id=WORKSPACE_ROOT_ID,
+    )
+    db.commit()
+    return database
+
+
+def _make_entry(db, database, title=None, position=1.0, type="page"):
+    from app.blocks import repository as repo
+
+    entry = repo.create_block(
+        db, type=type, position=position, parent_id=database.id,
+        content={"title": title} if title else None,
+    )
+    db.commit()
+    return entry
+
+
+def _run_bulk(db, db_uuid, schema_id, filter_spec, body):
+    """
+    Run the bulk handler with the WS broadcast and computed hooks patched out,
+    so the test isolates the entry-selection + upsert behaviour.
+    """
+    with patch(
+        "app.ws.broadcaster.broadcast_block_event", new_callable=AsyncMock,
+    ), patch(
+        "app.blocks.computed.compute_all_for_entry",
+    ), patch(
+        "app.blocks.computed.compute_same_db_rollup_dependents",
+    ):
+        asyncio.run(_handle_bulk_upsert_value(
+            db=db, db_uuid=db_uuid, schema_id=schema_id,
+            filter_spec=filter_spec, body=body,
+        ))
+
+
+_DONE = {"value": {"text": "DONE"}}
+
+
+def _value_text(db, page_id, schema_id):
+    from app.blocks import repository as repo
+
+    pv = repo.get_value(db, page_id, schema_id)
+    return None if pv is None else pv.value
+
+
+# ─── _handle_bulk_upsert_value: 'where' text filter ───────────────────────────
+
+
+def test_bulk_where_text_contains_updates_only_matching():
+    """A 'where' contains filter on a text property updates only matching entries."""
+    import app.database.database as db_module
+    from app.blocks import repository as repo
+
+    with db_module.SessionLocal() as db:
+        database = _seed_database(db)
+        status = repo.create_schema(
+            db, database_id=database.id, name="Status", type="text", position=1.0,
+        )
+        target = repo.create_schema(
+            db, database_id=database.id, name="Result", type="text", position=2.0,
+        )
+        db.commit()
+        e_hit  = _make_entry(db, database, "Hit",  position=1.0)
+        e_miss = _make_entry(db, database, "Miss", position=2.0)
+        repo.upsert_value(db, page_id=e_hit.id,  schema_id=status.id, value={"text": "open"})
+        repo.upsert_value(db, page_id=e_miss.id, schema_id=status.id, value={"text": "closed"})
+        db.commit()
+
+        spec = {
+            "mode": "where",
+            "groups": [{
+                "conjunction": "and",
+                "filters": [{"schemaId": str(status.id), "operator": "contains", "value": "open"}],
+            }],
+        }
+        _run_bulk(db, str(database.id), str(target.id), spec, _DONE)
+
+        assert _value_text(db, e_hit.id,  target.id) == {"text": "DONE"}
+        assert _value_text(db, e_miss.id, target.id) is None
+
+
+# ─── _handle_bulk_upsert_value: 'where' name filter (issue #6) ─────────────────
+
+
+def test_bulk_where_name_filter_updates_only_matching():
+    """The name column ('__name__') is filterable in automation bulk actions."""
+    import app.database.database as db_module
+    from app.blocks import repository as repo
+
+    with db_module.SessionLocal() as db:
+        database = _seed_database(db)
+        target = repo.create_schema(
+            db, database_id=database.id, name="Result", type="text", position=1.0,
+        )
+        db.commit()
+        e_napoleon  = _make_entry(db, database, "Napoleon",   position=1.0)
+        e_wellington = _make_entry(db, database, "Wellington", position=2.0)
+        db.commit()
+
+        spec = {
+            "mode": "where",
+            "groups": [{
+                "conjunction": "and",
+                "filters": [{"schemaId": "__name__", "operator": "contains", "value": "leon"}],
+            }],
+        }
+        _run_bulk(db, str(database.id), str(target.id), spec, _DONE)
+
+        assert _value_text(db, e_napoleon.id,   target.id) == {"text": "DONE"}
+        assert _value_text(db, e_wellington.id, target.id) is None
+
+
+# ─── _handle_bulk_upsert_value: 'where' relation filter (issue #6) ─────────────
+
+
+def test_bulk_where_relation_contains_matches_by_entry_uuid():
+    """
+    A relation 'contains' filter matches on the related entry's UUID, not on a
+    name string searched inside the UUID pool (the bug reported in issue #6).
+    """
+    import app.database.database as db_module
+    from app.blocks import repository as repo
+
+    with db_module.SessionLocal() as db:
+        database = _seed_database(db)
+        other_db = repo.create_block(
+            db, type="database", position=2.0, parent_id=database.parent_id,
+        )
+        db.commit()
+        linked_target = _make_entry(db, other_db, "Linked Target", position=1.0)
+
+        relation = repo.create_schema(
+            db, database_id=database.id, name="Links", type="relation",
+            position=1.0, config={"target_database_id": str(other_db.id)},
+        )
+        target = repo.create_schema(
+            db, database_id=database.id, name="Result", type="text", position=2.0,
+        )
+        db.commit()
+        e_linked   = _make_entry(db, database, "Linked",   position=1.0)
+        e_unlinked = _make_entry(db, database, "Unlinked", position=2.0)
+        repo.upsert_value(
+            db, page_id=e_linked.id, schema_id=relation.id,
+            value={"related_ids": [str(linked_target.id)]},
+        )
+        repo.upsert_value(
+            db, page_id=e_unlinked.id, schema_id=relation.id,
+            value={"related_ids": []},
+        )
+        db.commit()
+
+        spec = {
+            "mode": "where",
+            "groups": [{
+                "conjunction": "and",
+                "filters": [{
+                    "schemaId": str(relation.id),
+                    "operator": "contains",
+                    "value":    str(linked_target.id),
+                }],
+            }],
+        }
+        _run_bulk(db, str(database.id), str(target.id), spec, _DONE)
+
+        assert _value_text(db, e_linked.id,   target.id) == {"text": "DONE"}
+        assert _value_text(db, e_unlinked.id, target.id) is None
+
+
+# ─── _handle_bulk_upsert_value: 'all' mode ────────────────────────────────────
+
+
+def test_bulk_all_updates_every_entry_excluding_templates():
+    """mode == 'all' updates all active entries but never entry_template blocks."""
+    import app.database.database as db_module
+    from app.blocks import repository as repo
+
+    with db_module.SessionLocal() as db:
+        database = _seed_database(db)
+        target = repo.create_schema(
+            db, database_id=database.id, name="Result", type="text", position=1.0,
+        )
+        db.commit()
+        e1 = _make_entry(db, database, "One", position=1.0)
+        e2 = _make_entry(db, database, "Two", position=2.0)
+        tmpl = _make_entry(db, database, "Template", position=3.0, type="entry_template")
+        db.commit()
+
+        _run_bulk(db, str(database.id), str(target.id), {"mode": "all", "groups": []}, _DONE)
+
+        assert _value_text(db, e1.id, target.id) == {"text": "DONE"}
+        assert _value_text(db, e2.id, target.id) == {"text": "DONE"}
+        assert _value_text(db, tmpl.id, target.id) is None
+
+
+# ─── _handle_bulk_upsert_value: stale-property safety guard ───────────────────
+
+
+def test_bulk_where_stale_property_aborts_without_updating():
+    """
+    A 'where' filter that references a property which no longer exists must abort
+    the whole action rather than silently updating every entry.
+    """
+    import app.database.database as db_module
+    from app.blocks import repository as repo
+
+    with db_module.SessionLocal() as db:
+        database = _seed_database(db)
+        target = repo.create_schema(
+            db, database_id=database.id, name="Result", type="text", position=1.0,
+        )
+        db.commit()
+        e1 = _make_entry(db, database, "One", position=1.0)
+        e2 = _make_entry(db, database, "Two", position=2.0)
+        db.commit()
+
+        spec = {
+            "mode": "where",
+            "groups": [{
+                "conjunction": "and",
+                "filters": [{
+                    "schemaId": str(uuid.uuid4()),  # never created → stale
+                    "operator": "contains",
+                    "value":    "anything",
+                }],
+            }],
+        }
+        _run_bulk(db, str(database.id), str(target.id), spec, _DONE)
+
+        assert _value_text(db, e1.id, target.id) is None
+        assert _value_text(db, e2.id, target.id) is None
+
+
+# ─── _handle_bulk_upsert_value: delegation contract ───────────────────────────
+
+
+def test_bulk_where_relation_delegates_resolved_descriptor_to_query_entries():
+    """
+    The handler must resolve a relation condition into a FilterDescriptor with
+    schema_type 'relation' and the entry UUID as value, then hand it to
+    repository.query_entries with the server-side row cap.
+    """
+    import app.database.database as db_module
+    from app.blocks import repository as repo
+
+    with db_module.SessionLocal() as db:
+        database = _seed_database(db)
+        relation = repo.create_schema(
+            db, database_id=database.id, name="Links", type="relation",
+            position=1.0, config={"target_database_id": str(uuid.uuid4())},
+        )
+        target = repo.create_schema(
+            db, database_id=database.id, name="Result", type="text", position=2.0,
+        )
+        db.commit()
+        rel_uuid = str(uuid.uuid4())
+
+        spec = {
+            "mode": "where",
+            "groups": [{
+                "conjunction": "and",
+                "filters": [{
+                    "schemaId": str(relation.id),
+                    "operator": "contains",
+                    "value":    rel_uuid,
+                }],
+            }],
+        }
+
+        with patch(
+            "app.blocks.repository.query_entries", return_value=([], 0),
+        ) as mock_q, patch(
+            "app.ws.broadcaster.broadcast_block_event", new_callable=AsyncMock,
+        ):
+            asyncio.run(_handle_bulk_upsert_value(
+                db=db, db_uuid=str(database.id), schema_id=str(target.id),
+                filter_spec=spec, body=_DONE,
+            ))
+
+        assert mock_q.call_count == 1
+        _, called_db_id, called_groups, called_sorts = mock_q.call_args[0]
+        assert str(called_db_id) == str(database.id)
+        assert called_sorts == []
+        assert mock_q.call_args.kwargs.get("limit") == 10_000
+        assert len(called_groups) == 1
+        descriptors = called_groups[0].filters
+        assert len(descriptors) == 1
+        assert descriptors[0].schema_type == "relation"
+        assert descriptors[0].operator == "contains"
+        assert descriptors[0].value == rel_uuid

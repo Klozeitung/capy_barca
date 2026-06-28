@@ -85,6 +85,58 @@ class FilterGroupDescriptor:
     filters: list = dc_field(default_factory=list)  # list[FilterDescriptor]
 
 
+# ─── Filter resolution (shared by query endpoint & automation engine) ─────────
+
+
+def resolve_filter_descriptor(
+    schema_map: dict[str, PropertySchema],
+    *,
+    schema_id: str,
+    operator: str,
+    value: str = '',
+    date_mode: Optional[str] = None,
+    date_offset: Optional[int] = None,
+    formula_result_type: Optional[str] = None,
+    value2: Optional[str] = None,
+) -> Optional[FilterDescriptor]:
+    """
+    Resolve a single raw filter condition into a FilterDescriptor.
+
+    *schema_map* maps a schema-UUID string to its PropertySchema.  The special
+    '__name__' schema_id (the entry title) resolves with no type/config.  A
+    schema_id that is not present in *schema_map* yields None so the caller can
+    skip the (stale) condition.
+
+    This is the single resolution path shared by the database query endpoint
+    (database_router.query_entries) and the automation bulk-action engine
+    (automations_engine._handle_bulk_upsert_value), so a stored filter spec is
+    interpreted identically no matter which subsystem evaluates it.
+
+    The formula_result_type is only meaningful for formula schemas and is forced
+    to None for every other type, matching the query endpoint's prior behaviour.
+    """
+    if schema_id == '__name__':
+        schema_type = None
+        schema_config = None
+    else:
+        schema = schema_map.get(schema_id)
+        if schema is None:
+            return None
+        schema_type = schema.type
+        schema_config = schema.config
+    return FilterDescriptor(
+        schema_id=schema_id,
+        schema_type=schema_type,
+        schema_config=schema_config,
+        operator=operator,
+        value=value,
+        date_mode=date_mode,
+        date_offset=date_offset,
+        formula_result_type=formula_result_type if schema_type == 'formula' else None,
+        value2=value2,
+    )
+
+
 # ─── Query helpers ────────────────────────────────────────────────────────────
 
 _PRESET_OPERATORS: frozenset[str] = frozenset({

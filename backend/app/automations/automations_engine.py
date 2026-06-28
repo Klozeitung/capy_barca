@@ -82,12 +82,10 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Optional
 
-import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from app.automations.automations_models import Automation
 from app.automations.automations_repository import list_enabled_for_database
-from app.blocks.models import Block, PropertyValue
 
 logger = logging.getLogger(__name__)
 
@@ -502,25 +500,90 @@ async def _handle_bulk_upsert_value(
             f"Automation bulk action contains invalid UUID: {exc}"
         ) from exc
 
-    # Fetch all active entries in the target database.
-    rows = db.execute(
-        sa.select(Block).where(
-            Block.parent_id == db_id,
-            Block.state == "active",
-        )
-    ).scalars().all()
+    mode   = filter_spec.get("mode", "all")
+    groups = filter_spec.get("groups", []) or []
 
-    logger.info(
-        "Bulk action: db=%s schema=%s mode=%s entries_found=%d",
-        db_uuid, schema_id, filter_spec.get("mode"), len(rows),
+    # Resolve the stored filter spec into repository descriptors via the shared
+    # resolver, then delegate matching to ``repository.query_entries`` — the very
+    # same server-side evaluator used by database table views.  This gives the
+    # automation filter identical semantics to a view filter (name column,
+    # relations by entry UUID, multi-select, dates, …) from a single source of
+    # truth, and excludes entry_template blocks automatically.
+    schema_map = {str(s.id): s for s in repo.list_schemas(db, db_id)}
+    resolved_groups: list[repo.FilterGroupDescriptor] = []
+    stale_reference = False
+
+    if mode == "where":
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            resolved_filters: list[repo.FilterDescriptor] = []
+            for cond in group.get("filters", []):
+                if not isinstance(cond, dict):
+                    continue
+                cond_schema_id = (cond.get("schemaId") or "").strip()
+                if not cond_schema_id:
+                    # Incomplete row that was never fully configured — ignore it
+                    # rather than letting it widen or narrow the match set.
+                    continue
+                descriptor = repo.resolve_filter_descriptor(
+                    schema_map,
+                    schema_id=cond_schema_id,
+                    operator=cond.get("operator", "eq"),
+                    value=cond.get("value", "") or "",
+                    date_mode=cond.get("dateMode"),
+                    date_offset=cond.get("dateOffset"),
+                    value2=cond.get("value2", "") or "",
+                )
+                if descriptor is None:
+                    # Condition references a property that no longer exists.
+                    stale_reference = True
+                    break
+                resolved_filters.append(descriptor)
+            if stale_reference:
+                break
+            if resolved_filters:
+                resolved_groups.append(
+                    repo.FilterGroupDescriptor(
+                        conjunction=group.get("conjunction", "and"),
+                        filters=resolved_filters,
+                    )
+                )
+
+    # A bulk upsert is destructive, so a 'where' filter that cannot be applied
+    # must NOT silently fall through to "update everything".  Abort instead.
+    if mode == "where" and stale_reference:
+        logger.warning(
+            "Bulk action aborted: 'where' filter references a property that no "
+            "longer exists (db=%s schema=%s). No entries updated to avoid an "
+            "unintended mass update.",
+            db_uuid, schema_id,
+        )
+        return
+    if mode == "where" and not resolved_groups:
+        logger.warning(
+            "Bulk action aborted: 'where' filter resolved to no usable "
+            "conditions (db=%s schema=%s). No entries updated to avoid an "
+            "unintended mass update.",
+            db_uuid, schema_id,
+        )
+        return
+
+    # query_entries caps results at 10 000 rows (mirrors the view query cap).
+    rows, total = repo.query_entries(
+        db, db_id, resolved_groups, [], limit=10_000, offset=0,
     )
 
-    mode   = filter_spec.get("mode", "all")
-    groups = filter_spec.get("groups", [])
-
-    if mode == "where" and groups:
-        rows = _filter_entries(db, rows, groups)
-        logger.info("Bulk action: entries_after_filter=%d", len(rows))
+    logger.info(
+        "Bulk action: db=%s schema=%s mode=%s entries_matched=%d",
+        db_uuid, schema_id, mode, len(rows),
+    )
+    if total > len(rows):
+        logger.warning(
+            "Bulk action: %d entries matched but only the first %d will be "
+            "updated (server-side cap). db=%s",
+            total, len(rows), db_uuid,
+        )
 
     if not rows:
         logger.info("Bulk action: no entries to update (filter matched nothing or DB is empty)")
@@ -551,182 +614,3 @@ async def _handle_bulk_upsert_value(
         before=None,
         after={"database_id": db_uuid},
     )
-
-
-# ─── Filter helpers ───────────────────────────────────────────────────────────
-
-
-def _filter_entries(
-    db: Session,
-    entries: list,
-    groups: list[dict],
-) -> list:
-    """
-    Filter *entries* in-memory using the stored filter groups.
-
-    Loads property values for all entries in a single query, then applies
-    each group's conditions.  Groups are ANDed together; within a group,
-    conditions are combined with the group's own conjunction.
-
-    Returns the subset of entries that satisfy all groups.
-    """
-    if not entries or not groups:
-        return entries
-
-    entry_ids = [e.id for e in entries]
-
-    pv_rows = db.execute(
-        sa.select(PropertyValue).where(
-            PropertyValue.page_id.in_(entry_ids)
-        )
-    ).scalars().all()
-
-    logger.debug("Filter: loaded %d property values for %d entries", len(pv_rows), len(entry_ids))
-
-    # Build lookup: str(entry_id) -> {str(schema_id): raw_value}
-    # PropertyValue uses ``property_schema_id`` as the FK column name.
-    val_map: dict[str, dict[str, Any]] = {}
-    for pv in pv_rows:
-        eid = str(pv.page_id)
-        sid = str(pv.property_schema_id)
-        if eid not in val_map:
-            val_map[eid] = {}
-        val_map[eid][sid] = pv.value
-
-    result = []
-    for entry in entries:
-        ev = val_map.get(str(entry.id), {})
-        # All groups must match (groups are ANDed).
-        matched = all(_group_matches(ev, g) for g in groups)
-        logger.debug("Filter: entry %s -> match=%s", entry.id, matched)
-        if matched:
-            result.append(entry)
-    return result
-
-
-def _group_matches(entry_values: dict[str, Any], group: dict) -> bool:
-    """
-    Evaluate a single filter group against *entry_values*.
-
-    ``conjunction == "and"`` requires all conditions to match.
-    ``conjunction == "or"``  requires at least one condition to match.
-    An empty conditions list always passes.
-    """
-    conjunction = group.get("conjunction", "and")
-    filters: list[dict] = group.get("filters", [])
-    if not filters:
-        return True
-    results = [_condition_matches(entry_values, f) for f in filters]
-    if conjunction == "or":
-        return any(results)
-    return all(results)
-
-
-def _condition_matches(entry_values: dict[str, Any], condition: dict) -> bool:
-    """Evaluate a single filter condition against the entry's property values."""
-    schema_id    = condition.get("schemaId", "")
-    operator     = condition.get("operator", "eq")
-    filter_value = condition.get("value", "")
-
-    raw      = entry_values.get(schema_id)
-    cell_str = _extract_cell_string(raw)
-
-    return _compare(cell_str, operator, filter_value)
-
-
-def _extract_cell_string(raw: Any) -> str:
-    """
-    Extract a comparable string representation from a stored cell value.
-
-    Cell values are JSON objects whose shape depends on property type:
-      text / email / phone / url -> {"text": "<value>"}
-      select                     -> {"option": "<value>"}
-      number                     -> {"number": <int|float>}
-      checkbox                   -> {"checked": <bool>}
-
-    Number normalisation: whole floats (2.0) are returned as "2" so that a
-    filter value of "2" matches regardless of whether the stored JSON number
-    is an int or a float.
-
-    Checkbox normalisation: booleans are lowercased ("true"/"false") to
-    match the string values used by the frontend's filter option elements.
-
-    Falls back to ``str(raw)`` for unknown shapes, and returns ``""`` for
-    None or missing values.
-    """
-    if raw is None:
-        return ""
-    if isinstance(raw, dict):
-        if "text" in raw:
-            v = raw["text"]
-            return str(v) if v is not None else ""
-        if "option" in raw:
-            v = raw["option"]
-            return str(v) if v is not None else ""
-        if "number" in raw:
-            v = raw["number"]
-            if v is None:
-                return ""
-            # Normalise whole floats (e.g. 2.0 → "2") so string comparison
-            # works when the user types "2" in the filter input.
-            try:
-                f = float(v)
-                return str(int(f)) if f == int(f) else str(f)
-            except (ValueError, TypeError):
-                return str(v)
-        if "checked" in raw:
-            v = raw["checked"]
-            # Lowercase so "true"/"false" matches <option value="true|false">
-            return str(v).lower() if v is not None else ""
-    return str(raw)
-
-
-def _compare(cell_str: str, operator: str, filter_value: str) -> bool:
-    """
-    Compare *cell_str* against *filter_value* using *operator*.
-
-    For ``eq`` and ``neq``, a numeric comparison is attempted first so that
-    normalised number strings ("2") match filter inputs ("2.0") and vice-versa.
-    String comparison is the fallback when either value is non-numeric.
-
-    Supports all FilterOperator values used by the frontend filter panel.
-    Unknown operators pass by default to avoid silently dropping updates
-    when new operators are introduced before the engine is updated.
-    """
-    if operator in ("eq", "neq"):
-        # Try numeric comparison first (handles "2" == "2.0" etc.)
-        try:
-            cell_num   = float(cell_str)
-            filter_num = float(filter_value)
-            numeric_eq = cell_num == filter_num
-            return numeric_eq if operator == "eq" else not numeric_eq
-        except (ValueError, TypeError):
-            pass
-        # Fallback: plain string comparison
-        return (cell_str == filter_value) if operator == "eq" else (cell_str != filter_value)
-    if operator == "contains":
-        return filter_value.lower() in cell_str.lower()
-    if operator == "not_contains":
-        return filter_value.lower() not in cell_str.lower()
-    if operator == "starts_with":
-        return cell_str.lower().startswith(filter_value.lower())
-    if operator == "ends_with":
-        return cell_str.lower().endswith(filter_value.lower())
-    if operator == "is_empty":
-        return cell_str == ""
-    if operator == "is_not_empty":
-        return cell_str != ""
-    if operator in ("gt", "gte", "lt", "lte"):
-        try:
-            cell_num   = float(cell_str)
-            filter_num = float(filter_value)
-        except (ValueError, TypeError):
-            return False
-        if operator == "gt":  return cell_num > filter_num
-        if operator == "gte": return cell_num >= filter_num
-        if operator == "lt":  return cell_num < filter_num
-        if operator == "lte": return cell_num <= filter_num
-
-    # Unknown operator — pass through to avoid silently blocking updates.
-    logger.debug("Unknown filter operator %r — condition passes by default", operator)
-    return True

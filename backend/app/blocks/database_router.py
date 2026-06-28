@@ -1995,24 +1995,14 @@ def query_entries(
 
     def _resolve_filter(f: QueryFilter) -> repo.FilterDescriptor | None:
         """Resolve one QueryFilter into a FilterDescriptor, or None to skip it."""
-        if f.schema_id == '__name__':
-            schema_type = None
-            schema_config = None
-        else:
-            s = schema_map.get(f.schema_id)
-            if s is None:
-                return None
-            schema_type = s.type
-            schema_config = s.config
-        return repo.FilterDescriptor(
+        return repo.resolve_filter_descriptor(
+            schema_map,
             schema_id=f.schema_id,
-            schema_type=schema_type,
-            schema_config=schema_config,
             operator=f.operator,
             value=f.value,
             date_mode=f.date_mode,
             date_offset=f.date_offset,
-            formula_result_type=f.formula_result_type if schema_type == 'formula' else None,
+            formula_result_type=f.formula_result_type,
             value2=f.value2,
         )
 

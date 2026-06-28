@@ -1131,3 +1131,107 @@ def test_formula_filter_is_empty(db, workspace, database_block):
     entries, total = repo.query_entries(db, database_block.id, [_g(f)], [])
     assert total == 1
     assert entries[0].id == e_empty.id
+
+
+# ─── resolve_filter_descriptor (shared filter resolver) ───────────────────────
+
+
+def test_resolve_filter_descriptor_name_column():
+    """The '__name__' title column resolves with no schema type or config."""
+    d = repo.resolve_filter_descriptor(
+        {}, schema_id="__name__", operator="contains", value="leon",
+    )
+    assert d is not None
+    assert d.schema_id == "__name__"
+    assert d.schema_type is None
+    assert d.schema_config is None
+    assert d.operator == "contains"
+    assert d.value == "leon"
+
+
+def test_resolve_filter_descriptor_known_schema_attaches_type_and_config(db, database_block):
+    schema = repo.create_schema(
+        db, database_id=database_block.id, name="Status", type="select",
+        position=1.0, config={"options": ["Todo", "Done"]},
+    )
+    db.commit()
+    schema_map = {str(schema.id): schema}
+    d = repo.resolve_filter_descriptor(
+        schema_map, schema_id=str(schema.id), operator="eq", value="Done",
+    )
+    assert d is not None
+    assert d.schema_type == "select"
+    assert d.schema_config == {"options": ["Todo", "Done"]}
+    assert d.value == "Done"
+
+
+def test_resolve_filter_descriptor_unknown_schema_returns_none():
+    """A schema_id absent from the map yields None so the caller can skip it."""
+    d = repo.resolve_filter_descriptor(
+        {}, schema_id=str(uuid.uuid4()), operator="contains", value="x",
+    )
+    assert d is None
+
+
+def test_resolve_filter_descriptor_relation_passthrough(db, database_block):
+    schema = repo.create_schema(
+        db, database_id=database_block.id, name="Linked", type="relation",
+        position=1.0, config={"target_database_id": str(uuid.uuid4())},
+    )
+    db.commit()
+    rel_uuid = str(uuid.uuid4())
+    d = repo.resolve_filter_descriptor(
+        {str(schema.id): schema},
+        schema_id=str(schema.id), operator="contains", value=rel_uuid,
+    )
+    assert d is not None
+    assert d.schema_type == "relation"
+    assert d.value == rel_uuid
+
+
+def test_resolve_filter_descriptor_formula_result_type_kept_for_formula(db, database_block):
+    schema = repo.create_schema(
+        db, database_id=database_block.id, name="Calc", type="formula",
+        position=1.0, config={"expression": "1+1"},
+    )
+    db.commit()
+    d = repo.resolve_filter_descriptor(
+        {str(schema.id): schema},
+        schema_id=str(schema.id), operator="gt", value="1",
+        formula_result_type="number",
+    )
+    assert d is not None
+    assert d.formula_result_type == "number"
+
+
+def test_resolve_filter_descriptor_formula_result_type_dropped_for_non_formula(db, database_block):
+    """formula_result_type is only meaningful for formula schemas; forced None otherwise."""
+    schema = repo.create_schema(
+        db, database_id=database_block.id, name="Plain", type="text", position=1.0,
+    )
+    db.commit()
+    d = repo.resolve_filter_descriptor(
+        {str(schema.id): schema},
+        schema_id=str(schema.id), operator="contains", value="x",
+        formula_result_type="number",
+    )
+    assert d is not None
+    assert d.formula_result_type is None
+
+
+def test_resolve_filter_descriptor_date_fields_passthrough(db, database_block):
+    schema = repo.create_schema(
+        db, database_id=database_block.id, name="Due", type="date", position=1.0,
+    )
+    db.commit()
+    d = repo.resolve_filter_descriptor(
+        {str(schema.id): schema},
+        schema_id=str(schema.id), operator="between",
+        value="2026-01-01", value2="2026-12-31",
+        date_mode="exact", date_offset=0,
+    )
+    assert d is not None
+    assert d.value == "2026-01-01"
+    assert d.value2 == "2026-12-31"
+    assert d.date_mode == "exact"
+    assert d.date_offset == 0

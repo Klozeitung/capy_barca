@@ -2,32 +2,23 @@
 /**
  * FilterPanel
  *
- * Renders the filter-group UI panel.  All data is received via props; every
- * mutation is emitted so the parent (DatabaseBlock) can delegate to the
- * useFilterPanel composable.
+ * Renders the filter-group UI panel: group chrome (conjunction toggle, add /
+ * remove group, add / remove filter) plus one FilterConditionRow per filter.
+ * All condition-editing logic and the type-aware value widgets live in the
+ * shared FilterConditionRow component so the view filter and the automations
+ * action filter stay in sync.
  *
- * Pure helper functions (getOperatorsForSchemaId, isDateFilter, …) are
- * imported directly from useFilterPanel to avoid duplicating logic.
+ * All data is received via props; every mutation is emitted so the parent
+ * (DatabaseBlock) can delegate to the useFilterPanel composable.
  */
-import { ref } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
-import { useDatabaseStore, type PropertySchema, type DatabaseEntry, type DatabaseView, type FilterOperator, type DateFilterMode } from '@/stores/database'
-import {
-  getOperatorsForSchemaId,
-  filterNeedsValue,
-  filterNeedsValue2,
-  isDateFilter,
-  isSelectFilter,
-  isMultiSelectFilter,
-  isCheckboxFilter,
-  isRelationFilter,
-  getSelectOptions,
-} from '@/composables/useFilterPanel'
+import { type PropertySchema, type DatabaseEntry, type DatabaseView, type FilterOperator, type DateFilterMode } from '@/stores/database'
+import FilterConditionRow from './FilterConditionRow.vue'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
-const props = defineProps<{
+defineProps<{
   activeView:       DatabaseView | null
   schemas:          PropertySchema[]
   displayedEntries: DatabaseEntry[]
@@ -50,34 +41,7 @@ const emit = defineEmits<{
 
 // ── Dependencies ──────────────────────────────────────────────────────────────
 
-const { t }     = useI18n()
-const dbStore   = useDatabaseStore()
-
-// ── Relation-entry cache (loaded lazily per schema) ───────────────────────────
-
-const relationEntries = ref<Record<string, DatabaseEntry[]>>({})
-
-function getRelationEntries(schemaId: string): DatabaseEntry[] {
-  if (schemaId in relationEntries.value) return relationEntries.value[schemaId]
-  const schema   = props.schemas.find((s) => s.id === schemaId)
-  const targetId = schema?.config?.target_database_id as string | undefined
-  if (!targetId) return []
-  relationEntries.value[schemaId] = []
-  dbStore.fetchEntries(targetId).then((entries) => {
-    relationEntries.value[schemaId] = entries
-  })
-  return []
-}
-
-function entryTitle(entry: DatabaseEntry): string {
-  return ((entry.content?.title as string | undefined) ?? '').trim() || t('main.untitled')
-}
-
-// ── Wrappers that thread props into the pure helpers ──────────────────────────
-
-function operators(schemaId: string): FilterOperator[] {
-  return getOperatorsForSchemaId(schemaId, props.schemas, props.displayedEntries, props.nameColKey)
-}
+const { t } = useI18n()
 </script>
 
 <template>
@@ -113,144 +77,18 @@ function operators(schemaId: string): FilterOperator[] {
         :key="filter.id"
         class="db__panel-row db__panel-row--indented"
       >
-        <!-- Schema picker -->
-        <select
-          class="db__panel-select"
-          :value="filter.schemaId"
-          @change="emit('filter-schema-change', group.id, filter.id, ($event.target as HTMLSelectElement).value)"
-        >
-          <option :value="nameColKey">{{ t('db.nameColumn') }}</option>
-          <option v-for="s in schemas" :key="s.id" :value="s.id">{{ s.name }}</option>
-        </select>
-
-        <!-- Operator picker -->
-        <select
-          class="db__panel-select"
-          :value="filter.operator"
-          @change="emit('filter-operator-change', group.id, filter.id, ($event.target as HTMLSelectElement).value as FilterOperator)"
-        >
-          <option v-for="op in operators(filter.schemaId)" :key="op" :value="op">
-            {{ t(`db.filter.operators.${op}`) }}
-          </option>
-        </select>
-
-        <!-- Value inputs (varies by schema type) -->
-        <template v-if="filterNeedsValue(filter.operator)">
-
-          <!-- Date filter -->
-          <template v-if="isDateFilter(filter, schemas, displayedEntries, nameColKey)">
-            <!-- 'between' shows two plain date pickers; no dateMode selector needed -->
-            <template v-if="filterNeedsValue2(filter.operator)">
-              <input
-                type="date"
-                class="db__panel-input"
-                :value="filter.value"
-                @input="emit('filter-value-change', group.id, filter.id, ($event.target as HTMLInputElement).value)"
-              />
-              <input
-                type="date"
-                class="db__panel-input"
-                :value="filter.value2 ?? ''"
-                @input="emit('filter-value2-change', group.id, filter.id, ($event.target as HTMLInputElement).value)"
-              />
-            </template>
-            <!-- All other date operators use the existing dateMode selector -->
-            <template v-else>
-              <select
-                class="db__panel-select db__panel-select--short"
-                :value="filter.dateMode ?? 'exact'"
-                @change="emit('filter-date-mode-change', group.id, filter.id, ($event.target as HTMLSelectElement).value as DateFilterMode)"
-              >
-                <option value="exact">{{ t('db.filter.dateModes.exact') }}</option>
-                <option value="today">{{ t('db.filter.dateModes.today') }}</option>
-                <option value="relative">{{ t('db.filter.dateModes.relative') }}</option>
-              </select>
-              <input
-                v-if="(filter.dateMode ?? 'exact') === 'exact'"
-                type="date"
-                class="db__panel-input"
-                :value="filter.value"
-                @input="emit('filter-value-change', group.id, filter.id, ($event.target as HTMLInputElement).value)"
-              />
-              <input
-                v-else-if="filter.dateMode === 'relative'"
-                type="number"
-                class="db__panel-input db__panel-input--narrow"
-                :value="filter.dateOffset ?? 0"
-                :placeholder="t('db.filter.dateModes.offsetPlaceholder')"
-                @input="emit('filter-date-offset-change', group.id, filter.id, Number(($event.target as HTMLInputElement).value))"
-              />
-            </template>
-          </template>
-
-          <!-- Checkbox filter -->
-          <template v-else-if="isCheckboxFilter(filter, schemas, nameColKey)">
-            <select
-              class="db__panel-select db__panel-select--short"
-              :value="filter.value"
-              @change="emit('filter-value-change', group.id, filter.id, ($event.target as HTMLSelectElement).value)"
-            >
-              <option value="true">{{ t('db.filter.checkboxTrue') }}</option>
-              <option value="false">{{ t('db.filter.checkboxFalse') }}</option>
-            </select>
-          </template>
-
-          <!-- Single-select filter -->
-          <template v-else-if="isSelectFilter(filter, schemas, nameColKey)">
-            <select
-              class="db__panel-select"
-              :value="filter.value"
-              @change="emit('filter-value-change', group.id, filter.id, ($event.target as HTMLSelectElement).value)"
-            >
-              <option value="">{{ t('db.filter.selectAny') }}</option>
-              <option v-for="opt in getSelectOptions(filter, schemas, nameColKey)" :key="opt" :value="opt">
-                {{ opt }}
-              </option>
-            </select>
-          </template>
-
-          <!-- Multi-select filter -->
-          <template v-else-if="isMultiSelectFilter(filter, schemas, nameColKey)">
-            <select
-              class="db__panel-select"
-              :value="filter.value"
-              @change="emit('filter-value-change', group.id, filter.id, ($event.target as HTMLSelectElement).value)"
-            >
-              <option value="">{{ t('db.filter.selectAny') }}</option>
-              <option v-for="opt in getSelectOptions(filter, schemas, nameColKey)" :key="opt" :value="opt">
-                {{ opt }}
-              </option>
-            </select>
-          </template>
-
-          <!-- Relation filter -->
-          <template v-else-if="isRelationFilter(filter, schemas, nameColKey)">
-            <select
-              class="db__panel-select"
-              :value="filter.value"
-              @change="emit('filter-value-change', group.id, filter.id, ($event.target as HTMLSelectElement).value)"
-            >
-              <option value="">{{ t('db.filter.selectAny') }}</option>
-              <option
-                v-for="entry in getRelationEntries(filter.schemaId)"
-                :key="entry.id"
-                :value="entry.id"
-              >
-                {{ entryTitle(entry) }}
-              </option>
-            </select>
-          </template>
-
-          <!-- Text / fallback filter -->
-          <template v-else>
-            <input
-              class="db__panel-input"
-              :value="filter.value"
-              :placeholder="t('db.filter.value')"
-              @input="emit('filter-value-change', group.id, filter.id, ($event.target as HTMLInputElement).value)"
-            />
-          </template>
-        </template>
+        <FilterConditionRow
+          :filter="filter"
+          :schemas="schemas"
+          :displayed-entries="displayedEntries"
+          :name-col-key="nameColKey"
+          @schema-change="(v: string) => emit('filter-schema-change', group.id, filter.id, v)"
+          @operator-change="(v: FilterOperator) => emit('filter-operator-change', group.id, filter.id, v)"
+          @value-change="(v: string) => emit('filter-value-change', group.id, filter.id, v)"
+          @value2-change="(v: string) => emit('filter-value2-change', group.id, filter.id, v)"
+          @date-mode-change="(v: DateFilterMode) => emit('filter-date-mode-change', group.id, filter.id, v)"
+          @date-offset-change="(v: number) => emit('filter-date-offset-change', group.id, filter.id, v)"
+        />
 
         <button class="db__panel-remove" @click="emit('remove-filter', group.id, filter.id)">
           <Icon icon="mdi:close" width="13" height="13" />

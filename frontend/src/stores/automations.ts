@@ -80,14 +80,21 @@ export interface AutomationTrigger {
 /**
  * A single filter condition inside an action filter group.
  *
- * Mirrors the ViewFilter shape (schemaId, operator, value) without the
- * date-specific fields, since automation action filters only support the
- * simple scalar operators for the initial implementation.
+ * Mirrors the ViewFilter shape so the automation action filter and the database
+ * view filter share one editing component and one server-side evaluator. The
+ * date-specific fields are optional and only present for date / created_time /
+ * last_edited_time conditions:
+ *   value2     – upper bound for the 'between' operator (ISO date string).
+ *   dateMode   – 'exact' | 'today' | 'relative' for point-comparison operators.
+ *   dateOffset – day offset when dateMode === 'relative'.
  */
 export interface AutomationActionFilterCondition {
-  schemaId: string
-  operator: string
-  value:    string
+  schemaId:    string
+  operator:    string
+  value:       string
+  value2?:     string
+  dateMode?:   string
+  dateOffset?: number
 }
 
 /**
