@@ -715,11 +715,17 @@ def _infer_result_type(value: Any) -> str:
 
     Note: ``bool`` must be checked before ``int``/``float`` because Python's
     ``bool`` is a subclass of ``int``.
+
+    A date property referenced directly by a formula (``prop('date')``) yields a
+    ``{"start", "end"}`` dict rather than a scalar; it is classified as ``"date"``
+    so the filter UI offers date operators for such formula columns (#43).
     """
     from datetime import datetime as _DT
     if isinstance(value, bool):
         return "boolean"
     if isinstance(value, _DT):
+        return "date"
+    if isinstance(value, dict) and ("start" in value or "end" in value):
         return "date"
     if isinstance(value, (int, float)):
         return "number"

@@ -23,6 +23,8 @@
  *   boolean  → check / cross icon
  *   ISO date / datetime → rendered in the user's preferred date format,
  *                         with time shown only when present and non-midnight
+ *   {start, end} date object (e.g. prop('date')) → same date formatting,
+ *                         rendered as "start → end" when a distinct end exists
  *   number   → toLocaleString (decimal comma for de-DE locale)
  *   string   → as-is
  *   null     → empty
@@ -47,7 +49,7 @@ import { computed, ref } from 'vue'
 import { Icon } from '@iconify/vue'
 import type { DatabaseEntry, PropertySchema } from '@/stores/database'
 import { useAuthStore } from '@/stores/auth'
-import { getCellValue, formatCanonicalDate, ISO_DATE_RE, ISO_DATETIME_RE } from './cellUtils'
+import { getCellValue, formatCanonicalDate, formatDateRangeResult, isDateRangeResult, ISO_DATE_RE, ISO_DATETIME_RE, type DateRangeResult } from './cellUtils'
 import SideView from '@/components/main/SideView.vue'
 
 const props = defineProps<{
@@ -128,7 +130,7 @@ const cellData = computed(() => getCellValue(props.entry, props.schema.id) as an
 const hasError  = computed(() => !!cellData.value?.error)
 const errorMessage = computed(() => cellData.value?.error ?? '')
 
-type ResultKind = 'empty' | 'relation' | 'boolean' | 'datetime' | 'date' | 'number' | 'string'
+type ResultKind = 'empty' | 'relation' | 'boolean' | 'datetime' | 'date' | 'dateRange' | 'number' | 'string'
 
 const resultKind = computed<ResultKind>(() => {
   if (cellData.value === null || cellData.value === undefined) return 'empty'
@@ -141,6 +143,7 @@ const resultKind = computed<ResultKind>(() => {
     if (ISO_DATETIME_RE.test(r)) return 'datetime'
     if (ISO_DATE_RE.test(r))     return 'date'
   }
+  if (isDateRangeResult(r)) return 'dateRange'
   return 'string'
 })
 
@@ -153,6 +156,7 @@ const displayText = computed<string>(() => {
     case 'boolean':  return ''                      // rendered via icon
     case 'datetime': return formatCanonicalDate(r as string, auth.dateFormat)
     case 'date':     return formatCanonicalDate(r as string, auth.dateFormat)
+    case 'dateRange':return formatDateRangeResult(r as DateRangeResult, auth.dateFormat)
     case 'number':   return (r as number).toLocaleString('de-DE', { maximumFractionDigits: 10 })
     case 'string':   return r as string
     default:         return String(r)
@@ -237,8 +241,8 @@ const formulaInlineStyle = computed<Record<string, string>>(() => {
       />
     </template>
 
-    <!-- Datetime / date: calendar icon + formatted string -->
-    <template v-else-if="resultKind === 'datetime' || resultKind === 'date'">
+    <!-- Datetime / date / date-range: calendar icon + formatted string -->
+    <template v-else-if="resultKind === 'datetime' || resultKind === 'date' || resultKind === 'dateRange'">
       <Icon icon="mdi:calendar-outline" width="13" height="13" class="formula-cell__date-icon" />
       {{ displayText }}
     </template>

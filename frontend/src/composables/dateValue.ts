@@ -1,0 +1,77 @@
+/**
+ * dateValue
+ *
+ * Bridges the application's canonical ISO date strings and the ``Date`` objects
+ * used by the date-picker control (``components/DatePicker.vue``).
+ *
+ * All conversions are hardened for the full 1..9999 year range. The JavaScript
+ * ``Date`` *constructor* maps a year in 0..99 into 1900..1999 (``new Date(5, …)``
+ * yields the year 1905), so:
+ *   - Dates are built via ``setFullYear`` rather than the constructor, and
+ *   - years are always emitted zero-padded to four digits.
+ *
+ * This keeps the stored contract intact for antiquity and far-future dates
+ * alike:
+ *   includeTime === false  ->  "YYYY-MM-DD"
+ *   includeTime === true   ->  "YYYY-MM-DDTHH:mm"
+ * The four-digit year also preserves the lexicographic ordering that the
+ * start/end comparison logic in the cells relies on (e.g. ``end < start``).
+ *
+ * All values are handled in local time, matching the previous native
+ * ``<input type="date">`` / ``datetime-local`` behaviour: the literal
+ * year/month/day/hour/minute the user selects is stored verbatim, with no
+ * timezone conversion applied.
+ */
+
+// Leading group is 1+ digits so four-digit years parse while remaining lenient
+// toward any zero-padded low year already stored.
+const ISO_RE = /^(\d{1,})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/
+
+/**
+ * Parse a canonical ISO date/datetime string into a ``Date``.
+ *
+ * Returns ``null`` for empty, nullish, or structurally invalid input. Years
+ * 1..99 are set via ``setFullYear`` so they are never remapped into the 1900s.
+ */
+export function parseIsoToDate(iso: string | null | undefined): Date | null {
+  if (!iso) return null
+  const m = ISO_RE.exec(iso)
+  if (!m) return null
+
+  const year = Number(m[1])
+  const month = Number(m[2])
+  const day = Number(m[3])
+  const hour = m[4] !== undefined ? Number(m[4]) : 0
+  const minute = m[5] !== undefined ? Number(m[5]) : 0
+
+  if (!year || month < 1 || month > 12 || day < 1 || day > 31) return null
+
+  const d = new Date(0)
+  d.setFullYear(year, month - 1, day)
+  d.setHours(hour, minute, 0, 0)
+  return d
+}
+
+/**
+ * Format a ``Date`` into a canonical ISO string.
+ *
+ * The year is zero-padded to four digits (so the year 5 becomes ``"0005-…"``),
+ * preserving lexicographic ordering. Returns ``''`` for a nullish date.
+ *
+ * @param includeTime  When true, append ``THH:mm`` (matching the previous
+ *                      ``datetime-local`` contract); otherwise emit a plain date.
+ */
+export function formatDateToIso(date: Date | null | undefined, includeTime: boolean): string {
+  if (!date) return ''
+
+  const year = String(date.getFullYear()).padStart(4, '0')
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const datePart = `${year}-${month}-${day}`
+
+  if (!includeTime) return datePart
+
+  const hh = String(date.getHours()).padStart(2, '0')
+  const mm = String(date.getMinutes()).padStart(2, '0')
+  return `${datePart}T${hh}:${mm}`
+}

@@ -23,10 +23,12 @@
  *   "YYYY-MM-DDTHH:MM:SS→"         → since date (open-ended)
  *   "YYYY-MM-DDTHH:MM:SS→YYYY-…"   → from – to
  *
- * Positioning: Teleported to <body> and anchored below the triggering element
- * via an anchor rect passed as a prop.
+ * Positioning: Teleported to <body> and shown as a centered modal over a dimmed
+ * backdrop. The panel never exceeds the viewport; overflowing content scrolls
+ * within the body. The optional ``anchorRect`` prop is retained for API
+ * compatibility but no longer influences placement (#39).
  */
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import {
@@ -37,7 +39,7 @@ import {
   optionColorStyle,
 } from '@/stores/database'
 import { useBlockStore } from '@/stores/blocks'
-import { getRawCellValue, getTimelineDisplayMode, getNuanceConfig, type TimelineDisplayMode } from './cellUtils'
+import { getRawCellValue, getTimelineDisplayMode, getNuanceConfig, formatPeriodKey, type TimelineDisplayMode } from './cellUtils'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
@@ -527,53 +529,17 @@ async function save() {
   }
 }
 
-// ── Positioning ───────────────────────────────────────────────────────────────
-
-const panelEl = ref<HTMLElement | null>(null)
-const panelStyle = ref<Record<string, string>>({})
-
-function positionPanel() {
-  if (!props.anchorRect) return
-  const rect = props.anchorRect
-  const MARGIN = 6
-  const panelWidth = 480
-  const viewportW = window.innerWidth
-  const viewportH = window.innerHeight
-
-  let left = rect.left
-  let top  = rect.bottom + MARGIN
-
-  if (left + panelWidth > viewportW - MARGIN) {
-    left = Math.max(MARGIN, viewportW - panelWidth - MARGIN)
-  }
-  if (top + 400 > viewportH - MARGIN) {
-    top = Math.max(MARGIN, rect.top - 400 - MARGIN)
-  }
-
-  panelStyle.value = {
-    position: 'fixed',
-    left:  `${left}px`,
-    top:   `${top}px`,
-    width: `${panelWidth}px`,
-    // #19: must sit above the SideView panel (z-index 900); otherwise the
-    // editor opens behind it and the trigger appears inoperative. Matches the
-    // relation picker's stacking level (1000).
-    zIndex: '1000',
-  }
-}
-
-// ── Click-away ────────────────────────────────────────────────────────────────
-
-function onDocumentClick(event: MouseEvent) {
-  if (panelEl.value?.contains(event.target as Node)) return
-  emit('close')
-}
+// ── Dismissal ─────────────────────────────────────────────────────────────────
+//
+// The editor is a centered modal over a full-viewport backdrop (#39); a click
+// on the backdrop closes it (wired in the template), so no document-level
+// listener is required.
 
 /**
- * Clicks inside the panel are stopped from reaching the document listener, so
- * the pool entry picker needs its own dismissal: any in-panel click that lands
- * outside the combobox closes the dropdown. The combobox stops propagation on
- * its own clicks, so this handler only fires for clicks elsewhere in the panel.
+ * Clicks inside the panel are stopped from reaching the backdrop, so the pool
+ * entry picker needs its own dismissal: any in-panel click that lands outside
+ * the combobox closes the dropdown. The combobox stops propagation on its own
+ * clicks, so this handler only fires for clicks elsewhere in the panel.
  */
 function onPanelClick(event: MouseEvent) {
   if (!poolPickerOpen.value) return
@@ -594,24 +560,15 @@ onMounted(async () => {
   } else {
     slots.value = initSlots()
   }
-
-  await nextTick()
-  positionPanel()
-  await nextTick()
-  document.addEventListener('click', onDocumentClick)
-})
-
-onUnmounted(() => {
-  document.removeEventListener('click', onDocumentClick)
 })
 </script>
 
 <template>
   <Teleport to="body">
+    <!-- #39: dimmed backdrop; clicking it closes the centered editor. -->
+    <div class="te__backdrop" @click="emit('close')"></div>
     <div
-      ref="panelEl"
       class="te"
-      :style="panelStyle"
       @click.stop="onPanelClick"
     >
       <!-- Header -->
@@ -789,7 +746,7 @@ onUnmounted(() => {
                 :key="range"
                 class="te__pool-range-row"
               >
-                <code class="te__pool-range-key">{{ range || t('db.timeline.alwaysValid') }}</code>
+                <code class="te__pool-range-key">{{ range ? formatPeriodKey(range) : t('db.timeline.alwaysValid') }}</code>
                 <span
                   v-if="nuanceCfg && nuanceValue(entry.uid, range)"
                   class="te__pool-nuance-tag"
@@ -919,14 +876,30 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.te__backdrop {
+  position: fixed;
+  inset: 0;
+  /* #19: must sit above the SideView panel (z-index 900). */
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.35);
+}
+
 .te {
+  /* #39: centered modal that never exceeds the viewport; the body scrolls. */
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1001;
+  width: 480px;
+  max-width: calc(100vw - 32px);
+  max-height: min(480px, calc(100vh - 32px));
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
   display: flex;
   flex-direction: column;
-  max-height: 480px;
   overflow: hidden;
 }
 

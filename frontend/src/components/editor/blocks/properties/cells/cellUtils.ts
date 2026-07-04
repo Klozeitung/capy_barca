@@ -286,6 +286,46 @@ export function maybeFormatRollupDate(value: string, format: string): string {
   return value
 }
 
+/**
+ * A computed date result that arrives as an object rather than an ISO string.
+ *
+ * A formula that yields a date property directly (``prop('date')``) returns the
+ * property's ``{start, end}`` shape (``end`` may be null) so that composing
+ * functions like ``dateStart`` / ``dateEnd`` can consume it. The ``start``
+ * boundary is a canonical ISO string. This is distinct from a resolved relation
+ * descriptor (``{id, title, database_id}``), which carries no ``start``.
+ */
+export interface DateRangeResult {
+  start: string
+  end: string | null
+}
+
+/**
+ * Type guard: true when a formula/computed result is a canonical date-range
+ * object (``{start, end}`` with an ISO ``start``). Used so date results render
+ * like a date cell instead of leaking raw JSON (#43).
+ */
+export function isDateRangeResult(r: unknown): r is DateRangeResult {
+  if (r === null || typeof r !== 'object' || Array.isArray(r)) return false
+  const start = (r as Record<string, unknown>).start
+  return typeof start === 'string' && (ISO_DATE_RE.test(start) || ISO_DATETIME_RE.test(start))
+}
+
+/**
+ * Format a ``{start, end}`` date result, mirroring the date-cell rendering:
+ * a single boundary, or ``start → end`` when a distinct end is present. Each
+ * boundary uses ``formatCanonicalDate`` (time shown only when non-midnight).
+ * Returns '' when there is no start.
+ */
+export function formatDateRangeResult(value: DateRangeResult, format: string): string {
+  const start = value.start ?? ''
+  const end = value.end ?? ''
+  if (!start) return ''
+  const s = formatCanonicalDate(start, format)
+  if (end && end !== start) return `${s} → ${formatCanonicalDate(end, format)}`
+  return s
+}
+
 // ── Display value ─────────────────────────────────────────────────────────────
 
 const euroFormatter = new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' })
@@ -422,6 +462,7 @@ export function formatFormulaExport(
     }
     return r
   }
+  if (isDateRangeResult(r)) return formatDateRangeResult(r, resolveDateFormat(schema))
   return String(r)
 }
 

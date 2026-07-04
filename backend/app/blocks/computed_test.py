@@ -93,6 +93,24 @@ def test_infer_result_type_none():
     assert _infer_result_type(None) == "text"
 
 
+def test_infer_result_type_date_range_dict():
+    # A formula that yields a date property directly (prop('date')) returns a
+    # {"start", "end"} dict; it must be classified as "date" so the filter UI
+    # offers date operators for the column (#43).
+    assert _infer_result_type({"start": "2000-01-01T00:01", "end": "2000-01-02T00:01"}) == "date"
+
+
+def test_infer_result_type_date_range_dict_start_only():
+    assert _infer_result_type({"start": "2000-01-01", "end": None}) == "date"
+
+
+def test_infer_result_type_relation_descriptor_dict_is_not_date():
+    # A resolved relation descriptor is also a dict but carries no start/end;
+    # it must not be mistaken for a date result.
+    descriptor = {"id": "u1", "title": "Vyrenell", "database_id": "db"}
+    assert _infer_result_type(descriptor) == "text"
+
+
 # ─── _serialise_formula_result ───────────────────────────────────────────────
 
 

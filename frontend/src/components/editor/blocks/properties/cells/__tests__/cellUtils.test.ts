@@ -310,3 +310,81 @@ describe('getTimelineDisplayMode', () => {
     expect(getTimelineDisplayMode(schemaWith({ timelineDisplayMode: 'now' }))).toBe('now')
   })
 })
+
+// ── Formula date-range result (#43) ───────────────────────────────────────────
+//
+// A formula that yields a date property directly (prop('date')) produces a
+// {start, end} object, not an ISO string. It must render like a date cell
+// ("start → end") instead of leaking raw JSON. The type guard also has to
+// reject relation descriptors, which are objects too but carry no start.
+
+import {
+  isDateRangeResult,
+  formatDateRangeResult,
+  formatFormulaExport,
+} from '../cellUtils'
+
+describe('isDateRangeResult', () => {
+  it('accepts a {start, end} object with an ISO start', () => {
+    expect(isDateRangeResult({ start: '2000-01-01T00:01', end: '2000-01-02T00:01' })).toBe(true)
+    expect(isDateRangeResult({ start: '2000-01-01', end: null })).toBe(true)
+  })
+
+  it('rejects non-date-range shapes', () => {
+    expect(isDateRangeResult(null)).toBe(false)
+    expect(isDateRangeResult('2000-01-01')).toBe(false)
+    expect(isDateRangeResult(['2000-01-01'])).toBe(false)
+    expect(isDateRangeResult({ id: 'u1', title: 'X', database_id: 'db' })).toBe(false)
+    expect(isDateRangeResult({ start: 'not-a-date' })).toBe(false)
+  })
+})
+
+describe('formatDateRangeResult', () => {
+  it('renders a single boundary when there is no distinct end', () => {
+    expect(formatDateRangeResult({ start: '2000-01-01T00:01', end: null }, 'DD.MM.YYYY')).toBe('01.01.2000 00:01')
+    expect(formatDateRangeResult({ start: '2000-01-01T00:01', end: '2000-01-01T00:01' }, 'DD.MM.YYYY')).toBe('01.01.2000 00:01')
+  })
+
+  it('renders "start → end" for a distinct end', () => {
+    expect(
+      formatDateRangeResult({ start: '2000-01-01T00:01', end: '2000-01-02T00:01' }, 'DD.MM.YYYY'),
+    ).toBe('01.01.2000 00:01 → 02.01.2000 00:01')
+  })
+
+  it('drops midnight time components', () => {
+    expect(
+      formatDateRangeResult({ start: '2000-01-01T00:00:00', end: '2000-01-02T00:00:00' }, 'DD.MM.YYYY'),
+    ).toBe('01.01.2000 → 02.01.2000')
+  })
+
+  it('returns empty when there is no start', () => {
+    expect(formatDateRangeResult({ start: '', end: null }, 'DD.MM.YYYY')).toBe('')
+  })
+})
+
+describe('formatFormulaExport – date-range object result (#43)', () => {
+  function formulaSchema(): PropertySchema {
+    return {
+      id: 'schema-f',
+      database_id: 'db-1',
+      name: 'F',
+      type: 'formula',
+      config: { expression: "prop('date')", dateFormat: 'DD.MM.YYYY' },
+      position: 0,
+      group: 'Standard',
+    }
+  }
+
+  it('formats a {start, end} result instead of leaking JSON', () => {
+    const value = {
+      result: { start: '2000-01-01T00:01', end: '2000-01-02T00:01' },
+      result_type: 'date',
+    }
+    expect(formatFormulaExport(value, formulaSchema())).toBe('01.01.2000 00:01 → 02.01.2000 00:01')
+  })
+
+  it('formats a start-only result as a single date', () => {
+    const value = { result: { start: '2000-01-01T00:00:00', end: null }, result_type: 'date' }
+    expect(formatFormulaExport(value, formulaSchema())).toBe('01.01.2000')
+  })
+})

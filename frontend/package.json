@@ -1,6 +1,6 @@
 {
   "name": "capybarca",
-  "version": "0.0.0",
+  "version": "0.14.12",
   "private": true,
   "type": "module",
   "scripts": {
@@ -20,6 +20,8 @@
     "@iconify-json/mdi": "^1.2.3",
     "@iconify-json/tabler": "^1.2.0",
     "@iconify/vue": "^4.3.0",
+    "@vuepic/vue-datepicker": "^14.0.0",
+    "date-fns": "^4.4.0",
     "jspdf": "^2.5.2",
     "jspdf-autotable": "^3.8.4",
     "pinia": "^3.0.4",
