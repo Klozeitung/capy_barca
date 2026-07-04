@@ -39,6 +39,7 @@ import {
   isRelationFilter,
   getSelectOptions,
 } from '@/composables/useFilterPanel'
+import DatePicker from '@/components/DatePicker.vue'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
@@ -162,17 +163,15 @@ function isNumberFilter(): boolean {
     <template v-if="isDateFilter(filter, schemas, effectiveEntries, nameColKey)">
       <!-- 'between' shows two plain date pickers; no dateMode selector needed -->
       <template v-if="filterNeedsValue2(filter.operator)">
-        <input
-          type="date"
-          :class="valueInputClass"
-          :value="filter.value"
-          @input="emit('value-change', ($event.target as HTMLInputElement).value)"
+        <DatePicker
+          :input-class="valueInputClass"
+          :model-value="filter.value"
+          @update:model-value="emit('value-change', $event)"
         />
-        <input
-          type="date"
-          :class="valueInputClass"
-          :value="filter.value2 ?? ''"
-          @input="emit('value2-change', ($event.target as HTMLInputElement).value)"
+        <DatePicker
+          :input-class="valueInputClass"
+          :model-value="filter.value2 ?? ''"
+          @update:model-value="emit('value2-change', $event)"
         />
       </template>
       <!-- All other date operators use the dateMode selector -->
@@ -186,12 +185,11 @@ function isNumberFilter(): boolean {
           <option value="today">{{ t('db.filter.dateModes.today') }}</option>
           <option value="relative">{{ t('db.filter.dateModes.relative') }}</option>
         </select>
-        <input
+        <DatePicker
           v-if="(filter.dateMode ?? 'exact') === 'exact'"
-          type="date"
-          :class="valueInputClass"
-          :value="filter.value"
-          @input="emit('value-change', ($event.target as HTMLInputElement).value)"
+          :input-class="valueInputClass"
+          :model-value="filter.value"
+          @update:model-value="emit('value-change', $event)"
         />
         <input
           v-else-if="filter.dateMode === 'relative'"

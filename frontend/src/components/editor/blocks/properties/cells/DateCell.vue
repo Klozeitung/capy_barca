@@ -14,7 +14,8 @@
 import { ref } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useDatabaseStore, type DatabaseEntry, type PropertySchema } from '@/stores/database'
-import { vFocus, getCellValue, displayValue, getTimelineDisplayMode } from './cellUtils'
+import { getCellValue, displayValue, getTimelineDisplayMode } from './cellUtils'
+import DatePicker from '@/components/DatePicker.vue'
 import TimelineEditor from './TimelineEditor.vue'
 import TimelineSlotList from './TimelineSlotList.vue'
 
@@ -54,10 +55,6 @@ function includeTime(): boolean {
   return (props.schema.config?.includeTime as boolean | undefined) ?? false
 }
 
-function inputType(): string {
-  return includeTime() ? 'datetime-local' : 'date'
-}
-
 function startValue(): string {
   const val = getCellValue(props.entry, props.schema.id, props.schema)
   return (val?.start as string | undefined) ?? ''
@@ -94,26 +91,25 @@ async function save(field: 'start' | 'end', newVal: string) {
     v-if="isActive && !hasTimeline()"
     class="db__date-wrap"
     @click.stop
+    @keydown.escape.prevent="emit('deactivate')"
   >
     <!-- Start date (always present) -->
-    <input
-      :type="inputType()"
-      class="db__cell-input db__cell-input--date"
-      :value="startValue()"
-      v-focus
-      @change="save('start', ($event.target as HTMLInputElement).value)"
-      @keydown.escape.prevent="emit('deactivate')"
+    <DatePicker
+      class="db__date-field"
+      :model-value="startValue()"
+      :include-time="includeTime()"
+      autofocus
+      @update:model-value="save('start', $event)"
     />
 
     <!-- End date (only when hasEndDate is configured) -->
     <template v-if="hasEndDate()">
       <span class="db__date-sep">→</span>
-      <input
-        :type="inputType()"
-        class="db__cell-input db__cell-input--date"
-        :value="endValue()"
-        @change="save('end', ($event.target as HTMLInputElement).value)"
-        @keydown.escape.prevent="emit('deactivate')"
+      <DatePicker
+        class="db__date-field"
+        :model-value="endValue()"
+        :include-time="includeTime()"
+        @update:model-value="save('end', $event)"
       />
     </template>
 
@@ -169,25 +165,9 @@ async function save(field: 'start' | 'end', newVal: string) {
   outline-offset: -2px;
 }
 
-.db__cell-input {
-  display: block;
-  width: 100%;
-  padding: 7px 12px;
-  background: transparent;
-  border: none;
-  outline: 2px solid var(--color-accent);
-  outline-offset: -2px;
-  font-size: 0.875rem;
-  color: var(--color-text);
-  min-height: 36px;
-  box-sizing: border-box;
-}
-
-.db__cell-input--date {
-  outline: none;
+.db__date-field {
   flex: 1;
   min-width: 0;
-  padding: 5px 8px;
 }
 
 .db__date-sep {

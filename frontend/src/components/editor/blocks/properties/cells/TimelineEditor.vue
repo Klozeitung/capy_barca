@@ -40,6 +40,7 @@ import {
 } from '@/stores/database'
 import { useBlockStore } from '@/stores/blocks'
 import { getRawCellValue, getTimelineDisplayMode, getNuanceConfig, formatPeriodKey, type TimelineDisplayMode } from './cellUtils'
+import DatePicker from '@/components/DatePicker.vue'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
@@ -609,24 +610,24 @@ onMounted(async () => {
               <span v-if="slot.isAlways" class="te__open-label te__open-label--padded">
                 {{ t('db.timeline.alwaysValid') }}
               </span>
-              <input
+              <DatePicker
                 v-else
-                type="datetime-local"
-                class="te__ts-input"
-                :value="slot.startTs"
-                @change="slot.startTs = ($event.target as HTMLInputElement).value"
+                class="te__dp"
+                include-time
+                :model-value="slot.startTs"
+                @update:model-value="slot.startTs = $event"
               />
 
               <span class="te__range-sep">→</span>
               <span class="te__range-label">{{ t('db.timeline.end') }}</span>
 
               <span v-if="slot.isAlways" class="te__open-label te__open-label--padded">—</span>
-              <input
+              <DatePicker
                 v-else
-                type="datetime-local"
-                class="te__ts-input"
-                :value="slot.endTs"
-                @change="slot.endTs = ($event.target as HTMLInputElement).value"
+                class="te__dp"
+                include-time
+                :model-value="slot.endTs"
+                @update:model-value="slot.endTs = $event"
               />
 
               <button class="te__delete-btn te__delete-btn--slot" @click="removeSlot(slot.id)" :title="t('actions.delete')">
@@ -695,19 +696,19 @@ onMounted(async () => {
 
               <!-- date -->
               <div v-else-if="schema.type === 'date'" class="te__date-pair">
-                <input
-                  :type="includeTime() ? 'datetime-local' : 'date'"
-                  class="te__value-input"
-                  :value="slotDateStart(slot)"
-                  @change="setSlotDateStart(slot, ($event.target as HTMLInputElement).value)"
+                <DatePicker
+                  class="te__dp"
+                  :include-time="includeTime()"
+                  :model-value="slotDateStart(slot)"
+                  @update:model-value="setSlotDateStart(slot, $event)"
                 />
                 <template v-if="hasEndDate()">
                   <span class="te__date-arrow">→</span>
-                  <input
-                    :type="includeTime() ? 'datetime-local' : 'date'"
-                    class="te__value-input"
-                    :value="slotDateEnd(slot)"
-                    @change="setSlotDateEnd(slot, ($event.target as HTMLInputElement).value)"
+                  <DatePicker
+                    class="te__dp"
+                    :include-time="includeTime()"
+                    :model-value="slotDateEnd(slot)"
+                    @update:model-value="setSlotDateEnd(slot, $event)"
                   />
                 </template>
               </div>
@@ -828,19 +829,21 @@ onMounted(async () => {
             <div class="te__pool-range-inputs">
               <div class="te__pool-range-field">
                 <span class="te__range-label">{{ t('db.timeline.start') }}</span>
-                <input
-                  v-model="newPoolStartTs"
-                  type="datetime-local"
-                  class="te__ts-input"
+                <DatePicker
+                  class="te__dp"
+                  include-time
+                  :model-value="newPoolStartTs"
+                  @update:model-value="newPoolStartTs = $event"
                 />
               </div>
               <span class="te__range-sep">→</span>
               <div class="te__pool-range-field">
                 <span class="te__range-label">{{ t('db.timeline.end') }}</span>
-                <input
-                  v-model="newPoolEndTs"
-                  type="datetime-local"
-                  class="te__ts-input"
+                <DatePicker
+                  class="te__dp"
+                  include-time
+                  :model-value="newPoolEndTs"
+                  @update:model-value="newPoolEndTs = $event"
                 />
               </div>
               <div v-if="nuanceCfg" class="te__pool-range-field">
@@ -1020,6 +1023,13 @@ onMounted(async () => {
 .te__value-input:focus,
 .te__pool-range-input:focus {
   border-color: var(--color-accent);
+}
+
+/* Embedded DatePicker fills its row cell; the inner input carries the field
+   styling (see components/DatePicker.vue, matched to .te__value-input above). */
+.te__dp {
+  width: 100%;
+  min-width: 0;
 }
 
 .te__value-checkbox {

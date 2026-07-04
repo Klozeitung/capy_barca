@@ -23,13 +23,14 @@
  *
  * Changes
  * -------
- * #50  Date and time are now separate inputs.  The date field is always
- *      type="date".  A time field (type="time") appears next to it when the
- *      all-day toggle is OFF, defaulting to 00:00 so the user can leave it
- *      empty and still get a valid timed entry (backend receives T00:00).
- *      Toggling all-day on/off no longer needs to reformat the stored string;
- *      it merely shows/hides the time field.  The backend always stores
- *      start/end as full ISO strings (or date-only when all-day).
+ * #50  Date and time are separate inputs. The date field is the shared
+ *      DatePicker component (custom picker, 1..9999 year range); a time field
+ *      (type="time") appears next to it when the all-day toggle is OFF,
+ *      defaulting to 00:00 so the user can leave it empty and still get a valid
+ *      timed entry (backend receives T00:00). Toggling all-day on/off no longer
+ *      needs to reformat the stored string; it merely shows/hides the time
+ *      field. The backend always stores start/end as full ISO strings (or
+ *      date-only when all-day).
  */
 import { ref, computed } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -37,6 +38,7 @@ import { useI18n } from 'vue-i18n'
 import { useBlockStore } from '@/stores/blocks'
 import { useDatabaseStore, type DatabaseEntry, type DatabaseView, type PropertySchema } from '@/stores/database'
 import IconPicker from '@/components/IconPicker.vue'
+import DatePicker from '@/components/DatePicker.vue'
 import { CHIP_COLORS, DEFAULT_CHIP_COLOR } from '@/composables/calendarColors'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
@@ -342,11 +344,9 @@ async function save(): Promise<void> {
           <!-- Start (#50: separate date + optional time field) -->
           <div class="cfem__date-row">
             <span class="cfem__date-label">{{ t('db.calendar.start') }}</span>
-            <input
-              type="date"
-              class="cfem__date-input"
-              :value="localStartDate"
-              @change="onStartDateChange(($event.target as HTMLInputElement).value)"
+            <DatePicker
+              :model-value="localStartDate"
+              @update:model-value="onStartDateChange($event)"
             />
             <input
               v-if="!localAllDay"
@@ -360,11 +360,9 @@ async function save(): Promise<void> {
           <!-- End (#50: separate date + optional time field) -->
           <div class="cfem__date-row">
             <span class="cfem__date-label">{{ t('db.calendar.end') }}</span>
-            <input
-              type="date"
-              class="cfem__date-input"
-              :value="localEndDate"
-              @change="onEndDateChange(($event.target as HTMLInputElement).value)"
+            <DatePicker
+              :model-value="localEndDate"
+              @update:model-value="onEndDateChange($event)"
             />
             <input
               v-if="!localAllDay"
@@ -422,12 +420,10 @@ async function save(): Promise<void> {
             <span class="cfem__date-label cfem__date-label--until">
               {{ t('db.calendar.repeatUntil') }}
             </span>
-            <input
-              type="date"
-              class="cfem__date-input"
-              :value="localRepeatUntil"
-              :min="localStartDate || undefined"
-              @change="onRepeatUntilChange(($event.target as HTMLInputElement).value)"
+            <DatePicker
+              :model-value="localRepeatUntil"
+              :min-date="localStartDate || ''"
+              @update:model-value="onRepeatUntilChange($event)"
             />
             <button
               v-if="localRepeatUntil"

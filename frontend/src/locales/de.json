@@ -771,5 +771,24 @@
     "warnAccessibilityBody": "Dieser Block ist zugänglicher eingestellt als seine übergeordneten Blöcke. Nutzer ohne Zugang zu den Elternblöcken können ihn nur über einen direkten Link öffnen, nicht über den Navigationsbaum.",
     "copyLink": "Link kopieren",
     "linkCopied": "Link kopiert"
+  },
+  "datepicker": {
+    "aria": {
+      "toggleOverlay": "Datumsauswahl umschalten",
+      "menu": "Datumsauswahl",
+      "input": "Datum eingeben",
+      "calendarIcon": "Kalendersymbol",
+      "openTimePicker": "Zeitauswahl öffnen",
+      "closeTimePicker": "Zeitauswahl schließen",
+      "amPmButton": "AM/PM umschalten",
+      "openYearsOverlay": "Jahr wählen",
+      "openMonthsOverlay": "Monat wählen",
+      "nextMonth": "Nächster Monat",
+      "prevMonth": "Vorheriger Monat",
+      "nextYear": "Nächstes Jahr",
+      "prevYear": "Vorheriges Jahr",
+      "clearInput": "Datum löschen",
+      "timePicker": "Zeitauswahl"
+    }
   }
 }

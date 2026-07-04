@@ -793,5 +793,24 @@
     "warnAccessibilityBody": "This block has a more permissive setting than its parent blocks. Users without access to the parent blocks can only open it via a direct link — it will not appear in the navigation tree.",
     "copyLink": "Copy link",
     "linkCopied": "Link copied"
+  },
+  "datepicker": {
+    "aria": {
+      "toggleOverlay": "Toggle the date picker",
+      "menu": "Date picker",
+      "input": "Type a date",
+      "calendarIcon": "Calendar icon",
+      "openTimePicker": "Open time picker",
+      "closeTimePicker": "Close time picker",
+      "amPmButton": "Switch AM/PM",
+      "openYearsOverlay": "Choose a year",
+      "openMonthsOverlay": "Choose a month",
+      "nextMonth": "Next month",
+      "prevMonth": "Previous month",
+      "nextYear": "Next year",
+      "prevYear": "Previous year",
+      "clearInput": "Clear date",
+      "timePicker": "Time picker"
+    }
   }
 }

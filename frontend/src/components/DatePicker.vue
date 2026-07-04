@@ -30,7 +30,7 @@
  * far-off years) with a calendar icon that opens the popover. Month and weekday
  * names follow the active i18n locale rather than the OS.
  */
-import { computed } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { VueDatePicker } from '@vuepic/vue-datepicker'
 import { enUS, de } from 'date-fns/locale'
@@ -46,23 +46,55 @@ const props = withDefaults(defineProps<{
   placeholder?: string
   /** Disable interaction (read-only display). */
   disabled?: boolean
+  /** Open the picker automatically on mount (e.g. an activated cell). */
+  autofocus?: boolean
+  /** Override the inner input's class for host skinning. Defaults to the
+   *  built-in ``dp-app-input``, which is value-equal to the app's field style. */
+  inputClass?: string
+  /** Optional inclusive lower bound, as a canonical ISO date string. */
+  minDate?: string
 }>(), {
   includeTime: false,
   clearable: true,
   placeholder: '',
   disabled: false,
+  autofocus: false,
+  inputClass: '',
+  minDate: '',
 })
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
 }>()
 
-const { locale } = useI18n()
+const { locale, t } = useI18n()
 
 // vue-datepicker's ``locale`` prop expects a date-fns Locale object (v14+),
 // not a BCP-47 string, so the active i18n locale code is mapped to one. English
 // is the fallback for any non-German locale.
 const dpLocale = computed<Locale>(() => (locale.value.startsWith('de') ? de : enUS))
+
+// Screen-reader labels for the picker chrome, sourced from i18n so they follow
+// the active language. The function-valued AriaLabelsConfig fields (day names,
+// increment/decrement, ...) are left to vue-datepicker, which derives them from
+// the date-fns locale above.
+const ariaLabels = computed(() => ({
+  toggleOverlay: t('datepicker.aria.toggleOverlay'),
+  menu: t('datepicker.aria.menu'),
+  input: t('datepicker.aria.input'),
+  calendarIcon: t('datepicker.aria.calendarIcon'),
+  openTimePicker: t('datepicker.aria.openTimePicker'),
+  closeTimePicker: t('datepicker.aria.closeTimePicker'),
+  amPmButton: t('datepicker.aria.amPmButton'),
+  openYearsOverlay: t('datepicker.aria.openYearsOverlay'),
+  openMonthsOverlay: t('datepicker.aria.openMonthsOverlay'),
+  nextMonth: t('datepicker.aria.nextMonth'),
+  prevMonth: t('datepicker.aria.prevMonth'),
+  nextYear: t('datepicker.aria.nextYear'),
+  prevYear: t('datepicker.aria.prevYear'),
+  clearInput: t('datepicker.aria.clearInput'),
+  timePicker: t('datepicker.aria.timePicker'),
+}))
 
 // vue-datepicker binds a Date; convert to/from the app's ISO string contract.
 // The getter/setter is the single conversion boundary, so every consumer keeps
@@ -75,13 +107,31 @@ const dateModel = computed<Date | null>({
 // Display and text-entry format follow includeTime. Four-digit year (yyyy)
 // keeps low years unambiguous both on screen and when typed.
 const displayFormat = computed(() => (props.includeTime ? 'yyyy-MM-dd HH:mm' : 'yyyy-MM-dd'))
+
+// Inner input skin: a host-provided class (view/automations filter) or the
+// built-in default, which is styled value-equal to the app's native fields.
+const inputClassName = computed(() => props.inputClass?.trim() || 'dp-app-input')
+
+// Optional lower bound, parsed through the same hardened bridge as the value.
+const parsedMinDate = computed(() => (props.minDate ? parseIsoToDate(props.minDate) ?? undefined : undefined))
+
+// When mounted for an activated cell, open the picker straight away so the user
+// can pick or type without a second click (parity with the previously
+// autofocused native input).
+const dpRef = ref<{ openMenu?: () => void } | null>(null)
+onMounted(() => {
+  if (props.autofocus) dpRef.value?.openMenu?.()
+})
 </script>
 
 <template>
   <VueDatePicker
+    ref="dpRef"
     v-model="dateModel"
     :locale="dpLocale"
+    :aria-labels="ariaLabels"
     :year-range="[1, 9999]"
+    :min-date="parsedMinDate"
     :enable-time-picker="includeTime"
     :format="displayFormat"
     :preview-format="displayFormat"
@@ -90,8 +140,9 @@ const displayFormat = computed(() => (props.includeTime ? 'yyyy-MM-dd HH:mm' : '
     :disabled="disabled"
     text-input
     auto-apply
+    esc-close
     :teleport="true"
-    input-class-name="dp-app-input"
+    :input-class-name="inputClassName"
   />
 </template>
 
@@ -126,5 +177,13 @@ const displayFormat = computed(() => (props.includeTime ? 'yyyy-MM-dd HH:mm' : '
 }
 .dp-app-input:focus {
   border-color: var(--color-accent);
+}
+
+/* Embedded picker root behaves like the app's native fields inside a flex row
+   (matches the flex: 1 of .db__panel-input / .db__panel-select). The inner
+   input carries the visual skin; this only governs row layout. */
+.dp__main {
+  flex: 1;
+  min-width: 0;
 }
 </style>
