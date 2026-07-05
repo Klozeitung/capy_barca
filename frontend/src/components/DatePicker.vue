@@ -39,7 +39,8 @@ import { useI18n } from 'vue-i18n'
 import { VueDatePicker } from '@vuepic/vue-datepicker'
 import { enUS, de } from 'date-fns/locale'
 import type { Locale } from 'date-fns'
-import { parseIsoToDate, formatDateToIso } from '@/composables/dateValue'
+import { parseIsoToDate, formatDateToIso, dateFnsPatternFor } from '@/composables/dateValue'
+import { useAuthStore } from '@/stores/auth'
 
 const props = withDefaults(defineProps<{
   modelValue: string
@@ -55,6 +56,10 @@ const props = withDefaults(defineProps<{
   inputClass?: string
   /** Optional inclusive lower bound, as a canonical ISO date string. */
   minDate?: string
+  /** Application date-format token for display and text entry (e.g.
+   *  "DD.MM.YYYY"). When empty, the user's global preference is used. The
+   *  stored/emitted value is always canonical ISO regardless of this. */
+  format?: string
 }>(), {
   includeTime: false,
   clearable: true,
@@ -62,6 +67,7 @@ const props = withDefaults(defineProps<{
   disabled: false,
   inputClass: '',
   minDate: '',
+  format: '',
 })
 
 const emit = defineEmits<{
@@ -105,9 +111,17 @@ const dateModel = computed<Date | null>({
   set: (d) => emit('update:modelValue', formatDateToIso(d, props.includeTime)),
 })
 
-// Display and text-entry format follow includeTime. Four-digit year (yyyy)
-// keeps low years unambiguous both on screen and when typed.
-const displayFormat = computed(() => (props.includeTime ? 'yyyy-MM-dd HH:mm' : 'yyyy-MM-dd'))
+// Display and text-entry format follow the user's date-format preference. A
+// caller may pass an explicit token (e.g. a per-property override resolved via
+// resolveDateFormat); otherwise the global preference from the auth store is
+// used. The store read is guarded so isolated component tests without an active
+// Pinia instance degrade to the token default rather than throwing. This governs
+// display and typing only - the emitted value stays canonical ISO.
+let authStore: ReturnType<typeof useAuthStore> | null = null
+try { authStore = useAuthStore() } catch { authStore = null }
+
+const formatToken = computed(() => props.format?.trim() || authStore?.dateFormat || 'DD.MM.YYYY')
+const userPattern = computed(() => dateFnsPatternFor(formatToken.value, props.includeTime))
 
 // Inner input skin: a host-provided class (view/automations filter) or the
 // built-in default, which is styled value-equal to the app's native fields.
@@ -118,13 +132,15 @@ const parsedMinDate = computed(() => (props.minDate ? parseIsoToDate(props.minDa
 
 // Text-input configuration: the calendar popover never opens (openMenu: false),
 // so navigating to a problematic far-off year cannot freeze the UI. Typing is
-// committed on Enter, Tab, or blur; date-fns still parses and validates it.
-const textInputConfig = {
+// committed on Enter, Tab, or blur; date-fns parses it with the user's format
+// and still validates it (e.g. rejects 0003-02-29).
+const textInputConfig = computed(() => ({
   openMenu: false,
   enterSubmit: true,
   tabSubmit: true,
   applyOnBlur: true,
-}
+  format: userPattern.value,
+}))
 
 // The app has no JS theme signal - it themes purely via
 // ``@media (prefers-color-scheme)`` with a dark default. Mirror that into
@@ -149,8 +165,8 @@ onUnmounted(() => themeQuery?.removeEventListener('change', syncDark))
     :year-range="[1, 9999]"
     :min-date="parsedMinDate"
     :enable-time-picker="includeTime"
-    :format="displayFormat"
-    :preview-format="displayFormat"
+    :format="userPattern"
+    :preview-format="userPattern"
     :text-input="textInputConfig"
     :clearable="clearable"
     :placeholder="placeholder"

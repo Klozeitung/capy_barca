@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseIsoToDate, formatDateToIso } from '../dateValue'
+import { parseIsoToDate, formatDateToIso, dateFnsPatternFor } from '../dateValue'
 
 // The critical property of this module is a faithful ISO <-> Date round-trip
 // across the full 1..9999 year range. The JavaScript Date constructor maps
@@ -70,5 +70,34 @@ describe('round-trip across the 1..9999 range', () => {
 
   it.each(cases)('%s round-trips unchanged', (iso, includeTime) => {
     expect(formatDateToIso(parseIsoToDate(iso), includeTime)).toBe(iso)
+  })
+})
+
+// ── dateFnsPatternFor ─────────────────────────────────────────────────────────
+//
+// The picker's display/parse format is derived from the application's date
+// tokens; the value it emits stays canonical ISO regardless. Separators are
+// preserved and only the field letters are mapped to date-fns tokens.
+
+describe('dateFnsPatternFor', () => {
+  it('maps the European default token', () => {
+    expect(dateFnsPatternFor('DD.MM.YYYY', false)).toBe('dd.MM.yyyy')
+    expect(dateFnsPatternFor('DD.MM.YYYY', true)).toBe('dd.MM.yyyy HH:mm')
+  })
+
+  it('maps the US and ISO tokens', () => {
+    expect(dateFnsPatternFor('MM.DD.YYYY', false)).toBe('MM.dd.yyyy')
+    expect(dateFnsPatternFor('YYYY-MM-DD', false)).toBe('yyyy-MM-dd')
+    expect(dateFnsPatternFor('YYYY-DD-MM', false)).toBe('yyyy-dd-MM')
+  })
+
+  it('preserves the hyphen separators of per-property variants', () => {
+    expect(dateFnsPatternFor('DD-MM-YYYY', false)).toBe('dd-MM-yyyy')
+    expect(dateFnsPatternFor('MM-DD-YYYY', true)).toBe('MM-dd-yyyy HH:mm')
+  })
+
+  it('falls back to the European default for empty input', () => {
+    expect(dateFnsPatternFor('', false)).toBe('dd.MM.yyyy')
+    expect(dateFnsPatternFor('', true)).toBe('dd.MM.yyyy HH:mm')
   })
 })

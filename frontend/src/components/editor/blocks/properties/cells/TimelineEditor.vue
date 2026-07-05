@@ -39,7 +39,7 @@ import {
   optionColorStyle,
 } from '@/stores/database'
 import { useBlockStore } from '@/stores/blocks'
-import { getRawCellValue, getTimelineDisplayMode, getNuanceConfig, formatPeriodKey, type TimelineDisplayMode } from './cellUtils'
+import { getRawCellValue, getTimelineDisplayMode, getNuanceConfig, formatPeriodKey, resolveDateFormat, type TimelineDisplayMode } from './cellUtils'
 import DatePicker from '@/components/DatePicker.vue'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
@@ -76,6 +76,11 @@ async function saveDisplayMode(newMode: TimelineDisplayMode) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const isRelation = computed(() => props.schema.type === 'relation')
+
+// Effective display/entry format for this property's date fields: a per-property
+// override when set, otherwise the user's global preference. Passed to every
+// DatePicker below; the stored value stays canonical ISO.
+const dateFormat = computed(() => resolveDateFormat(props.schema))
 
 function schemaOptions() {
   const opts = (props.schema.config?.options as unknown[] | undefined) ?? []
@@ -613,6 +618,7 @@ onMounted(async () => {
               <DatePicker
                 v-else
                 class="te__dp"
+                :format="dateFormat"
                 include-time
                 :model-value="slot.startTs"
                 @update:model-value="slot.startTs = $event"
@@ -625,6 +631,7 @@ onMounted(async () => {
               <DatePicker
                 v-else
                 class="te__dp"
+                :format="dateFormat"
                 include-time
                 :model-value="slot.endTs"
                 @update:model-value="slot.endTs = $event"
@@ -698,6 +705,7 @@ onMounted(async () => {
               <div v-else-if="schema.type === 'date'" class="te__date-pair">
                 <DatePicker
                   class="te__dp"
+                  :format="dateFormat"
                   :include-time="includeTime()"
                   :model-value="slotDateStart(slot)"
                   @update:model-value="setSlotDateStart(slot, $event)"
@@ -706,6 +714,7 @@ onMounted(async () => {
                   <span class="te__date-arrow">→</span>
                   <DatePicker
                     class="te__dp"
+                    :format="dateFormat"
                     :include-time="includeTime()"
                     :model-value="slotDateEnd(slot)"
                     @update:model-value="setSlotDateEnd(slot, $event)"
@@ -831,6 +840,7 @@ onMounted(async () => {
                 <span class="te__range-label">{{ t('db.timeline.start') }}</span>
                 <DatePicker
                   class="te__dp"
+                  :format="dateFormat"
                   include-time
                   :model-value="newPoolStartTs"
                   @update:model-value="newPoolStartTs = $event"
@@ -841,6 +851,7 @@ onMounted(async () => {
                 <span class="te__range-label">{{ t('db.timeline.end') }}</span>
                 <DatePicker
                   class="te__dp"
+                  :format="dateFormat"
                   include-time
                   :model-value="newPoolEndTs"
                   @update:model-value="newPoolEndTs = $event"

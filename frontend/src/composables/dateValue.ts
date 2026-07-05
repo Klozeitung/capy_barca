@@ -75,3 +75,24 @@ export function formatDateToIso(date: Date | null | undefined, includeTime: bool
   const mm = String(date.getMinutes()).padStart(2, '0')
   return `${datePart}T${hh}:${mm}`
 }
+
+/**
+ * Translate an application date-format token into a date-fns pattern for the
+ * picker's display and text-entry parsing.
+ *
+ * The application stores the preference as a token such as ``"DD.MM.YYYY"``,
+ * ``"MM.DD.YYYY"``, ``"YYYY-MM-DD"``, ``"YYYY-DD-MM"`` (global user preference)
+ * or a per-property hyphen variant like ``"DD-MM-YYYY"``. Separators (``.`` or
+ * ``-``) are preserved; only the field letters are mapped to date-fns tokens
+ * (``DD`` -> ``dd``, ``YYYY`` -> ``yyyy``; ``MM`` is already the date-fns month
+ * token and stays as-is). ``" HH:mm"`` is appended when a time is shown.
+ *
+ * This governs on-screen display and what the user types only. The picker's
+ * value contract stays canonical ISO via ``parseIsoToDate`` / ``formatDateToIso``.
+ */
+export function dateFnsPatternFor(token: string, includeTime: boolean): string {
+  const base = (token || 'DD.MM.YYYY')
+    .replace(/YYYY/g, 'yyyy')
+    .replace(/DD/g, 'dd')
+  return includeTime ? `${base} HH:mm` : base
+}

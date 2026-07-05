@@ -15,7 +15,7 @@
 import { ref, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useDatabaseStore, type DatabaseEntry, type PropertySchema } from '@/stores/database'
-import { getCellValue, displayValue, getTimelineDisplayMode } from './cellUtils'
+import { getCellValue, displayValue, getTimelineDisplayMode, resolveDateFormat } from './cellUtils'
 import DatePicker from '@/components/DatePicker.vue'
 import TimelineEditor from './TimelineEditor.vue'
 import TimelineSlotList from './TimelineSlotList.vue'
@@ -115,6 +115,7 @@ watch(
       :class="['db__date-field', { 'db__date-field--time': includeTime() }]"
       :model-value="startValue()"
       :include-time="includeTime()"
+      :format="resolveDateFormat(schema)"
       @update:model-value="save('start', $event)"
     />
 
@@ -125,6 +126,7 @@ watch(
         :class="['db__date-field', { 'db__date-field--time': includeTime() }]"
         :model-value="endValue()"
         :include-time="includeTime()"
+        :format="resolveDateFormat(schema)"
         @update:model-value="save('end', $event)"
       />
     </template>
