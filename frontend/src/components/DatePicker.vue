@@ -26,11 +26,15 @@
  * always emits a zero-padded four-digit year so lexicographic start/end
  * comparisons keep working.
  *
- * UI: an inline text-entry field (type a date directly - the fast path for
- * far-off years) with a calendar icon that opens the popover. Month and weekday
- * names follow the active i18n locale rather than the OS.
+ * UI: a text-entry field only - the user types the date (fast for far-off
+ * years) and date-fns validates it (e.g. it rejects 0003-02-29, a non-leap
+ * year). The calendar popover is intentionally disabled: vue-datepicker's
+ * month/year grid can freeze the UI when navigated to certain far-off years,
+ * and it is not needed for text entry. Keeping the library still buys parsing,
+ * real-date validation, a single source of truth, and the option to re-enable a
+ * picker selectively later. Parsing follows the active i18n locale, not the OS.
  */
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { VueDatePicker } from '@vuepic/vue-datepicker'
 import { enUS, de } from 'date-fns/locale'
@@ -46,8 +50,6 @@ const props = withDefaults(defineProps<{
   placeholder?: string
   /** Disable interaction (read-only display). */
   disabled?: boolean
-  /** Open the picker automatically on mount (e.g. an activated cell). */
-  autofocus?: boolean
   /** Override the inner input's class for host skinning. Defaults to the
    *  built-in ``dp-app-input``, which is value-equal to the app's field style. */
   inputClass?: string
@@ -58,7 +60,6 @@ const props = withDefaults(defineProps<{
   clearable: true,
   placeholder: '',
   disabled: false,
-  autofocus: false,
   inputClass: '',
   minDate: '',
 })
@@ -115,19 +116,34 @@ const inputClassName = computed(() => props.inputClass?.trim() || 'dp-app-input'
 // Optional lower bound, parsed through the same hardened bridge as the value.
 const parsedMinDate = computed(() => (props.minDate ? parseIsoToDate(props.minDate) ?? undefined : undefined))
 
-// When mounted for an activated cell, open the picker straight away so the user
-// can pick or type without a second click (parity with the previously
-// autofocused native input).
-const dpRef = ref<{ openMenu?: () => void } | null>(null)
+// Text-input configuration: the calendar popover never opens (openMenu: false),
+// so navigating to a problematic far-off year cannot freeze the UI. Typing is
+// committed on Enter, Tab, or blur; date-fns still parses and validates it.
+const textInputConfig = {
+  openMenu: false,
+  enterSubmit: true,
+  tabSubmit: true,
+  applyOnBlur: true,
+}
+
+// The app has no JS theme signal - it themes purely via
+// ``@media (prefers-color-scheme)`` with a dark default. Mirror that into
+// vue-datepicker's ``dark`` flag so the field is not rendered in the light theme.
+const isDark = ref(true)
+let themeQuery: MediaQueryList | null = null
+const syncDark = () => { isDark.value = !(themeQuery?.matches ?? false) }
 onMounted(() => {
-  if (props.autofocus) dpRef.value?.openMenu?.()
+  themeQuery = window.matchMedia('(prefers-color-scheme: light)')
+  syncDark()
+  themeQuery.addEventListener('change', syncDark)
 })
+onUnmounted(() => themeQuery?.removeEventListener('change', syncDark))
 </script>
 
 <template>
   <VueDatePicker
-    ref="dpRef"
     v-model="dateModel"
+    :dark="isDark"
     :locale="dpLocale"
     :aria-labels="ariaLabels"
     :year-range="[1, 9999]"
@@ -135,12 +151,11 @@ onMounted(() => {
     :enable-time-picker="includeTime"
     :format="displayFormat"
     :preview-format="displayFormat"
+    :text-input="textInputConfig"
     :clearable="clearable"
     :placeholder="placeholder"
     :disabled="disabled"
-    text-input
-    auto-apply
-    esc-close
+    hide-input-icon
     :teleport="true"
     :input-class-name="inputClassName"
   />

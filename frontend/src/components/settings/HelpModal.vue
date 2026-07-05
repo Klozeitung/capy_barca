@@ -258,20 +258,12 @@ const permissionModes = [
 
             </template>
 
-            <!-- ── Permissions ────────────────────────────────────────── -->
+            <!-- ── Databases ──────────────────────────────────────────── -->
             <template v-else-if="activeSection === 'databases'">
               <div class="hm__group">
                 <p class="hm__group-label">{{ t('help.databasesTitle') }}</p>
-                <p class="hm__permissions-intro">{{ t('help.databasesDateIntro') }}</p>
-                <p class="hm__permissions-intro">{{ t('help.databasesDateOverride') }}</p>
-                <p class="hm__permissions-note">{{ t('help.databasesRollupBadge') }}</p>
-                <p class="hm__permissions-note">{{ t('help.databasesChipWrap') }}</p>
-                <p class="hm__permissions-note">{{ t('help.databasesDescription') }}</p>
-                <p class="hm__permissions-note">{{ t('help.databasesNuance') }}</p>
-                <p class="hm__permissions-note">{{ t('help.databasesGroups') }}</p>
-                <p class="hm__permissions-note">{{ t('help.databasesTimelineSearch') }}</p>
-                <p class="hm__permissions-note">{{ t('help.databasesNameSearch') }}</p>
-                <p class="hm__permissions-note">{{ t('help.databasesPropertyVisibilityOrder') }}</p>
+                <p class="hm__permissions-intro">{{ t('help.databasesOverview') }}</p>
+                <p class="hm__permissions-intro">{{ t('help.databasesDates') }}</p>
               </div>
             </template>
 

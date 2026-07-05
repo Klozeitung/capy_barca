@@ -692,6 +692,7 @@
     "handleShiftClick": "Leeren Block darüber einfügen",
     "handleCtrlShiftClick": "Block duplizieren",
     "handleCtrlAltClick": "Block löschen",
+    "handleCtrlMiddleClickMirror": "Zum Sync-Ursprung springen (nur Sync-Spiegel)",
     "editorSlash": "Block-Typ-Menü öffnen",
     "editorAt": "Seite erwähnen / verknüpfen",
     "editorEnter": "Neuen Block anlegen",
@@ -704,17 +705,9 @@
     "permissionsIntro": "Jeder Block kann individuell eingeschränkt werden. Ohne explizite Einstellung erbt ein Block die Berechtigung seines Elternelements.",
     "permissionsNote": "Berechtigungen werden über den Schraubenschlüssel-Button in den Seiteneinstellungen verwaltet. Administratoren sehen immer alle Blöcke.",
     "sectionDatabases": "Datenbanken",
-    "databasesTitle": "Datum & Rollups",
-    "databasesDateIntro": "Dein bevorzugtes Datumsformat legst du unter Einstellungen → Datum fest. Es gilt überall, wo Datumsangaben erscheinen — in Tabellenzellen, Rollups und Formelergebnissen.",
-    "databasesDateOverride": "Eine einzelne Datumseigenschaft kann von dieser Vorgabe abweichen: Öffne ihre Einstellungen und wähle statt \"Global\" ein festes Format. Datumswerte werden immer in einem kanonischen Format gespeichert; eine geänderte Anzeige verändert den zugrunde liegenden Wert nie.",
-    "databasesRollupBadge": "Rollup-Eigenschaften können ein kleines Funktions-Badge (z. B. ERL für frühestes Datum) vor dem Wert anzeigen. Es ist standardmäßig aus und kann je Eigenschaft in den Rollup-Einstellungen aktiviert werden.",
-    "databasesChipWrap": "Standardmäßig fließen Relation- und Rollup-Chips nebeneinander und brechen bei Bedarf innerhalb der Spalte um. Aktiviere \"Chips umbrechen\" in den Eigenschafts-Einstellungen, um jeden Chip in eine eigene Zeile zu setzen.",
-    "databasesDescription": "Jede Eigenschaft kann in ihren Einstellungen eine frei wählbare Beschreibung erhalten. Sie erscheint als Tooltip beim Überfahren des Spaltenkopfs, wird im CSV-Export an den Spaltennamen angehängt und im PDF-Export als gedämpfte Unterzeile unter dem Spaltenkopf dargestellt.",
-    "databasesNuance": "Relation-Eigenschaften können \"nuanciert\" werden: Jede Verknüpfung wird mit einem gewählten Zusatz versehen (z. B. \"erfolgreich Großmeister\"), der mit optionalem Text vor oder nach dem Chip steht. In einer Timeline kann die Nuance je Zeitraum variieren. Das Aktivieren ist unwiderruflich, und bei bilateralen Relationen hat jede Seite ihre eigene Formulierung.",
-    "databasesGroups": "Eigenschaften im Eintrags-Seitenpanel lassen sich in Gruppen organisieren: Mit \"Neue Gruppe\" legst du eine an, ziehst Eigenschaften zwischen Gruppen, benennst eine Gruppe per Doppelklick auf den Namen um und löschst eine eigene Gruppe über das Papierkorb-Symbol — ihre Eigenschaften wandern dann zurück in die Gruppe Standard, statt gelöscht zu werden.",
-    "databasesTimelineSearch": "Beim Verknüpfen von Einträgen in einer Timeline-Relation wird der verknüpfte Eintrag über ein Suchfeld statt einer langen Dropdownliste gewählt: Tippe, um die Ziel-Datenbank zu filtern; gibt es keinen Treffer, wähle \"Erstellen & verknüpfen\", um in einem Schritt einen neuen Eintrag mit diesem Titel anzulegen und zu verknüpfen.",
-    "databasesNameSearch": "In der Tabellen-Symbolleiste blendet das Lupen-Symbol ein Suchfeld ein, das die angezeigten Einträge nach Name filtert — eine Teilstring-Suche, kein exakter Abgleich. Das Kreuz rechts im Feld setzt die Suche zurück. Der Filter wirkt auf die bereits geladenen Einträge; die Anzeige \"x von y geladen\" bleibt davon unberührt.",
-    "databasesPropertyVisibilityOrder": "In den Ansicht-Einstellungen unter \"Eigenschaften verwalten\" sind die Eigenschaften alphabetisch sortiert und in zwei Gruppen unterteilt: eingeblendete oben, ausgeblendete darunter. Ausgeblendete Eigenschaften werden gedämpft dargestellt; das Augen-Symbol schaltet die Sichtbarkeit je Eigenschaft um."
+    "databasesTitle": "Datenbanken",
+    "databasesOverview": "Eine Datenbank speichert Einträge als Zeilen und Properties als typisierte Spalten (Text, Zahl, Datum, Auswahl, Relation, Rollup und mehr). Dieselben Daten lassen sich über verschiedene Ansichten zeigen — Tabelle, Kalender und weitere — jeweils mit eigenen Filtern und Sortierung.",
+    "databasesDates": "Das Datumsformat legst du unter Einstellungen → Datum fest; es gilt überall, eine einzelne Datums-Property kann es in ihren Einstellungen überschreiben. Datumsfelder decken die Jahre 1 bis 9999 ab."
   },
   "synchedBlock": {
     "originLabel": "Synced",

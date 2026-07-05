@@ -726,17 +726,9 @@
     "permissionsIntro": "Each block can be individually restricted. Without an explicit setting, a block inherits the permission of its parent.",
     "permissionsNote": "Permissions are managed via the gear button in page settings. Admins always see all blocks.",
     "sectionDatabases": "Databases",
-    "databasesTitle": "Dates & rollups",
-    "databasesDateIntro": "Your preferred date format is set under Settings → Date and applies everywhere dates are shown — table cells, rollups, and formula results.",
-    "databasesDateOverride": "A single date property can deviate from this default: open its settings and pick an explicit format instead of \"Global\". Dates are always stored in a canonical format, so changing the display never alters the underlying value.",
-    "databasesRollupBadge": "Rollup properties can show a small function badge (e.g. ERL for earliest date) in front of the value. It is off by default and can be enabled per property in the rollup settings.",
-    "databasesChipWrap": "By default, relation and rollup chips flow inline and wrap as needed within the column. Enable \"Wrap chips\" in the property settings to place each chip on its own line.",
-    "databasesDescription": "Any property can carry a free-text description in its settings. It appears as a tooltip when you hover the column header, is appended to the column name in CSV exports, and is rendered as a dimmed sub-row beneath the header in PDF exports.",
-    "databasesNuance": "Relation properties can be made \"nuanced\": each link is qualified with a chosen descriptor (e.g. \"successfully Grandmaster\"), shown before or after the chip with optional surrounding text. On a timeline, the nuance can differ per period. Enabling nuance is irreversible, and for bilateral relations each side has its own wording.",
-    "databasesGroups": "Properties in the entry side panel can be organised into groups: use \"New group\" to add one, drag properties between groups, double-click a group name to rename it, and delete a custom group via its trash icon — its properties move back to the Standard group rather than being deleted.",
-    "databasesTimelineSearch": "When linking entries on a timeline relation, the linked entry is chosen through a search field rather than a long dropdown: type to filter the target database, and if no match exists, pick \"Create & link\" to create a new entry with that title and link it in one step.",
-    "databasesNameSearch": "In the table toolbar, the magnifier icon reveals a search field that filters the shown entries by name — a substring match, not an exact one. The cross at the right of the field clears the search. The filter applies to the entries already loaded; the \"showing x of y\" indicator is unaffected.",
-    "databasesPropertyVisibilityOrder": "In View Settings under \"Manage properties\", properties are sorted alphabetically and split into two groups: shown ones on top, hidden ones below. Hidden properties are dimmed, and the eye icon toggles visibility per property."
+    "databasesTitle": "Databases",
+    "databasesOverview": "A database stores entries as rows and properties as typed columns (text, number, date, select, relation, rollup, and more). The same data can appear through different views — table, calendar, and others — each with its own filters and sorting.",
+    "databasesDates": "Your date format is set under Settings → Date and applies everywhere; a single date property can override it in its own settings. Date fields cover the years 1 to 9999."
   },
   "synchedBlock": {
     "originLabel": "Synced",

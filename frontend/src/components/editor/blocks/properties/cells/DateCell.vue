@@ -2,16 +2,17 @@
 /**
  * DateCell
  *
- * Renders a date (or date-range) property. When isActive the native date /
- * datetime-local inputs are shown. Start-date is always present; end-date is
- * shown only when schema.config.hasEndDate is true.
+ * Renders a date (or date-range) property. When isActive, DatePicker fields are
+ * shown (text-entry, 1..9999 year range). Start-date is always present;
+ * end-date is shown only when schema.config.hasEndDate is true. On activation
+ * the first field is focused so the user can type immediately.
  *
  * When ``schema.config.hasTimeline`` is true, clicking opens the
  * TimelineEditor instead of the inline date picker.
  *
  * Value shape: { start: string, end: string | null }
  */
-import { ref } from 'vue'
+import { ref, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useDatabaseStore, type DatabaseEntry, type PropertySchema } from '@/stores/database'
 import { getCellValue, displayValue, getTimelineDisplayMode } from './cellUtils'
@@ -84,21 +85,36 @@ async function save(field: 'start' | 'end', newVal: string) {
   await dbStore.upsertValue(props.databaseId, props.entry.id, props.schema.id, value)
   emit('saved')
 }
+
+// ── Autofocus ─────────────────────────────────────────────────────────────────
+// On activation, focus the first date field so the user can type immediately.
+// The picker is text-only (no popover), so this replaces the native input's
+// former autofocus without opening a calendar.
+const dateWrapEl = ref<HTMLElement | null>(null)
+watch(
+  () => props.isActive,
+  (active) => {
+    if (active && !hasTimeline()) {
+      nextTick(() => dateWrapEl.value?.querySelector('input')?.focus())
+    }
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
   <div
     v-if="isActive && !hasTimeline()"
+    ref="dateWrapEl"
     class="db__date-wrap"
     @click.stop
     @keydown.escape.prevent="emit('deactivate')"
   >
     <!-- Start date (always present) -->
     <DatePicker
-      class="db__date-field"
+      :class="['db__date-field', { 'db__date-field--time': includeTime() }]"
       :model-value="startValue()"
       :include-time="includeTime()"
-      autofocus
       @update:model-value="save('start', $event)"
     />
 
@@ -106,7 +122,7 @@ async function save(field: 'start' | 'end', newVal: string) {
     <template v-if="hasEndDate()">
       <span class="db__date-sep">→</span>
       <DatePicker
-        class="db__date-field"
+        :class="['db__date-field', { 'db__date-field--time': includeTime() }]"
         :model-value="endValue()"
         :include-time="includeTime()"
         @update:model-value="save('end', $event)"
@@ -158,6 +174,7 @@ async function save(field: 'start' | 'end', newVal: string) {
 <style scoped>
 .db__date-wrap {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
   padding: 2px 4px;
@@ -165,9 +182,15 @@ async function save(field: 'start' | 'end', newVal: string) {
   outline-offset: -2px;
 }
 
+/* Fields keep enough width to show the full value; when two of them plus the
+   separator and confirm button no longer fit, the row wraps instead of
+   clipping. Date-time needs more room than a bare date. */
 .db__date-field {
   flex: 1;
-  min-width: 0;
+  min-width: 7rem;
+}
+.db__date-field--time {
+  min-width: 9.5rem;
 }
 
 .db__date-sep {
