@@ -22,6 +22,8 @@
  * year/month/day/hour/minute the user selects is stored verbatim, with no
  * timezone conversion applied.
  */
+import { format as formatDateFns } from 'date-fns'
+import type { Locale } from 'date-fns'
 
 // Leading group is 1+ digits so four-digit years parse while remaining lenient
 // toward any zero-padded low year already stored.
@@ -95,4 +97,37 @@ export function dateFnsPatternFor(token: string, includeTime: boolean): string {
     .replace(/YYYY/g, 'yyyy')
     .replace(/DD/g, 'dd')
   return includeTime ? `${base} HH:mm` : base
+}
+
+/**
+ * Format a ``Date`` into a display string using a date-fns pattern.
+ *
+ * This is the display counterpart to the ISO bridge above and the single place
+ * the picker's on-screen text is produced. It is used as vue-datepicker's
+ * ``format`` *function* rather than passing the pattern as a bare string,
+ * because in text-input mode the library does not reliably honour a string
+ * ``format`` for a blurred field's read display: it can fall back to its
+ * built-in default pattern, which shows the US ``MM/dd/yyyy`` order and, when
+ * that default carries a time component, leaks a time into a date-only field.
+ * Driving the display through this function makes the user's pattern
+ * authoritative in every focus state.
+ *
+ * ``pattern`` is a date-fns pattern as produced by ``dateFnsPatternFor``. The
+ * date-fns ``yyyy`` token zero-pads the year to four digits, so antiquity years
+ * render consistently with the stored ISO contract (year 5 -> ``0005``).
+ * Returns ``''`` for a nullish date, and also for an invalid one (date-fns
+ * throws on ``Invalid Date``), so the field degrades to empty rather than
+ * surfacing an error.
+ */
+export function formatDateForDisplay(
+  date: Date | null | undefined,
+  pattern: string,
+  locale?: Locale,
+): string {
+  if (!date) return ''
+  try {
+    return formatDateFns(date, pattern, locale ? { locale } : undefined)
+  } catch {
+    return ''
+  }
 }

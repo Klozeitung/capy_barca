@@ -39,7 +39,7 @@ import { useI18n } from 'vue-i18n'
 import { VueDatePicker } from '@vuepic/vue-datepicker'
 import { enUS, de } from 'date-fns/locale'
 import type { Locale } from 'date-fns'
-import { parseIsoToDate, formatDateToIso, dateFnsPatternFor } from '@/composables/dateValue'
+import { parseIsoToDate, formatDateToIso, dateFnsPatternFor, formatDateForDisplay } from '@/composables/dateValue'
 import { useAuthStore } from '@/stores/auth'
 
 const props = withDefaults(defineProps<{
@@ -123,6 +123,22 @@ try { authStore = useAuthStore() } catch { authStore = null }
 const formatToken = computed(() => props.format?.trim() || authStore?.dateFormat || 'DD.MM.YYYY')
 const userPattern = computed(() => dateFnsPatternFor(formatToken.value, props.includeTime))
 
+// Read-display formatter, passed to vue-datepicker as a ``format`` *function*.
+// A bare string ``format`` is not reliably honoured in text-input mode: a
+// blurred field - e.g. the non-focused half of a start/end pair - can fall back
+// to the library's built-in default pattern. That default renders the US
+// ``MM/dd/yyyy`` order instead of the user's preference, and (because its
+// default carries a time component) can leak a time into a date-only field.
+// Since parsing still uses ``userPattern`` via textInputConfig, that mismatch
+// can additionally make a subsequently focused field misparse its own display
+// and clear the value. Driving the display through a function keeps the user's
+// pattern authoritative in every focus state. vue-datepicker passes a single
+// Date here (no range prop is used); the array branch is defensive only.
+function formatDisplay(value: Date | Date[]): string {
+  const date = Array.isArray(value) ? value[0] : value
+  return formatDateForDisplay(date ?? null, userPattern.value, dpLocale.value)
+}
+
 // Inner input skin: a host-provided class (view/automations filter) or the
 // built-in default, which is styled value-equal to the app's native fields.
 const inputClassName = computed(() => props.inputClass?.trim() || 'dp-app-input')
@@ -165,8 +181,8 @@ onUnmounted(() => themeQuery?.removeEventListener('change', syncDark))
     :year-range="[1, 9999]"
     :min-date="parsedMinDate"
     :enable-time-picker="includeTime"
-    :format="userPattern"
-    :preview-format="userPattern"
+    :format="formatDisplay"
+    :preview-format="formatDisplay"
     :text-input="textInputConfig"
     :clearable="clearable"
     :placeholder="placeholder"
