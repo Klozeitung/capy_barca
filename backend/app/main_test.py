@@ -9,7 +9,7 @@ client = TestClient(app)
 
 def test_app_is_initialized():
     assert app.title == "CapyBarca API"
-    assert app.version == "0.14.16"
+    assert app.version == "0.14.16.1"
 
 
 def test_health_returns_200():

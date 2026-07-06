@@ -36,6 +36,7 @@
  */
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { Icon } from '@iconify/vue'
 import { VueDatePicker } from '@vuepic/vue-datepicker'
 import { enUS, de } from 'date-fns/locale'
 import type { Locale } from 'date-fns'
@@ -123,20 +124,45 @@ try { authStore = useAuthStore() } catch { authStore = null }
 const formatToken = computed(() => props.format?.trim() || authStore?.dateFormat || 'DD.MM.YYYY')
 const userPattern = computed(() => dateFnsPatternFor(formatToken.value, props.includeTime))
 
-// Read-display formatter, passed to vue-datepicker as a ``format`` *function*.
-// A bare string ``format`` is not reliably honoured in text-input mode: a
-// blurred field - e.g. the non-focused half of a start/end pair - can fall back
-// to the library's built-in default pattern. That default renders the US
-// ``MM/dd/yyyy`` order instead of the user's preference, and (because its
-// default carries a time component) can leak a time into a date-only field.
-// Since parsing still uses ``userPattern`` via textInputConfig, that mismatch
-// can additionally make a subsequently focused field misparse its own display
-// and clear the value. Driving the display through a function keeps the user's
-// pattern authoritative in every focus state. vue-datepicker passes a single
-// Date here (no range prop is used); the array branch is defensive only.
-function formatDisplay(value: Date | Date[]): string {
-  const date = Array.isArray(value) ? value[0] : value
-  return formatDateForDisplay(date ?? null, userPattern.value, dpLocale.value)
+// Read-display text for the input.
+//
+// vue-datepicker ignores the ``format`` prop for the input's read display in
+// text-input mode: a bound value is always rendered with the library's built-in
+// default pattern (``MM/dd/yyyy`` / ``MM/dd/yyyy, HH:mm``), which shows the US
+// order and leaks a time into date-only fields. It was verified against
+// vue-datepicker 14 that neither a string nor a function ``format`` (nor
+// ``enable-time-picker``) changes this. The input is therefore rendered via the
+// ``#dp-input`` slot below, where its displayed text is produced here from the
+// user's own pattern while vue-datepicker keeps doing the parsing/validation.
+//
+// While a field is focused, the user's raw keystrokes are shown (``liveText``);
+// when blurred, the value is re-rendered from the model in the user's pattern
+// (``displayText``). Both halves of a start/end pair thus always read in the
+// user's format, and a date-only field never shows a time.
+const editing = ref(false)
+const liveText = ref('')
+const displayText = computed(() =>
+  formatDateForDisplay(dateModel.value, userPattern.value, dpLocale.value),
+)
+
+function onFieldFocus(onInput: (ev: string | Event) => void, onFocus: () => void): void {
+  editing.value = true
+  liveText.value = displayText.value
+  // Seed vue-datepicker's internal text with the currently displayed value so a
+  // focus/blur without any edit re-parses to the same value instead of parsing
+  // the library's US-formatted default (which would fail and clear the field).
+  onInput(displayText.value)
+  onFocus()
+}
+
+function onFieldInput(ev: Event, onInput: (ev: string | Event) => void): void {
+  liveText.value = (ev.target as HTMLInputElement).value
+  onInput(ev)
+}
+
+function onFieldBlur(onBlur: () => void): void {
+  onBlur()
+  editing.value = false
 }
 
 // Inner input skin: a host-provided class (view/automations filter) or the
@@ -181,16 +207,48 @@ onUnmounted(() => themeQuery?.removeEventListener('change', syncDark))
     :year-range="[1, 9999]"
     :min-date="parsedMinDate"
     :enable-time-picker="includeTime"
-    :format="formatDisplay"
-    :preview-format="formatDisplay"
     :text-input="textInputConfig"
     :clearable="clearable"
     :placeholder="placeholder"
     :disabled="disabled"
-    hide-input-icon
     :teleport="true"
-    :input-class-name="inputClassName"
-  />
+  >
+    <!--
+      Custom input: vue-datepicker's default input renders the value with its
+      built-in (US) pattern regardless of ``format``, so the input is provided
+      here. The slot's handlers keep vue-datepicker responsible for parsing and
+      real-date validation; only the displayed text is ours.
+    -->
+    <template #dp-input="{ onInput, onEnter, onTab, onClear, onBlur, onFocus, onKeypress, onPaste }">
+      <span class="dp-input-wrap">
+        <input
+          :class="inputClassName"
+          :value="editing ? liveText : displayText"
+          :placeholder="placeholder"
+          :disabled="disabled"
+          autocomplete="off"
+          @focus="onFieldFocus(onInput, onFocus)"
+          @input="onFieldInput($event, onInput)"
+          @keydown.enter="onEnter"
+          @keydown.tab="onTab"
+          @keypress="onKeypress"
+          @paste="onPaste"
+          @blur="onFieldBlur(onBlur)"
+        />
+        <button
+          v-if="clearable && displayText && !disabled"
+          type="button"
+          class="dp-input-clear"
+          :aria-label="t('datepicker.aria.clearInput')"
+          tabindex="-1"
+          @mousedown.prevent
+          @click="onClear()"
+        >
+          <Icon icon="mdi:close" width="14" height="14" />
+        </button>
+      </span>
+    </template>
+  </VueDatePicker>
 </template>
 
 <!--
@@ -224,6 +282,38 @@ onUnmounted(() => themeQuery?.removeEventListener('change', syncDark))
 }
 .dp-app-input:focus {
   border-color: var(--color-accent);
+}
+
+/* Custom input wrapper (see the #dp-input slot). The input fills the field row;
+   the optional clear button sits just after it, replacing vue-datepicker's own
+   clear icon, which is not rendered when the input is slotted. */
+.dp-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+}
+.dp-input-wrap > input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+}
+.dp-input-clear {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 0 2px;
+  border-radius: 3px;
+  transition: color 0.12s, background 0.12s;
+}
+.dp-input-clear:hover {
+  color: var(--color-text);
+  background: var(--color-hover);
 }
 
 /* Embedded picker root behaves like the app's native fields inside a flex row
