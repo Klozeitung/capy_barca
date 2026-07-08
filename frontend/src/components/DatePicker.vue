@@ -36,7 +36,6 @@
  */
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Icon } from '@iconify/vue'
 import { VueDatePicker } from '@vuepic/vue-datepicker'
 import { enUS, de } from 'date-fns/locale'
 import type { Locale } from 'date-fns'
@@ -217,36 +216,26 @@ onUnmounted(() => themeQuery?.removeEventListener('change', syncDark))
       Custom input: vue-datepicker's default input renders the value with its
       built-in (US) pattern regardless of ``format``, so the input is provided
       here. The slot's handlers keep vue-datepicker responsible for parsing and
-      real-date validation; only the displayed text is ours.
+      real-date validation; only the displayed text is ours. Clearing stays with
+      vue-datepicker's native clear button (:clearable), which it still renders
+      next to the slotted input - no custom clear affordance is added here.
     -->
-    <template #dp-input="{ onInput, onEnter, onTab, onClear, onBlur, onFocus, onKeypress, onPaste }">
-      <span class="dp-input-wrap">
-        <input
-          :class="inputClassName"
-          :value="editing ? liveText : displayText"
-          :placeholder="placeholder"
-          :disabled="disabled"
-          autocomplete="off"
-          @focus="onFieldFocus(onInput, onFocus)"
-          @input="onFieldInput($event, onInput)"
-          @keydown.enter="onEnter"
-          @keydown.tab="onTab"
-          @keypress="onKeypress"
-          @paste="onPaste"
-          @blur="onFieldBlur(onBlur)"
-        />
-        <button
-          v-if="clearable && displayText && !disabled"
-          type="button"
-          class="dp-input-clear"
-          :aria-label="t('datepicker.aria.clearInput')"
-          tabindex="-1"
-          @mousedown.prevent
-          @click="onClear()"
-        >
-          <Icon icon="mdi:close" width="14" height="14" />
-        </button>
-      </span>
+    <template #dp-input="{ onInput, onEnter, onTab, onBlur, onFocus, onKeypress, onPaste }">
+      <input
+        class="dp-slot-input"
+        :class="inputClassName"
+        :value="editing ? liveText : displayText"
+        :placeholder="placeholder"
+        :disabled="disabled"
+        autocomplete="off"
+        @focus="onFieldFocus(onInput, onFocus)"
+        @input="onFieldInput($event, onInput)"
+        @keydown.enter="onEnter"
+        @keydown.tab="onTab"
+        @keypress="onKeypress"
+        @paste="onPaste"
+        @blur="onFieldBlur(onBlur)"
+      />
     </template>
   </VueDatePicker>
 </template>
@@ -284,36 +273,15 @@ onUnmounted(() => themeQuery?.removeEventListener('change', syncDark))
   border-color: var(--color-accent);
 }
 
-/* Custom input wrapper (see the #dp-input slot). The input fills the field row;
-   the optional clear button sits just after it, replacing vue-datepicker's own
-   clear icon, which is not rendered when the input is slotted. */
-.dp-input-wrap {
-  display: flex;
-  align-items: center;
-  gap: 2px;
+/* The #dp-input slot replaces vue-datepicker's own input, which was width:100%
+   and thus filled the relative .dp--input-wrap so the absolutely positioned
+   native clear button (right:0) sat flush at the input's right edge. The slotted
+   input must reclaim that full width, otherwise it stays content-width and the
+   clear button drifts to the far right of the wrap, leaving a large gap. Applied
+   via a stable class so it holds for every consumer regardless of inputClassName. */
+.dp-slot-input {
   width: 100%;
-}
-.dp-input-wrap > input {
-  flex: 1;
-  min-width: 0;
-  width: 100%;
-}
-.dp-input-clear {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  padding: 0 2px;
-  border-radius: 3px;
-  transition: color 0.12s, background 0.12s;
-}
-.dp-input-clear:hover {
-  color: var(--color-text);
-  background: var(--color-hover);
+  box-sizing: border-box;
 }
 
 /* Embedded picker root behaves like the app's native fields inside a flex row
