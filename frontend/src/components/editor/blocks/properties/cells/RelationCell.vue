@@ -35,6 +35,7 @@ import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useDatabaseStore, type PropertySchema, type DatabaseEntry, normalizeSelectOption, optionColorStyle } from '@/stores/database'
 import { useBlockStore } from '@/stores/blocks'
+import { useEscapeKey } from '@/composables/useEscapeStack'
 import SideView from '@/components/main/SideView.vue'
 import TimelineEditor from './TimelineEditor.vue'
 import {
@@ -290,6 +291,12 @@ async function openPicker() {
 function closePicker() {
   isOpen.value = false
 }
+
+// Close the picker on Escape via the shared overlay stack, so it wins over any
+// SideView underneath it regardless of where focus currently sits. Registered
+// only while the picker is open. A nested SideView opened from a chip pushes
+// its own handler on top, so Escape closes that first.
+useEscapeKey(closePicker, isOpen)
 
 // ── Click-away (#55) ──────────────────────────────────────────────────────────
 
@@ -592,7 +599,6 @@ async function onSideViewRefresh(): Promise<void> {
         class="rel-cell__picker"
         :style="pickerStyle"
         @click.stop
-        @keydown.esc="closePicker"
       >
         <!-- Search input -->
         <div class="rel-cell__search-wrap">

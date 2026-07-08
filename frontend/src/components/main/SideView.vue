@@ -30,6 +30,7 @@ import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useBlockStore, type Block } from '@/stores/blocks'
 import { useDatabaseStore, type DatabaseEntry } from '@/stores/database'
+import { useEscapeKey } from '@/composables/useEscapeStack'
 import BlockTopSection from './BlockTopSection.vue'
 import BlockPropertySection from './BlockPropertySection.vue'
 import BlockContentSection from './BlockContentSection.vue'
@@ -109,12 +110,12 @@ function close(): void {
 
 // ── Keyboard ──────────────────────────────────────────────────────────────────
 
-function onKeydown(e: KeyboardEvent): void {
-  if (e.key === 'Escape') close()
-}
-
-onMounted(() => document.addEventListener('keydown', onKeydown))
-onUnmounted(() => document.removeEventListener('keydown', onKeydown))
+// Close on Escape via the shared overlay stack. Any overlay opened above this
+// panel (e.g. a select, multi-select or relation picker) registers on top of
+// the stack and intercepts Escape first, so a single press dismisses only the
+// top-most overlay instead of collapsing the whole panel. See
+// composables/useEscapeStack.
+useEscapeKey(close)
 
 // ── Open as full page ─────────────────────────────────────────────────────────
 

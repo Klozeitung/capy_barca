@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { Icon } from '@iconify/vue'
+import { useEscapeKey } from '@/composables/useEscapeStack'
 import mdiData from '@iconify-json/mdi/icons.json'
 import tablerData from '@iconify-json/tabler/icons.json'
 import lucideData from '@iconify-json/lucide/icons.json'
@@ -136,9 +137,11 @@ function clear(): void {
   emit('close')
 }
 
-function onKeydown(e: KeyboardEvent): void {
-  if (e.key === 'Escape') emit('close')
-}
+// Close on Escape via the shared overlay stack. The picker is only mounted
+// while open, so it registers for its whole lifetime; when it floats above a
+// SideView it therefore intercepts Escape before the panel does, and it no
+// longer depends on the search field holding focus.
+useEscapeKey(() => emit('close'))
 </script>
 
 <template>
@@ -148,7 +151,6 @@ function onKeydown(e: KeyboardEvent): void {
       ref="containerRef"
       class="icon-picker"
       :style="fixedStyle ?? undefined"
-      @keydown="onKeydown"
     >
       <div class="icon-picker__header">
         <Icon icon="mdi:magnify" width="15" height="15" class="icon-picker__search-icon" />
@@ -186,7 +188,6 @@ function onKeydown(e: KeyboardEvent): void {
     v-else
     ref="containerRef"
     class="icon-picker"
-    @keydown="onKeydown"
   >
     <div class="icon-picker__header">
       <Icon icon="mdi:magnify" width="15" height="15" class="icon-picker__search-icon" />

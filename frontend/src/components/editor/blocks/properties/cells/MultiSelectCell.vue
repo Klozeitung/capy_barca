@@ -12,6 +12,7 @@ import { ref, computed, nextTick, watch, onUnmounted } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useDatabaseStore, type DatabaseEntry, type PropertySchema, normalizeSelectOption, optionColorStyle } from '@/stores/database'
+import { useEscapeKey } from '@/composables/useEscapeStack'
 import { getCellValue, getTimelineDisplayMode } from './cellUtils'
 import TimelineEditor from './TimelineEditor.vue'
 import TimelineSlotList from './TimelineSlotList.vue'
@@ -68,6 +69,11 @@ watch(() => props.isActive, async (active) => {
 onUnmounted(() => {
   document.removeEventListener('click', onDocumentClick)
 })
+
+// Close the picker on Escape via the shared overlay stack, so it wins over any
+// SideView underneath it and focus position (cell vs. picker input) no longer
+// matters. Registered only while the picker is open.
+useEscapeKey(() => emit('deactivate'), computed(() => props.isActive))
 
 async function openPicker(e: MouseEvent) {
   e.stopPropagation()
@@ -242,7 +248,6 @@ async function createAndToggle() {
       class="db__ms-picker"
       :style="{ top: pickerPos.top + 'px', left: pickerPos.left + 'px' }"
       @click.stop
-      @keydown.esc="emit('deactivate')"
     >
       <!-- Search input -->
       <div class="db__ms-search-wrap">
