@@ -48,6 +48,7 @@ import {
   hideSchemaInAllViews,
   removeGroupFromFolded,
   removeGroupFromOrder,
+  reorderGroups,
   schemaIdsInGroup,
 } from './propertySectionHelpers'
 
@@ -525,6 +526,10 @@ function onPropertyDragStart(e: DragEvent, schema: PropertySchema): void {
 }
 
 function onPropertyDragOver(e: DragEvent, targetSchemaId: string, groupName: string): void {
+  // A group is being dragged (not a property): the row's ``.stop`` handler would
+  // otherwise swallow the event before the group-level target can react, so
+  // route it to the group-reorder path here.
+  if (dragGroupName.value) { onGroupDragOver(e, groupName); return }
   e.preventDefault()
   e.dataTransfer!.dropEffect = 'move'
   dragOverSchemaId.value = targetSchemaId
@@ -532,6 +537,8 @@ function onPropertyDragOver(e: DragEvent, targetSchemaId: string, groupName: str
 }
 
 function onGroupBodyDragOver(e: DragEvent, groupName: string): void {
+  // During a group drag, treat the whole group body as a group-reorder target.
+  if (dragGroupName.value) { onGroupDragOver(e, groupName); return }
   e.preventDefault()
   e.dataTransfer!.dropEffect = 'move'
   dragOverGroupName.value = groupName
@@ -551,6 +558,11 @@ function onGroupHeaderPropertyDragOver(e: DragEvent, groupName: string): void {
 }
 
 async function onPropertyDrop(e: DragEvent, targetSchemaId: string | null, groupName: string): Promise<void> {
+  // A group drop that lands on a property row / body reaches this handler
+  // because of the child ``.stop`` modifiers; delegate it to the group-reorder
+  // path instead of treating it as a property move.
+  if (dragGroupName.value) { await onGroupDrop(e, groupName); return }
+
   e.preventDefault()
   const sourceId = dragSchemaId.value
   dragSchemaId.value = null
@@ -628,24 +640,43 @@ async function onGroupDrop(e: DragEvent, targetGroupName: string): Promise<void>
   if (!sourceName || sourceName === targetGroupName) return
   if (sourceName === DEFAULT_GROUP || targetGroupName === DEFAULT_GROUP) return
 
-  // Build the current custom group order.
+  // Build the current custom group order and move the source before the target.
   const customGroups = groupedSchemas.value
     .filter((g) => !g.isDefault)
     .map((g) => g.name)
 
-  const fromIdx = customGroups.indexOf(sourceName)
-  const toIdx = customGroups.indexOf(targetGroupName)
-  if (fromIdx === -1 || toIdx === -1) return
+  if (!customGroups.includes(sourceName) || !customGroups.includes(targetGroupName)) return
 
-  customGroups.splice(fromIdx, 1)
-  customGroups.splice(toIdx, 0, sourceName)
-
-  await saveGroupOrder(customGroups)
+  await saveGroupOrder(reorderGroups(customGroups, sourceName, targetGroupName))
 }
 
 function onGroupDragEnd(): void {
   dragGroupName.value = null
   dragOverGroupTarget.value = null
+}
+
+// ── Group-header drag routing ─────────────────────────────────────────────────
+//
+// The group header is a shared drop zone: it accepts a *group* being reordered
+// as well as a *property* being dropped into the group. These merged handlers
+// branch on which kind of drag is in progress so the two interactions no longer
+// shadow one another. Restricting group-drag initiation to the dedicated handle
+// (see template) is what keeps the two apart at drag-start time.
+
+function onGroupHeaderDragOver(e: DragEvent, groupName: string): void {
+  if (dragGroupName.value) {
+    onGroupDragOver(e, groupName)
+  } else if (dragSchemaId.value) {
+    onGroupHeaderPropertyDragOver(e, groupName)
+  }
+}
+
+async function onGroupHeaderDrop(e: DragEvent, groupName: string): Promise<void> {
+  if (dragGroupName.value) {
+    await onGroupDrop(e, groupName)
+  } else {
+    await onPropertyDrop(e, null, groupName)
+  }
 }
 </script>
 
@@ -669,19 +700,17 @@ function onGroupDragEnd(): void {
         'bps__group--drag-over': dragOverGroupTarget === group.name,
         'bps__group--default': group.isDefault,
       }"
-      :draggable="!group.isDefault"
-      @dragstart.stop="!group.isDefault && onGroupDragStart($event, group.name)"
       @dragover.stop="onGroupDragOver($event, group.name)"
       @drop.stop="onGroupDrop($event, group.name)"
-      @dragend="onGroupDragEnd"
     >
-      <!-- Group header (custom groups only) — also a property drop target -->
+      <!-- Group header (custom groups only) — drop target for both group
+           reorder and property-into-group drops. -->
       <div
         v-if="!group.isDefault"
         class="bps__group-header"
         :class="{ 'bps__group-header--drop-target': dragSchemaId && dragOverGroupName === group.name && !dragOverSchemaId }"
-        @dragover.stop="onGroupHeaderPropertyDragOver($event, group.name)"
-        @drop.stop="onPropertyDrop($event, null, group.name)"
+        @dragover.stop="onGroupHeaderDragOver($event, group.name)"
+        @drop.stop="onGroupHeaderDrop($event, group.name)"
       >
         <button
           class="bps__fold-btn"
@@ -723,13 +752,21 @@ function onGroupDragEnd(): void {
           <Icon icon="mdi:trash-can-outline" width="13" height="13" />
         </button>
 
-        <!-- Drag handle for group -->
-        <Icon
+        <!-- Drag handle for group reorder — only element that starts a group
+             drag, so property interactions inside the group never trigger it. -->
+        <span
           class="bps__group-drag-handle"
-          icon="mdi:drag-horizontal-variant"
-          width="14"
-          height="14"
-        />
+          draggable="true"
+          :title="t('propertySection.reorderGroup')"
+          @dragstart.stop="onGroupDragStart($event, group.name)"
+          @dragend="onGroupDragEnd"
+        >
+          <Icon
+            icon="mdi:drag-horizontal-variant"
+            width="14"
+            height="14"
+          />
+        </span>
       </div>
 
       <!-- Property rows -->
@@ -1060,11 +1097,18 @@ function onGroupDragEnd(): void {
 }
 
 .bps__group-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--color-text-muted);
   opacity: 0;
   cursor: grab;
   flex-shrink: 0;
   transition: opacity 0.12s;
+}
+
+.bps__group-drag-handle:active {
+  cursor: grabbing;
 }
 
 .bps__group-header:hover .bps__group-drag-handle {

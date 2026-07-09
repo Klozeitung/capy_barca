@@ -7,6 +7,7 @@
  * - schemaIdsInGroup       – collect schema IDs belonging to a group
  * - removeGroupFromOrder   – drop a group from the persisted custom-group order
  * - removeGroupFromFolded  – drop a group key from the fold-state map (immutable)
+ * - reorderGroups          – move a custom group before a drop target (immutable)
  * - hideSchemaInAllViews   – add a schema ID to every view's hiddenColumns
  */
 import type { DatabaseView, PropertySchema } from '@/stores/database'
@@ -40,6 +41,36 @@ export function removeGroupFromFolded(
 ): Record<string, boolean> {
   const next = { ...folded }
   delete next[group]
+  return next
+}
+
+/**
+ * Move `sourceGroup` to the drop position of `targetGroup` within `order`.
+ *
+ * The dragged group lands next to the target on the side it travelled from:
+ * dragging forward inserts it after the target, dragging backward inserts it
+ * before the target. This mirrors the standard drag-reorder behaviour and is
+ * equivalent to removing the source, then re-inserting it at the target's
+ * original index.
+ *
+ * The input array is never mutated: a new array is always returned. When either
+ * group is absent, or source and target are identical, a copy of the original
+ * order is returned unchanged.
+ */
+export function reorderGroups(
+  order: string[],
+  sourceGroup: string,
+  targetGroup: string,
+): string[] {
+  if (sourceGroup === targetGroup) return order.slice()
+
+  const fromIdx = order.indexOf(sourceGroup)
+  const toIdx = order.indexOf(targetGroup)
+  if (fromIdx === -1 || toIdx === -1) return order.slice()
+
+  const next = order.slice()
+  next.splice(fromIdx, 1)
+  next.splice(toIdx, 0, sourceGroup)
   return next
 }
 

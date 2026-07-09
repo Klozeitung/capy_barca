@@ -3,6 +3,7 @@ import {
   schemaIdsInGroup,
   removeGroupFromOrder,
   removeGroupFromFolded,
+  reorderGroups,
   hideSchemaInAllViews,
 } from '../propertySectionHelpers'
 import type { DatabaseView, PropertySchema } from '@/stores/database'
@@ -84,6 +85,48 @@ describe('removeGroupFromFolded', () => {
     const result = removeGroupFromFolded(folded, 'A')
     expect(result).not.toBe(folded)
     expect(folded).toEqual({ A: true })
+  })
+})
+
+// ── reorderGroups ─────────────────────────────────────────────────────────────
+
+describe('reorderGroups', () => {
+  it('drops a forward-dragged group after the target', () => {
+    // Dragging A onto C lands A on C's far side (the direction of travel).
+    expect(reorderGroups(['A', 'B', 'C'], 'A', 'C')).toEqual(['B', 'C', 'A'])
+  })
+
+  it('drops a backward-dragged group before the target', () => {
+    expect(reorderGroups(['A', 'B', 'C'], 'C', 'A')).toEqual(['C', 'A', 'B'])
+  })
+
+  it('swaps adjacent groups regardless of drag direction', () => {
+    expect(reorderGroups(['A', 'B', 'C'], 'B', 'A')).toEqual(['B', 'A', 'C'])
+    expect(reorderGroups(['A', 'B', 'C'], 'A', 'B')).toEqual(['B', 'A', 'C'])
+  })
+
+  it('is a no-op when source and target are the same', () => {
+    expect(reorderGroups(['A', 'B', 'C'], 'B', 'B')).toEqual(['A', 'B', 'C'])
+  })
+
+  it('is a no-op when the source group is absent', () => {
+    expect(reorderGroups(['A', 'B'], 'Ghost', 'A')).toEqual(['A', 'B'])
+  })
+
+  it('is a no-op when the target group is absent', () => {
+    expect(reorderGroups(['A', 'B'], 'A', 'Ghost')).toEqual(['A', 'B'])
+  })
+
+  it('does not mutate the input array', () => {
+    const order = ['A', 'B', 'C']
+    reorderGroups(order, 'A', 'C')
+    expect(order).toEqual(['A', 'B', 'C'])
+  })
+
+  it('always returns a new array reference', () => {
+    const order = ['A', 'B']
+    expect(reorderGroups(order, 'A', 'A')).not.toBe(order)
+    expect(reorderGroups(order, 'Ghost', 'A')).not.toBe(order)
   })
 })
 

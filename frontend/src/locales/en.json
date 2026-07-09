@@ -590,6 +590,7 @@
     "groupNamePlaceholder": "Group name",
     "deleteGroup": "Delete group",
     "deleteGroupConfirm": "Click again to confirm",
+    "reorderGroup": "Drag to reorder group",
     "visibility": {
       "title": "Property visibility",
       "show": "Always show",
@@ -728,7 +729,8 @@
     "sectionDatabases": "Databases",
     "databasesTitle": "Databases",
     "databasesOverview": "A database stores entries as rows and properties as typed columns (text, number, date, select, relation, rollup, and more). The same data can appear through different views — table, calendar, and others — each with its own filters and sorting.",
-    "databasesDates": "Your date format is set under Settings → Date and applies everywhere; a single date property can override it in its own settings. Date fields cover the years 1 to 9999."
+    "databasesDates": "Your date format is set under Settings → Date and applies everywhere; a single date property can override it in its own settings. Date fields cover the years 1 to 9999.",
+    "databasesGroups": "In the properties side panel you can organise properties into groups. Custom groups fold and unfold, rename on double-click, and reorder by drag-and-drop via the handle on the right of the group header. The default group always stays on top."
   },
   "synchedBlock": {
     "originLabel": "Synced",

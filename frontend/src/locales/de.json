@@ -569,6 +569,7 @@
     "groupNamePlaceholder": "Gruppenname",
     "deleteGroup": "Gruppe löschen",
     "deleteGroupConfirm": "Zum Bestätigen erneut klicken",
+    "reorderGroup": "Ziehen, um die Gruppe zu verschieben",
     "visibility": {
       "title": "Eigenschafts-Sichtbarkeit",
       "show": "Immer anzeigen",
@@ -707,7 +708,8 @@
     "sectionDatabases": "Datenbanken",
     "databasesTitle": "Datenbanken",
     "databasesOverview": "Eine Datenbank speichert Einträge als Zeilen und Properties als typisierte Spalten (Text, Zahl, Datum, Auswahl, Relation, Rollup und mehr). Dieselben Daten lassen sich über verschiedene Ansichten zeigen — Tabelle, Kalender und weitere — jeweils mit eigenen Filtern und Sortierung.",
-    "databasesDates": "Das Datumsformat legst du unter Einstellungen → Datum fest; es gilt überall, eine einzelne Datums-Property kann es in ihren Einstellungen überschreiben. Datumsfelder decken die Jahre 1 bis 9999 ab."
+    "databasesDates": "Das Datumsformat legst du unter Einstellungen → Datum fest; es gilt überall, eine einzelne Datums-Property kann es in ihren Einstellungen überschreiben. Datumsfelder decken die Jahre 1 bis 9999 ab.",
+    "databasesGroups": "In der Eigenschaften-Seitenleiste lassen sich Properties zu Gruppen zusammenfassen. Eigene Gruppen kannst du ein- und ausklappen, per Doppelklick umbenennen und über den Ziehpunkt rechts im Gruppenkopf per Drag-and-drop neu anordnen. Die Standardgruppe bleibt immer oben."
   },
   "synchedBlock": {
     "originLabel": "Synced",
