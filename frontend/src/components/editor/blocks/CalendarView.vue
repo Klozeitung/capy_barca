@@ -42,6 +42,14 @@
  *      page scroll handles the rest.  Cell height changed from a fixed 128px
  *      to min-height: 150px so rows with multi-day bars have room to breathe.
  *      The chip max-height is raised proportionally (72px → 90px).
+ * #bar Multi-week bars render their label and actions in every week row.
+ *      Previously the icon / name / edit / delete were gated behind a
+ *      showLabel flag that was only true in the week where the event visually
+ *      started; continuation weeks rendered an empty bar that collapsed to its
+ *      padding and looked compressed.  The gate (and the now-unused showLabel
+ *      field) is removed, so each week segment of a multi-week event carries
+ *      the full content.  .cal-view__bar also gets a min-height floor so every
+ *      segment keeps a uniform height even in edge cases.
  */
 import { ref, computed } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -385,7 +393,6 @@ interface WeekBar {
   occ:       RecurOccurrence
   colStart:  number   // 1-indexed CSS grid column start
   colEnd:    number   // exclusive CSS grid column end
-  showLabel: boolean  // true when the bar's visual start is in this week
 }
 
 function weekBars(weekCellsArr: CalCell[]): WeekBar[] {
@@ -407,7 +414,7 @@ function weekBars(weekCellsArr: CalCell[]): WeekBar[] {
     const colStart = (startIdx === -1 ? 0 : startIdx) + 1
     const colEnd   = (endIdx   === -1 ? 6 : endIdx)   + 2
 
-    bars.push({ occ, colStart, colEnd, showLabel: occ.startDate >= weekStart })
+    bars.push({ occ, colStart, colEnd })
   }
 
   return bars
@@ -948,41 +955,43 @@ async function onCellDrop(cell: CalCell): Promise<void> {
                 @dragstart="!bar.occ.isVirtual && onEntryDragStart(bar.occ.entry, $event)"
                 @dragend="onEntryDragEnd"
               >
-                <template v-if="bar.showLabel">
-                  <!-- Recurrence indicator (#rec) -->
-                  <Icon
-                    v-if="isRecurringEntry(bar.occ.entry, dateSchema)"
-                    icon="mdi:repeat"
-                    width="8" height="8"
-                    class="cal-view__chip-recur"
-                    :title="t('db.calendar.recurIndicator')"
-                  />
+                <!-- Rendered in every week segment of a multi-week event, so
+                     the name and actions are reachable from any row and no
+                     continuation segment collapses to an empty bar. -->
 
-                  <!-- Page icon → icon picker (#54) -->
-                  <button class="cal-view__chip-icon-btn" @click.stop="openChipIconPicker(bar.occ.entry, $event)">
-                    <Icon :icon="bar.occ.entry.icon ?? 'mdi:file-outline'" width="9" height="9" />
-                  </button>
+                <!-- Recurrence indicator (#rec) -->
+                <Icon
+                  v-if="isRecurringEntry(bar.occ.entry, dateSchema)"
+                  icon="mdi:repeat"
+                  width="8" height="8"
+                  class="cal-view__chip-recur"
+                  :title="t('db.calendar.recurIndicator')"
+                />
 
-                  <!-- Name → navigate (#54) -->
-                  <span class="cal-view__bar-name" @click.stop="emit('open-entry', bar.occ.entry)">
-                    {{ entryTitle(bar.occ.entry) }}
-                  </span>
+                <!-- Page icon → icon picker (#54) -->
+                <button class="cal-view__chip-icon-btn" @click.stop="openChipIconPicker(bar.occ.entry, $event)">
+                  <Icon :icon="bar.occ.entry.icon ?? 'mdi:file-outline'" width="9" height="9" />
+                </button>
 
-                  <!-- Edit (#54) -->
-                  <button class="cal-view__chip-action" :title="t('db.calendar.fastEdit')" @click.stop="requestEdit(bar.occ)">
-                    <Icon icon="mdi:pencil-outline" width="9" height="9" />
-                  </button>
+                <!-- Name → navigate (#54) -->
+                <span class="cal-view__bar-name" @click.stop="emit('open-entry', bar.occ.entry)">
+                  {{ entryTitle(bar.occ.entry) }}
+                </span>
 
-                  <!-- Delete (#54) -->
-                  <button
-                    class="cal-view__chip-action"
-                    :class="{ 'cal-view__chip-action--danger': confirmDeleteId === occKey(bar.occ) }"
-                    :title="confirmDeleteId === occKey(bar.occ) ? t('db.calendar.deleteConfirm') : t('actions.delete')"
-                    @click.stop="requestDelete(bar.occ, $event)"
-                  >
-                    <Icon :icon="confirmDeleteId === occKey(bar.occ) ? 'mdi:check' : 'mdi:trash-can-outline'" width="9" height="9" />
-                  </button>
-                </template>
+                <!-- Edit (#54) -->
+                <button class="cal-view__chip-action" :title="t('db.calendar.fastEdit')" @click.stop="requestEdit(bar.occ)">
+                  <Icon icon="mdi:pencil-outline" width="9" height="9" />
+                </button>
+
+                <!-- Delete (#54) -->
+                <button
+                  class="cal-view__chip-action"
+                  :class="{ 'cal-view__chip-action--danger': confirmDeleteId === occKey(bar.occ) }"
+                  :title="confirmDeleteId === occKey(bar.occ) ? t('db.calendar.deleteConfirm') : t('actions.delete')"
+                  @click.stop="requestDelete(bar.occ, $event)"
+                >
+                  <Icon :icon="confirmDeleteId === occKey(bar.occ) ? 'mdi:check' : 'mdi:trash-can-outline'" width="9" height="9" />
+                </button>
               </div>
             </div>
 
@@ -1328,8 +1337,11 @@ async function onCellDrop(cell: CalCell): Promise<void> {
   border-radius: 3px; padding: 1px 3px; font-size: 0.71rem;
   white-space: nowrap; cursor: default;
   display: flex; align-items: center; gap: 3px;
-  transition: opacity 0.1s; min-width: 0;
+  transition: opacity 0.1s; min-width: 0; min-height: 18px;
   /* background + color set via :style */
+  /* #bar: min-height floor so every segment keeps a uniform bar height,
+     including edge cases such as a title-less entry where only the icons
+     would otherwise set the height. */
 }
 .cal-view__bar { cursor: grab; }
 .cal-view__bar--dragging { opacity: 0.35; }
