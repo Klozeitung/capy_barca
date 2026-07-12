@@ -140,6 +140,19 @@ _READONLY_TYPES: frozenset[str] = frozenset(
     }
 )
 
+# Property types that store links in the relation pool format rather than a
+# flat scalar value.  ``relation`` is migrated to timeline via the dedicated
+# relation helper; ``parent_item`` / ``sub_item`` never carry a user-toggled
+# timeline (their config is locked in the UI).  Used to route the timeline
+# value migration: relation-family types are excluded from the scalar path.
+_RELATION_FAMILY_TYPES: frozenset[str] = frozenset(
+    {
+        "relation",
+        "parent_item",
+        "sub_item",
+    }
+)
+
 
 # ─── Request / Response schemas ───────────────────────────────────────────────
 
@@ -1290,6 +1303,64 @@ def _migrate_relation_values_to_timeline(
         )
 
 
+def _migrate_scalar_values_to_timeline(
+    db: Session,
+    database_id: uuid.UUID,
+    schema_id: uuid.UUID,
+) -> None:
+    """
+    Migrate a flat scalar property value to the timeline format when
+    ``hasTimeline`` is enabled on an existing non-relation schema.
+
+    For each active entry in *database_id* that has a value for *schema_id*
+    in the old flat format — any scalar shape such as ``{"text": ...}``,
+    ``{"number": ...}``, ``{"option": ...}`` / ``{"options": [...]}``,
+    ``{"start": ..., "end": ...}``, ``{"checked": ...}``, ``{"value": ...}``
+    or ``{"files": [...]}`` without a ``_timeline`` key — the whole value is
+    wrapped into a single always-valid (``""``) slot::
+
+        { "_timeline": { "": <original flat value> } }
+
+    The previous value becomes a permanent "always valid" (``""``) slot,
+    matching the ``migrateWarning`` shown in the UI before the user confirms
+    the toggle.  Without this migration, "all" display mode — which renders
+    only ``_timeline`` slots — shows nothing for pre-existing entries, even
+    though "last" mode still resolves the flat value.  The resolved "last"
+    value is unchanged (a singleton ``""`` slot resolves back to the original
+    value), so formula / rollup results are unaffected.
+
+    Values that already contain a ``_timeline`` (or ``relationPool``) key,
+    are ``None``, or are empty dicts are left untouched.
+
+    Parameters
+    ----------
+    db:
+        Active database session (within the caller's transaction).
+    database_id:
+        UUID of the database whose entries should be scanned.
+    schema_id:
+        UUID of the scalar schema that was just enabled for timeline.
+    """
+    entries = repo.list_children(
+        db, database_id, state="active",
+        exclude_types=frozenset({"entry_template"}),
+    )
+    for entry in entries:
+        pv = repo.get_value(db, entry.id, schema_id)
+        if pv is None or not pv.value:
+            continue
+        val = pv.value
+        # Skip values already in timeline / pool format.
+        if "_timeline" in val or "relationPool" in val:
+            continue
+        repo.upsert_value(
+            db,
+            page_id=entry.id,
+            schema_id=schema_id,
+            value={"_timeline": {"": val}},
+        )
+
+
 def _get_mirror_schema(db: Session, schema) -> Optional[object]:
     """
     Resolve the mirror ``PropertySchema`` for a bilateral relation.
@@ -1578,7 +1649,7 @@ async def create_schema(
     "/{database_id}/schemas/{schema_id}",
     response_model=SchemaResponse,
 )
-def update_schema(
+async def update_schema(
     database_id: uuid.UUID,
     schema_id: uuid.UUID,
     payload: SchemaUpdate,
@@ -1608,6 +1679,11 @@ def update_schema(
     old_name = schema.name
     old_config = dict(schema.config or {})
     old_mirror_name: str | None = old_config.get("mirror_property_name")
+
+    # Databases whose entry values were rewritten by a timeline migration below.
+    # Broadcast (post-commit) is emitted only for these, so pure schema edits
+    # keep the existing "schema CRUD needs no broadcast" behaviour.
+    _migrated_entry_dbs: set[uuid.UUID] = set()
 
     effective_type = payload.type if payload.type is not None else schema.type
     effective_config = payload.config if payload.config is not None else schema.config
@@ -1775,51 +1851,62 @@ def update_schema(
                         if current_mirror_name:
                             _ensure_bilateral_mirror(db, updated, target_db_id, current_mirror_name)
 
-        # ── Relation timeline value migration ────────────────────────────────
+        # ── Timeline value migration (enable hasTimeline on existing data) ────
         #
-        # When hasTimeline is newly enabled on a relation schema, existing
-        # flat ``{ related_ids: [...] }`` values must be converted to the
-        # pool format or they become invisible to the UI (which now expects
-        # ``relationPool`` / ``_timeline``).  All linked entries default to
-        # the "always valid" (``""``) range, matching the migrateWarning
-        # shown in the frontend before the user confirms the toggle.
+        # When hasTimeline is newly enabled, existing flat values must be
+        # wrapped into the ``_timeline`` format or they become invisible in
+        # "all" display mode (which renders only ``_timeline`` slots), even
+        # though "last" mode still resolves the flat value.  All existing
+        # values default to the "always valid" (``""``) slot, matching the
+        # migrateWarning shown in the frontend before the user confirms the
+        # toggle.
         #
-        # For bilateral relations the mirror schema's values are migrated in
-        # the same transaction (Case C above already toggled hasTimeline on
-        # the mirror schema config).
-        if updated.type == "relation" and payload.config is not None:
+        # Relation properties store links in the pool format and are migrated
+        # by the dedicated relation helper — including the bilateral mirror
+        # side in the same transaction (Case C above already toggled
+        # hasTimeline on the mirror schema config).  All other (scalar)
+        # property types are wrapped by _migrate_scalar_values_to_timeline.
+        if payload.config is not None:
             _new_cfg = updated.config or {}
             _old_ht = old_config.get("hasTimeline", False)
             _new_ht = _new_cfg.get("hasTimeline", False)
             if not _old_ht and _new_ht:
-                _migrate_relation_values_to_timeline(db, database_id, schema_id)
-                _direction = _new_cfg.get("direction")
-                if _direction == "bilateral":
-                    _target_raw = (
-                        _new_cfg.get("target_database_id")
-                        or old_config.get("target_database_id")
-                    )
-                    if _target_raw:
-                        try:
-                            _target_db_id = uuid.UUID(str(_target_raw))
-                        except ValueError:
-                            _target_db_id = None
-                        if _target_db_id:
-                            _mirror_name = (
-                                _new_cfg.get("mirror_property_name")
-                                or old_config.get("mirror_property_name")
-                                or updated.name
-                            )
-                            _mirror_sch = repo.get_schema_by_name(
-                                db, _target_db_id, _mirror_name
-                            )
-                            if _mirror_sch is not None:
-                                _migrate_relation_values_to_timeline(
-                                    db, _target_db_id, _mirror_sch.id
+                if updated.type == "relation":
+                    _migrate_relation_values_to_timeline(db, database_id, schema_id)
+                    _migrated_entry_dbs.add(database_id)
+                    _direction = _new_cfg.get("direction")
+                    if _direction == "bilateral":
+                        _target_raw = (
+                            _new_cfg.get("target_database_id")
+                            or old_config.get("target_database_id")
+                        )
+                        if _target_raw:
+                            try:
+                                _target_db_id = uuid.UUID(str(_target_raw))
+                            except ValueError:
+                                _target_db_id = None
+                            if _target_db_id:
+                                _mirror_name = (
+                                    _new_cfg.get("mirror_property_name")
+                                    or old_config.get("mirror_property_name")
+                                    or updated.name
                                 )
+                                _mirror_sch = repo.get_schema_by_name(
+                                    db, _target_db_id, _mirror_name
+                                )
+                                if _mirror_sch is not None:
+                                    _migrate_relation_values_to_timeline(
+                                        db, _target_db_id, _mirror_sch.id
+                                    )
+                                    _migrated_entry_dbs.add(_target_db_id)
+                elif (
+                    updated.type not in _RELATION_FAMILY_TYPES
+                    and updated.type not in _READONLY_TYPES
+                ):
+                    _migrate_scalar_values_to_timeline(db, database_id, schema_id)
+                    _migrated_entry_dbs.add(database_id)
 
         db.commit()
-        return updated
     except IntegrityError:
         db.rollback()
         raise HTTPException(
@@ -1829,6 +1916,20 @@ def update_schema(
     except Exception:
         db.rollback()
         raise
+
+    # Post-commit: a timeline migration rewrote entry values for these databases
+    # (this DB and, for bilateral relations, the mirror target DB). Notify their
+    # clients so open views refresh without a full page reload. Fires after
+    # commit so clients always fetch committed data. Pure schema edits leave the
+    # set empty and emit nothing.
+    for _bcast_db_id in _migrated_entry_dbs:
+        await broadcast_block_event(
+            event_type="database_entries_updated",
+            block_id=str(_bcast_db_id),
+            before=None,
+            after={"database_id": str(_bcast_db_id)},
+        )
+    return updated
 
 
 @database_router.delete(

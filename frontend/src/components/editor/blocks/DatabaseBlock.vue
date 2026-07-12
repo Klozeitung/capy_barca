@@ -1148,6 +1148,11 @@ async function handleRelationChange(
     ]
     if (targetId && targetId !== props.blockId) {
       refetches.push(dbStore.fetchSchemas(targetId))
+      // The bilateral mirror value was written server-side on the target
+      // entry. Without re-fetching the target database's entries, its cached
+      // values stay stale and any SideView opened on a linked target entry
+      // shows an empty synced relation until a full page reload.
+      refetches.push(dbStore.fetchEntries(targetId))
     }
     await Promise.all(refetches)
   }

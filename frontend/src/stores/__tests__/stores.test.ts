@@ -688,6 +688,35 @@ describe('useDatabaseStore', () => {
     expect(result.name).toBe('Priority')
   })
 
+  it('updateSchema also re-fetches entries when they are cached', async () => {
+    const updated = makeSchema({ name: 'Priority' })
+    vi.mocked(apiClient.patch).mockResolvedValueOnce(updated)
+    vi.mocked(apiClient.get)
+      .mockResolvedValueOnce([updated]) // fetchSchemas
+      .mockResolvedValueOnce([])        // fetchEntries
+
+    const store = useDatabaseStore()
+    store.entries['db-1'] = [makeEntry()]
+
+    await store.updateSchema('db-1', 'schema-1', { config: { hasTimeline: true } })
+
+    // A config change can rewrite entry values server-side, so entries are
+    // re-fetched in addition to schemas.
+    expect(apiClient.get).toHaveBeenCalledTimes(2)
+  })
+
+  it('updateSchema does not re-fetch entries when not cached', async () => {
+    const updated = makeSchema({ name: 'Priority' })
+    vi.mocked(apiClient.patch).mockResolvedValueOnce(updated)
+    vi.mocked(apiClient.get).mockResolvedValueOnce([updated]) // only fetchSchemas
+
+    const store = useDatabaseStore()
+
+    await store.updateSchema('db-1', 'schema-1', { config: { hasTimeline: true } })
+
+    expect(apiClient.get).toHaveBeenCalledTimes(1)
+  })
+
   // ── deleteSchema ────────────────────────────────────────────────────────────
 
   it('deleteSchema calls delete endpoint and re-fetches schemas', async () => {

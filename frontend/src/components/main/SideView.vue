@@ -30,6 +30,7 @@ import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useBlockStore, type Block } from '@/stores/blocks'
 import { useDatabaseStore, type DatabaseEntry } from '@/stores/database'
+import { WS_BLOCK_EVENT, type BlockEventPayload } from '@/stores/ws'
 import { useEscapeKey } from '@/composables/useEscapeStack'
 import BlockTopSection from './BlockTopSection.vue'
 import BlockPropertySection from './BlockPropertySection.vue'
@@ -93,6 +94,29 @@ async function loadEntry(): Promise<void> {
 onMounted(() => loadEntry())
 
 watch(() => props.entryId, () => loadEntry())
+
+// ── WebSocket sync ────────────────────────────────────────────────────────────
+
+/**
+ * Re-fetch this entry's data whenever the backend broadcasts an update for the
+ * owning database. Value mutations broadcast database_entries_updated with
+ * block_id = databaseId; this covers, in particular, a bilateral relation whose
+ * mirror value was written on this entry server-side (from this or another
+ * session) while the panel is open.
+ *
+ * Block-level events (title, icon) are already patched in-place in the
+ * blockStore, and ``block`` is a computed over blockStore.blocks[entryId], so
+ * those stay reactive without an explicit re-fetch here.
+ */
+function _onWsEvent(e: Event): void {
+  const { event_type, block_id } = (e as CustomEvent<BlockEventPayload>).detail
+  if (event_type === 'database_entries_updated' && block_id === props.databaseId) {
+    dbStore.fetchEntries(props.databaseId)
+  }
+}
+
+onMounted(() => window.addEventListener(WS_BLOCK_EVENT, _onWsEvent))
+onUnmounted(() => window.removeEventListener(WS_BLOCK_EVENT, _onWsEvent))
 
 // ── Slide-in animation ────────────────────────────────────────────────────────
 

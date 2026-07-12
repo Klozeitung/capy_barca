@@ -2528,6 +2528,137 @@ def test_enable_timeline_on_bilateral_relation_migrates_both_sides(http_client):
     assert val_b["relationPool"][entry_a["id"]] == [""]
 
 
+# ── Scalar timeline value migration (enable hasTimeline on existing data) ─────
+#
+# Non-relation properties store a flat scalar value. Enabling hasTimeline must
+# wrap that value into a single always-valid ("") _timeline slot, otherwise
+# pre-existing entries render in "last" mode but vanish in "all" mode (which
+# reads only _timeline slots). The relation path has always done this via the
+# pool format; these tests cover the scalar path.
+
+def test_enable_timeline_wraps_existing_text_value_in_always_valid_slot(http_client):
+    """
+    Enabling hasTimeline on a text schema with an existing flat value wraps it
+    into a single always-valid ("") _timeline slot, preserving the value.
+    """
+    db_id = _create_database(http_client)
+    schema = _create_schema(http_client, db_id, name="Note", type_="text")
+    entry = _create_entry(http_client, db_id)
+
+    _upsert_value(
+        http_client, db_id, entry["id"], schema["id"],
+        {"text": "hello"},
+    )
+
+    resp = http_client.patch(
+        f"/api/databases/{db_id}/schemas/{schema['id']}",
+        json={"config": {**(schema["config"] or {}), "hasTimeline": True}},
+    )
+    assert resp.status_code == 200
+
+    entries = http_client.get(f"/api/databases/{db_id}/entries").json()
+    row = next(e for e in entries if e["id"] == entry["id"])
+    val = row["values"].get(schema["id"])
+    assert val is not None, "Value must not be None after migration"
+    assert "_timeline" in val, "Value must have _timeline after migration"
+    assert list(val["_timeline"].keys()) == [""], "Only an always-valid slot"
+    assert val["_timeline"][""] == {"text": "hello"}, "Original value preserved"
+
+
+def test_enable_timeline_wraps_select_and_date_values(http_client):
+    """The scalar wrap works for other flat shapes (select option, date range)."""
+    db_id = _create_database(http_client)
+    select_schema = _create_schema(
+        http_client, db_id, name="Status", type_="select",
+        config={"mode": "single", "options": [{"label": "Active"}]},
+    )
+    date_schema = _create_schema(
+        http_client, db_id, name="When", type_="date",
+        config={"hasEndDate": True},
+    )
+    entry = _create_entry(http_client, db_id)
+
+    _upsert_value(
+        http_client, db_id, entry["id"], select_schema["id"],
+        {"option": "Active"},
+    )
+    _upsert_value(
+        http_client, db_id, entry["id"], date_schema["id"],
+        {"start": "2024-01-01T00:00:00", "end": "2024-02-01T00:00:00"},
+    )
+
+    for sch in (select_schema, date_schema):
+        resp = http_client.patch(
+            f"/api/databases/{db_id}/schemas/{sch['id']}",
+            json={"config": {**(sch["config"] or {}), "hasTimeline": True}},
+        )
+        assert resp.status_code == 200
+
+    entries = http_client.get(f"/api/databases/{db_id}/entries").json()
+    row = next(e for e in entries if e["id"] == entry["id"])
+
+    sel_val = row["values"].get(select_schema["id"])
+    assert sel_val["_timeline"][""] == {"option": "Active"}
+
+    date_val = row["values"].get(date_schema["id"])
+    assert date_val["_timeline"][""] == {
+        "start": "2024-01-01T00:00:00",
+        "end": "2024-02-01T00:00:00",
+    }
+
+
+def test_enable_timeline_leaves_empty_scalar_values_untouched(http_client):
+    """Entries with no value for the scalar schema get no value written."""
+    db_id = _create_database(http_client)
+    schema = _create_schema(http_client, db_id, name="Note", type_="text")
+    entry = _create_entry(http_client, db_id)
+    # entry intentionally has no value for schema
+
+    resp = http_client.patch(
+        f"/api/databases/{db_id}/schemas/{schema['id']}",
+        json={"config": {**(schema["config"] or {}), "hasTimeline": True}},
+    )
+    assert resp.status_code == 200
+
+    entries = http_client.get(f"/api/databases/{db_id}/entries").json()
+    row = next(e for e in entries if e["id"] == entry["id"])
+    val = row["values"].get(schema["id"])
+    assert val is None or val == {}
+
+
+def test_enable_timeline_skips_scalar_values_already_in_timeline_format(http_client):
+    """A value already carrying _timeline is not double-wrapped."""
+    db_id = _create_database(http_client)
+    schema = _create_schema(http_client, db_id, name="Note", type_="text")
+    entry = _create_entry(http_client, db_id)
+
+    # Enable timeline first, then write an already-bounded timeline value.
+    http_client.patch(
+        f"/api/databases/{db_id}/schemas/{schema['id']}",
+        json={"config": {**(schema["config"] or {}), "hasTimeline": True}},
+    )
+    bounded = {"_timeline": {"2024-01-01T00:00:00→": {"text": "later"}}}
+    _upsert_value(http_client, db_id, entry["id"], schema["id"], bounded)
+
+    # Disable and re-enable (double-toggle edge case).
+    http_client.patch(
+        f"/api/databases/{db_id}/schemas/{schema['id']}",
+        json={"config": {**(schema["config"] or {}), "hasTimeline": False}},
+    )
+    http_client.patch(
+        f"/api/databases/{db_id}/schemas/{schema['id']}",
+        json={"config": {**(schema["config"] or {}), "hasTimeline": True}},
+    )
+
+    entries = http_client.get(f"/api/databases/{db_id}/entries").json()
+    row = next(e for e in entries if e["id"] == entry["id"])
+    val = row["values"].get(schema["id"])
+    # The bounded slot must survive — not be wrapped under a new "" key.
+    assert val is not None
+    assert "2024-01-01T00:00:00→" in val["_timeline"]
+    assert "" not in val["_timeline"]
+
+
 # ── _pool_to_timeline: always-valid and invalid-timestamp edge cases ──────────
 
 def test_pool_to_timeline_always_valid_only():

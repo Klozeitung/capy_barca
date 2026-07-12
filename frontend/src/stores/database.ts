@@ -502,6 +502,13 @@ export const useDatabaseStore = defineStore('database', () => {
       payload,
     )
     await fetchSchemas(databaseId)
+    // A config change can rewrite entry values server-side (e.g. enabling
+    // timeline wraps existing flat values into the _timeline format). The
+    // embedded values are then stale, so re-fetch entries too when cached –
+    // mirroring deleteSchema.
+    if (entries.value[databaseId] !== undefined) {
+      await fetchEntries(databaseId)
+    }
     return schema
   }
 
