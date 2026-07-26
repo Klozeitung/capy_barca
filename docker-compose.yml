@@ -1,12 +1,16 @@
 services:
   db:
-    image: postgres:16
+    image: postgres:16.14
     restart: unless-stopped
     env_file: .env
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "${PORT_DB:-5432}:5432"
+      # Loopback only. The backend reaches PostgreSQL over the Compose network
+      # via the service name 'db', so this mapping exists purely for host-local
+      # maintenance (psql, pg_dump). Publishing on all interfaces would expose
+      # the database to the LAN and to the tailnet.
+      - "127.0.0.1:${PORT_DB:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-capybarca} -d ${POSTGRES_DB:-capybarca_db}"]
       interval: 2s
@@ -48,14 +52,17 @@ services:
       - collabora
 
   collabora:
-    image: collabora/code:latest
+    # Pinned deliberately. The 'latest' tag can cross a major release and
+    # change WOPI behaviour without any change in this repository; new
+    # versions are adopted here and rolled out via update.sh.
+    image: collabora/code:26.04.2.4.1
     restart: unless-stopped
     environment:
-      # SSL wird von nginx terminiert; Collabora laeuft intern auf HTTP.
-      # extra_params ist die korrekte Weise, coolwsd-Optionen im Docker-Image
-      # zu setzen – die --o: Syntax schreibt direkt in coolwsd.xml.
+      # SSL is terminated by nginx; Collabora runs on plain HTTP internally.
+      # extra_params is the supported way to pass coolwsd options to the Docker
+      # image - the --o: syntax writes directly into coolwsd.xml.
       - extra_params=--o:ssl.enable=false --o:ssl.termination=true
-      # Requests von beliebigen Origins zulassen (self-hosted hinter nginx).
+      # Accept requests from any origin (self-hosted behind nginx).
       - aliasgroup1=https?://.*
     expose:
       - "9980"

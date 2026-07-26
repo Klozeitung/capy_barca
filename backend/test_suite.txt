@@ -1,0 +1,46 @@
+# Backend test suite.
+#
+# Single source of truth for the set of pytest files that must pass before a
+# build is considered good. Both setup.sh and the GitHub Actions workflow read
+# this file, so the installer and CI can never drift apart.
+#
+# Format: one path per line, relative to the backend/ directory (which is /app
+# inside the container). Blank lines and everything after a '#' are ignored.
+# Paths must not contain whitespace.
+
+app/main_test.py
+app/conftest_test.py
+
+app/database/database_test.py
+
+app/session/user_registration_test.py
+app/session/user_login_test.py
+app/session/session_test.py
+app/session/login_router_test.py
+
+app/security/limiter_test.py
+app/setup_router_test.py
+app/users/router_test.py
+app/permissions/router_test.py
+
+app/blocks/models_test.py
+app/blocks/repository_test.py
+app/blocks/service_test.py
+app/blocks/router_test.py
+app/blocks/database_router_test.py
+app/blocks/events_test.py
+app/blocks/preferences_test.py
+app/blocks/filter_test.py
+app/blocks/types_test.py
+app/blocks/computed_test.py
+app/blocks/formula_engine_test.py
+
+app/media/router_test.py
+app/wopi/router_test.py
+
+app/ws/manager_test.py
+app/ws/router_test.py
+
+app/automations/automations_engine_test.py
+app/automations/automations_router_test.py
+app/comments/comments_router_test.py

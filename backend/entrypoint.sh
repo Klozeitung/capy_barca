@@ -26,11 +26,16 @@ for i in $(seq 1 10); do
 done
 
 # ─── Uvicorn ──────────────────────────────────────────────────────────────────
+# Arguments are collected in an array rather than a single string so that no
+# value is subject to word splitting or pathname expansion on the exec line.
 
-ARGS="app.main:app --host ${HOST} --port ${PORT} --log-level info"
+ARGS=(app.main:app --host "${HOST}" --port "${PORT}" --log-level info)
 
 if [ "${DEBUG:-false}" = "true" ]; then
-    ARGS="${ARGS} --reload"
+    echo "WARNING: DEBUG=true — development mode."
+    echo "         uvicorn runs with --reload and the session cookie is issued"
+    echo "         without the Secure flag. Do not use this in production."
+    ARGS+=(--reload)
 fi
 
 SSL_KEY="/app/ssl/key.pem"
@@ -38,11 +43,11 @@ SSL_CERT="/app/ssl/cert.pem"
 
 if [ -f "${SSL_KEY}" ] && [ -f "${SSL_CERT}" ]; then
     echo "SSL-certificates found. Starting with HTTPS."
-    ARGS="${ARGS} --ssl-keyfile ${SSL_KEY} --ssl-certfile ${SSL_CERT}"
+    ARGS+=(--ssl-keyfile "${SSL_KEY}" --ssl-certfile "${SSL_CERT}")
 else
     echo "No SSL-certificates found. Starting without HTTPS."
 fi
 
 DISPLAY_HOST="${TAILSCALE_IP:-${HOST}}"
 echo "Backend starting on ${DISPLAY_HOST}:${PORT}"
-exec uvicorn ${ARGS}
+exec uvicorn "${ARGS[@]}"

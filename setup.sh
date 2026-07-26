@@ -20,7 +20,7 @@ echo ""
 #   ./setup.sh -recovery          (manual or via restore.sh)
 #   CAPYBARCA_RECOVERY=1 ./setup.sh  (programmatic)
 #
-# In recovery mode the .env interaction is skipped.
+# In recovery mode the GitHub SSH setup and .env interaction are skipped.
 # Instead the database is restored from recovery/import/db.sql.gz.
 
 if [[ "${1:-}" == "-recovery" ]]; then
@@ -76,6 +76,72 @@ echo ""
 echo "Stopping running CapyBarca containers..."
 docker compose down 2>/dev/null || true
 
+
+# ─── GitHub SSH ───────────────────────────────────────────────────────────────
+# (skipped in recovery mode)
+
+if [ "${CAPYBARCA_RECOVERY}" != "1" ]; then
+
+echo ""
+echo "Checking GitHub SSH authentication..."
+
+REMOTE_URL=$(git remote get-url origin 2>/dev/null || true)
+SSH_KEY="$HOME/.ssh/id_ed25519"
+SSH_CONFIG="$HOME/.ssh/config"
+SSH_HOST_ALIAS="github-capybarca"
+
+# Ensure SSH key exists
+if [ ! -f "$SSH_KEY" ]; then
+    echo "No SSH key found. Creating new key..."
+    mkdir -p "$HOME/.ssh"
+    chmod 700 "$HOME/.ssh"
+    ssh-keygen -t ed25519 -f "$SSH_KEY" -N "" -C "capybarca@$(hostname)"
+    echo -e "${GREEN}[OK] SSH key created.${NC}"
+else
+    echo -e "${GREEN}[OK] SSH key found: ${SSH_KEY}${NC}"
+fi
+
+# Add host alias to ~/.ssh/config if not already present
+if ! grep -q "Host ${SSH_HOST_ALIAS}" "$SSH_CONFIG" 2>/dev/null; then
+    echo "" >> "$SSH_CONFIG"
+    echo "Host ${SSH_HOST_ALIAS}" >> "$SSH_CONFIG"
+    echo "    HostName github.com" >> "$SSH_CONFIG"
+    echo "    User git" >> "$SSH_CONFIG"
+    echo "    IdentityFile ${SSH_KEY}" >> "$SSH_CONFIG"
+    chmod 600 "$SSH_CONFIG"
+    echo -e "${GREEN}[OK] SSH config entry for ${SSH_HOST_ALIAS} written.${NC}"
+else
+    echo -e "${GREEN}[OK] SSH config entry for ${SSH_HOST_ALIAS} already exists.${NC}"
+fi
+
+# Switch remote URL to github-capybarca alias
+REPO_PATH=$(echo "$REMOTE_URL" | sed 's|https://github.com/||;s|git@github.com:||;s|git@github-capybarca:||')
+TARGET_URL="git@${SSH_HOST_ALIAS}:${REPO_PATH}"
+if [ "$REMOTE_URL" != "$TARGET_URL" ]; then
+    git remote set-url origin "$TARGET_URL"
+    echo -e "${GREEN}[OK] Remote URL switched to ${TARGET_URL}.${NC}"
+else
+    echo -e "${GREEN}[OK] Remote URL already correct.${NC}"
+fi
+
+# Test GitHub SSH connection
+echo ""
+echo "Testing SSH connection to GitHub..."
+if ssh -T -o StrictHostKeyChecking=accept-new "${SSH_HOST_ALIAS}" 2>&1 | grep -q "successfully authenticated"; then
+    echo -e "${GREEN}[OK] SSH connection to GitHub works.${NC}"
+else
+    echo -e "${YELLOW}SSH connection not confirmed. Is the key added to GitHub?${NC}"
+    echo ""
+    echo -e "${CYAN}Add this public key to your GitHub account:${NC}"
+    echo -e "${CYAN}  https://github.com/settings/ssh/new${NC}"
+    echo ""
+    cat "${SSH_KEY}.pub"
+    echo ""
+    read -p "Press Enter once you have added the key to GitHub..."
+fi
+
+fi  # end: not recovery mode
+
 # ─── Helper functions ─────────────────────────────────────────────────────────
 
 REQUIRED_VARS=(
@@ -129,14 +195,19 @@ POSTGRES_PASSWORD=${2}
 POSTGRES_DB=${3}
 
 # Ports
+# PORT_DB is the host-side loopback mapping only (see docker-compose.yml).
 PORT_DB=${5}
 PORT_BACKEND=${6}
 PORT_FRONTEND=${7}
 
 # FastAPI
-DATABASE_URL=postgresql://${1}:${2}@db:${5}/${3}
+# Inside the Compose network PostgreSQL always listens on 5432, independently
+# of the published host port, so DATABASE_URL must address that port.
+DATABASE_URL=postgresql://${1}:${2}@db:5432/${3}
 SECRET_KEY=${4}
-DEBUG=true
+# Development only. DEBUG=true starts uvicorn with --reload and drops the
+# Secure flag from the session cookie. Production installations keep it false.
+DEBUG=${11}
 
 # Network
 TAILSCALE_IP=${8}
@@ -179,7 +250,7 @@ ask_var() {
             echo -e "${GREEN}[OK] SECRET_KEY generated automatically.${NC}" >&2
             echo "$GENERATED" ;;
         DEBUG)
-            echo "true" ;;
+            echo "false" ;;
         TAILSCALE_IP)
             local DETECTED_IP=""
             if command -v tailscale &> /dev/null && tailscale status &> /dev/null; then
@@ -236,7 +307,10 @@ guided_setup() {
 
     ALLOW_NEW_USERS=$(read_env_value ALLOW_NEW_USERS)
     ALLOW_NEW_USERS="${ALLOW_NEW_USERS:-false}"
-    write_env "$DB_USER" "$DB_PASSWORD" "$DB_NAME" "$SECRET_KEY" "$PORT_DB" "$PORT_BACKEND" "$PORT_FRONTEND" "$TAILSCALE_IP" "$TAILSCALE_HOSTNAME" "$ALLOW_NEW_USERS"
+
+    # A guided setup always produces a production configuration. DEBUG can be
+    # switched on afterwards via "Edit individual fields".
+    write_env "$DB_USER" "$DB_PASSWORD" "$DB_NAME" "$SECRET_KEY" "$PORT_DB" "$PORT_BACKEND" "$PORT_FRONTEND" "$TAILSCALE_IP" "$TAILSCALE_HOSTNAME" "$ALLOW_NEW_USERS" "false"
 }
 
 patch_missing() {
@@ -254,6 +328,7 @@ patch_missing() {
     TAILSCALE_IP=$(read_env_value TAILSCALE_IP)
     TAILSCALE_HOSTNAME=$(read_env_value TAILSCALE_HOSTNAME)
     ALLOW_NEW_USERS=$(read_env_value ALLOW_NEW_USERS)
+    DEBUG_VALUE=$(read_env_value DEBUG)
 
     for KEY in "${MISSING[@]}"; do
         echo -e "${YELLOW}Setting ${KEY}...${NC}"
@@ -266,6 +341,7 @@ patch_missing() {
             PORT_DB)            PORT_DB=$VALUE ;;
             PORT_BACKEND)       PORT_BACKEND=$VALUE ;;
             PORT_FRONTEND)      PORT_FRONTEND=$VALUE ;;
+            DEBUG)              DEBUG_VALUE=$VALUE ;;
             TAILSCALE_IP)       TAILSCALE_IP=$VALUE ;;
             TAILSCALE_HOSTNAME) TAILSCALE_HOSTNAME=$VALUE ;;
             ALLOW_NEW_USERS)    ALLOW_NEW_USERS=$VALUE ;;
@@ -273,7 +349,10 @@ patch_missing() {
     done
 
     ALLOW_NEW_USERS="${ALLOW_NEW_USERS:-false}"
-    write_env "$DB_USER" "$DB_PASSWORD" "$DB_NAME" "$SECRET_KEY" "$PORT_DB" "$PORT_BACKEND" "$PORT_FRONTEND" "$TAILSCALE_IP" "$TAILSCALE_HOSTNAME" "$ALLOW_NEW_USERS"
+    # Patching only fills gaps; an existing DEBUG value is carried over
+    # unchanged so a deliberate development setup is not silently reset.
+    DEBUG_VALUE="${DEBUG_VALUE:-false}"
+    write_env "$DB_USER" "$DB_PASSWORD" "$DB_NAME" "$SECRET_KEY" "$PORT_DB" "$PORT_BACKEND" "$PORT_FRONTEND" "$TAILSCALE_IP" "$TAILSCALE_HOSTNAME" "$ALLOW_NEW_USERS" "$DEBUG_VALUE"
 }
 
 edit_individual() {
@@ -301,9 +380,22 @@ edit_individual() {
 
     TAILSCALE_HOSTNAME=$(ask_var TAILSCALE_HOSTNAME "$(read_env_value TAILSCALE_HOSTNAME)")
 
+    # DEBUG is security-relevant and therefore never pre-selected: the prompt
+    # defaults to "no" even when the current .env has it enabled.
+    echo ""
+    echo -e "${YELLOW}DEBUG mode is for development only.${NC}"
+    echo "  It starts uvicorn with --reload and issues the session cookie"
+    echo "  without the Secure flag. Current value: $(read_env_value DEBUG)"
+    read -p "Enable DEBUG mode? [y/N]: " ENABLE_DEBUG
+    if [[ "$ENABLE_DEBUG" =~ ^[yY]$ ]]; then
+        DEBUG_VALUE="true"
+    else
+        DEBUG_VALUE="false"
+    fi
+
     ALLOW_NEW_USERS=$(read_env_value ALLOW_NEW_USERS)
     ALLOW_NEW_USERS="${ALLOW_NEW_USERS:-false}"
-    write_env "$DB_USER" "$DB_PASSWORD" "$DB_NAME" "$SECRET_KEY" "$PORT_DB" "$PORT_BACKEND" "$PORT_FRONTEND" "$TAILSCALE_IP" "$TAILSCALE_HOSTNAME" "$ALLOW_NEW_USERS"
+    write_env "$DB_USER" "$DB_PASSWORD" "$DB_NAME" "$SECRET_KEY" "$PORT_DB" "$PORT_BACKEND" "$PORT_FRONTEND" "$TAILSCALE_IP" "$TAILSCALE_HOSTNAME" "$ALLOW_NEW_USERS" "$DEBUG_VALUE"
 }
 
 # ─── .env management ──────────────────────────────────────────────────────────
@@ -366,6 +458,20 @@ else
     fi
 fi
 
+# ─── DEBUG guard ─────────────────────────────────────────────────────────────
+#
+# Earlier installer versions wrote DEBUG=true into every .env. Keeping an .env
+# untouched therefore carries that value forward, so the state is reported
+# explicitly instead of silently.
+
+if [ "$(read_env_value DEBUG)" = "true" ]; then
+    echo ""
+    echo -e "${YELLOW}[WARNING] DEBUG=true is set in .env.${NC}"
+    echo "  The session cookie will be issued without the Secure flag and"
+    echo "  uvicorn will run with --reload. For a production instance, rerun"
+    echo "  setup.sh and choose 'Edit individual fields' to disable DEBUG."
+fi
+
 # ─── Recovery: re-detect Tailscale values ────────────────────────────────────
 #
 # The .env from the backup belongs to the source machine. TAILSCALE_IP and
@@ -389,13 +495,13 @@ if [ "${CAPYBARCA_RECOVERY}" = "1" ]; then
 
         if [ -n "${DETECTED_IP}" ] && [ "${DETECTED_IP}" != "${BACKUP_IP}" ]; then
             sed -i "s|^TAILSCALE_IP=.*|TAILSCALE_IP=${DETECTED_IP}|" .env
-            echo -e "${GREEN}[OK] TAILSCALE_IP:       ${BACKUP_IP} -> ${DETECTED_IP}${NC}"
+            echo -e "${GREEN}[OK] TAILSCALE_IP:       ${BACKUP_IP} → ${DETECTED_IP}${NC}"
             PATCHED=true
         fi
 
         if [ -n "${DETECTED_HOST}" ] && [ "${DETECTED_HOST}" != "${BACKUP_HOST}" ]; then
             sed -i "s|^TAILSCALE_HOSTNAME=.*|TAILSCALE_HOSTNAME=${DETECTED_HOST}|" .env
-            echo -e "${GREEN}[OK] TAILSCALE_HOSTNAME: ${BACKUP_HOST} -> ${DETECTED_HOST}${NC}"
+            echo -e "${GREEN}[OK] TAILSCALE_HOSTNAME: ${BACKUP_HOST} → ${DETECTED_HOST}${NC}"
             PATCHED=true
         fi
 
@@ -581,37 +687,26 @@ fi
 
 echo ""
 echo "Running backend tests..."
-if docker compose exec backend pytest \
-    app/main_test.py \
-    app/session/user_registration_test.py \
-    app/session/user_login_test.py \
-    app/session/session_test.py \
-    app/conftest_test.py \
-    app/session/login_router_test.py \
-    app/security/limiter_test.py \
-    app/setup_router_test.py \
-    app/users/router_test.py \
-    app/database/database_test.py \
-    app/blocks/models_test.py \
-    app/blocks/computed_test.py \
-    app/blocks/repository_test.py \
-    app/blocks/filter_test.py \
-    app/blocks/types_test.py \
-    app/blocks/service_test.py \
-    app/blocks/router_test.py \
-    app/blocks/events_test.py \
-    app/blocks/preferences_test.py \
-    app/blocks/database_router_test.py \
-    app/blocks/formula_engine_test.py \
-    app/media/router_test.py \
-    app/ws/manager_test.py \
-    app/ws/router_test.py \
-    app/wopi/router_test.py \
-    app/automations/automations_engine_test.py \
-    app/automations/automations_router_test.py \
-    app/comments/comments_router_test.py \
-    app/permissions/router_test.py \
-    -v; then
+
+# The suite is defined in backend/test_suite.txt so that this installer and the
+# GitHub Actions workflow always execute exactly the same set of files.
+TEST_SUITE_FILE="backend/test_suite.txt"
+
+if [ ! -f "${TEST_SUITE_FILE}" ]; then
+    echo -e "${RED}[ERROR] ${TEST_SUITE_FILE} not found.${NC}"
+    exit 1
+fi
+
+mapfile -t BACKEND_TESTS < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' "${TEST_SUITE_FILE}" | grep -v '^$')
+
+if [ ${#BACKEND_TESTS[@]} -eq 0 ]; then
+    echo -e "${RED}[ERROR] ${TEST_SUITE_FILE} lists no test files.${NC}"
+    exit 1
+fi
+
+echo "Suite: ${#BACKEND_TESTS[@]} test files from ${TEST_SUITE_FILE}"
+
+if docker compose exec backend pytest "${BACKEND_TESTS[@]}" -v; then
     echo -e "${GREEN}[OK] Backend tests passed.${NC}"
 else
     echo ""

@@ -111,9 +111,11 @@ Key variables:
 |---|---|
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Database credentials |
 | `PORT_FRONTEND` | Port CapyBarca is served on (default: 1701) |
+| `PORT_DB` | Host-side port for local database maintenance. Published on `127.0.0.1` only; containers always talk to PostgreSQL on 5432 over the internal network |
 | `SECRET_KEY` | Session signing key — keep this secret |
 | `TAILSCALE_IP` / `TAILSCALE_HOSTNAME` | Your Tailscale network address |
 | `ALLOW_NEW_USERS` | `true` to allow self-registration on the login page |
+| `DEBUG` | Development only, default `false`. `true` starts uvicorn with `--reload` and issues the session cookie **without** the `Secure` flag. Leave it off on any real instance |
 
 ---
 
@@ -138,7 +140,7 @@ This project is a work in progress. It is used by its developer since February 2
 
 As Timelining and Nuancing are rather complicated features, rollups and formulas will work without taking nuances into account and will default to "last state" for timelined properties - for now.
 
-Despite heavy testing (~1430 automated backend tests each time a new version is build in the dev environment by setup.sh and a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet. Thus, this honest disclaimer is in order:
+Despite heavy testing (~1544 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet. Thus, this honest disclaimer is in order:
 
 DO NOT USE FOR IRREPLACABLE DATA AND FILES. USE AT OWN RISK.
 

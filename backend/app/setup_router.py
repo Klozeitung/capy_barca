@@ -6,7 +6,7 @@ from fastapi import APIRouter, Cookie, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from app.database.database import SessionLocal
-from app.session.login_router import _COOKIE_MAX_AGE, _COOKIE_NAME, _SECURE
+from app.session.login_router import set_session_cookie
 from app.session.session import create_token, validate_token
 from app.session.user_registration import create_admin
 from app.users import repository as user_repo
@@ -73,19 +73,11 @@ def register(payload: RegisterRequest, response: Response):
     a separate login request.
     """
     if _is_configured():
-        raise HTTPException(status_code=403, detail="Bereits eingerichtet")
+        raise HTTPException(status_code=403, detail="Already configured")
 
     user = create_admin(payload.username, payload.password)
 
-    token = create_token(user.id)
-    response.set_cookie(
-        key=_COOKIE_NAME,
-        value=token,
-        httponly=True,
-        samesite="strict",
-        max_age=_COOKIE_MAX_AGE,
-        secure=_SECURE,
-    )
+    set_session_cookie(response, create_token(user.id))
     return {"success": True, "username": user.username, "role": user.role}
 
 
@@ -100,32 +92,24 @@ def signup(payload: SignupRequest, response: Response):
     ``PATCH /api/users/{id}/role``.
     """
     if not _allow_new_users():
-        raise HTTPException(status_code=403, detail="Registrierung ist deaktiviert")
+        raise HTTPException(status_code=403, detail="Registration is disabled")
     if not _is_configured():
         raise HTTPException(
             status_code=403,
-            detail="Bitte zuerst den Admin-Account einrichten",
+            detail="Please set up the admin account first",
         )
 
     with SessionLocal() as db:
         if user_repo.get_by_username(db, payload.username) is not None:
             raise HTTPException(
                 status_code=409,
-                detail=f"Benutzername '{payload.username}' ist bereits vergeben",
+                detail=f"Username '{payload.username}' is already taken",
             )
         user = user_repo.create_user(db, payload.username, payload.password, role="member")
         db.commit()
         db.refresh(user)
 
-    token = create_token(user.id)
-    response.set_cookie(
-        key=_COOKIE_NAME,
-        value=token,
-        httponly=True,
-        samesite="strict",
-        max_age=_COOKIE_MAX_AGE,
-        secure=_SECURE,
-    )
+    set_session_cookie(response, create_token(user.id))
     return {"success": True, "username": user.username, "role": user.role}
 
 
@@ -142,12 +126,12 @@ def download_backup_script(session: Optional[str] = Cookie(default=None)):
     Requires an active session.
     """
     if not session or not validate_token(session):
-        raise HTTPException(status_code=401, detail="Nicht angemeldet")
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
     if not _BACKUP_SCRIPT_PATH.exists():
         raise HTTPException(
             status_code=404,
-            detail="backup.sh nicht gefunden. Bitte CapyBarca neu installieren.",
+            detail="backup.sh not found. Please reinstall CapyBarca.",
         )
 
     script = _BACKUP_SCRIPT_PATH.read_text(encoding="utf-8")

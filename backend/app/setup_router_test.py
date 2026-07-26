@@ -6,11 +6,42 @@ import app.session.session as s
 from app.main import app
 from app.users.repository import create_user
 
-client = TestClient(app)
+# /api/register issues the same Secure session cookie as /api/login, and a
+# cookie jar never returns a Secure cookie over plain HTTP. The client is
+# therefore addressed over HTTPS, matching the only deployment the installer
+# produces and keeping the suite independent of the ambient DEBUG value.
+_BASE_URL = "https://testserver"
+
+client = TestClient(app, base_url=_BASE_URL)
 
 
 # isolated_db (autouse) from conftest.py handles per-test DB isolation.
 # No .env patching is needed – configured state is derived from the users table.
+
+
+def cookie_attributes(response) -> set:
+    """
+    Return the lower-cased attribute names of the response's Set-Cookie header.
+
+    Parsing the attributes instead of substring-matching the raw header keeps
+    the assertion immune to a random token value that happens to contain an
+    attribute name.
+    """
+    header = response.headers["set-cookie"]
+    return {part.strip().split("=")[0].lower() for part in header.split(";")[1:]}
+
+
+@pytest.fixture(autouse=True)
+def clean_cookie_jar():
+    """
+    Start and end every test with an empty jar on the module-level client.
+
+    The client is shared across the module, so without this a cookie set by
+    one test would leak into the next and make results order-dependent.
+    """
+    client.cookies.clear()
+    yield
+    client.cookies.clear()
 
 
 def test_setup_status_returns_not_configured():
@@ -45,6 +76,26 @@ def test_register_sets_session_cookie():
     assert "session" in response.cookies
 
 
+def test_register_cookie_has_secure_flag_outside_debug(monkeypatch):
+    """
+    Register must issue the same cookie attributes as login.
+
+    Both endpoints share ``set_session_cookie``; this asserts the shared
+    helper is actually reached from this call site.
+    """
+    monkeypatch.delenv("DEBUG", raising=False)
+    response = client.post("/api/register", json={"username": "capybarca", "password": "geheim"})
+    attributes = cookie_attributes(response)
+    assert "secure" in attributes
+    assert "httponly" in attributes
+
+
+def test_register_cookie_omits_secure_flag_in_debug_mode(monkeypatch):
+    monkeypatch.setenv("DEBUG", "true")
+    response = client.post("/api/register", json={"username": "capybarca", "password": "geheim"})
+    assert "secure" not in cookie_attributes(response)
+
+
 def test_register_session_cookie_is_valid():
     client.post("/api/register", json={"username": "capybarca", "password": "geheim"})
     verify_resp = client.get("/api/verify")
@@ -69,7 +120,7 @@ def test_register_returns_422_on_empty_password():
     assert response.status_code == 422
 
 
-# ─── Backup-Script-Download ───────────────────────────────────────────────────
+# ─── Backup script download ───────────────────────────────────────────────────
 
 
 @pytest.fixture
@@ -91,7 +142,7 @@ def backup_script_path(tmp_path, monkeypatch):
 def auth_client(backup_script_path):
     """TestClient with a session cookie that passes validate_token."""
     with patch("app.setup_router.validate_token", return_value=True):
-        c = TestClient(app)
+        c = TestClient(app, base_url=_BASE_URL)
         c.cookies.set("session", "test-token")
         yield c
 
@@ -140,7 +191,7 @@ def test_backup_script_returns_404_when_file_missing(monkeypatch):
 
     monkeypatch.setattr(sr, "_BACKUP_SCRIPT_PATH", Path("/nonexistent/backup.sh"))
     with patch("app.setup_router.validate_token", return_value=True):
-        c = TestClient(app)
+        c = TestClient(app, base_url=_BASE_URL)
         c.cookies.set("session", "test-token")
         response = c.get("/api/backup/script")
     assert response.status_code == 404

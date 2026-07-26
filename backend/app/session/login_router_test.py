@@ -5,7 +5,28 @@ import app.session.session as s
 from app.main import app
 from app.users.repository import create_user
 
-client = TestClient(app)
+# The session cookie carries the Secure flag whenever DEBUG is not "true",
+# which is the production default. A cookie jar never returns a Secure cookie
+# over a plain-HTTP connection, so a client on the default http://testserver
+# would silently drop the session on every follow-up request and every
+# authenticated assertion below would fail with 401.
+#
+# Addressing the app over HTTPS reflects the only deployment the installer
+# produces (Tailscale certificates are mandatory, nginx and uvicorn both
+# terminate TLS) and keeps the suite independent of the ambient DEBUG value.
+client = TestClient(app, base_url="https://testserver")
+
+
+def cookie_attributes(response) -> set:
+    """
+    Return the lower-cased attribute names of the response's Set-Cookie header.
+
+    Parsing the attributes instead of substring-matching the raw header keeps
+    the assertion immune to a random token value that happens to contain an
+    attribute name.
+    """
+    header = response.headers["set-cookie"]
+    return {part.strip().split("=")[0].lower() for part in header.split(";")[1:]}
 
 
 @pytest.fixture(autouse=True)
@@ -14,6 +35,19 @@ def test_user():
     with s.SessionLocal() as db:
         create_user(db, "capybarca", "geheim", role="admin")
         db.commit()
+
+
+@pytest.fixture(autouse=True)
+def clean_cookie_jar():
+    """
+    Start and end every test with an empty jar on the module-level client.
+
+    The client is shared across the module, so without this a cookie set by
+    one test would leak into the next and make results order-dependent.
+    """
+    client.cookies.clear()
+    yield
+    client.cookies.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -47,6 +81,27 @@ def test_login_response_includes_date_format():
 def test_login_sets_session_cookie():
     response = client.post("/api/login", json={"username": "capybarca", "password": "geheim"})
     assert "session" in response.cookies
+
+
+def test_login_cookie_is_httponly_and_samesite_strict():
+    response = client.post("/api/login", json={"username": "capybarca", "password": "geheim"})
+    header = response.headers["set-cookie"].lower()
+    assert "httponly" in cookie_attributes(response)
+    assert "samesite=strict" in header
+
+
+def test_login_cookie_has_secure_flag_outside_debug(monkeypatch):
+    """Production default: DEBUG unset or false issues a Secure cookie."""
+    monkeypatch.delenv("DEBUG", raising=False)
+    response = client.post("/api/login", json={"username": "capybarca", "password": "geheim"})
+    assert "secure" in cookie_attributes(response)
+
+
+def test_login_cookie_omits_secure_flag_in_debug_mode(monkeypatch):
+    """DEBUG=true drops the Secure flag so local HTTP development works."""
+    monkeypatch.setenv("DEBUG", "true")
+    response = client.post("/api/login", json={"username": "capybarca", "password": "geheim"})
+    assert "secure" not in cookie_attributes(response)
 
 
 def test_login_returns_401_on_wrong_password():
@@ -97,6 +152,13 @@ def test_verify_returns_200_after_login():
     assert data["authenticated"] is True
     assert data["username"] == "capybarca"
     assert data["role"] == "admin"
+
+
+def test_verify_returns_200_after_login_in_debug_mode(monkeypatch):
+    """The session round-trip must work in both cookie modes."""
+    monkeypatch.setenv("DEBUG", "true")
+    client.post("/api/login", json={"username": "capybarca", "password": "geheim"})
+    assert client.get("/api/verify").status_code == 200
 
 
 def test_verify_response_includes_date_format():
