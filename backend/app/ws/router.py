@@ -6,6 +6,11 @@ session cookie that arrives with the HTTP upgrade handshake – the same
 cookie already used by all REST endpoints, so no additional token passing
 is required.
 
+The account the cookie resolves to is handed to the connection manager and
+kept for the life of the connection. The cookie is only available during the
+handshake, and the broadcaster needs to know whose connection this is in order
+to decide which events it may receive.
+
 An absent or invalid session causes an immediate close with application
 code 4401 (chosen to mirror HTTP 401; codes ≥ 4000 are reserved for
 application-defined use by the WebSocket RFC).
@@ -45,12 +50,17 @@ async def websocket_endpoint(
     The client must carry a valid ``session`` cookie (the same one issued
     by ``POST /api/login``). No token is passed in the URL to avoid it
     appearing in access logs.
+
+    Whether the account is still active is not re-checked here: the
+    broadcaster resolves it on every send, so a deactivation takes effect
+    immediately rather than at the next reconnect.
     """
-    if not session or not validate_token(session):
+    user_id = validate_token(session) if session else None
+    if not user_id:
         await websocket.close(code=_CLOSE_UNAUTHORIZED)
         return
 
-    await manager.connect(websocket)
+    await manager.connect(websocket, user_id)
     try:
         while True:
             raw = await websocket.receive_text()

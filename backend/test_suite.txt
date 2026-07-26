@@ -39,6 +39,7 @@ app/media/router_test.py
 app/wopi/router_test.py
 
 app/ws/manager_test.py
+app/ws/broadcaster_test.py
 app/ws/router_test.py
 
 app/automations/automations_engine_test.py
