@@ -25,11 +25,42 @@ for i in $(seq 1 10); do
     sleep 2
 done
 
+# ─── Proxy headers ────────────────────────────────────────────────────────────
+# Without --proxy-headers every request appears to originate from the nginx
+# container, so the login rate limiter keys all clients into a single global
+# bucket instead of one bucket per caller.
+#
+# FORWARDED_ALLOW_IPS selects the peers whose X-Forwarded-For header is
+# trusted. The default trusts every peer, which is sound here because the
+# backend port is only published inside the Compose network, never to the
+# host, and because nginx overwrites X-Forwarded-For with $remote_addr so the
+# header can never carry a client-supplied value.
+#
+# The two halves belong together: when uvicorn trusts every peer it reads the
+# leftmost entry of the header, which is exactly the entry an appending nginx
+# configuration would let the client choose. Do not relax one side without the
+# other.
+#
+# Residual exposure: another container on the same Compose network (Collabora)
+# could forge the header. Closing that means setting FORWARDED_ALLOW_IPS to the
+# nginx container address, which in turn requires a fixed address for it.
+
+FORWARDED_IPS="${FORWARDED_ALLOW_IPS:-*}"
+
 # ─── Uvicorn ──────────────────────────────────────────────────────────────────
 # Arguments are collected in an array rather than a single string so that no
 # value is subject to word splitting or pathname expansion on the exec line.
+# The default "*" for --forwarded-allow-ips depends on this: as an unquoted
+# string it would be expanded against the working directory.
 
-ARGS=(app.main:app --host "${HOST}" --port "${PORT}" --log-level info)
+ARGS=(
+    app.main:app
+    --host "${HOST}"
+    --port "${PORT}"
+    --log-level info
+    --proxy-headers
+    --forwarded-allow-ips "${FORWARDED_IPS}"
+)
 
 if [ "${DEBUG:-false}" = "true" ]; then
     echo "WARNING: DEBUG=true — development mode."
@@ -49,5 +80,6 @@ else
 fi
 
 DISPLAY_HOST="${TAILSCALE_IP:-${HOST}}"
+echo "Trusting proxy headers from: ${FORWARDED_IPS}"
 echo "Backend starting on ${DISPLAY_HOST}:${PORT}"
 exec uvicorn "${ARGS[@]}"
