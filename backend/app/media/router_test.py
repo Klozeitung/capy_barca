@@ -379,6 +379,123 @@ def test_upload_requires_auth(anon_client):
     assert resp.status_code == 401
 
 
+# ─── Upload: size ceiling and permitted types ─────────────────────────────────
+
+
+def test_upload_rejects_a_file_over_the_size_ceiling(http_client, tmp_upload_dir, monkeypatch):
+    import app.media.router as media_module
+
+    monkeypatch.setattr(media_module, "_MAX_UPLOAD_BYTES", 1024)
+    resp = _upload(
+        http_client, "file", str(uuid.uuid4()), content=b"x" * 2048, filename="big.bin"
+    )
+    assert resp.status_code == 413
+
+
+def test_upload_at_the_size_ceiling_is_accepted(http_client, monkeypatch):
+    import app.media.router as media_module
+
+    monkeypatch.setattr(media_module, "_MAX_UPLOAD_BYTES", 1024)
+    resp = _upload(
+        http_client, "file", str(uuid.uuid4()), content=b"x" * 1024, filename="exact.bin"
+    )
+    assert resp.status_code == 200
+    assert resp.json()["size"] == 1024
+
+
+def test_upload_over_the_ceiling_leaves_no_partial_file(http_client, tmp_upload_dir, monkeypatch):
+    """
+    The write streams, so a refused upload has already put bytes on disk by the
+    time the limit is crossed. Those must not survive the error.
+    """
+    import app.media.router as media_module
+
+    monkeypatch.setattr(media_module, "_MAX_UPLOAD_BYTES", 1024)
+    _upload(
+        http_client, "file", str(uuid.uuid4()), content=b"x" * 4096, filename="big.bin"
+    )
+    leftovers = list((tmp_upload_dir / "files").glob("*")) if (tmp_upload_dir / "files").exists() else []
+    assert leftovers == []
+
+
+@pytest.mark.parametrize(
+    "category,filename",
+    [
+        ("image", "a.png"),
+        ("image", "b.jpg"),
+        ("image", "c.webp"),
+        ("video", "v.mp4"),
+        ("video", "v.webm"),
+        ("audio", "a.mp3"),
+        ("audio", "a.flac"),
+        ("pdf", "doc.pdf"),
+    ],
+)
+def test_upload_accepts_a_permitted_media_type(http_client, category, filename):
+    resp = _upload(http_client, category, str(uuid.uuid4()), filename=filename)
+    assert resp.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "category,filename",
+    [
+        ("image", "payload.svg"),
+        ("image", "payload.html"),
+        ("image", "payload.exe"),
+        ("video", "payload.svg"),
+        ("audio", "payload.html"),
+        ("pdf", "payload.html"),
+        ("pdf", "payload.svg"),
+    ],
+)
+def test_upload_refuses_a_type_the_category_does_not_accept(http_client, category, filename):
+    """
+    SVG is the one worth naming: it is a document that can carry script, and an
+    image block renders its source, so an accepted SVG would run in this origin.
+    """
+    resp = _upload(http_client, category, str(uuid.uuid4()), filename=filename)
+    assert resp.status_code == 415
+
+
+@pytest.mark.parametrize("category", ["file", "drive"])
+def test_upload_still_accepts_arbitrary_attachments(http_client, category):
+    """
+    These two categories exist for arbitrary files. What makes them safe is the
+    delivery side, which hands anything unknown out as a download.
+    """
+    for filename in ("notes.txt", "sheet.xlsx", "archive.zip", "page.html"):
+        resp = _upload(http_client, category, str(uuid.uuid4()), filename=filename)
+        assert resp.status_code == 200, filename
+
+
+def test_upload_refused_type_writes_nothing(http_client, tmp_upload_dir):
+    block_id = str(uuid.uuid4())
+    _upload(http_client, "image", block_id, filename="payload.svg")
+    media_dir = tmp_upload_dir / "media" / "image"
+    assert not media_dir.exists() or list(media_dir.glob("*")) == []
+
+
+def test_upload_allowlist_matches_the_inline_delivery_mapping():
+    """
+    The two lists have to agree: a type accepted for a media block but absent
+    from the inline mapping would upload and then download instead of render.
+    """
+    import app.media.router as media_module
+    from app.main import INLINE_MEDIA_TYPES
+
+    permitted = set().union(*media_module._CATEGORY_EXTENSIONS.values())
+    assert permitted <= set(INLINE_MEDIA_TYPES)
+
+
+def test_upload_allowlist_excludes_svg():
+    import app.media.router as media_module
+    from app.main import INLINE_MEDIA_TYPES
+
+    permitted = set().union(*media_module._CATEGORY_EXTENSIONS.values())
+    assert ".svg" not in permitted
+    assert ".svg" not in INLINE_MEDIA_TYPES
+
+
 # ─── Delete ───────────────────────────────────────────────────────────────────
 
 

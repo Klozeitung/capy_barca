@@ -144,6 +144,10 @@
     "signupDisabled": "Registration is disabled."
   },
   "errors": {
+    "uploadFailed": "Upload failed.",
+    "uploadTooLarge": "The file exceeds the server's size limit.",
+    "uploadTypeNotAllowed": "This file type is not allowed for this block.",
+    "uploadForbidden": "You are not allowed to upload to this block.",
     "loadFailed": "Failed to load.",
     "saveFailed": "Failed to save."
   },
@@ -728,6 +732,11 @@
     }
   },
   "help": {
+    "sectionFiles": "Files",
+    "filesTitle": "Files and uploads",
+    "filesSize": "The server limits how large a single upload may be. If a file goes over that limit, the block says so while uploading.",
+    "filesTypes": "Image, video, audio and PDF blocks only accept their matching formats. SVG is excluded, because an SVG file can carry scripts and would be rendered directly inside the block.",
+    "filesDownload": "File and drive blocks accept anything. Those are always downloaded rather than opened in the browser.",
     "title": "Help",
     "sectionBlocks": "Block Types",
     "sectionShortcuts": "Shortcuts",

@@ -63,6 +63,30 @@ STATIC_ROOT: Path = Path("static/uploads")
 MEDIA_CATEGORIES: frozenset[str] = frozenset({"image", "video", "audio", "pdf"})
 VALID_CATEGORIES: frozenset[str] = MEDIA_CATEGORIES | frozenset({"file", "drive"})
 
+# ── Upload limits and permitted types ─────────────────────────────────────────
+# The ceiling is enforced here as well as in nginx. nginx stops an oversized
+# body at the edge; this stops one that arrives by any other route and produces
+# a JSON answer the frontend can present, instead of nginx's HTML error page.
+_MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "100")) * 1024 * 1024
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+_UPLOAD_TOO_LARGE = "The file exceeds the upload size limit"
+_UPLOAD_TYPE_REFUSED = "This file type is not allowed for this block"
+
+# Extensions the four media categories accept. The list is deliberately short
+# and excludes SVG: an SVG is a document that can carry script, and an image
+# block renders its source inline.
+#
+# The 'file' and 'drive' categories take arbitrary attachments and are absent
+# here on purpose. What makes them safe is the delivery side, where anything
+# outside INLINE_MEDIA_TYPES in app/main.py is handed out as a download with
+# a neutral content type.
+_CATEGORY_EXTENSIONS: dict[str, frozenset[str]] = {
+    "image": frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp"}),
+    "video": frozenset({".mp4", ".webm", ".ogv", ".mov", ".m4v"}),
+    "audio": frozenset({".mp3", ".wav", ".ogg", ".oga", ".m4a", ".flac", ".aac"}),
+    "pdf": frozenset({".pdf"}),
+}
+
 # ── Bookmark fetching ─────────────────────────────────────────────────────────
 # One message for every refusal reason. Distinguishing "blocked address" from
 # "does not resolve" would turn the endpoint into a probe for which internal
@@ -389,6 +413,10 @@ async def upload_file(
     Returns the generated ``file_uuid``, public URL, original filename,
     byte size, and MIME type. The caller is responsible for persisting these
     values in the block's ``content`` field via the blocks API.
+
+    Refuses a type the category does not accept with 415, and an upload past
+    the size ceiling with 413. A partial file from a refused upload is removed
+    before the error is raised.
     """
     if category not in VALID_CATEGORIES:
         raise HTTPException(status_code=400, detail=f"Unknown category: {category!r}")
@@ -402,18 +430,38 @@ async def upload_file(
     if not ext and file.content_type:
         ext = mimetypes.guess_extension(file.content_type) or ""
 
+    permitted = _CATEGORY_EXTENSIONS.get(category)
+    if permitted is not None and ext not in permitted:
+        raise HTTPException(status_code=415, detail=_UPLOAD_TYPE_REFUSED)
+
     stored_name = f"{file_uuid}{ext}"
     dest_dir = _storage_dir(category, block_id_str)
     dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / stored_name
 
-    contents = await file.read()
-    (dest_dir / stored_name).write_bytes(contents)
+    # Written in chunks rather than read whole: a single read pulls the entire
+    # upload into memory before anything is checked, so the size limit would
+    # arrive after the damage. Streaming also lets the ceiling stop the write
+    # at the moment it is crossed.
+    size = 0
+    too_large = False
+    with dest_path.open("wb") as sink:
+        while chunk := await file.read(_UPLOAD_CHUNK_BYTES):
+            size += len(chunk)
+            if size > _MAX_UPLOAD_BYTES:
+                too_large = True
+                break
+            sink.write(chunk)
+
+    if too_large:
+        dest_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=413, detail=_UPLOAD_TOO_LARGE)
 
     return UploadResponse(
         file_uuid=file_uuid,
         url=_public_url(category, block_id_str, stored_name),
         filename=original_name,
-        size=len(contents),
+        size=size,
         mime=file.content_type or "application/octet-stream",
     )
 

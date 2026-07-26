@@ -34,6 +34,9 @@ services:
       TAILSCALE_IP: "${TAILSCALE_IP}"
       TAILSCALE_HOSTNAME: "${TAILSCALE_HOSTNAME}"
       PORT_FRONTEND: "${PORT_FRONTEND:-1701}"
+      # Upload ceiling. Passed to both services from one place so nginx and the
+      # application cannot end up enforcing different numbers.
+      MAX_UPLOAD_MB: "${MAX_UPLOAD_MB:-100}"
     volumes:
       - ./ssl:/app/ssl:ro
       - ./static/uploads:/app/static/uploads
@@ -56,6 +59,8 @@ services:
     environment:
       PORT_BACKEND: "${PORT_BACKEND:-17012}"
       PORT_FRONTEND: "${PORT_FRONTEND:-1701}"
+      # Substituted into nginx.conf as client_max_body_size at container start.
+      MAX_UPLOAD_MB: "${MAX_UPLOAD_MB:-100}"
     volumes:
       - ./ssl:/etc/nginx/ssl:ro
     ports:

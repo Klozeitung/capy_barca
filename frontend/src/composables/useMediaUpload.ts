@@ -7,10 +7,13 @@
  * All async functions return values rather than using callbacks so callers can
  * act on results with plain ``await`` in their event handlers.
  *
- * HTTP 413 (Request Entity Too Large) is surfaced as a dedicated, localised
- * error message so the block dropzones can display it as a tooltip.
+ * Rejections the server can give are surfaced as their own localised messages
+ * so the block dropzones can display them as a tooltip: 413 when the file is
+ * past the size ceiling, 415 when the block does not accept that type, 403
+ * when the block is not the caller's to write to.
  */
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 export type MediaCategory = 'image' | 'video' | 'audio' | 'pdf' | 'file' | 'drive'
 
@@ -24,6 +27,7 @@ export interface UploadedFile {
 }
 
 export function useMediaUpload(category: MediaCategory, blockId: string) {
+  const { t } = useI18n()
   const isDragging = ref(false)
   const isUploading = ref(false)
   const error = ref<string | null>(null)
@@ -42,16 +46,14 @@ export function useMediaUpload(category: MediaCategory, blockId: string) {
         credentials: 'include',
       })
       if (!res.ok) {
-        if (res.status === 413) {
-          throw new Error(
-            'Die Datei, die du versucht hast, hochzuladen, übersteigt die verbliebene Kapazität des Servers.',
-          )
-        }
-        throw new Error(`Upload fehlgeschlagen (${res.status})`)
+        if (res.status === 413) throw new Error(t('errors.uploadTooLarge'))
+        if (res.status === 415) throw new Error(t('errors.uploadTypeNotAllowed'))
+        if (res.status === 403) throw new Error(t('errors.uploadForbidden'))
+        throw new Error(t('errors.uploadFailed'))
       }
       return (await res.json()) as UploadedFile
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Upload fehlgeschlagen'
+      error.value = e instanceof Error ? e.message : t('errors.uploadFailed')
       return null
     } finally {
       isUploading.value = false

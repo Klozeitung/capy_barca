@@ -13,6 +13,8 @@
  *  shortcuts – Keyboard / mouse shortcut reference for:
  *                • Drag-handle modifier clicks
  *                • Editor keyboard shortcuts
+ *  files     – What the server accepts for uploads and how it hands files
+ *              back out again.
  */
 import { ref, computed } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -28,6 +30,7 @@ const SECTIONS = [
   { key: 'blocks',      labelKey: 'help.sectionBlocks',      icon: 'mdi:view-grid-outline' },
   { key: 'shortcuts',   labelKey: 'help.sectionShortcuts',   icon: 'mdi:keyboard-outline' },
   { key: 'databases',   labelKey: 'help.sectionDatabases',   icon: 'mdi:database-cog-outline' },
+  { key: 'files',       labelKey: 'help.sectionFiles',       icon: 'mdi:tray-arrow-up' },
   { key: 'permissions', labelKey: 'help.sectionPermissions', icon: 'mdi:shield-lock-outline' },
 ] as const
 
@@ -266,6 +269,16 @@ const permissionModes = [
                 <p class="hm__permissions-intro">{{ t('help.databasesDates') }}</p>
                 <p class="hm__permissions-intro">{{ t('help.databasesGroups') }}</p>
                 <p class="hm__permissions-intro">{{ t('help.databasesKeying') }}</p>
+              </div>
+            </template>
+
+            <!-- ── Files and uploads ────────────────────────────────────── -->
+            <template v-else-if="activeSection === 'files'">
+              <div class="hm__group">
+                <p class="hm__group-label">{{ t('help.filesTitle') }}</p>
+                <p class="hm__permissions-intro">{{ t('help.filesSize') }}</p>
+                <p class="hm__permissions-intro">{{ t('help.filesTypes') }}</p>
+                <p class="hm__permissions-intro">{{ t('help.filesDownload') }}</p>
               </div>
             </template>
 

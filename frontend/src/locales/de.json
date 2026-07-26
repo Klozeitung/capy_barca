@@ -144,6 +144,10 @@
     "signupDisabled": "Registrierung ist deaktiviert."
   },
   "errors": {
+    "uploadFailed": "Upload fehlgeschlagen.",
+    "uploadTooLarge": "Die Datei überschreitet das Größenlimit des Servers.",
+    "uploadTypeNotAllowed": "Dieser Dateityp ist für diesen Block nicht zugelassen.",
+    "uploadForbidden": "Keine Berechtigung, in diesen Block hochzuladen.",
     "loadFailed": "Laden fehlgeschlagen.",
     "saveFailed": "Speichern fehlgeschlagen."
   },
@@ -715,6 +719,11 @@
     }
   },
   "help": {
+    "sectionFiles": "Dateien",
+    "filesTitle": "Dateien und Uploads",
+    "filesSize": "Der Server begrenzt die Größe einzelner Uploads. Überschreitet eine Datei das Limit, meldet der Block das direkt beim Hochladen.",
+    "filesTypes": "Bild-, Video-, Audio- und PDF-Blöcke nehmen nur die jeweils passenden Formate an. SVG ist ausgenommen, weil eine SVG-Datei Skripte enthalten kann und im Block direkt dargestellt würde.",
+    "filesDownload": "Datei- und Ablage-Blöcke nehmen beliebige Dateien. Diese werden immer heruntergeladen statt im Browser geöffnet.",
     "title": "Hilfe",
     "sectionBlocks": "Block-Typen",
     "sectionShortcuts": "Tastaturkürzel",
