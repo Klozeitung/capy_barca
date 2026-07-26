@@ -2,27 +2,19 @@
 Tests for block event emission and the history/revert HTTP endpoints.
 
 Event emission is tested at the service level to avoid coupling the tests
-to the router layer. HTTP-level history and revert tests use TestClient.
+to the router layer. HTTP-level history and revert tests use the shared
+``http_client`` fixture from conftest.py, which authenticates through the
+same dependency override every other router test uses and seeds the
+workspace root.
 """
 import uuid
-from unittest.mock import patch
 
 import pytest
-from fastapi.testclient import TestClient
 
 import app.session.session as s
 from app.blocks import repository as repo
 from app.blocks import service
 from app.blocks.models import WORKSPACE_ROOT_ID, Block
-from app.main import app
-
-
-# ─── Shared auth mock ─────────────────────────────────────────────────────────
-
-@pytest.fixture(autouse=True)
-def mock_auth():
-    with patch("app.blocks.router.validate_token", return_value=True):
-        yield
 
 
 # ─── Unit-test fixtures (direct DB access) ───────────────────────────────────
@@ -48,26 +40,6 @@ def page(db, workspace):
     block = repo.create_block(db, type="page", position=1.0, parent_id=workspace.id)
     db.commit()
     return block
-
-
-# ─── HTTP-test fixture ────────────────────────────────────────────────────────
-
-@pytest.fixture
-def http_client(isolated_db):
-    """
-    TestClient with workspace root pre-seeded and session cookie set on the
-    client instance (avoids the per-request cookies DeprecationWarning).
-    isolated_db is explicitly requested to guarantee fixture ordering: the
-    in-memory DB must be ready before we seed the workspace root.
-    """
-    with s.SessionLocal() as db:
-        block = Block(id=WORKSPACE_ROOT_ID, type="workspace", position=0.0)
-        db.add(block)
-        db.commit()
-
-    client = TestClient(app)
-    client.cookies.set("session", "test-token")
-    return client
 
 
 # ─── Event emission (unit level) ──────────────────────────────────────────────

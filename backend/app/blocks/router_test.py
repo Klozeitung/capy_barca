@@ -1,18 +1,22 @@
 """
 Tests for the block router.
 
-All tests exercise the HTTP layer via FastAPI's TestClient. Auth is handled
-by monkeypatching ``validate_token`` to return ``True``, which avoids a
-dependency on a live session in the database while still verifying that the
-auth guard is wired correctly through a dedicated test that patches it to
-return ``False``.
+All tests exercise the HTTP layer via FastAPI's TestClient. Authentication is
+supplied by overriding ``app.session.deps.get_current_user``, the same gate the
+router uses in production — there is no longer a module-local ``validate_token``
+to monkeypatch, because the router no longer has its own auth path.
 
-A workspace root block is seeded before each test via the ``http_client``
-fixture so that foreign key constraints on ``parent_id`` are satisfied from
-the first request.
+Unauthenticated behaviour is checked with ``anon_client``, which carries no
+override and therefore runs the real dependency chain.
+
+A workspace root block is seeded before each test via the ``http_client`` or
+``workspace_root`` fixture so that foreign key constraints on ``parent_id`` are
+satisfied from the first request.
+
+Authorization tests live at the end of the file. They cover the object-level
+guard that every block-addressed endpoint now applies.
 """
 import uuid
-from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,17 +24,94 @@ from fastapi.testclient import TestClient
 import app.session.session as s
 from app.blocks.models import WORKSPACE_ROOT_ID, Block
 from app.main import app
+from app.permissions import repository as perm_repo
+from app.session.deps import get_current_user, require_session
+from app.users.model import User
+
+# Module-level client with no dependency overrides, for 401 checks. Created
+# once at import time; the overrides it must not see are installed and torn
+# down per test by the fixtures below.
+anon_client = TestClient(app)
 
 
-@pytest.fixture(autouse=True)
-def mock_auth():
-    """Patch validate_token to return True for all router tests."""
-    with patch("app.blocks.router.validate_token", return_value=True):
-        yield
+def _make_user(role="member", is_active=True, persist=True):
+    """Build a User, optionally inserting the row the permission layer expects."""
+    user = User(
+        id=uuid.uuid4(),
+        username=f"user_{uuid.uuid4().hex[:8]}",
+        password_hash="x",
+        role=role,
+        is_active=is_active,
+    )
+    if persist:
+        with s.SessionLocal() as db:
+            db.add(user)
+            db.commit()
+            # refresh before expunge: the session expires attributes on commit,
+            # and a detached instance cannot reload them.
+            db.refresh(user)
+            db.expunge(user)
+    return user
+
+
+def _seed_root():
+    """Insert the workspace root that Alembic normally provides."""
+    with s.SessionLocal() as db:
+        db.merge(Block(id=WORKSPACE_ROOT_ID, type="workspace", position=0.0, state="active"))
+        db.commit()
+
+
+def _seed_block(owner_id=None, mode="private", grants=(), block_type="page",
+                state="active"):
+    """
+    Create a block under the workspace root with an explicit permission row.
+
+    Returns the new block id as a string, which is the form every endpoint URL
+    below needs.
+    """
+    block_id = uuid.uuid4()
+    with s.SessionLocal() as db:
+        block = Block(
+            id=block_id,
+            parent_id=WORKSPACE_ROOT_ID,
+            type=block_type,
+            position=1.0,
+            state=state,
+        )
+        block.owner_id = owner_id
+        db.add(block)
+        db.flush()
+        perm_repo.set_permission(db, block_id, mode, list(grants))
+        db.commit()
+    return str(block_id)
 
 
 @pytest.fixture
-def http_client(isolated_db, monkeypatch):
+def workspace_root(isolated_db):
+    """Seed the workspace root without installing any auth override."""
+    _seed_root()
+
+
+@pytest.fixture
+def client_factory(isolated_db):
+    """
+    Return a builder for TestClients authenticated as a specific user.
+
+    Used by the authorization tests, which need more than one identity in a
+    single test — an owner and an unrelated member, for instance.
+    """
+    def _make(user):
+        app.dependency_overrides[get_current_user] = lambda: user
+        client = TestClient(app)
+        client.cookies.set("session", "test-token")
+        return client
+
+    yield _make
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def http_client(isolated_db):
     """
     TestClient with workspace root pre-seeded and session cookie set on the
     client instance (avoids the per-request cookies DeprecationWarning).
@@ -39,51 +120,78 @@ def http_client(isolated_db, monkeypatch):
     the in-memory DB must be ready before we seed the workspace root.
 
     ``get_current_user`` is overridden via FastAPI dependency overrides so
-    that endpoints which need the current user (for permissions / owner_id)
-    receive a fake admin user without a live session.
+    that endpoints receive a fake admin user without a live session. Admins
+    bypass the permission layer, so these tests exercise endpoint behaviour
+    rather than authorization; authorization has its own section below.
     """
-    import uuid as _uuid
-    from app.main import app as _app
-    from app.session.deps import get_current_user
-    from app.users.model import User
-
     fake_user = User(
-        id=_uuid.uuid4(),
+        id=uuid.uuid4(),
         username="testuser",
         password_hash="x",
         role="admin",
         is_active=True,
     )
-    _app.dependency_overrides[get_current_user] = lambda: fake_user
+    app.dependency_overrides[get_current_user] = lambda: fake_user
 
-    with s.SessionLocal() as db:
-        block = Block(id=WORKSPACE_ROOT_ID, type="workspace", position=0.0)
-        db.add(block)
-        db.commit()
+    _seed_root()
 
-    client = TestClient(_app)
+    client = TestClient(app)
     client.cookies.set("session", "test-token")
     yield client
 
-    _app.dependency_overrides.clear()
+    app.dependency_overrides.clear()
 
 
 # ─── Auth guard ───────────────────────────────────────────────────────────────
 
 
-def test_create_block_requires_auth(http_client):
-    with patch("app.blocks.router.validate_token", return_value=False):
-        response = http_client.post(
-            "/api/blocks",
-            json={"type": "page", "parent_id": str(WORKSPACE_ROOT_ID)},
+def test_create_block_requires_auth(workspace_root):
+    """No session cookie, no override: the shared dependency must reject it."""
+    response = anon_client.post(
+        "/api/blocks",
+        json={"type": "page", "parent_id": str(WORKSPACE_ROOT_ID)},
+    )
+    assert response.status_code == 401
+
+
+def test_get_block_requires_auth(workspace_root):
+    response = anon_client.get(f"/api/blocks/{WORKSPACE_ROOT_ID}")
+    assert response.status_code == 401
+
+
+def test_session_for_deleted_user_is_rejected(workspace_root):
+    """
+    A token that still validates but resolves to no user row must be refused.
+
+    This is the fail-open that used to live in ``_resolve_user_from_session``:
+    an unresolvable user returned None and every permission check was skipped.
+    ``get_current_user`` raises 401 instead.
+    """
+    app.dependency_overrides[require_session] = lambda: uuid.uuid4()
+    try:
+        client = TestClient(app)
+        client.cookies.set("session", "test-token")
+        response = client.patch(
+            f"/api/blocks/{WORKSPACE_ROOT_ID}", json={"content": {"title": "x"}}
         )
-    assert response.status_code == 401
+        assert response.status_code == 401
+    finally:
+        app.dependency_overrides.clear()
 
 
-def test_get_block_requires_auth(http_client):
-    with patch("app.blocks.router.validate_token", return_value=False):
-        response = http_client.get(f"/api/blocks/{WORKSPACE_ROOT_ID}")
-    assert response.status_code == 401
+def test_session_for_deactivated_user_is_rejected(workspace_root):
+    """A live session belonging to a deactivated account must not authenticate."""
+    inactive = _make_user(role="member", is_active=False)
+    app.dependency_overrides[require_session] = lambda: inactive.id
+    try:
+        client = TestClient(app)
+        client.cookies.set("session", "test-token")
+        response = client.patch(
+            f"/api/blocks/{WORKSPACE_ROOT_ID}", json={"content": {"title": "x"}}
+        )
+        assert response.status_code == 401
+    finally:
+        app.dependency_overrides.clear()
 
 
 # ─── POST /api/blocks ─────────────────────────────────────────────────────────
@@ -486,7 +594,6 @@ def test_purge_unknown_block_returns_404(http_client):
 def test_purge_drive_block_removes_drive_directory(http_client, tmp_path, monkeypatch):
     """Purging a drive block must delete its entire drive directory."""
     import app.media.router as media_module
-    import app.blocks.router as block_router_module
 
     fake_root = tmp_path / "uploads"
     monkeypatch.setattr(media_module, "STATIC_ROOT", fake_root)
@@ -791,3 +898,300 @@ def test_get_block_response_has_owner_id_field(http_client):
     resp = http_client.get(f"/api/blocks/{WORKSPACE_ROOT_ID}")
     assert resp.status_code == 200
     assert "owner_id" in resp.json()
+
+
+# ─── Object-level authorization ───────────────────────────────────────────────
+#
+# Every endpoint that addresses a block by id now asks the permission layer as
+# well as the auth layer. The deny cases are parametrised because the guard is
+# uniform: it fires before any service or filesystem work, so the shape of the
+# request past the block id does not matter. The allow cases are written out
+# individually, because past the guard each endpoint has its own preconditions.
+
+
+def _update(client, bid):
+    return client.patch(f"/api/blocks/{bid}", json={"content": {"title": "x"}})
+
+
+def _appearance(client, bid):
+    return client.patch(f"/api/blocks/{bid}/appearance", json={"icon": "star"})
+
+
+def _upload_cover(client, bid):
+    return client.post(
+        f"/api/blocks/{bid}/cover",
+        files={"file": ("cover.png", b"img", "image/png")},
+    )
+
+
+def _remove_cover(client, bid):
+    return client.delete(f"/api/blocks/{bid}/cover")
+
+
+def _move(client, bid):
+    return client.post(
+        f"/api/blocks/{bid}/move",
+        json={"new_parent_id": str(WORKSPACE_ROOT_ID), "new_position": 5.0},
+    )
+
+
+def _duplicate(client, bid):
+    return client.post(f"/api/blocks/{bid}/duplicate")
+
+
+def _soft_delete(client, bid):
+    return client.delete(f"/api/blocks/{bid}")
+
+
+def _restore(client, bid):
+    return client.post(f"/api/blocks/{bid}/restore")
+
+
+def _purge(client, bid):
+    return client.delete(f"/api/blocks/{bid}/purge")
+
+
+def _rebalance(client, bid):
+    return client.post(f"/api/blocks/{bid}/rebalance-children")
+
+
+def _upsert_preference(client, bid):
+    return client.put(f"/api/blocks/{bid}/preferences/view", json={"value": 1})
+
+
+def _revert(client, bid):
+    return client.post(f"/api/blocks/{bid}/revert/{uuid.uuid4()}")
+
+
+WRITE_ENDPOINTS = [
+    ("update_block", _update),
+    ("update_appearance", _appearance),
+    ("upload_cover", _upload_cover),
+    ("remove_cover", _remove_cover),
+    ("move_block", _move),
+    ("duplicate_block", _duplicate),
+    ("soft_delete_block", _soft_delete),
+    ("restore_block", _restore),
+    ("purge_block", _purge),
+    ("rebalance_children", _rebalance),
+    ("upsert_preference", _upsert_preference),
+    ("revert_event", _revert),
+]
+
+_IDS = [name for name, _ in WRITE_ENDPOINTS]
+
+
+@pytest.mark.parametrize("name,call", WRITE_ENDPOINTS, ids=_IDS)
+def test_write_on_foreign_private_block_returns_403(
+    workspace_root, client_factory, name, call
+):
+    """A member must not reach a private block belonging to someone else."""
+    member = _make_user()
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    client = client_factory(member)
+    assert call(client, block_id).status_code == 403
+
+
+@pytest.mark.parametrize("name,call", WRITE_ENDPOINTS, ids=_IDS)
+def test_write_on_whitelist_block_without_grant_returns_403(
+    workspace_root, client_factory, name, call
+):
+    member = _make_user()
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="whitelist", grants=[])
+    client = client_factory(member)
+    assert call(client, block_id).status_code == 403
+
+
+@pytest.mark.parametrize("name,call", WRITE_ENDPOINTS, ids=_IDS)
+def test_write_denied_before_any_side_effect(
+    workspace_root, client_factory, name, call
+):
+    """The block must be untouched after a refused write."""
+    member = _make_user()
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    client = client_factory(member)
+    call(client, block_id)
+    with s.SessionLocal() as db:
+        block = db.get(Block, uuid.UUID(block_id))
+    assert block is not None
+    assert block.state == "active"
+
+
+# ── Allow cases ───────────────────────────────────────────────────────────────
+
+
+def test_owner_may_update_own_private_block(workspace_root, client_factory):
+    member = _make_user()
+    block_id = _seed_block(owner_id=member.id, mode="private")
+    client = client_factory(member)
+    assert _update(client, block_id).status_code == 200
+
+
+def test_owner_may_change_appearance(workspace_root, client_factory):
+    member = _make_user()
+    block_id = _seed_block(owner_id=member.id, mode="private")
+    client = client_factory(member)
+    assert _appearance(client, block_id).status_code == 200
+
+
+def test_owner_may_soft_delete_own_block(workspace_root, client_factory):
+    member = _make_user()
+    block_id = _seed_block(owner_id=member.id, mode="private")
+    client = client_factory(member)
+    assert _soft_delete(client, block_id).status_code == 200
+
+
+def test_owner_may_write_preference(workspace_root, client_factory):
+    member = _make_user()
+    block_id = _seed_block(owner_id=member.id, mode="private")
+    client = client_factory(member)
+    assert _upsert_preference(client, block_id).status_code == 200
+
+
+def test_owner_may_duplicate_own_block(workspace_root, client_factory):
+    member = _make_user()
+    block_id = _seed_block(owner_id=member.id, mode="private")
+    client = client_factory(member)
+    assert _duplicate(client, block_id).status_code == 201
+
+
+def test_whitelisted_member_may_update(workspace_root, client_factory):
+    member = _make_user()
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="whitelist", grants=[member.id])
+    client = client_factory(member)
+    assert _update(client, block_id).status_code == 200
+
+
+def test_everyone_mode_allows_any_member_to_update(workspace_root, client_factory):
+    member = _make_user()
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="everyone")
+    client = client_factory(member)
+    assert _update(client, block_id).status_code == 200
+
+
+def test_admin_bypasses_block_permissions(workspace_root, client_factory):
+    admin = _make_user(role="admin")
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    client = client_factory(admin)
+    assert _update(client, block_id).status_code == 200
+
+
+def test_unknown_block_still_returns_404_not_403(workspace_root, client_factory):
+    """The guard must not turn a genuine 404 into a permission error."""
+    member = _make_user()
+    client = client_factory(member)
+    assert _update(client, str(uuid.uuid4())).status_code == 404
+
+
+# ── Reads answer 404, so they do not confirm the id exists ────────────────────
+
+
+def test_get_foreign_private_block_returns_404(workspace_root, client_factory):
+    member = _make_user()
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    client = client_factory(member)
+    assert client.get(f"/api/blocks/{block_id}").status_code == 404
+
+
+def test_owner_may_read_own_private_block(workspace_root, client_factory):
+    member = _make_user()
+    block_id = _seed_block(owner_id=member.id, mode="private")
+    client = client_factory(member)
+    assert client.get(f"/api/blocks/{block_id}").status_code == 200
+
+
+def test_history_of_foreign_private_block_returns_404(workspace_root, client_factory):
+    """History carries full before/after content and is gated like a read."""
+    member = _make_user()
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    client = client_factory(member)
+    assert client.get(f"/api/blocks/{block_id}/history").status_code == 404
+
+
+def test_preferences_of_foreign_private_block_returns_404(workspace_root, client_factory):
+    member = _make_user()
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    client = client_factory(member)
+    assert client.get(f"/api/blocks/{block_id}/preferences").status_code == 404
+
+
+def test_single_preference_of_foreign_private_block_returns_404(
+    workspace_root, client_factory
+):
+    member = _make_user()
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    client = client_factory(member)
+    resp = client.get(f"/api/blocks/{block_id}/preferences/view")
+    assert resp.status_code == 404
+
+
+def test_children_of_foreign_private_block_returns_404(workspace_root, client_factory):
+    member = _make_user()
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    client = client_factory(member)
+    assert client.get(f"/api/blocks/{block_id}/children").status_code == 404
+
+
+def test_trash_excludes_blocks_owned_by_others(workspace_root, client_factory):
+    member = _make_user()
+    _seed_block(owner_id=uuid.uuid4(), mode="private", state="trash")
+    mine = _seed_block(owner_id=member.id, mode="private", state="trash")
+    client = client_factory(member)
+    ids = [b["id"] for b in client.get("/api/blocks/trash").json()]
+    assert mine in ids
+    assert len(ids) == 1
+
+
+# ── Creation is checked against the parent ────────────────────────────────────
+
+
+def test_create_under_foreign_private_parent_returns_403(workspace_root, client_factory):
+    member = _make_user()
+    parent_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    client = client_factory(member)
+    resp = client.post("/api/blocks", json={"type": "page", "parent_id": parent_id})
+    assert resp.status_code == 403
+
+
+def test_create_under_own_parent_is_allowed(workspace_root, client_factory):
+    member = _make_user()
+    parent_id = _seed_block(owner_id=member.id, mode="private")
+    client = client_factory(member)
+    resp = client.post("/api/blocks", json={"type": "page", "parent_id": parent_id})
+    assert resp.status_code == 201
+
+
+def test_create_stamps_the_authenticated_user_as_owner(workspace_root, client_factory):
+    member = _make_user()
+    parent_id = _seed_block(owner_id=member.id, mode="private")
+    client = client_factory(member)
+    resp = client.post("/api/blocks", json={"type": "page", "parent_id": parent_id})
+    assert resp.json()["owner_id"] == str(member.id)
+
+
+# ── Move is checked at both ends ──────────────────────────────────────────────
+
+
+def test_move_into_inaccessible_parent_returns_403(workspace_root, client_factory):
+    """Owning the block being moved is not enough; the destination counts too."""
+    member = _make_user()
+    own = _seed_block(owner_id=member.id, mode="private")
+    foreign_parent = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    client = client_factory(member)
+    resp = client.post(
+        f"/api/blocks/{own}/move",
+        json={"new_parent_id": foreign_parent, "new_position": 1.0},
+    )
+    assert resp.status_code == 403
+
+
+def test_move_within_own_blocks_is_allowed(workspace_root, client_factory):
+    member = _make_user()
+    own = _seed_block(owner_id=member.id, mode="private")
+    own_parent = _seed_block(owner_id=member.id, mode="private")
+    client = client_factory(member)
+    resp = client.post(
+        f"/api/blocks/{own}/move",
+        json={"new_parent_id": own_parent, "new_position": 1.0},
+    )
+    assert resp.status_code == 200

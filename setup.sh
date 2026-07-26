@@ -35,40 +35,106 @@ fi
 
 # ─── Prerequisites ────────────────────────────────────────────────────────────
 
+# Every external tool this script depends on is checked here, together with
+# the reason it is needed. A tool that is only discovered to be missing
+# halfway through leaves a half-configured installation behind, and in the
+# case of python3 the failure used to abort the script without printing
+# anything at all.
+
 echo "Checking prerequisites..."
 
-get_install_hint() {
-    if command -v dnf &> /dev/null; then
-        echo "sudo dnf install docker docker-compose"
-    elif command -v apt &> /dev/null; then
-        echo "sudo apt install docker.io docker-compose"
+pkg_hint() {
+    local TOOL=$1
+    if command -v apt &> /dev/null; then
+        case "${TOOL}" in
+            docker)  echo "sudo apt install docker.io" ;;
+            compose) echo "sudo apt install docker-compose-v2" ;;
+            *)       echo "sudo apt install ${TOOL}" ;;
+        esac
+    elif command -v dnf &> /dev/null; then
+        case "${TOOL}" in
+            docker)  echo "sudo dnf install docker" ;;
+            compose) echo "sudo dnf install docker-compose-plugin" ;;
+            *)       echo "sudo dnf install ${TOOL}" ;;
+        esac
     elif command -v pacman &> /dev/null; then
-        echo "sudo pacman -S docker docker-compose"
+        case "${TOOL}" in
+            compose) echo "sudo pacman -S docker-compose" ;;
+            *)       echo "sudo pacman -S ${TOOL}" ;;
+        esac
     elif command -v zypper &> /dev/null; then
-        echo "sudo zypper install docker docker-compose"
+        case "${TOOL}" in
+            compose) echo "sudo zypper install docker-compose" ;;
+            *)       echo "sudo zypper install ${TOOL}" ;;
+        esac
     else
-        echo "https://docs.docker.com/engine/install/"
+        echo "install ${TOOL} with your package manager"
     fi
 }
 
-if ! command -v docker &> /dev/null; then
-    echo -e "${RED}[ERROR] Docker is not installed.${NC}"
-    echo "Please install with: $(get_install_hint)"
-    echo "Then run setup.sh again."
-    exit 1
-fi
+require_tool() {
+    local TOOL=$1
+    local REASON=$2
+    if ! command -v "${TOOL}" &> /dev/null; then
+        echo -e "${RED}[ERROR] ${TOOL} is not installed.${NC}"
+        echo "  Needed for: ${REASON}"
+        echo "  Install with: $(pkg_hint "${TOOL}")"
+        echo "  Then run setup.sh again."
+        exit 1
+    fi
+}
 
+require_tool docker "building and running the containers"
+
+# A failing 'docker info' has two very different causes. Reporting the wrong
+# one sends the user to restart a daemon that is already running.
 if ! docker info &> /dev/null; then
-    echo -e "${RED}[ERROR] Docker daemon is not running.${NC}"
-    if command -v systemctl &> /dev/null; then
-        echo "Start with: sudo systemctl start docker"
+    if [ -S /var/run/docker.sock ] && [ ! -w /var/run/docker.sock ]; then
+        echo -e "${RED}[ERROR] No permission to access the Docker socket.${NC}"
+        echo "  The daemon is running, but this account may not talk to it."
+        echo "  Add the account to the docker group:"
+        echo ""
+        echo "    sudo usermod -aG docker $(id -un)"
+        echo ""
+        echo "  Then log out and back in. Group membership is established at"
+        echo "  login, so opening a new terminal in the same session is not"
+        echo "  enough."
     else
-        echo "Please start the Docker daemon manually."
+        echo -e "${RED}[ERROR] Docker daemon is not running.${NC}"
+        if command -v systemctl &> /dev/null; then
+            echo "  Start with: sudo systemctl start docker"
+        else
+            echo "  Please start the Docker daemon manually."
+        fi
     fi
     exit 1
 fi
 
-echo -e "${GREEN}[OK] Docker found.${NC}"
+# 'docker compose' (the v2 plugin) and 'docker-compose' (the standalone v1
+# binary) are different packages. This script uses the plugin exclusively, so
+# a machine carrying only v1 has to be told precisely what is missing.
+if ! docker compose version &> /dev/null; then
+    echo -e "${RED}[ERROR] The Docker Compose v2 plugin is not available.${NC}"
+    echo "  setup.sh uses 'docker compose', not the older standalone"
+    echo "  'docker-compose' binary. They are separate packages, and having"
+    echo "  the second one installed does not provide the first."
+    echo "  Install with: $(pkg_hint compose)"
+    echo "  If your distribution does not carry it:"
+    echo "    https://docs.docker.com/compose/install/linux/"
+    exit 1
+fi
+
+require_tool python3 "reading the hostname out of 'tailscale status --json'"
+require_tool curl "the backend health check after startup"
+
+echo -e "${GREEN}[OK] Docker, Compose v2, python3 and curl found.${NC}"
+
+# Not fatal: without ss the port check below cannot run, and ports are then
+# assumed to be free.
+if ! command -v ss &> /dev/null; then
+    echo -e "${YELLOW}[WARNING] ss not found - ports cannot be checked for use.${NC}"
+    echo "  They will be assumed free. Install iproute2 for the check."
+fi
 
 # ─── Stop running containers ──────────────────────────────────────────────────
 
@@ -121,6 +187,26 @@ get_missing_vars() {
     echo "${MISSING[@]}"
 }
 
+# Percent-encodes a string for use inside a URL. POSTGRES_PASSWORD is free
+# text and lands in DATABASE_URL, where an unencoded '@', ':', '/', '?' or '#'
+# would terminate a field early and produce a connection string that silently
+# points somewhere else. LC_ALL=C makes the loop walk bytes rather than
+# characters, so multi-byte input is encoded byte by byte as a URL requires.
+urlencode() {
+    local STRING=$1
+    local OUT=""
+    local I CHAR
+    local LC_ALL=C
+    for (( I = 0; I < ${#STRING}; I++ )); do
+        CHAR=${STRING:I:1}
+        case "${CHAR}" in
+            [a-zA-Z0-9.~_-]) OUT+="${CHAR}" ;;
+            *)               OUT+=$(printf '%%%02X' "'${CHAR}") ;;
+        esac
+    done
+    printf '%s' "${OUT}"
+}
+
 write_env() {
     # The container user is never asked for: it is always the account running
     # this script, because that account owns the repository and the
@@ -129,6 +215,25 @@ write_env() {
     local APP_GID_VALUE
     APP_UID_VALUE=$(id -u)
     APP_GID_VALUE=$(id -g)
+
+    local DB_USER_ENC
+    local DB_PASSWORD_ENC
+    local DB_NAME_ENC
+    DB_USER_ENC=$(urlencode "${1}")
+    DB_PASSWORD_ENC=$(urlencode "${2}")
+    DB_NAME_ENC=$(urlencode "${3}")
+
+    # docker compose reads .env as key=value. A '$' or '#' inside a value is
+    # not handled uniformly across compose versions, so it is flagged rather
+    # than silently accepted or silently rejected.
+    case "${2}" in
+        *'$'*|*'#'*)
+            echo -e "${YELLOW}[WARNING] The database password contains '$' or '#'.${NC}"
+            echo "  Those characters are not read back reliably from .env by every"
+            echo "  docker compose version. If the backend cannot reach the"
+            echo "  database afterwards, rerun setup.sh and choose a password"
+            echo "  without them." ;;
+    esac
 
     cat > .env << EOF
 # PostgreSQL
@@ -145,7 +250,9 @@ PORT_FRONTEND=${7}
 # FastAPI
 # Inside the Compose network PostgreSQL always listens on 5432, independently
 # of the published host port, so DATABASE_URL must address that port.
-DATABASE_URL=postgresql://${1}:${2}@db:5432/${3}
+# Credentials are percent-encoded here; POSTGRES_* above stay verbatim,
+# because PostgreSQL itself receives those directly and not through a URL.
+DATABASE_URL=postgresql://${DB_USER_ENC}:${DB_PASSWORD_ENC}@db:5432/${DB_NAME_ENC}
 SECRET_KEY=${4}
 # Development only. DEBUG=true starts uvicorn with --reload and drops the
 # Secure flag from the session cookie. Production installations keep it false.
@@ -170,6 +277,9 @@ APP_GID=${APP_GID_VALUE}
 # nginx overwrites the header. See README.
 FORWARDED_ALLOW_IPS=*
 EOF
+    # .env carries SECRET_KEY and the database password and must not be
+    # readable by other accounts on the host.
+    chmod 600 .env
     echo -e "${GREEN}[OK] .env saved.${NC}"
 }
 
@@ -411,6 +521,10 @@ else
     fi
 fi
 
+# An .env carried over from an older installation was written before the mode
+# was enforced, so it is corrected here as well as at creation time.
+chmod 600 .env 2>/dev/null || true
+
 # ─── DEBUG guard ─────────────────────────────────────────────────────────────
 #
 # Earlier installer versions wrote DEBUG=true into every .env. Keeping an .env
@@ -574,13 +688,18 @@ else
         exit 0
     fi
 
+    # Without the trailing '|| true' a non-zero exit here aborts the whole
+    # script under 'set -e' before the check below can report anything, which
+    # produces a silent stop with no output.
     TS_HOSTNAME=$(tailscale status --json | python3 -c \
         "import sys, json; d = json.load(sys.stdin); print(d['Self']['DNSName'].rstrip('.'))" \
-        2>/dev/null)
+        2>/dev/null || true)
 
     if [ -z "$TS_HOSTNAME" ]; then
-        echo -e "${RED}[ERROR] Could not determine Tailscale hostname.${NC}"
-        echo "Please check manually: tailscale status"
+        echo -e "${RED}[ERROR] Could not determine the Tailscale hostname.${NC}"
+        echo "  'tailscale status --json' returned nothing usable. Check that"
+        echo "  Tailscale is connected and MagicDNS is enabled:"
+        echo "    tailscale status"
         exit 1
     fi
 
@@ -744,7 +863,7 @@ done
 
 echo ""
 echo "Running database migrations..."
-if docker compose exec backend alembic upgrade head; then
+if docker compose exec -T backend alembic upgrade head; then
     echo -e "${GREEN}[OK] Migrations applied.${NC}"
 else
     echo -e "${RED}[ERROR] Migrations failed.${NC}"
@@ -775,7 +894,7 @@ fi
 
 echo "Suite: ${#BACKEND_TESTS[@]} test files from ${TEST_SUITE_FILE}"
 
-if docker compose exec backend pytest "${BACKEND_TESTS[@]}" -v; then
+if docker compose exec -T backend pytest "${BACKEND_TESTS[@]}" -v; then
     echo -e "${GREEN}[OK] Backend tests passed.${NC}"
 else
     echo ""
@@ -796,6 +915,9 @@ echo ""
 echo "  Local:    https://localhost:${PORT_FRONTEND}"
 echo "  External: https://${TAILSCALE_HOSTNAME}:${PORT_FRONTEND}"
 echo "  API Docs: Docker-internal only via ${PORT_BACKEND}/docs"
+echo ""
+echo "  On a first installation, open one of the addresses above. CapyBarca"
+echo "  asks for an administrator account before anything else can be used."
 echo ""
 echo "Cleaning up build cache..."
 echo ""

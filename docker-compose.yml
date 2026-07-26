@@ -64,7 +64,22 @@ services:
     volumes:
       - ./ssl:/etc/nginx/ssl:ro
     ports:
-      - "${PORT_FRONTEND:-1701}:${PORT_FRONTEND:-1701}"
+      # Bound to the tailnet address and to loopback, never to 0.0.0.0. A
+      # published port with no address binds every interface, which put the
+      # login page on the LAN as well as on the tailnet - the same exposure
+      # the db service avoids above.
+      #
+      # TAILSCALE_IP uses the ':?' form rather than a default on purpose. If
+      # the variable were allowed to fall back, an empty value would expand to
+      # a portless mapping and silently restore the exposure this line exists
+      # to remove. Compose refuses to start instead, and setup.sh guarantees
+      # the value is present.
+      #
+      # The loopback mapping is not optional: setup.sh checks backend health
+      # against https://localhost:${PORT_FRONTEND}/api/health, and backup.sh
+      # and restore.sh run on the host as well.
+      - "${TAILSCALE_IP:?TAILSCALE_IP is not set - run ./setup.sh}:${PORT_FRONTEND:-1701}:${PORT_FRONTEND:-1701}"
+      - "127.0.0.1:${PORT_FRONTEND:-1701}:${PORT_FRONTEND:-1701}"
     depends_on:
       - backend
       - collabora

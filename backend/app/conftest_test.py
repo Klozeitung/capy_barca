@@ -9,6 +9,7 @@ presence, and full isolation between test invocations.
 from sqlalchemy import inspect, text
 
 import app.session.session as s
+from app.blocks.models import WORKSPACE_ROOT_ID
 from app.session.session import SessionRecord
 
 
@@ -60,3 +61,36 @@ def test_revoked_token_is_absent_from_db():
     with s.SessionLocal() as db:
         record = db.get(SessionRecord, s._hash_token(token))
     assert record is None
+
+
+# ─── Shared session factory ───────────────────────────────────────────────────
+
+
+def test_deps_get_db_uses_the_isolated_session():
+    """
+    Every router reaches the database through ``app.session.deps.get_db``, the
+    block router included — it re-exports the dependency rather than defining
+    its own. The fixture therefore has to redirect that module's SessionLocal,
+    and this test fails if that patch is ever dropped.
+    """
+    from app.session.deps import get_db
+
+    generator = get_db()
+    db = next(generator)
+    try:
+        assert db.bind.dialect.name == "sqlite"
+    finally:
+        generator.close()
+
+
+def test_http_client_authenticates_the_block_router(http_client):
+    """
+    One dependency override is enough for every router.
+
+    The block router used to need a second mechanism as well — a monkeypatched
+    ``app.blocks.router.validate_token`` for its own module-local auth path.
+    That path is gone, and this test pins the replacement: the shared override
+    alone gets an authenticated request through.
+    """
+    response = http_client.get(f"/api/blocks/{WORKSPACE_ROOT_ID}")
+    assert response.status_code == 200

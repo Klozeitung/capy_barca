@@ -1,10 +1,21 @@
 """
 Block router.
 
-HTTP interface for block operations. All endpoints require a valid session
-cookie. Business logic is delegated entirely to the service layer; this
-module is responsible only for request parsing, auth enforcement, response
-shaping, HTTP error translation, and post-commit WebSocket broadcast.
+HTTP interface for block operations. Business logic is delegated entirely to
+the service layer; this module is responsible only for request parsing, auth
+enforcement, response shaping, HTTP error translation, and post-commit
+WebSocket broadcast.
+
+Authorization
+-------------
+Every endpoint resolves the caller through ``get_current_user`` from
+``app.session.deps``, the same gate every other router uses, and every handler
+that addresses a block by id additionally calls ``require_block_access``. A
+valid session establishes who the caller is, not what they may touch.
+
+Read handlers answer 404 for a block the caller may not see, so the response
+does not confirm that the id exists. Write handlers answer 403, because
+reaching them at all requires already knowing the id.
 
 Convention
 ----------
@@ -21,7 +32,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, Cookie, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
@@ -30,41 +41,12 @@ from app.blocks import service
 from app.blocks.computed import compute_cross_db_dependents, compute_same_db_rollup_dependents
 from app.blocks.service import BlockConflict, BlockNotFound
 from app.blocks.types import validate_block_type
-from app.database.database import SessionLocal
 from app.permissions import repository as perm_repo
-from app.session.session import validate_token
+from app.session.deps import get_current_user, get_db, require_block_access
 from app.users.model import User
 from app.ws.broadcaster import broadcast_block_event
 
 logger = logging.getLogger(__name__)
-
-
-def _resolve_user_from_session(db, session_token: Optional[str]) -> Optional[User]:
-    """
-    Resolve the authenticated User from a raw session token, or None.
-
-    Delegates to the module-local ``validate_token`` reference (patchable in
-    tests) which handles token hashing and expiry internally and returns the
-    ``user_id`` directly — no second DB round-trip via SessionRecord needed.
-
-    In test setups that patch ``validate_token`` to return ``True`` (a
-    non-UUID truthy value), ``db.get(User, True)`` returns None and
-    permission checks are skipped, preserving backward compatibility.
-
-    The block router already enforces authentication via ``require_session``;
-    this helper only provides user identity for owner_id stamping and
-    permission filtering without duplicating the auth gate.
-    """
-    if not session_token:
-        return None
-    # validate_token hashes the token and checks expiry; returns user_id or None.
-    user_id = validate_token(session_token)
-    if not user_id:
-        return None
-    try:
-        return db.get(User, user_id)
-    except Exception:
-        return None
 
 
 block_router = APIRouter(prefix="/api/blocks", tags=["blocks"])
@@ -156,34 +138,10 @@ def _collect_block_snapshots(db, root_id: uuid.UUID) -> list[dict]:
 
 
 # ─── DB dependency ────────────────────────────────────────────────────────────
-
-
-def get_db():
-    """Yield a database session and ensure it is closed after the request."""
-    with SessionLocal() as db:
-        yield db
-
-
-# ─── Auth ─────────────────────────────────────────────────────────────────────
-
-
-def require_session(session: Optional[str] = Cookie(default=None)) -> str:
-    """
-    Dependency that enforces a valid session cookie.
-
-    The local ``validate_token`` reference is intentionally kept here (rather
-    than importing ``require_session`` from ``app.session.deps``) so that the
-    existing test suite can patch ``app.blocks.router.validate_token`` to
-    bypass authentication without touching the shared deps module.
-
-    Raises
-    ------
-    HTTPException(401)
-        If the cookie is absent or the token is invalid / expired.
-    """
-    if not session or not validate_token(session):
-        raise HTTPException(status_code=401, detail="Nicht angemeldet")
-    return session
+#
+# ``get_db`` is re-exported from ``app.session.deps`` rather than redefined.
+# ``app.permissions.router`` and ``app.automations.automations_router`` import
+# it from this module, so the name has to stay resolvable here.
 
 
 # ─── Request / Response schemas ───────────────────────────────────────────────
@@ -318,10 +276,12 @@ def _handle_service_errors(exc: Exception) -> None:
 async def create_block(
     payload: BlockCreate,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """Create a new block under the given parent."""
-    current_user = _resolve_user_from_session(db, _session)
+    # The new block takes its place in the tree underneath the parent, so the
+    # parent is the object the caller has to be allowed to touch.
+    require_block_access(db, payload.parent_id, current_user)
     try:
         block = service.create_block(
             db,
@@ -350,7 +310,7 @@ async def create_block(
 @block_router.get("/trash", response_model=list[BlockResponse])
 def list_trash(
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Return all top-level trashed blocks (state='trash' whose parent is active or null).
@@ -361,8 +321,7 @@ def list_trash(
     Non-admin users only see trashed blocks they own.
     """
     blocks = repo.list_trash(db)
-    current_user = _resolve_user_from_session(db, _session)
-    if current_user is not None and current_user.role != "admin":
+    if current_user.role != "admin":
         blocks = [
             b for b in blocks
             if getattr(b, "owner_id", None) == current_user.id
@@ -374,18 +333,15 @@ def list_trash(
 def get_block(
     block_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """Return a single block by ID."""
     block = repo.get_block(db, block_id)
     if block is None:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
-    # Return 404 (not 403) for inaccessible blocks to avoid leaking existence.
-    # Permission check requires a resolved user; degrade gracefully to open
-    # access when the session cannot be resolved (e.g. in test setups that
-    # only patch validate_token without inserting a live session record).
-    current_user = _resolve_user_from_session(db, _session)
-    if current_user is not None and not perm_repo.can_user_access(db, block_id, current_user):
+    # 404 rather than 403 on purpose: a read must not confirm that an id the
+    # caller may not see exists at all.
+    if not perm_repo.can_user_access(db, block_id, current_user):
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
     return block
 
@@ -395,7 +351,7 @@ def list_children(
     block_id: uuid.UUID,
     state: Optional[str] = "active",
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Return all direct children of a block, ordered by position.
@@ -403,16 +359,15 @@ def list_children(
     The ``state`` query parameter filters by block state. Defaults to
     ``active``. Pass ``state=`` (empty) to return children of all states.
     Children that the current user may not access are silently excluded.
-    When the user cannot be resolved (e.g. test environments that only patch
-    ``validate_token``), the full child list is returned unfiltered.
     """
     try:
         repo.get_block_or_raise(db, block_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
+    if not perm_repo.can_user_access(db, block_id, current_user):
+        raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
     children = repo.list_children(db, block_id, state=state or None)
-    current_user = _resolve_user_from_session(db, _session)
-    if current_user is not None and current_user.role != "admin":
+    if current_user.role != "admin":
         children = [
             c for c in children
             if perm_repo.can_user_access(db, c.id, current_user)
@@ -425,12 +380,13 @@ async def update_block(
     block_id: uuid.UUID,
     payload: BlockUpdate,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """Update type, content, position, or state of a block."""
     before_block = repo.get_block(db, block_id)
     if before_block is None:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
+    require_block_access(db, block_id, current_user)
     try:
         before_snapshot = _block_to_dict(before_block)
         update_kwargs = payload.model_dump(exclude_none=True)
@@ -454,13 +410,14 @@ async def update_appearance(
     block_id: uuid.UUID,
     payload: BlockAppearanceUpdate,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """Update the icon and/or cover of a block."""
     try:
         before_block = repo.get_block(db, block_id)
         if before_block is None:
             raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
+        require_block_access(db, block_id, current_user)
         before_snapshot = _block_to_dict(before_block)
         block = service.update_block_appearance(
             db,
@@ -488,7 +445,7 @@ async def upload_cover(
     block_id: uuid.UUID,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Upload (or replace) the cover image for a page block.
@@ -506,6 +463,7 @@ async def upload_cover(
     block = repo.get_block(db, block_id)
     if block is None:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
+    require_block_access(db, block_id, current_user)
 
     # Determine extension from original filename; default to empty string.
     original_name = file.filename or ""
@@ -562,7 +520,7 @@ async def upload_cover(
 async def remove_cover(
     block_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Remove the cover image of a page block.
@@ -578,6 +536,7 @@ async def remove_cover(
     block = repo.get_block(db, block_id)
     if block is None:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
+    require_block_access(db, block_id, current_user)
 
     # Delete physical file(s) for this block.
     covers_dir = static_root / "covers"
@@ -617,13 +576,18 @@ async def move_block(
     block_id: uuid.UUID,
     payload: BlockMove,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """Move a block to a new parent and position."""
     try:
         before_block = repo.get_block(db, block_id)
         if before_block is None:
             raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
+        # Both ends of the move are checked. Permitting only the source would
+        # let a caller file a block they own underneath a parent they cannot
+        # reach; permitting only the target would let them take one away.
+        require_block_access(db, block_id, current_user)
+        require_block_access(db, payload.new_parent_id, current_user)
         before_snapshot = _block_to_dict(before_block)
         block = service.move(
             db,
@@ -650,7 +614,7 @@ async def move_block(
 async def duplicate_block(
     block_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Deep-duplicate a block and its entire active subtree.
@@ -664,6 +628,7 @@ async def duplicate_block(
     original = repo.get_block(db, block_id)
     if original is None:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
+    require_block_access(db, block_id, current_user)
 
     # Calculate the insertion position: midpoint between the original and its
     # next sibling, or original.position + 1 when there is no next sibling.
@@ -680,13 +645,12 @@ async def duplicate_block(
         parent_id = original.parent_id  # workspace-level blocks have no parent
 
     try:
-        _dup_user = _resolve_user_from_session(db, _session)
         new_block = service.deep_duplicate(
             db,
             block_id,
             parent_id=parent_id,
             position=position,
-            owner_id=_dup_user.id if _dup_user else None,
+            owner_id=current_user.id,
         )
         db.commit()
         await broadcast_block_event(
@@ -705,9 +669,10 @@ async def duplicate_block(
 async def soft_delete_block(
     block_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """Soft-delete a block and all its descendants (sets state to trash)."""
+    require_block_access(db, block_id, current_user)
     try:
         affected = service.soft_delete(db, block_id)
 
@@ -754,9 +719,10 @@ async def soft_delete_block(
 async def restore_block(
     block_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """Restore a trashed block and all its trashed descendants."""
+    require_block_access(db, block_id, current_user)
     try:
         restored = service.restore(db, block_id)
         db.commit()
@@ -777,13 +743,14 @@ async def restore_block(
 async def purge_block(
     block_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Permanently delete a trashed block and its entire subtree.
 
     The block must be in state ``trash`` before purging. Returns 204 No Content.
     """
+    require_block_access(db, block_id, current_user)
     try:
         # Snapshot the entire subtree BEFORE deletion so we know which
         # files to clean up from the filesystem.  After db.delete() the
@@ -827,7 +794,7 @@ async def purge_block(
 def rebalance_children(
     block_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Normalise the positions of all active children of *block_id* to evenly
@@ -841,6 +808,7 @@ def rebalance_children(
         repo.get_block_or_raise(db, block_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
+    require_block_access(db, block_id, current_user)
     try:
         rebalanced = service.rebalance_positions(db, block_id)
         db.commit()
@@ -860,11 +828,11 @@ def get_preference(
     block_id: uuid.UUID,
     key: str,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """Return a single preference value for a block."""
     block = repo.get_block(db, block_id)
-    if block is None:
+    if block is None or not perm_repo.can_user_access(db, block_id, current_user):
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
     pref = repo.get_preference(db, block_id, key)
     if pref is None:
@@ -883,12 +851,13 @@ def upsert_preference(
     key: str,
     payload: PreferenceUpdate,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """Create or update a preference value for a block."""
     block = repo.get_block(db, block_id)
     if block is None:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
+    require_block_access(db, block_id, current_user)
     pref = repo.upsert_preference(db, block_id, key, payload.value)
     db.commit()
     return pref
@@ -900,11 +869,11 @@ def upsert_preference(
 def list_preferences(
     block_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """Return all preference values for a block."""
     block = repo.get_block(db, block_id)
-    if block is None:
+    if block is None or not perm_repo.can_user_access(db, block_id, current_user):
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
     return repo.list_preferences(db, block_id)
 
@@ -917,11 +886,17 @@ def get_history(
     block_id: uuid.UUID,
     limit: int = 100,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
-    """Return the mutation history for a block, newest first."""
+    """
+    Return the mutation history for a block, newest first.
+
+    Each event carries the full ``before`` and ``after`` content snapshots, so
+    this endpoint discloses as much as reading the block itself and is gated
+    the same way.
+    """
     block = repo.get_block(db, block_id)
-    if block is None:
+    if block is None or not perm_repo.can_user_access(db, block_id, current_user):
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
     events = repo.list_events(db, block_id, limit=limit)
     return [
@@ -942,7 +917,7 @@ async def revert_event(
     block_id: uuid.UUID,
     event_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Revert a block to the ``before`` snapshot of the given event.
@@ -954,6 +929,7 @@ async def revert_event(
     block = repo.get_block(db, block_id)
     if block is None:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
+    require_block_access(db, block_id, current_user)
     event = repo.get_event(db, event_id)
     if event is None or event.block_id != block_id:
         raise HTTPException(status_code=404, detail=f"Event {event_id} not found")

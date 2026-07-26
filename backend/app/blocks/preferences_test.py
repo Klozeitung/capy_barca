@@ -1,34 +1,15 @@
 """
 Tests for the block preferences HTTP endpoints.
+
+Authentication and the workspace root come from the shared ``http_client``
+fixture in conftest.py, which overrides ``get_current_user`` — the same gate
+the block router uses in production.
 """
 import uuid
-from unittest.mock import patch
 
 import pytest
-from fastapi.testclient import TestClient
 
-import app.session.session as s
-from app.blocks.models import WORKSPACE_ROOT_ID, Block
-from app.main import app
-
-
-@pytest.fixture(autouse=True)
-def mock_auth():
-    with patch("app.blocks.router.validate_token", return_value=True):
-        yield
-
-
-@pytest.fixture
-def http_client(isolated_db):
-    """TestClient with workspace root seeded and session cookie on the instance."""
-    with s.SessionLocal() as db:
-        block = Block(id=WORKSPACE_ROOT_ID, type="workspace", position=0.0)
-        db.add(block)
-        db.commit()
-
-    client = TestClient(app)
-    client.cookies.set("session", "test-token")
-    return client
+from app.blocks.models import WORKSPACE_ROOT_ID
 
 
 @pytest.fixture
