@@ -10,6 +10,11 @@ from datetime import datetime as _DT, timezone
 import pytest
 
 from app.blocks.formula_engine import (
+    MAX_EXPRESSION_LENGTH,
+    MAX_OPERATOR_CHAIN,
+    MAX_PARSE_DEPTH,
+    MAX_POWER_EXPONENT,
+    MAX_POWER_RESULT_DIGITS,
     FormulaError,
     FormulaResult,
     evaluate,
@@ -1710,7 +1715,7 @@ def test_at_with_none_element():
 
 
 def test_at_date_string_element():
-    # Primary use-case from issue #13: index into a rollup date list
+    # Primary use case: index into a rollup date list
     result = ev("at(prop('Dates'), 0)", {"Dates": ["2024-06-15", "2025-01-01"]})
     assert result == "2024-06-15"
 
@@ -1821,3 +1826,242 @@ def test_rename_prop_result_still_evaluates():
     # End-to-end: after rename the formula resolves against the new context key.
     out = rename_prop_in_expression("prop('Old') + 5", "Old", "New")
     assert ev(out, {"New": 10}) == 15
+
+
+# ─── Resource limits ──────────────────────────────────────────────────────────
+#
+# Formulas are user input that runs on the server. Each block below covers one
+# way a short expression used to be able to occupy it, or to leave as something
+# other than a formula error.
+
+
+# ── Exponentiation ────────────────────────────────────────────────────────────
+
+
+def test_power_still_works_for_ordinary_values():
+    assert ev("2 ^ 10") == 1024
+    assert ev("2 ^ 0") == 1
+    assert ev("2 ^ -1") == 0.5
+    assert ev("(-2) ^ 3") == -8
+
+
+def test_power_allows_a_large_but_bounded_result():
+    """The bound has to leave real arithmetic alone."""
+    assert ev(f"2 ^ {MAX_POWER_EXPONENT}") == 2 ** MAX_POWER_EXPONENT
+
+
+def test_power_rejects_an_exponent_past_the_limit():
+    message = err(f"2 ^ {MAX_POWER_EXPONENT + 1}")
+    assert "exponent" in message
+
+
+def test_power_chain_is_refused():
+    """
+    ``9^9^9`` is three characters of input asking for 9 to the power of
+    387420489, because ``^`` binds to the right. This is the case the finding
+    names, and it used to run until the process was gone.
+    """
+    message = err("9 ^ 9 ^ 9")
+    assert "exponent" in message
+
+
+def test_power_deep_chain_is_refused():
+    assert err("9 ^ 9 ^ 9 ^ 9") != ""
+
+
+def test_power_rejects_a_result_that_would_be_enormous():
+    """
+    The exponent bound alone is not enough: the base can be the result of an
+    earlier power, so a modest exponent still compounds. Both operands here
+    are within the exponent limit.
+    """
+    message = err("(10 ^ 300) ^ 300")
+    assert "digits" in message
+
+
+def test_power_result_just_under_the_digit_limit_is_allowed():
+    """
+    Chosen so the digit rule is the binding constraint rather than the
+    exponent: 10000^1000 is 4001 digits, both operands within the exponent
+    cap. With a base of 10 the exponent cap would always trip first and the
+    digit rule would never be exercised.
+    """
+    assert 1000 * math.log10(10000) < MAX_POWER_RESULT_DIGITS
+    assert evaluate(f"10000 ^ {MAX_POWER_EXPONENT}", {}).error is None
+
+
+def test_power_result_just_over_the_digit_limit_is_refused():
+    """Same exponent, larger base: 5001 digits."""
+    assert 1000 * math.log10(100000) > MAX_POWER_RESULT_DIGITS
+    assert "digits" in err(f"100000 ^ {MAX_POWER_EXPONENT}")
+
+
+def test_power_zero_to_a_negative_exponent_is_a_formula_error():
+    assert "negative power" in err("0 ^ -1")
+
+
+def test_power_of_empty_operands_stays_empty():
+    """The existing empty-propagation rule must survive the bound."""
+    assert ev("prop('A') ^ prop('B')", {"A": None, "B": None}) is None
+
+
+# ── Nesting depth ─────────────────────────────────────────────────────────────
+
+
+def _nested(depth: int) -> str:
+    return "(" * depth + "1" + ")" * depth
+
+
+def test_moderate_nesting_is_accepted():
+    assert ev(_nested(MAX_PARSE_DEPTH - 2)) == 1
+
+
+def test_nesting_past_the_limit_is_a_formula_error():
+    assert "nested too deeply" in err(_nested(MAX_PARSE_DEPTH + 10))
+
+
+def test_deep_nesting_does_not_reach_the_interpreter_stack():
+    """
+    Far past both the parser's cap and Python's own recursion limit. What must
+    not happen is a RecursionError: callers treat a bad formula as recoverable
+    and are not prepared for one.
+    """
+    expression = _nested(400)
+    assert len(expression) < MAX_EXPRESSION_LENGTH
+    result = evaluate(expression, {})
+    assert result.error is not None
+    assert "recursion" not in result.error.lower()
+
+
+@pytest.mark.parametrize(
+    "entry_point",
+    [validate_syntax, extract_prop_names],
+)
+def test_deep_nesting_raises_formula_error_on_every_entry_point(entry_point):
+    """
+    ``evaluate`` always caught broadly. These two did not, and they are the
+    ones the dependency-graph builder in computed.py calls, where anything
+    other than a FormulaError leaves as a 500.
+    """
+    with pytest.raises(FormulaError):
+        entry_point(_nested(400))
+
+
+def test_deep_function_nesting_is_a_formula_error():
+    """Nesting through function arguments counts the same as parentheses."""
+    expression = "abs(" * 200 + "1" + ")" * 200
+    assert len(expression) < MAX_EXPRESSION_LENGTH
+    assert "nested too deeply" in err(expression)
+
+
+def test_long_right_associative_chain_is_a_formula_error():
+    """``^`` recurses on its right-hand side, so a chain is a nesting case."""
+    assert err("2" + " ^ 2" * 300) != ""
+
+
+# ── Prefix operator runs ──────────────────────────────────────────────────────
+
+
+def test_short_prefix_run_is_accepted():
+    assert ev("--1") == 1
+    assert ev("not not true") is True
+
+
+def test_prefix_run_past_the_limit_is_a_formula_error():
+    """
+    Parsing these no longer recurses, but the evaluator still walks the chain
+    it produces, so the run stays bounded.
+    """
+    assert "prefix operators" in err("-" * (MAX_PARSE_DEPTH + 5) + "1")
+
+
+def test_very_long_prefix_run_does_not_reach_the_interpreter_stack():
+    result = evaluate("-" * 900 + "1", {})
+    assert result.error is not None
+    assert "recursion" not in result.error.lower()
+
+
+# ── Expression length ─────────────────────────────────────────────────────────
+
+
+def test_expression_at_the_length_limit_is_accepted():
+    """
+    Padded with whitespace rather than more operators. A chain long enough to
+    fill the character budget runs into the chain bound first, which is a
+    different rule and has its own tests below.
+    """
+    expression = "1 + 1" + " " * (MAX_EXPRESSION_LENGTH - 5)
+    assert len(expression) == MAX_EXPRESSION_LENGTH
+    assert evaluate(expression, {}).error is None
+
+
+def test_expression_past_the_length_limit_is_refused():
+    expression = "1" + "+1" * MAX_EXPRESSION_LENGTH
+    assert "too long" in err(expression)
+
+
+@pytest.mark.parametrize("entry_point", [validate_syntax, extract_prop_names])
+def test_over_long_expression_raises_formula_error_on_every_entry_point(entry_point):
+    with pytest.raises(FormulaError):
+        entry_point("1" + "+1" * MAX_EXPRESSION_LENGTH)
+
+
+def test_length_limit_is_checked_before_parsing():
+    """
+    Refused by the lexer, so an over-long expression never reaches the parser
+    at all rather than being parsed and then rejected.
+    """
+    message = err("(" * MAX_EXPRESSION_LENGTH + ")" * MAX_EXPRESSION_LENGTH)
+    assert "too long" in message
+
+
+# ── Operator chains ───────────────────────────────────────────────────────────
+#
+# Parsing 'a + b + c + …' is a loop and costs no stack, but each operator adds
+# a level to the left spine of the tree, and the evaluator walks that spine
+# recursively. The parser's nesting counter never sees it: it oscillates
+# between one and two for the whole chain.
+
+
+def test_ordinary_chain_still_evaluates():
+    assert ev("1 + 2 + 3 + 4 + 5") == 15
+
+
+def test_long_chain_within_the_bound_still_evaluates():
+    terms = MAX_OPERATOR_CHAIN - 10
+    assert ev("1" + " + 1" * terms) == terms + 1
+
+
+def test_chain_past_the_bound_is_a_formula_error():
+    assert "operators in a row" in err("1" + "+1" * (MAX_OPERATOR_CHAIN + 5))
+
+
+def test_very_long_chain_does_not_reach_the_interpreter_stack():
+    """
+    This is the case that exposed the gap: the expression is well inside the
+    character budget and its parse depth never exceeds two, yet evaluating it
+    used to exhaust the stack.
+    """
+    expression = "1" + "+1" * 900
+    assert len(expression) < MAX_EXPRESSION_LENGTH
+    result = evaluate(expression, {})
+    assert result.error is not None
+    assert "recursion" not in result.error.lower()
+
+
+@pytest.mark.parametrize("entry_point", [validate_syntax, extract_prop_names])
+def test_long_chain_raises_formula_error_on_every_entry_point(entry_point):
+    with pytest.raises(FormulaError):
+        entry_point("1" + "+1" * 900)
+
+
+def test_nesting_and_chaining_combine_without_exhausting_the_stack():
+    """
+    The two bounds add along a path rather than multiplying, and the deepest
+    tree they permit together still evaluates.
+    """
+    inner = "1" + " + 1" * (MAX_OPERATOR_CHAIN - 10)
+    expression = "(" * (MAX_PARSE_DEPTH - 4) + inner + ")" * (MAX_PARSE_DEPTH - 4)
+    result = evaluate(expression, {})
+    assert result.error is None
+    assert result.result == MAX_OPERATOR_CHAIN - 9

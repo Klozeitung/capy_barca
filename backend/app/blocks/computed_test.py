@@ -93,10 +93,43 @@ def test_infer_result_type_none():
     assert _infer_result_type(None) == "text"
 
 
+def test_dependency_graph_survives_a_pathological_expression():
+    """
+    The graph builder catches FormulaError and nothing else, so the engine has
+    to guarantee that is all it raises. A formula nested past the parser's cap
+    used to escape as a RecursionError and surface as a 500 rather than as an
+    unparseable formula with no dependencies.
+    """
+    schema_id = uuid.uuid4()
+    schemas = [
+        SchemaLike(
+            id=schema_id,
+            name="Pathological",
+            type="formula",
+            config={"expression": "(" * 400 + "1" + ")" * 400},
+        )
+    ]
+    graph = build_dependency_graph(schemas)
+    assert graph[schema_id] == set()
+
+
+def test_dependency_graph_survives_an_over_long_expression():
+    schema_id = uuid.uuid4()
+    schemas = [
+        SchemaLike(
+            id=schema_id,
+            name="TooLong",
+            type="formula",
+            config={"expression": "1" + "+1" * 5000},
+        )
+    ]
+    assert build_dependency_graph(schemas)[schema_id] == set()
+
+
 def test_infer_result_type_date_range_dict():
     # A formula that yields a date property directly (prop('date')) returns a
     # {"start", "end"} dict; it must be classified as "date" so the filter UI
-    # offers date operators for the column (#43).
+    # offers date operators for the column.
     assert _infer_result_type({"start": "2000-01-01T00:01", "end": "2000-01-02T00:01"}) == "date"
 
 
@@ -439,7 +472,7 @@ def test_aggregate_show_original_preserves_order():
     assert _aggregate(["c", "a", "b"], "show_original") == ["c", "a", "b"]
 
 
-# ── _resolve_relation_entries (relation rollup → clickable chips, #11) ────────
+# ── _resolve_relation_entries (relation rollup → clickable chips) ─────────────
 
 def _fake_entry_resolver(mapping: dict[str, dict | None]):
     """Return a resolver mapping known IDs to descriptors, unknown IDs to None."""
@@ -872,7 +905,7 @@ def test_extract_scalar_relation_no_timeline_config():
     assert result == ["uuid-y"]
 
 
-# _extract_scalar: timeline-aware value-bearing scalars (#4)
+# _extract_scalar: timeline-aware value-bearing scalars
 
 def test_extract_scalar_text_timeline_last_slot():
     # A timelined text column stores its payload inside _timeline slots; the
@@ -1066,7 +1099,7 @@ def test_resolve_formula_relation_mixed_list_non_uuid_passthrough():
     assert result is mixed
 
 
-# ─── compute_all_for_entry: formula returning relation prop (#20) ─────────────
+# ─── compute_all_for_entry: formula returning relation prop ───────────────────
 
 
 def test_formula_relation_prop_resolves_to_chips(db, database_block, entry):
@@ -1370,7 +1403,7 @@ def test_rollup_over_timeline_relation_target_resolves_members(db, database_bloc
 
 
 def test_rollup_over_timeline_text_show_original(db, database_block, entry):
-    """Regression (#4): show_original over a TIMELINED text column must surface
+    """Regression: show_original over a TIMELINED text column must surface
     the last-slot text, not the "—" placeholder.
 
     Timelined text stores its payload inside ``_timeline`` slots; previously

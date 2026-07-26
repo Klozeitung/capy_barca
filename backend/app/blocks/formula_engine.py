@@ -75,6 +75,30 @@ Public API
   evaluate(expression, context)   -> FormulaResult
   extract_prop_names(expression)  -> list[str]
   validate_syntax(expression)     -> None  (raises FormulaError on error)
+
+Resource limits
+---------------
+Formulas are written by authenticated users and run on the server, so an
+expression is bounded before it is allowed to consume anything:
+
+  * length          – an expression past ``MAX_EXPRESSION_LENGTH`` characters
+                      is refused by the lexer, before a parser ever sees it.
+  * nesting         – the parser carries a depth counter and raises
+                      ``FormulaError`` at ``MAX_PARSE_DEPTH``. Without it,
+                      deeply nested parentheses exhaust the interpreter stack
+                      and the resulting ``RecursionError`` escapes as a 500
+                      instead of appearing as a formula error in the UI.
+  * chaining        – ``a + b + c + …`` parses in a loop but produces a tree
+                      as deep as the chain is long, which the evaluator then
+                      walks recursively. Bounded separately by
+                      ``MAX_OPERATOR_CHAIN``.
+  * exponentiation  – ``^`` is bounded in both the exponent and the size of
+                      the number it would produce. ``9^9^9`` is three
+                      characters of input and an unbounded amount of work.
+
+All three raise ``FormulaError``, so every caller that already handles a bad
+formula handles these as well. The three public entry points guarantee that:
+whatever happens inside, what leaves them is a ``FormulaError``.
 """
 
 from __future__ import annotations
@@ -90,6 +114,36 @@ from typing import Any, Optional
 # ─── Public types ─────────────────────────────────────────────────────────────
 
 FormulaValue = Any  # number | str | bool | datetime | None
+
+
+# ── Resource limits ───────────────────────────────────────────────────────────
+# Deliberately generous: a hand-written formula does not come close to any of
+# them, while each bounds a way for one expression to occupy the server.
+
+MAX_EXPRESSION_LENGTH = 2000
+
+# Two separate bounds, because two different shapes of expression end up as
+# depth in the AST, and the AST is what the evaluator walks recursively.
+#
+#   MAX_PARSE_DEPTH    – nesting: parentheses, function arguments, and the
+#                        right-hand side of '^'. Each level is one recursive
+#                        call in the parser as well.
+#   MAX_OPERATOR_CHAIN – chaining: 'a + b + c + …'. The parser handles this in
+#                        a loop and never recurses, but every operator still
+#                        adds a level to the left spine of the tree, so a long
+#                        enough chain exhausts the stack during evaluation.
+#
+# They add rather than multiply along any one path, so the deepest reachable
+# tree is roughly the sum of the two and stays well inside the interpreter's
+# own recursion limit.
+MAX_PARSE_DEPTH = 64
+MAX_OPERATOR_CHAIN = 200
+
+# Bounds for '^'. The exponent cap alone is not enough, because the base can
+# itself be the result of a previous power: the digit estimate is what stops a
+# chain from compounding.
+MAX_POWER_EXPONENT = 1000
+MAX_POWER_RESULT_DIGITS = 4096
 
 
 @dataclass
@@ -183,6 +237,12 @@ _ESCAPE_MAP: dict[str, str] = {
 
 
 def _lex(src: str) -> list[Token]:
+    if len(src) > MAX_EXPRESSION_LENGTH:
+        raise FormulaError(
+            f"Expression is too long: {len(src)} characters, "
+            f"the limit is {MAX_EXPRESSION_LENGTH}"
+        )
+
     tokens: list[Token] = []
     i = 0
     n = len(src)
@@ -314,11 +374,12 @@ _PREC: dict[TT, int] = {
 
 
 class _Parser:
-    __slots__ = ("_tokens", "_pos")
+    __slots__ = ("_tokens", "_pos", "_depth")
 
     def __init__(self, tokens: list[Token]) -> None:
         self._tokens = tokens
         self._pos = 0
+        self._depth = 0
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -344,6 +405,24 @@ class _Parser:
     def _prec(self) -> int:
         return _PREC.get(self._peek().type, 0)
 
+    def _descend(self) -> None:
+        """
+        Count one level of recursion and refuse to go deeper than the cap.
+
+        Every level of grouping routes through ``_expr`` exactly once, so one
+        counter here covers parentheses, function arguments and the
+        right-hand side of ``^`` alike. Prefix operators are handled without
+        recursion and carry their own bound. Without
+        it the interpreter stack runs out first, and a ``RecursionError`` is
+        not something the callers of this module are prepared for: it leaves
+        as a 500 rather than as a formula error the editor can display.
+        """
+        self._depth += 1
+        if self._depth > MAX_PARSE_DEPTH:
+            raise FormulaError(
+                f"Expression is nested too deeply, the limit is {MAX_PARSE_DEPTH} levels"
+            )
+
     # ── Grammar ───────────────────────────────────────────────────────────────
 
     def parse(self) -> Any:
@@ -356,25 +435,63 @@ class _Parser:
         return node
 
     def _expr(self, min_prec: int) -> Any:
-        left = self._unary()
-        while self._prec() > min_prec:
-            op_tok = self._advance()
-            # Right-associative for ^ : allow equal precedence on the right
-            rp = _PREC[op_tok.type]
-            if op_tok.type is TT.CARET:
-                rp -= 1
-            right = self._expr(rp)
-            left = BinOp(op_tok.value, left, right)
-        return left
+        self._descend()
+        try:
+            left = self._unary()
+            chain = 0
+            while self._prec() > min_prec:
+                chain += 1
+                if chain > MAX_OPERATOR_CHAIN:
+                    # The loop itself costs no stack, but each turn wraps the
+                    # tree built so far in another node, and the evaluator
+                    # descends that spine one frame at a time.
+                    raise FormulaError(
+                        f"Too many operators in a row, the limit is "
+                        f"{MAX_OPERATOR_CHAIN}"
+                    )
+                op_tok = self._advance()
+                # Right-associative for ^ : allow equal precedence on the right
+                rp = _PREC[op_tok.type]
+                if op_tok.type is TT.CARET:
+                    rp -= 1
+                right = self._expr(rp)
+                left = BinOp(op_tok.value, left, right)
+            return left
+        finally:
+            self._depth -= 1
 
     def _unary(self) -> Any:
-        if self._match(TT.MINUS):
-            self._advance()
-            return UnaryOp("-", self._unary())
-        if self._match(TT.NOT):
-            self._advance()
-            return UnaryOp("not", self._unary())
-        return self._primary()
+        """
+        Parse a run of prefix operators and the operand they apply to.
+
+        Written as a loop rather than by recursing on itself for two reasons.
+        It costs no interpreter stack, so a long run of prefix operators cannot
+        exhaust it. And it keeps the depth counter in ``_expr`` meaning what it
+        says: one unit per level of grouping, rather than two.
+
+        The run is still bounded, because the evaluator walks the resulting
+        chain of nodes recursively even though building it no longer does.
+        """
+        ops: list[str] = []
+        while True:
+            if self._match(TT.MINUS):
+                self._advance()
+                ops.append("-")
+            elif self._match(TT.NOT):
+                self._advance()
+                ops.append("not")
+            else:
+                break
+            if len(ops) > MAX_PARSE_DEPTH:
+                raise FormulaError(
+                    f"Too many prefix operators in a row, the limit is "
+                    f"{MAX_PARSE_DEPTH}"
+                )
+
+        node = self._primary()
+        for op in reversed(ops):
+            node = UnaryOp(op, node)
+        return node
 
     def _primary(self) -> Any:
         t = self._peek()
@@ -670,6 +787,42 @@ def _require_num(v: Any, ctx: str) -> float | int:
     raise FormulaError(f"{ctx}: expected number, got {type(v).__name__}")
 
 
+def _checked_power(base: float | int, exponent: float | int) -> float | int:
+    """
+    Raise *base* to *exponent* within bounds, or fail with a formula error.
+
+    Python happily evaluates ``9 ** 387420489``, which is what ``9^9^9`` asks
+    for once the right-associative parse is done: three characters of input,
+    and the process is gone. Two bounds are needed rather than one, because
+    the base can be the result of a previous power, so a modest exponent still
+    compounds across a chain.
+
+    The size check estimates the decimal length of the result instead of
+    computing it, since computing it is exactly what has to be avoided.
+    """
+    if abs(exponent) > MAX_POWER_EXPONENT:
+        raise FormulaError(
+            f"^: exponent {exponent} is out of range, the limit is "
+            f"{MAX_POWER_EXPONENT}"
+        )
+
+    magnitude = abs(base)
+    if magnitude > 1 and exponent > 0:
+        digits = exponent * math.log10(magnitude)
+        if digits > MAX_POWER_RESULT_DIGITS:
+            raise FormulaError(
+                f"^: the result would have about {int(digits)} digits, "
+                f"the limit is {MAX_POWER_RESULT_DIGITS}"
+            )
+
+    try:
+        return base ** exponent
+    except ZeroDivisionError:
+        raise FormulaError("^: zero cannot be raised to a negative power")
+    except OverflowError:
+        raise FormulaError("^: the result is too large")
+
+
 def _eval(node: Any, ctx: dict[str, FormulaValue]) -> FormulaValue:  # noqa: PLR0911,PLR0912
     if isinstance(node, NumberLit):
         return node.value
@@ -745,7 +898,7 @@ def _eval(node: Any, ctx: dict[str, FormulaValue]) -> FormulaValue:  # noqa: PLR
         if op == "^":
             if _is_empty(lv) and _is_empty(rv):
                 return None
-            return _require_num(left, "^") ** _require_num(right, "^")
+            return _checked_power(_require_num(left, "^"), _require_num(right, "^"))
         if op == "==":
             return lv == rv
         if op == "!=":
@@ -1285,6 +1438,8 @@ def evaluate(expression: str, context: dict[str, FormulaValue]) -> FormulaResult
         return FormulaResult(result=None, error=str(exc))
     except ZeroDivisionError:
         return FormulaResult(result=None, error="Division by zero")
+    except RecursionError:
+        return FormulaResult(result=None, error="Expression is nested too deeply")
     except Exception as exc:
         return FormulaResult(result=None, error=f"Runtime error: {exc}")
 
@@ -1296,14 +1451,21 @@ def extract_prop_names(expression: str) -> list[str]:
 
     Used by the dependency-graph builder for cycle detection.
 
-    Raises ``FormulaError`` on syntax errors.
+    Raises ``FormulaError`` on syntax errors, and on nothing else: callers
+    treat a bad formula as a recoverable condition, so anything the parser
+    might throw is converted rather than allowed to reach them as a 500.
     """
-    tokens = _lex(expression)
-    ast = _Parser(tokens).parse()
-    names: list[str] = []
-    seen: set[str] = set()
-    _walk_props(ast, names, seen)
-    return names
+    try:
+        tokens = _lex(expression)
+        ast = _Parser(tokens).parse()
+        names: list[str] = []
+        seen: set[str] = set()
+        _walk_props(ast, names, seen)
+        return names
+    except FormulaError:
+        raise
+    except RecursionError:
+        raise FormulaError("Expression is nested too deeply") from None
 
 
 def _string_literal_end(src: str, start: int) -> int:
@@ -1395,7 +1557,17 @@ def validate_syntax(expression: str) -> None:
     references an unknown function (e.g. ``empty`` before it was implemented).
     This ensures the formula modal gives accurate feedback at edit time instead
     of accepting expressions that will fail silently at runtime.
+
+    ``FormulaError`` is the only thing this raises. The depth cap in the parser
+    already prevents the stack from running out, so the ``RecursionError`` arm
+    below is a second line of defence for the recursive walks that follow the
+    parse.
     """
-    tokens = _lex(expression)
-    ast = _Parser(tokens).parse()
-    _check_known_functions(ast)
+    try:
+        tokens = _lex(expression)
+        ast = _Parser(tokens).parse()
+        _check_known_functions(ast)
+    except FormulaError:
+        raise
+    except RecursionError:
+        raise FormulaError("Expression is nested too deeply") from None

@@ -92,6 +92,11 @@ def build_dependency_graph(schemas: list[Any]) -> dict[uuid.UUID, set[uuid.UUID]
             try:
                 names = extract_prop_names(expr)
             except FormulaError:
+                # FormulaError is the only thing that entry point raises, by
+                # contract: an expression that is too long, too deeply nested
+                # or otherwise unparseable arrives here rather than escaping
+                # as a RecursionError and surfacing to the client as a 500.
+                # A formula that cannot be parsed simply has no dependencies.
                 graph[schema.id] = set()
                 continue
             deps: set[uuid.UUID] = set()
@@ -288,7 +293,7 @@ def _extract_scalar(schema_type: str, value: Optional[dict], config: Optional[di
     if value is None:
         return None
 
-    # Timeline-aware scalar extraction (#4). Timelined text / email / phone /
+    # Timeline-aware scalar extraction. Timelined text / email / phone /
     # url / number / checkbox / select / date columns store their per-period
     # payload inside ``_timeline`` slots rather than at the root. Mirroring the
     # documented "default to last state" behaviour for timelined properties
@@ -409,7 +414,7 @@ _ROLLUP_FUNCTIONS: frozenset[str] = frozenset({
 
 # Rollup target column types that store related entry IDs. When such a column
 # is rolled up with a raw-display function, the IDs are resolved to entry
-# titles for human-readable output (#11).
+# titles for human-readable output.
 _RELATION_COL_TYPES = frozenset({"relation", "parent_item", "sub_item"})
 _RAW_DISPLAY_FUNCTIONS = frozenset({"show_original", "first_value", "last_value"})
 
@@ -718,7 +723,7 @@ def _infer_result_type(value: Any) -> str:
 
     A date property referenced directly by a formula (``prop('date')``) yields a
     ``{"start", "end"}`` dict rather than a scalar; it is classified as ``"date"``
-    so the filter UI offers date operators for such formula columns (#43).
+    so the filter UI offers date operators for such formula columns.
     """
     from datetime import datetime as _DT
     if isinstance(value, bool):
@@ -754,7 +759,7 @@ def _compute_formula(
     # entry descriptors (e.g. the formula passes through a relation prop or a
     # show_original rollup prop), normalise to a descriptor list and mark the
     # stored value with relation=True so FormulaCell renders clickable chips
-    # instead of raw UUIDs (#20).
+    # instead of raw UUIDs.
     def _resolve_entry(rid_str: str) -> Optional[dict]:
         try:
             target_uuid = uuid.UUID(rid_str)
@@ -880,7 +885,7 @@ def _compute_rollup(
 
     # Relation-typed rollup targets yield lists of related entry IDs. For the
     # raw-display functions, resolve those IDs to entry descriptors so the cell
-    # can render clickable relation chips instead of raw UUIDs (#11). Counting/
+    # can render clickable relation chips instead of raw UUIDs. Counting/
     # aggregating functions keep the ID lists so their semantics are unchanged.
     if (col_type in _RELATION_COL_TYPES or target_is_relation_formula) and function in _RAW_DISPLAY_FUNCTIONS:
         def _resolve_entry(rid_str: str) -> Optional[dict]:
