@@ -111,13 +111,18 @@ Key variables:
 |---|---|
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Database credentials |
 | `PORT_FRONTEND` | Port CapyBarca is served on (default: 1701). Must be above 1023 — the containers run unprivileged and cannot bind privileged ports |
+| `PORT_BACKEND` | Internal port the backend listens on (default: 17012). Reachable only inside the Compose network, never published to the host. Must be above 1023 for the same reason as `PORT_FRONTEND` |
 | `PORT_DB` | Host-side port for local database maintenance. Published on `127.0.0.1` only; containers always talk to PostgreSQL on 5432 over the internal network |
-| `SECRET_KEY` | Session signing key — keep this secret |
+| `SECRET_KEY` | Signing key for session cookies and, via a derived key, for the access tokens handed to Collabora. The single most valuable secret in the installation — keep it out of backups you share |
 | `TAILSCALE_IP` / `TAILSCALE_HOSTNAME` | Your Tailscale network address |
 | `ALLOW_NEW_USERS` | `true` to allow self-registration on the login page |
 | `DEBUG` | Development only, default `false`. `true` starts uvicorn with `--reload` and issues the session cookie **without** the `Secure` flag. Leave it off on any real instance |
 | `APP_UID` / `APP_GID` | The account the containers run as. Set automatically by `setup.sh` from the user running it, so that `static/uploads` stays writable from the container and from `restore.sh` alike. Not meant to be edited by hand |
 | `FORWARDED_ALLOW_IPS` | Which peers may set `X-Forwarded-For`, used to identify clients for rate limiting. Default `*`, which is safe because the backend port is reachable only inside the Compose network and nginx overwrites the header. Narrow it to the nginx container address to exclude other containers as well |
+| `MAX_UPLOAD_MB` | Largest single upload, in megabytes (default: 100). Enforced by nginx on the request and by the backend on the file, from this one value, so the two cannot disagree. Also caps what Collabora may write back when saving a document |
+| `LOGIN_RATE_LIMIT` `SIGNUP_RATE_LIMIT` `PASSWORD_CHANGE_RATE_LIMIT` | Attempts per client for the three routes that hand out or verify credentials. Default `5/minute` each |
+| `BOOKMARK_RATE_LIMIT` | Bookmark previews per client (default: `10/minute`). The bookmark endpoint makes the server fetch a URL you choose, so it is throttled rather than left open |
+| `WOPI_TOKEN_RATE_LIMIT` | Collabora editor tokens per client (default: `30/minute`). Applies to token issuance only; the file endpoints Collabora calls during an editing session are not throttled |
 
 ---
 
@@ -140,11 +145,11 @@ All containers run as an unprivileged user rather than as root. `setup.sh` align
 
 ## Project Status
 
-This project is a work in progress. It is used by its developer since February 2026 as full replacement of Notion. Having been worked on in a private repo, it was copied to a (this) public repository when it was deemed to be useful and stable enough.
+This project is a work in progress. It is used by its developer since February 2026 as full replacement of Notion. Having been worked on in a private repo, it was copied to this public repository when it was deemed to be useful and stable enough.
 
 As Timelining and Nuancing are rather complicated features, rollups and formulas will work without taking nuances into account and will default to "last state" for timelined properties - for now.
 
-Despite heavy testing (~1741 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet. Thus, this honest disclaimer is in order:
+Despite heavy testing (~1750 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet. Thus, this honest disclaimer is in order:
 
 DO NOT USE FOR IRREPLACABLE DATA AND FILES. USE AT OWN RISK.
 
