@@ -13,6 +13,20 @@ Storage layout
 All uploaded files are linked to a block via the UUID stored in the block's
 ``content`` JSON field. The router does not mutate blocks directly; that
 responsibility stays with the caller (frontend updates via the blocks API).
+
+Authorization
+-------------
+Every endpoint that names a block enforces ``require_block_access`` on top of
+the session check, so an authenticated account cannot reach a block it has no
+permission for by guessing its id.
+
+Note on the shared namespaces: drive files live under a per-block directory,
+so the block check fully governs them. Media and file uploads land in one flat
+directory per category, and the server keeps no mapping from ``file_uuid`` back
+to its owning block. For those two categories the block check therefore governs
+where a file may be written, but a caller who already knows a ``file_uuid`` can
+still address it through any block id. Closing that needs a persisted
+file-to-block mapping and is out of scope here.
 """
 import mimetypes
 import re
@@ -23,10 +37,12 @@ from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Cookie, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
-from app.session.session import validate_token
+from app.session.deps import get_current_user, get_db, require_block_access
+from app.users.model import User
 
 # Root for all uploaded files. Always the default static/uploads directory.
 STATIC_ROOT: Path = Path("static/uploads")
@@ -37,26 +53,33 @@ VALID_CATEGORIES: frozenset[str] = MEDIA_CATEGORIES | frozenset({"file", "drive"
 media_router = APIRouter(prefix="/api/media", tags=["media"])
 
 
-# ─── Auth ─────────────────────────────────────────────────────────────────────
-
-
-def _require_session(session: Optional[str] = Cookie(default=None)) -> str:
-    if not session or not validate_token(session):
-        raise HTTPException(status_code=401, detail="Nicht angemeldet")
-    return session
-
-
 # ─── Internal helpers ─────────────────────────────────────────────────────────
+
+
+def _within_root(path: Path) -> Path:
+    """
+    Return *path* unchanged if it stays inside ``STATIC_ROOT``, else refuse.
+
+    Every identifier that builds a storage path is typed as ``uuid.UUID``, so
+    no request can currently escape. This is kept as a second line of defence
+    because the cost of a future mistake here is a write or a delete anywhere
+    the process can reach, and the check is a single ``resolve`` call.
+    """
+    root = STATIC_ROOT.resolve()
+    resolved = path.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise HTTPException(status_code=400, detail="Invalid storage path")
+    return path
 
 
 def _storage_dir(category: str, block_id: str) -> Path:
     """Return the storage directory for a given category and block_id."""
     if category in MEDIA_CATEGORIES:
-        return STATIC_ROOT / "media" / category
+        return _within_root(STATIC_ROOT / "media" / category)
     if category == "file":
-        return STATIC_ROOT / "files"
+        return _within_root(STATIC_ROOT / "files")
     # category == "drive"
-    return STATIC_ROOT / "drives" / block_id
+    return _within_root(STATIC_ROOT / "drives" / block_id)
 
 
 def _public_url(category: str, block_id: str, stored_name: str) -> str:
@@ -146,7 +169,7 @@ class CapacityResponse(BaseModel):
 
 @media_router.get("/capacity", response_model=CapacityResponse)
 def get_capacity(
-    _session: str = Depends(_require_session),
+    _user: User = Depends(get_current_user),
 ) -> CapacityResponse:
     """
     Return disk capacity information for the upload storage directory.
@@ -154,6 +177,8 @@ def get_capacity(
     Reports the total, used, and free bytes of the filesystem partition that
     holds ``STATIC_ROOT``. The directory is created eagerly if it does not
     exist yet so that a fresh installation does not cause a 500.
+
+    No block is addressed, so a valid session is the only requirement.
     """
     STATIC_ROOT.mkdir(parents=True, exist_ok=True)
     usage = shutil.disk_usage(STATIC_ROOT)
@@ -169,7 +194,8 @@ async def upload_file(
     category: str,
     block_id: uuid.UUID,
     file: UploadFile = File(...),
-    _session: str = Depends(_require_session),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> UploadResponse:
     """
     Upload a file and store it under the appropriate static sub-path.
@@ -180,6 +206,8 @@ async def upload_file(
     """
     if category not in VALID_CATEGORIES:
         raise HTTPException(status_code=400, detail=f"Unknown category: {category!r}")
+
+    require_block_access(db, block_id, user)
 
     block_id_str = str(block_id)
     file_uuid = str(uuid.uuid4())
@@ -209,11 +237,19 @@ async def delete_file(
     category: str,
     block_id: uuid.UUID,
     file_uuid: uuid.UUID,
-    _session: str = Depends(_require_session),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> DeleteResponse:
-    """Delete a previously uploaded file identified by its UUID."""
+    """
+    Delete a previously uploaded file identified by its UUID.
+
+    Authorization is checked before existence so that a caller without access
+    cannot use the status code to learn whether a file is there.
+    """
     if category not in VALID_CATEGORIES:
         raise HTTPException(status_code=400, detail=f"Unknown category: {category!r}")
+
+    require_block_access(db, block_id, user)
 
     block_id_str = str(block_id)
     file_uuid_str = str(file_uuid)
@@ -234,7 +270,7 @@ async def delete_file(
 @media_router.post("/bookmark", response_model=BookmarkResponse)
 async def fetch_bookmark(
     payload: BookmarkRequest,
-    _session: str = Depends(_require_session),
+    _user: User = Depends(get_current_user),
 ) -> BookmarkResponse:
     """
     Fetch Open Graph / meta data for a URL to build a bookmark preview.
@@ -275,9 +311,13 @@ async def fetch_bookmark(
 
 
 class DriveFileMoveRequest(BaseModel):
-    file_uuid: str
-    source_block_id: str
-    target_block_id: str
+    # Typed as UUID rather than str: these values used to be interpolated into
+    # a filesystem path straight from the request body, so a value such as
+    # "../../.." moved files outside the upload tree. Pydantic now rejects
+    # anything that is not a UUID with a 422 before the handler runs.
+    file_uuid: uuid.UUID
+    source_block_id: uuid.UUID
+    target_block_id: uuid.UUID
 
 
 class DriveFileMoveResponse(BaseModel):
@@ -287,7 +327,8 @@ class DriveFileMoveResponse(BaseModel):
 @media_router.post("/drive-file/move", response_model=DriveFileMoveResponse)
 async def move_drive_file(
     payload: DriveFileMoveRequest,
-    _session: str = Depends(_require_session),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> DriveFileMoveResponse:
     """
     Physically move a file from one drive block's directory to another and
@@ -297,20 +338,31 @@ async def move_drive_file(
     the file from the source block and adding it—with the new URL—to the
     target block) via the blocks API after this endpoint confirms success.
 
+    Both blocks are authorized: reading the file out of the source and writing
+    it into the target are separate accesses, and permitting one does not
+    imply the other.
+
     Raises 404 if the file is not found in the source directory.
     """
-    source_dir = STATIC_ROOT / "drives" / payload.source_block_id
-    target_dir = STATIC_ROOT / "drives" / payload.target_block_id
+    require_block_access(db, payload.source_block_id, user)
+    require_block_access(db, payload.target_block_id, user)
 
-    matches = list(source_dir.glob(f"{payload.file_uuid}*"))
+    source_block_id = str(payload.source_block_id)
+    target_block_id = str(payload.target_block_id)
+    file_uuid = str(payload.file_uuid)
+
+    source_dir = _within_root(STATIC_ROOT / "drives" / source_block_id)
+    target_dir = _within_root(STATIC_ROOT / "drives" / target_block_id)
+
+    matches = list(source_dir.glob(f"{file_uuid}*"))
     if not matches:
         raise HTTPException(status_code=404, detail="File not found in source drive")
 
     src_file = matches[0]
     target_dir.mkdir(parents=True, exist_ok=True)
-    dest_path = target_dir / src_file.name
+    dest_path = _within_root(target_dir / src_file.name)
     shutil.move(str(src_file), str(dest_path))
 
     return DriveFileMoveResponse(
-        url=_public_url("drive", payload.target_block_id, src_file.name),
+        url=_public_url("drive", target_block_id, src_file.name),
     )

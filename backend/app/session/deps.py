@@ -3,7 +3,9 @@ Shared FastAPI dependencies for authentication and database access.
 
 All routers import ``require_session``, ``get_current_user``,
 ``require_admin``, and ``get_db`` from here so auth logic lives in exactly
-one place.
+one place. ``require_block_access`` extends that to object-level
+authorization and is called from inside handlers rather than as a
+dependency, because the block identifier is not always a path parameter.
 """
 import uuid
 from typing import Optional
@@ -42,10 +44,10 @@ def require_session(session: Optional[str] = Cookie(default=None)) -> uuid.UUID:
         If the cookie is absent or the token is invalid / expired.
     """
     if not session:
-        raise HTTPException(status_code=401, detail="Nicht angemeldet")
+        raise HTTPException(status_code=401, detail="Not authenticated")
     user_id = validate_token(session)
     if not user_id:
-        raise HTTPException(status_code=401, detail="Nicht angemeldet")
+        raise HTTPException(status_code=401, detail="Not authenticated")
     return user_id
 
 
@@ -64,7 +66,7 @@ def get_current_user(
     """
     user = user_repo.get_by_id(db, user_id)
     if user is None or not user.is_active:
-        raise HTTPException(status_code=401, detail="Nicht angemeldet")
+        raise HTTPException(status_code=401, detail="Not authenticated")
     return user
 
 
@@ -78,5 +80,40 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
         If the authenticated user does not have the ``admin`` role.
     """
     if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Nicht autorisiert")
+        raise HTTPException(status_code=403, detail="Not authorized")
     return current_user
+
+
+# ─── Object-level authorization ───────────────────────────────────────────────
+
+
+def require_block_access(
+    db: Session,
+    block_id: uuid.UUID,
+    user: User,
+) -> None:
+    """
+    Enforce that *user* may act on *block_id*.
+
+    A valid session says who the caller is, not what they may touch. Every
+    endpoint that addresses a block by id has to ask this question as well,
+    otherwise any authenticated account reaches every block by guessing or
+    reading an id. The check delegates to the permission layer, which walks
+    the parent chain and lets admins through.
+
+    The permission model does not distinguish reading from writing, so this
+    single gate covers both. A block with no explicit permission row anywhere
+    in its parent chain resolves to ``everyone``, which is the behaviour of
+    an unconfigured workspace and is preserved deliberately.
+
+    Raises
+    ------
+    HTTPException(403)
+        If the user may not access the block.
+    """
+    # Local import: the permission layer reaches into app.blocks.models, which
+    # keeps the import graph acyclic only as long as this stays inside the call.
+    from app.permissions import repository as perm_repo
+
+    if not perm_repo.can_user_access(db, block_id, user):
+        raise HTTPException(status_code=403, detail="Not authorized for this block")

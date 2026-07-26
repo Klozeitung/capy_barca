@@ -3,30 +3,80 @@ Tests for the media upload router.
 
 All filesystem writes are redirected to a per-test temp directory via the
 ``tmp_upload_dir`` autouse fixture, keeping the real ``static/`` tree clean.
-HTTP auth is stubbed by the ``mock_auth`` autouse fixture.
+
+Authentication goes through the shared dependency in ``app.session.deps``
+rather than a router-local token check, so the tests override
+``get_current_user`` instead of patching a module-level ``validate_token``.
+That override is also what makes object-level authorization testable: the
+identity the router sees is a real ``User`` with a role and an id, and the
+permission layer resolves against blocks seeded into the in-memory database.
 """
 import io
 import uuid
-from pathlib import Path
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.session.deps import get_current_user
+from app.users.model import User
 
 
-@pytest.fixture(autouse=True)
-def mock_auth():
-    with patch("app.media.router.validate_token", return_value=True):
-        yield
+# ─── Identities and clients ───────────────────────────────────────────────────
 
 
 @pytest.fixture
-def http_client():
-    client = TestClient(app)
-    client.cookies.set("session", "test-token")
-    return client
+def member_user():
+    return User(
+        id=uuid.uuid4(),
+        username="member",
+        password_hash="x",
+        role="member",
+        is_active=True,
+    )
+
+
+@pytest.fixture
+def admin_user():
+    return User(
+        id=uuid.uuid4(),
+        username="admin",
+        password_hash="x",
+        role="admin",
+        is_active=True,
+    )
+
+
+@pytest.fixture
+def client_factory():
+    """Return a builder for a TestClient authenticated as a given user."""
+    def _make(user: User) -> TestClient:
+        app.dependency_overrides[get_current_user] = lambda: user
+        return TestClient(app)
+
+    yield _make
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.fixture
+def http_client(client_factory, member_user):
+    """
+    Default client: an ordinary member, not an admin.
+
+    Blocks that no test seeds have no permission row anywhere in their parent
+    chain and resolve to 'everyone', so the functional tests below still pass
+    while running through the real authorization path rather than around it.
+    """
+    return client_factory(member_user)
+
+
+@pytest.fixture
+def anon_client():
+    """Client without an identity override: exercises the real session gate."""
+    app.dependency_overrides.pop(get_current_user, None)
+    return TestClient(app)
 
 
 @pytest.fixture(autouse=True)
@@ -40,6 +90,41 @@ def tmp_upload_dir(tmp_path, monkeypatch):
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
+
+
+def _seed_block(owner_id=None, mode=None, grants=()) -> uuid.UUID:
+    """
+    Insert a block into the isolated database and give it a permission row.
+
+    ``mode=None`` leaves the block without an explicit permission row, which
+    is what the permission layer resolves to 'everyone'.
+    """
+    import app.database.database as db_module
+    from app.blocks.models import Block
+    from app.permissions import repository as perm_repo
+
+    block_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    with db_module.SessionLocal() as db:
+        db.add(
+            Block(
+                id=block_id,
+                parent_id=None,
+                reference_id=None,
+                type="page",
+                position=0.0,
+                state="active",
+                content={"title": "Test block"},
+                owner_id=owner_id,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.flush()
+        if mode is not None:
+            perm_repo.set_permission(db, block_id, mode, list(grants))
+        db.commit()
+    return block_id
 
 
 def _upload(
@@ -180,9 +265,24 @@ def test_upload_unknown_category_returns_400(http_client):
     assert resp.status_code == 400
 
 
-def test_upload_requires_auth(http_client):
-    with patch("app.media.router.validate_token", return_value=False):
-        resp = _upload(http_client, "image", str(uuid.uuid4()))
+@pytest.mark.parametrize("value", ["not-a-uuid", "12345", "drive", "null"])
+def test_upload_non_uuid_block_id_returns_422(http_client, value):
+    """
+    The block id in the path is typed, so anything else is refused.
+
+    Deliberately no literal "../" here: both httpx and nginx remove dot
+    segments before the request is sent, so such a value never reaches the
+    application and would only produce a 404 from an unmatched route. The
+    defence that actually carries is the type on the parameter, and that is
+    what this asserts. Body fields, which are not normalised by anyone, are
+    covered separately under the drive-file move.
+    """
+    resp = _upload(http_client, "drive", value)
+    assert resp.status_code == 422
+
+
+def test_upload_requires_auth(anon_client):
+    resp = _upload(anon_client, "image", str(uuid.uuid4()))
     assert resp.status_code == 401
 
 
@@ -244,10 +344,75 @@ def test_delete_unknown_category_returns_400(http_client):
     assert resp.status_code == 400
 
 
-def test_delete_requires_auth(http_client):
-    with patch("app.media.router.validate_token", return_value=False):
-        resp = http_client.delete(f"/api/media/image/{uuid.uuid4()}/{uuid.uuid4()}")
+def test_delete_requires_auth(anon_client):
+    resp = anon_client.delete(f"/api/media/image/{uuid.uuid4()}/{uuid.uuid4()}")
     assert resp.status_code == 401
+
+
+# ─── Object-level authorization ───────────────────────────────────────────────
+
+
+def test_upload_to_foreign_private_block_returns_403(client_factory, member_user):
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    client = client_factory(member_user)
+    resp = _upload(client, "drive", str(block_id))
+    assert resp.status_code == 403
+
+
+def test_upload_to_own_private_block_is_allowed(client_factory, member_user):
+    block_id = _seed_block(owner_id=member_user.id, mode="private")
+    client = client_factory(member_user)
+    resp = _upload(client, "drive", str(block_id))
+    assert resp.status_code == 200
+
+
+def test_upload_to_whitelisted_block_is_allowed(client_factory, member_user):
+    block_id = _seed_block(
+        owner_id=uuid.uuid4(), mode="whitelist", grants=[member_user.id]
+    )
+    client = client_factory(member_user)
+    resp = _upload(client, "drive", str(block_id))
+    assert resp.status_code == 200
+
+
+def test_upload_to_whitelist_without_grant_returns_403(client_factory, member_user):
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="whitelist", grants=[])
+    client = client_factory(member_user)
+    resp = _upload(client, "drive", str(block_id))
+    assert resp.status_code == 403
+
+
+def test_admin_bypasses_block_permissions(client_factory, admin_user):
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    client = client_factory(admin_user)
+    resp = _upload(client, "drive", str(block_id))
+    assert resp.status_code == 200
+
+
+def test_delete_in_foreign_private_block_returns_403(
+    client_factory, member_user, tmp_upload_dir
+):
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    file_uuid = str(uuid.uuid4())
+    path = _create_fake_file(tmp_upload_dir, "drive", str(block_id), file_uuid, ext=".txt")
+    client = client_factory(member_user)
+    resp = client.delete(f"/api/media/drive/{block_id}/{file_uuid}")
+    assert resp.status_code == 403
+    assert path.exists()
+
+
+def test_delete_denied_before_existence_is_revealed(client_factory, member_user):
+    """An unauthorized caller gets 403, not the 404 that would confirm absence."""
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    client = client_factory(member_user)
+    resp = client.delete(f"/api/media/drive/{block_id}/{uuid.uuid4()}")
+    assert resp.status_code == 403
+
+
+def test_capacity_needs_no_block_permission(client_factory, member_user):
+    """The capacity endpoint addresses no block and stays available."""
+    client = client_factory(member_user)
+    assert client.get("/api/media/capacity").status_code == 200
 
 
 # ─── Capacity ─────────────────────────────────────────────────────────────────
@@ -273,9 +438,8 @@ def test_capacity_values_are_non_negative(http_client):
     assert body["free_bytes"] >= 0
 
 
-def test_capacity_requires_auth(http_client):
-    with patch("app.media.router.validate_token", return_value=False):
-        resp = http_client.get("/api/media/capacity")
+def test_capacity_requires_auth(anon_client):
+    resp = anon_client.get("/api/media/capacity")
     assert resp.status_code == 401
 
 
@@ -357,13 +521,23 @@ def test_bookmark_graceful_on_network_error(http_client):
     assert resp.json()["url"] == "https://example.com"
 
 
-def test_bookmark_requires_auth(http_client):
-    with patch("app.media.router.validate_token", return_value=False):
-        resp = http_client.post("/api/media/bookmark", json={"url": "https://example.com"})
+def test_bookmark_requires_auth(anon_client):
+    resp = anon_client.post("/api/media/bookmark", json={"url": "https://example.com"})
     assert resp.status_code == 401
 
 
 # ─── Drive-file move ──────────────────────────────────────────────────────────
+
+
+def _move(client, file_uuid, source_block_id, target_block_id):
+    return client.post(
+        "/api/media/drive-file/move",
+        json={
+            "file_uuid": str(file_uuid),
+            "source_block_id": str(source_block_id),
+            "target_block_id": str(target_block_id),
+        },
+    )
 
 
 def test_move_drive_file_returns_200(http_client, tmp_upload_dir):
@@ -371,14 +545,7 @@ def test_move_drive_file_returns_200(http_client, tmp_upload_dir):
     tgt_block = str(uuid.uuid4())
     file_uuid = str(uuid.uuid4())
     _create_fake_file(tmp_upload_dir, "drive", src_block, file_uuid, ext=".docx")
-    resp = http_client.post(
-        "/api/media/drive-file/move",
-        json={
-            "file_uuid": file_uuid,
-            "source_block_id": src_block,
-            "target_block_id": tgt_block,
-        },
-    )
+    resp = _move(http_client, file_uuid, src_block, tgt_block)
     assert resp.status_code == 200
 
 
@@ -387,14 +554,7 @@ def test_move_drive_file_response_contains_new_url(http_client, tmp_upload_dir):
     tgt_block = str(uuid.uuid4())
     file_uuid = str(uuid.uuid4())
     _create_fake_file(tmp_upload_dir, "drive", src_block, file_uuid, ext=".docx")
-    resp = http_client.post(
-        "/api/media/drive-file/move",
-        json={
-            "file_uuid": file_uuid,
-            "source_block_id": src_block,
-            "target_block_id": tgt_block,
-        },
-    )
+    resp = _move(http_client, file_uuid, src_block, tgt_block)
     new_url = resp.json()["url"]
     assert tgt_block in new_url
     assert src_block not in new_url
@@ -405,14 +565,7 @@ def test_move_drive_file_removes_from_source(http_client, tmp_upload_dir):
     tgt_block = str(uuid.uuid4())
     file_uuid = str(uuid.uuid4())
     src_path = _create_fake_file(tmp_upload_dir, "drive", src_block, file_uuid, ext=".pdf")
-    http_client.post(
-        "/api/media/drive-file/move",
-        json={
-            "file_uuid": file_uuid,
-            "source_block_id": src_block,
-            "target_block_id": tgt_block,
-        },
-    )
+    _move(http_client, file_uuid, src_block, tgt_block)
     assert not src_path.exists()
 
 
@@ -421,14 +574,7 @@ def test_move_drive_file_places_in_target(http_client, tmp_upload_dir):
     tgt_block = str(uuid.uuid4())
     file_uuid = str(uuid.uuid4())
     _create_fake_file(tmp_upload_dir, "drive", src_block, file_uuid, ext=".pdf")
-    http_client.post(
-        "/api/media/drive-file/move",
-        json={
-            "file_uuid": file_uuid,
-            "source_block_id": src_block,
-            "target_block_id": tgt_block,
-        },
-    )
+    _move(http_client, file_uuid, src_block, tgt_block)
     matches = list((tmp_upload_dir / "drives" / tgt_block).glob(f"{file_uuid}*"))
     assert len(matches) == 1
 
@@ -439,37 +585,141 @@ def test_move_drive_file_creates_target_dir(http_client, tmp_upload_dir):
     file_uuid = str(uuid.uuid4())
     _create_fake_file(tmp_upload_dir, "drive", src_block, file_uuid, ext=".txt")
     assert not (tmp_upload_dir / "drives" / tgt_block).exists()
-    http_client.post(
-        "/api/media/drive-file/move",
-        json={
-            "file_uuid": file_uuid,
-            "source_block_id": src_block,
-            "target_block_id": tgt_block,
-        },
-    )
+    _move(http_client, file_uuid, src_block, tgt_block)
     assert (tmp_upload_dir / "drives" / tgt_block).is_dir()
 
 
-def test_move_drive_file_not_found_returns_404(http_client, tmp_upload_dir):
-    resp = http_client.post(
-        "/api/media/drive-file/move",
-        json={
-            "file_uuid": str(uuid.uuid4()),
-            "source_block_id": str(uuid.uuid4()),
-            "target_block_id": str(uuid.uuid4()),
-        },
-    )
+def test_move_drive_file_not_found_returns_404(http_client):
+    resp = _move(http_client, uuid.uuid4(), uuid.uuid4(), uuid.uuid4())
     assert resp.status_code == 404
 
 
-def test_move_drive_file_requires_auth(http_client):
-    with patch("app.media.router.validate_token", return_value=False):
-        resp = http_client.post(
-            "/api/media/drive-file/move",
-            json={
-                "file_uuid": str(uuid.uuid4()),
-                "source_block_id": str(uuid.uuid4()),
-                "target_block_id": str(uuid.uuid4()),
-            },
-        )
+def test_move_drive_file_requires_auth(anon_client):
+    resp = _move(anon_client, uuid.uuid4(), uuid.uuid4(), uuid.uuid4())
     assert resp.status_code == 401
+
+
+# ─── Drive-file move: path traversal ──────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "field", ["file_uuid", "source_block_id", "target_block_id"]
+)
+@pytest.mark.parametrize(
+    "value",
+    [
+        "../../../etc",
+        "..",
+        "a/../../b",
+        "/etc/passwd",
+        "%2e%2e%2f",
+    ],
+)
+def test_move_drive_file_rejects_non_uuid_identifier(http_client, field, value):
+    """
+    Every identifier that ends up in a filesystem path must be a UUID.
+
+    These fields were plain strings and were interpolated into the storage
+    path directly, so a relative segment moved files out of the upload tree.
+    """
+    payload = {
+        "file_uuid": str(uuid.uuid4()),
+        "source_block_id": str(uuid.uuid4()),
+        "target_block_id": str(uuid.uuid4()),
+    }
+    payload[field] = value
+    resp = http_client.post("/api/media/drive-file/move", json=payload)
+    assert resp.status_code == 422
+
+
+def test_storage_dir_allows_a_normal_drive_path(tmp_upload_dir):
+    import app.media.router as media_module
+
+    path = media_module._storage_dir("drive", str(uuid.uuid4()))
+    assert path.is_relative_to(tmp_upload_dir)
+
+
+def test_storage_dir_refuses_a_path_outside_the_upload_root(tmp_upload_dir):
+    """
+    Direct coverage for the containment guard.
+
+    No request can reach this today because every identifier feeding a storage
+    path is typed as a UUID. The guard exists for the case where that stops
+    being true, so it is exercised at the function level rather than over HTTP.
+    """
+    import app.media.router as media_module
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as excinfo:
+        media_module._storage_dir("drive", "../../escape")
+    assert excinfo.value.status_code == 400
+
+
+def test_move_drive_file_cannot_touch_files_outside_the_upload_root(
+    http_client, tmp_path, tmp_upload_dir
+):
+    """A traversal attempt must leave a file next to the upload tree alone."""
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    file_uuid = str(uuid.uuid4())
+    victim = outside_dir / f"{file_uuid}.txt"
+    victim.write_text("do not move me")
+
+    resp = http_client.post(
+        "/api/media/drive-file/move",
+        json={
+            "file_uuid": file_uuid,
+            "source_block_id": "../outside",
+            "target_block_id": str(uuid.uuid4()),
+        },
+    )
+
+    assert resp.status_code == 422
+    assert victim.exists()
+    assert victim.read_text() == "do not move me"
+
+
+# ─── Drive-file move: object-level authorization ──────────────────────────────
+
+
+def test_move_drive_file_from_foreign_source_returns_403(
+    client_factory, member_user, tmp_upload_dir
+):
+    src_block = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    tgt_block = uuid.uuid4()
+    file_uuid = str(uuid.uuid4())
+    src_path = _create_fake_file(
+        tmp_upload_dir, "drive", str(src_block), file_uuid, ext=".docx"
+    )
+    client = client_factory(member_user)
+    resp = _move(client, file_uuid, src_block, tgt_block)
+    assert resp.status_code == 403
+    assert src_path.exists()
+
+
+def test_move_drive_file_to_foreign_target_returns_403(
+    client_factory, member_user, tmp_upload_dir
+):
+    """Access to the source does not imply the right to write into the target."""
+    src_block = uuid.uuid4()
+    tgt_block = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    file_uuid = str(uuid.uuid4())
+    src_path = _create_fake_file(
+        tmp_upload_dir, "drive", str(src_block), file_uuid, ext=".docx"
+    )
+    client = client_factory(member_user)
+    resp = _move(client, file_uuid, src_block, tgt_block)
+    assert resp.status_code == 403
+    assert src_path.exists()
+
+
+def test_move_drive_file_between_own_blocks_is_allowed(
+    client_factory, member_user, tmp_upload_dir
+):
+    src_block = _seed_block(owner_id=member_user.id, mode="private")
+    tgt_block = _seed_block(owner_id=member_user.id, mode="private")
+    file_uuid = str(uuid.uuid4())
+    _create_fake_file(tmp_upload_dir, "drive", str(src_block), file_uuid, ext=".docx")
+    client = client_factory(member_user)
+    resp = _move(client, file_uuid, src_block, tgt_block)
+    assert resp.status_code == 200
