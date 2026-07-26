@@ -9,9 +9,17 @@
  *
  * Content shape:
  *   { url, title?, description?, image?, favicon? }
+ *
+ * Every URL in this content came out of a foreign document or out of whatever
+ * was written to the block through the API, and each one turns into something
+ * the browser acts on: a link the user clicks, an image it fetches. They are
+ * therefore filtered by scheme before they reach the template. The backend
+ * applies the same restriction; this is the half that also covers content that
+ * never passed through the bookmark endpoint.
  */
 import { computed, ref } from 'vue'
 import { Icon } from '@iconify/vue'
+import { useI18n } from 'vue-i18n'
 import { useBlockStore, type Block } from '@/stores/blocks'
 
 const props = defineProps<{
@@ -19,6 +27,7 @@ const props = defineProps<{
   parentId: string
 }>()
 
+const { t } = useI18n()
 const blockStore = useBlockStore()
 
 const hasUrl = computed(() => Boolean(props.block.content?.url))
@@ -27,6 +36,29 @@ const bTitle = computed(() => props.block.content?.title as string | undefined)
 const bDescription = computed(() => props.block.content?.description as string | undefined)
 const bImage = computed(() => props.block.content?.image as string | undefined)
 const bFavicon = computed(() => props.block.content?.favicon as string | undefined)
+
+// ── URL filtering ─────────────────────────────────────────────────────────────
+
+/** Return *raw* only if it parses and uses one of the permitted schemes. */
+function withScheme(raw: string | undefined, allowed: string[]): string | undefined {
+  if (!raw) return undefined
+  try {
+    const parsed = new URL(raw)
+    return allowed.includes(parsed.protocol) ? parsed.href : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// A link the user clicks: http and https only, so that a stored "javascript:"
+// value cannot execute on activation.
+const safeHref = computed(() => withScheme(bUrl.value, ['http:', 'https:']))
+
+// Images the browser fetches on its own: https only. That keeps a stored
+// "http://192.168.x.x/..." from turning the page into a request into the
+// user's network, and drops mixed content the browser would refuse anyway.
+const safeImage = computed(() => withScheme(bImage.value, ['https:']))
+const safeFavicon = computed(() => withScheme(bFavicon.value, ['https:']))
 
 // ── URL input state ───────────────────────────────────────────────────────────
 
@@ -38,7 +70,9 @@ async function handleConfirm(): Promise<void> {
   const raw = urlInput.value.trim()
   if (!raw) return
 
-  const url = raw.startsWith('http') ? raw : `https://${raw}`
+  // Only prepend a scheme when there is none. Matching on "http" alone also
+  // accepted values such as "httpfoo:" and passed them through untouched.
+  const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`
   isFetching.value = true
   fetchError.value = null
 
@@ -49,12 +83,14 @@ async function handleConfirm(): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url }),
     })
-    if (!res.ok) throw new Error(`Fetch failed (${res.status})`)
+    if (res.status === 400) throw new Error(t('block.bookmark.invalidTarget'))
+    if (res.status === 429) throw new Error(t('block.bookmark.tooManyRequests'))
+    if (!res.ok) throw new Error(t('block.bookmark.fetchFailed'))
     const data = await res.json()
     await blockStore.updateBlock(props.block.id, { content: data })
     urlInput.value = ''
   } catch (e) {
-    fetchError.value = e instanceof Error ? e.message : 'Failed to fetch preview'
+    fetchError.value = e instanceof Error ? e.message : t('block.bookmark.fetchFailed')
   } finally {
     isFetching.value = false
   }
@@ -70,6 +106,17 @@ function handleKeydown(e: KeyboardEvent): void {
 async function handleRemove(): Promise<void> {
   await blockStore.updateBlock(props.block.id, { content: {} })
 }
+
+/**
+ * Hide a favicon that fails to load.
+ *
+ * The previous handler read $el, which is not in scope inside a script-setup
+ * template, so it threw instead of hiding anything.
+ */
+function hideBrokenIcon(event: Event): void {
+  const img = event.target as HTMLImageElement | null
+  if (img) img.style.display = 'none'
+}
 </script>
 
 <template>
@@ -82,7 +129,7 @@ async function handleRemove(): Promise<void> {
           v-model="urlInput"
           type="url"
           class="bookmark-block__input"
-          placeholder="Paste a URL and press Enter…"
+          :placeholder="t('block.bookmark.urlPlaceholder')"
           :disabled="isFetching"
           @keydown="handleKeydown"
         />
@@ -94,7 +141,7 @@ async function handleRemove(): Promise<void> {
           <template v-if="isFetching">
             <Icon icon="mdi:loading" width="14" height="14" class="bookmark-block__spinner" />
           </template>
-          <template v-else>Load preview</template>
+          <template v-else>{{ t('block.bookmark.loadPreview') }}</template>
         </button>
       </div>
       <span v-if="fetchError" class="bookmark-block__error">{{ fetchError }}</span>
@@ -103,7 +150,7 @@ async function handleRemove(): Promise<void> {
     <!-- Preview card state -->
     <template v-else>
       <a
-        :href="bUrl"
+        :href="safeHref"
         target="_blank"
         rel="noopener noreferrer"
         class="bookmark-block__card"
@@ -118,23 +165,27 @@ async function handleRemove(): Promise<void> {
           </span>
           <span class="bookmark-block__card-meta">
             <img
-              v-if="bFavicon"
-              :src="bFavicon"
+              v-if="safeFavicon"
+              :src="safeFavicon"
               class="bookmark-block__favicon"
               alt=""
-              @error="($el as HTMLImageElement).style.display = 'none'"
+              @error="hideBrokenIcon"
             />
             {{ bUrl }}
           </span>
         </div>
 
         <!-- Thumbnail -->
-        <div v-if="bImage" class="bookmark-block__card-thumb">
-          <img :src="bImage" alt="" class="bookmark-block__thumb-img" />
+        <div v-if="safeImage" class="bookmark-block__card-thumb">
+          <img :src="safeImage" alt="" class="bookmark-block__thumb-img" />
         </div>
       </a>
 
-      <button class="bookmark-block__remove-btn" title="Remove bookmark" @click="handleRemove">
+      <button
+        class="bookmark-block__remove-btn"
+        :title="t('block.bookmark.remove')"
+        @click="handleRemove"
+      >
         <Icon icon="mdi:close" width="14" height="14" />
       </button>
     </template>

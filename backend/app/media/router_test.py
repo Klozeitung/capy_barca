@@ -14,7 +14,7 @@ permission layer resolves against blocks seeded into the in-memory database.
 import io
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -80,6 +80,21 @@ def anon_client():
 
 
 @pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """
+    Clear the shared rate-limit counter before each test.
+
+    The bookmark endpoint is throttled, and every test here talks to the same
+    client address, so without this the later bookmark tests would fail on the
+    budget spent by the earlier ones.
+    """
+    from app.security.limiter import limiter
+
+    limiter._storage.reset()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def tmp_upload_dir(tmp_path, monkeypatch):
     """Redirect STATIC_ROOT to a throwaway temp dir for every test."""
     import app.media.router as media_module
@@ -141,16 +156,94 @@ def _upload(
     )
 
 
-def _mock_httpx(html: str):
-    """Return a context manager that patches httpx.AsyncClient to return *html*."""
-    mock_response = MagicMock()
-    mock_response.text = html
+class _FakeResponse:
+    """
+    Minimal stand-in for the streaming response the bookmark endpoint reads.
 
-    mock_client = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=None)
-    mock_client.get = AsyncMock(return_value=mock_response)
-    return patch("httpx.AsyncClient", return_value=mock_client)
+    Written out rather than assembled from a mock because the endpoint now
+    branches on redirect status and consumes the body in chunks, and a mock
+    that answers every attribute would hide a mistake in either path.
+    """
+
+    def __init__(self, body: bytes = b"", status_code: int = 200, headers=None):
+        self._body = body
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.encoding = "utf-8"
+
+    @property
+    def is_redirect(self) -> bool:
+        return self.status_code in (301, 302, 303, 307, 308) and "location" in {
+            k.lower() for k in self.headers
+        }
+
+    async def aiter_bytes(self):
+        # Deliberately chunked so the size cap is exercised rather than assumed.
+        for i in range(0, len(self._body), 1024):
+            yield self._body[i:i + 1024]
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return None
+
+
+class _FakeAsyncClient:
+    """httpx.AsyncClient replacement that replays a scripted list of responses."""
+
+    def __init__(self, responses, requested):
+        self._responses = list(responses)
+        self._requested = requested
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return None
+
+    def stream(self, method, url, headers=None):
+        self._requested.append(url)
+        if not self._responses:
+            raise AssertionError(f"unexpected extra request to {url}")
+        return self._responses.pop(0)
+
+
+def _mock_httpx(html: str = "", responses=None, requested=None):
+    """
+    Patch httpx.AsyncClient and the DNS resolver for the bookmark endpoint.
+
+    The resolver is stubbed alongside the client because the endpoint refuses
+    any target it cannot resolve to a public address, and the test suite must
+    not depend on name resolution being available.
+    """
+    scripted = responses if responses is not None else [_FakeResponse(html.encode())]
+    sink = requested if requested is not None else []
+
+    async def _public_resolver(host, port):
+        return ["93.184.216.34"]
+
+    return _patch_stack(
+        patch("httpx.AsyncClient", lambda *a, **kw: _FakeAsyncClient(scripted, sink)),
+        patch("app.media.router._resolve_host", _public_resolver),
+    )
+
+
+class _patch_stack:
+    """Apply several patches as one context manager."""
+
+    def __init__(self, *patchers):
+        self._patchers = patchers
+
+    def __enter__(self):
+        for patcher in self._patchers:
+            patcher.start()
+        return self
+
+    def __exit__(self, *exc):
+        for patcher in reversed(self._patchers):
+            patcher.stop()
+        return False
 
 
 # ─── Upload: status and response shape ───────────────────────────────────────
@@ -511,19 +604,301 @@ def test_bookmark_sets_favicon_from_origin(http_client):
 
 
 def test_bookmark_graceful_on_network_error(http_client):
-    mock_client = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=None)
-    mock_client.get = AsyncMock(side_effect=Exception("timeout"))
-    with patch("httpx.AsyncClient", return_value=mock_client):
+    """An allowed target that fails to answer still yields a usable bookmark."""
+    class _Failing:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        def stream(self, *a, **kw):
+            raise Exception("timeout")
+
+    async def _public_resolver(host, port):
+        return ["93.184.216.34"]
+
+    with _patch_stack(
+        patch("httpx.AsyncClient", lambda *a, **kw: _Failing()),
+        patch("app.media.router._resolve_host", _public_resolver),
+    ):
         resp = http_client.post("/api/media/bookmark", json={"url": "https://example.com"})
     assert resp.status_code == 200
     assert resp.json()["url"] == "https://example.com"
+    assert resp.json()["title"] is None
 
 
 def test_bookmark_requires_auth(anon_client):
     resp = anon_client.post("/api/media/bookmark", json={"url": "https://example.com"})
     assert resp.status_code == 401
+
+
+# ─── Bookmark: outbound target validation ─────────────────────────────────────
+
+
+def _bookmark(client, url: str):
+    return client.post("/api/media/bookmark", json={"url": url})
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1/",
+        "http://127.0.0.1:8000/admin",
+        "http://[::1]/",
+        "http://[::ffff:127.0.0.1]/",
+        "http://10.0.0.1/",
+        "http://172.16.0.1/",
+        "http://192.168.1.1/",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://100.64.0.1/",
+        "https://100.100.100.100/",
+        "http://0.0.0.0/",
+        "http://[fc00::1]/",
+        "http://[fe80::1]/",
+    ],
+)
+def test_bookmark_refuses_non_public_address(http_client, url):
+    """
+    Literal addresses outside the public internet are refused before a socket
+    is opened. No client patch here on purpose: the real resolver is what has
+    to reject these.
+    """
+    assert _bookmark(http_client, url).status_code == 400
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",
+        "ftp://example.com/",
+        "gopher://example.com/",
+        "data:text/html,<h1>x</h1>",
+        "//example.com/",
+        "http:///no-host",
+        "not a url at all",
+    ],
+)
+def test_bookmark_refuses_unsupported_scheme(http_client, url):
+    assert _bookmark(http_client, url).status_code == 400
+
+
+def test_bookmark_refuses_container_service_by_name(http_client):
+    """The neighbouring Compose services must not be reachable through this."""
+    async def _internal_resolver(host, port):
+        return ["172.18.0.2"]
+
+    with patch("app.media.router._resolve_host", _internal_resolver):
+        assert _bookmark(http_client, "http://collabora:9980/").status_code == 400
+
+
+def test_bookmark_refuses_host_with_one_private_record(http_client):
+    """A name answering with both a public and a private record is refused."""
+    async def _mixed_resolver(host, port):
+        return ["93.184.216.34", "127.0.0.1"]
+
+    with patch("app.media.router._resolve_host", _mixed_resolver):
+        assert _bookmark(http_client, "https://mixed.example/").status_code == 400
+
+
+def test_bookmark_judges_a_literal_address_without_the_resolver(http_client):
+    """
+    A literal address is decided on its own merits.
+
+    Pinned because the opposite is easy to reintroduce and hard to notice: as
+    long as the verdict came from the resolver, anything able to answer that
+    lookup could vouch for an address that is plainly internal.
+    """
+    async def _lying_resolver(host, port):
+        return ["93.184.216.34"]
+
+    with patch("app.media.router._resolve_host", _lying_resolver):
+        assert _bookmark(http_client, "http://169.254.169.254/").status_code == 400
+        assert _bookmark(http_client, "http://127.0.0.1/").status_code == 400
+
+
+def test_bookmark_refuses_unresolvable_host(http_client):
+    async def _failing_resolver(host, port):
+        raise OSError("NXDOMAIN")
+
+    with patch("app.media.router._resolve_host", _failing_resolver):
+        assert _bookmark(http_client, "https://nope.example/").status_code == 400
+
+
+def test_bookmark_refusal_message_is_uniform(http_client):
+    """
+    A refused public-but-unresolvable host and a refused private address give
+    the same answer, so the endpoint cannot be used to probe internal names.
+    """
+    async def _failing_resolver(host, port):
+        raise OSError("NXDOMAIN")
+
+    private = _bookmark(http_client, "http://10.0.0.1/").json()
+    with patch("app.media.router._resolve_host", _failing_resolver):
+        unresolvable = _bookmark(http_client, "https://nope.example/").json()
+    assert private == unresolvable
+
+
+# ─── Bookmark: redirects ──────────────────────────────────────────────────────
+
+
+def test_bookmark_follows_a_public_redirect(http_client):
+    requested: list[str] = []
+    responses = [
+        _FakeResponse(status_code=302, headers={"location": "https://example.com/final"}),
+        _FakeResponse(b"<title>Final</title>"),
+    ]
+    with _mock_httpx(responses=responses, requested=requested):
+        resp = _bookmark(http_client, "https://example.com/start")
+    assert resp.status_code == 200
+    assert resp.json()["title"] == "Final"
+    assert requested == ["https://example.com/start", "https://example.com/final"]
+
+
+def test_bookmark_refuses_a_redirect_to_an_internal_address(http_client):
+    """
+    The whole point of following redirects by hand: the first hop is public,
+    the second is not, and automatic following would have taken it.
+    """
+    requested: list[str] = []
+    responses = [
+        _FakeResponse(status_code=302, headers={"location": "http://169.254.169.254/"}),
+        _FakeResponse(b"<title>secrets</title>"),
+    ]
+
+    async def _public_resolver(host, port):
+        return ["93.184.216.34"]
+
+    with _patch_stack(
+        patch(
+            "httpx.AsyncClient",
+            lambda *a, **kw: _FakeAsyncClient(responses, requested),
+        ),
+        patch("app.media.router._resolve_host", _public_resolver),
+    ):
+        resp = _bookmark(http_client, "https://example.com/start")
+
+    assert resp.status_code == 400
+    assert requested == ["https://example.com/start"]
+
+
+def test_bookmark_stops_after_the_redirect_budget(http_client):
+    requested: list[str] = []
+    responses = [
+        _FakeResponse(status_code=302, headers={"location": f"https://example.com/{i}"})
+        for i in range(6)
+    ]
+    with _mock_httpx(responses=responses, requested=requested):
+        resp = _bookmark(http_client, "https://example.com/start")
+    assert resp.status_code == 400
+    assert len(requested) <= 5
+
+
+def test_bookmark_refuses_a_redirect_without_a_location(http_client):
+    responses = [_FakeResponse(status_code=302, headers={})]
+    with _mock_httpx(responses=responses):
+        resp = _bookmark(http_client, "https://example.com/start")
+    # No location header means the response is not a redirect and the empty
+    # body is parsed as the page itself.
+    assert resp.status_code == 200
+    assert resp.json()["title"] is None
+
+
+# ─── Bookmark: response size ──────────────────────────────────────────────────
+
+
+def test_bookmark_reads_at_most_the_size_cap(http_client):
+    """
+    A page far beyond the cap must not be pulled into memory in full. The title
+    sits at the very front, so it survives while the tail is discarded.
+    """
+    import app.media.router as media_module
+
+    body = b"<title>Head</title>" + b"x" * (media_module._BOOKMARK_MAX_BYTES * 2)
+    with _mock_httpx(responses=[_FakeResponse(body)]):
+        resp = _bookmark(http_client, "https://example.com/huge")
+    assert resp.status_code == 200
+    assert resp.json()["title"] == "Head"
+
+
+# ─── Bookmark: preview assets handed to the browser ───────────────────────────
+
+
+def test_bookmark_keeps_an_https_image(http_client):
+    html = '<meta property="og:image" content="https://cdn.example/i.png" />'
+    with _mock_httpx(html):
+        resp = _bookmark(http_client, "https://example.com")
+    assert resp.json()["image"] == "https://cdn.example/i.png"
+
+
+def test_bookmark_drops_a_plain_http_image(http_client):
+    html = '<meta property="og:image" content="http://cdn.example/i.png" />'
+    with _mock_httpx(html):
+        resp = _bookmark(http_client, "https://example.com")
+    assert resp.json()["image"] is None
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "https://127.0.0.1/beacon.gif",
+        "https://192.168.1.1/beacon.gif",
+        "https://[::1]/beacon.gif",
+        "javascript:alert(1)",
+        "data:image/png;base64,AAAA",
+    ],
+)
+def test_bookmark_drops_an_unsafe_image(http_client, candidate):
+    """
+    These end up in an img tag in the user's browser, so a private address
+    here is a request into the user's own network.
+    """
+    html = f'<meta property="og:image" content="{candidate}" />'
+    with _mock_httpx(html):
+        resp = _bookmark(http_client, "https://example.com")
+    assert resp.json()["image"] is None
+
+
+def test_bookmark_resolves_a_relative_image_against_the_page(http_client):
+    html = '<meta property="og:image" content="/img/preview.png" />'
+    with _mock_httpx(html):
+        resp = _bookmark(http_client, "https://example.com/article")
+    assert resp.json()["image"] == "https://example.com/img/preview.png"
+
+
+def test_bookmark_favicon_omits_url_credentials(http_client):
+    """Credentials in the URL must not be carried into a rendered attribute."""
+    with _mock_httpx(""):
+        resp = _bookmark(http_client, "https://user:secret@example.com/page")
+    assert resp.json()["favicon"] == "https://example.com/favicon.ico"
+
+
+# ─── Bookmark: rate limit ─────────────────────────────────────────────────────
+
+
+def test_bookmark_rate_limit_blocks_after_threshold(http_client):
+    """
+    Without a limit the endpoint is a fast scanner for whatever the server can
+    reach, so the budget is asserted here the same way the login route does it.
+    """
+    import app.media.router as media_module
+
+    threshold = int(media_module._BOOKMARK_RATE_LIMIT.split("/")[0])
+    for _ in range(threshold):
+        _bookmark(http_client, "http://127.0.0.1/")
+    assert _bookmark(http_client, "http://127.0.0.1/").status_code == 429
+
+
+def test_bookmark_rate_limit_resets_after_storage_clear(http_client):
+    from app.security.limiter import limiter
+    import app.media.router as media_module
+
+    threshold = int(media_module._BOOKMARK_RATE_LIMIT.split("/")[0])
+    for _ in range(threshold):
+        _bookmark(http_client, "http://127.0.0.1/")
+    limiter._storage.reset()
+    with _mock_httpx("<title>Back</title>"):
+        assert _bookmark(http_client, "https://example.com").status_code == 200
 
 
 # ─── Drive-file move ──────────────────────────────────────────────────────────

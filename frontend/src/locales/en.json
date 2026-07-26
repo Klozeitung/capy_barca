@@ -45,6 +45,14 @@
       "synched_origin": "Synced Origin",
       "synched_mirror": "Synced Mirror"
     },
+    "bookmark": {
+      "urlPlaceholder": "Paste a URL and press Enter…",
+      "loadPreview": "Load preview",
+      "remove": "Remove bookmark",
+      "fetchFailed": "Could not load the preview.",
+      "invalidTarget": "This address cannot be loaded.",
+      "tooManyRequests": "Too many requests. Please wait a moment."
+    },
     "contextMenu": {
       "openFullPage": "Open full page",
       "showInline": "Show inline",

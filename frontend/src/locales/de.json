@@ -45,6 +45,14 @@
       "synched_origin": "Sync-Ursprung",
       "synched_mirror": "Sync-Spiegel"
     },
+    "bookmark": {
+      "urlPlaceholder": "URL einfügen und Enter drücken…",
+      "loadPreview": "Vorschau laden",
+      "remove": "Lesezeichen entfernen",
+      "fetchFailed": "Vorschau konnte nicht geladen werden.",
+      "invalidTarget": "Diese Adresse kann nicht geladen werden.",
+      "tooManyRequests": "Zu viele Anfragen. Bitte kurz warten."
+    },
     "contextMenu": {
       "openFullPage": "Ganzseitig öffnen",
       "showInline": "Inline anzeigen",

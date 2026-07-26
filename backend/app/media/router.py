@@ -20,6 +20,14 @@ Every endpoint that names a block enforces ``require_block_access`` on top of
 the session check, so an authenticated account cannot reach a block it has no
 permission for by guessing its id.
 
+Outbound requests
+-----------------
+``fetch_bookmark`` is the only endpoint that makes the server open a connection
+to an address the caller chose. Every target, including each redirect hop, is
+resolved and checked against an allowlist of publicly routable addresses before
+a socket is opened, the response body is capped, and the preview asset URLs
+handed back to the browser are restricted to https.
+
 Note on the shared namespaces: drive files live under a per-block directory,
 so the block check fully governs them. Media and file uploads land in one flat
 directory per category, and the server keeps no mapping from ``file_uuid`` back
@@ -28,19 +36,24 @@ where a file may be written, but a caller who already knows a ``file_uuid`` can
 still address it through any block id. Closing that needs a persisted
 file-to-block mapping and is out of scope here.
 """
+import asyncio
+import ipaddress
 import mimetypes
+import os
 import re
 import shutil
+import socket
 import uuid
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.security.limiter import limiter
 from app.session.deps import get_current_user, get_db, require_block_access
 from app.users.model import User
 
@@ -49,6 +62,18 @@ STATIC_ROOT: Path = Path("static/uploads")
 
 MEDIA_CATEGORIES: frozenset[str] = frozenset({"image", "video", "audio", "pdf"})
 VALID_CATEGORIES: frozenset[str] = MEDIA_CATEGORIES | frozenset({"file", "drive"})
+
+# ── Bookmark fetching ─────────────────────────────────────────────────────────
+# One message for every refusal reason. Distinguishing "blocked address" from
+# "does not resolve" would turn the endpoint into a probe for which internal
+# names exist.
+_BOOKMARK_REFUSED = "This address cannot be loaded"
+_BOOKMARK_SCHEMES: frozenset[str] = frozenset({"http", "https"})
+_BOOKMARK_TIMEOUT = 10.0
+_BOOKMARK_MAX_BYTES = 512 * 1024
+_BOOKMARK_MAX_REDIRECTS = 3
+_BOOKMARK_USER_AGENT = "Mozilla/5.0 (compatible; CapyBarca/1.0)"
+_BOOKMARK_RATE_LIMIT = os.getenv("BOOKMARK_RATE_LIMIT", "10/minute")
 
 media_router = APIRouter(prefix="/api/media", tags=["media"])
 
@@ -129,6 +154,167 @@ def _extract_meta_name(html: str, name: str) -> Optional[str]:
         re.IGNORECASE,
     )
     return m2.group(1) if m2 else None
+
+
+# ─── Outbound target validation ───────────────────────────────────────────────
+
+
+def _ip_is_publicly_routable(raw: str) -> bool:
+    """
+    Return True only for addresses that belong to the public internet.
+
+    Written as an allowlist rather than a list of forbidden ranges: a blocklist
+    has to be extended every time a new special-purpose range is assigned,
+    whereas ``is_global`` denies anything that is not unambiguously public.
+    That already covers loopback, RFC1918, link-local including the cloud
+    metadata address, unique-local, and the carrier-grade NAT range Tailscale
+    hands out. Multicast is excluded separately because it reports as global.
+    """
+    try:
+        address = ipaddress.ip_address(raw)
+    except ValueError:
+        return False
+
+    mapped = getattr(address, "ipv4_mapped", None)
+    if mapped is not None:
+        # ::ffff:127.0.0.1 must be judged as the IPv4 address it carries.
+        address = mapped
+
+    return address.is_global and not address.is_multicast
+
+
+async def _resolve_host(host: str, port: int) -> list[str]:
+    """
+    Return every address a connection to *host* could end up using.
+
+    Separate function so tests can substitute it, and so the blocking resolver
+    call runs off the event loop.
+    """
+    loop = asyncio.get_running_loop()
+    infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return [info[4][0] for info in infos]
+
+
+async def _assert_target_allowed(url: str) -> None:
+    """
+    Refuse *url* unless it names a public http(s) endpoint.
+
+    Every address the hostname resolves to has to qualify, not merely the
+    first: a name with both a public and a private record would otherwise be
+    a reliable way in.
+
+    Residual: the resolver runs again inside httpx when the connection is
+    opened, so a record that changes between the two lookups is not caught
+    here. Closing that means pinning the connection to the address that was
+    checked, which costs correct TLS naming for every ordinary bookmark.
+    """
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=_BOOKMARK_REFUSED)
+
+    if parsed.scheme not in _BOOKMARK_SCHEMES or not hostname:
+        raise HTTPException(status_code=400, detail=_BOOKMARK_REFUSED)
+
+    # A literal address is judged as it stands. Sending it through the resolver
+    # first would make the verdict depend on a lookup that has nothing left to
+    # decide, and any influence over that lookup would become influence over
+    # the verdict.
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        if not _ip_is_publicly_routable(hostname):
+            raise HTTPException(status_code=400, detail=_BOOKMARK_REFUSED)
+        return
+
+    try:
+        addresses = await _resolve_host(hostname, port)
+    except Exception:
+        raise HTTPException(status_code=400, detail=_BOOKMARK_REFUSED)
+
+    if not addresses or not all(_ip_is_publicly_routable(a) for a in addresses):
+        raise HTTPException(status_code=400, detail=_BOOKMARK_REFUSED)
+
+
+async def _fetch_preview_html(url: str) -> tuple[str, str]:
+    """
+    Fetch *url* and return ``(final_url, html)``.
+
+    Redirects are followed by hand instead of by httpx so that every hop is
+    validated. Automatic following would check the address the user supplied
+    and then quietly go wherever that address points.
+    """
+    current = url
+    headers = {"User-Agent": _BOOKMARK_USER_AGENT}
+
+    async with httpx.AsyncClient(
+        follow_redirects=False, timeout=_BOOKMARK_TIMEOUT
+    ) as client:
+        for _ in range(_BOOKMARK_MAX_REDIRECTS + 1):
+            await _assert_target_allowed(current)
+
+            async with client.stream("GET", current, headers=headers) as response:
+                if response.is_redirect:
+                    location = response.headers.get("location")
+                    if not location:
+                        raise HTTPException(
+                            status_code=400, detail=_BOOKMARK_REFUSED
+                        )
+                    current = urljoin(current, location)
+                    continue
+
+                # Read at most the cap: a preview needs the document head, and
+                # an unbounded read would let any page decide how much memory
+                # the server spends.
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in response.aiter_bytes():
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total >= _BOOKMARK_MAX_BYTES:
+                        break
+
+                body = b"".join(chunks)[:_BOOKMARK_MAX_BYTES]
+                return current, body.decode(
+                    response.encoding or "utf-8", errors="replace"
+                )
+
+    raise HTTPException(status_code=400, detail=_BOOKMARK_REFUSED)
+
+
+def _safe_preview_asset(candidate: Optional[str], base_url: str) -> Optional[str]:
+    """
+    Return an image URL the browser may load, or None.
+
+    These values come out of a foreign document and end up in an ``img`` tag,
+    which makes them a request the user's browser performs on the page's
+    behalf. Restricting them to https on a public host keeps that request from
+    reaching anything on the user's own network, and drops mixed content the
+    browser would refuse anyway.
+
+    Relative references are resolved against the page they were found on,
+    which also makes previews work for the many sites that use them.
+    """
+    if not candidate:
+        return None
+
+    absolute = urljoin(base_url, candidate.strip())
+    parsed = urlparse(absolute)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return None
+
+    # A literal address can be judged here; a name is left to the browser,
+    # since resolving it server-side would say nothing about what the client
+    # will resolve it to.
+    try:
+        ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        return absolute
+    return absolute if _ip_is_publicly_routable(parsed.hostname) else None
 
 
 # ─── Schemas ──────────────────────────────────────────────────────────────────
@@ -268,24 +454,30 @@ async def delete_file(
 
 
 @media_router.post("/bookmark", response_model=BookmarkResponse)
+@limiter.limit(_BOOKMARK_RATE_LIMIT)
 async def fetch_bookmark(
+    request: Request,
     payload: BookmarkRequest,
     _user: User = Depends(get_current_user),
 ) -> BookmarkResponse:
     """
     Fetch Open Graph / meta data for a URL to build a bookmark preview.
 
-    On any network or parse error the endpoint returns a minimal response
-    with just the URL rather than propagating a 5xx to the client.
+    This is the one place where the caller decides which address the server
+    connects to, so the target is validated before every hop and the endpoint
+    is rate limited: without a limit it doubles as a fast scanner for whatever
+    the server can reach.
+
+    A refused target is a 400. A target that was allowed but did not answer
+    keeps the previous behaviour and yields a minimal response carrying just
+    the URL, so a slow or broken site still produces a usable bookmark.
     """
     url = payload.url
+
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
-            response = await client.get(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; CapyBarca/1.0)"},
-            )
-            html = response.text
+        final_url, html = await _fetch_preview_html(url)
+    except HTTPException:
+        raise
     except Exception:
         return BookmarkResponse(url=url)
 
@@ -293,10 +485,15 @@ async def fetch_bookmark(
     description = (
         _extract_og(html, "og:description") or _extract_meta_name(html, "description")
     )
-    image = _extract_og(html, "og:image")
+    image = _safe_preview_asset(_extract_og(html, "og:image"), final_url)
 
-    parsed = urlparse(url)
-    favicon = f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
+    parsed_final = urlparse(final_url)
+    # Rebuilt from hostname and port rather than netloc: a URL may carry
+    # credentials, and those must not end up in an attribute the page renders.
+    origin = f"https://{parsed_final.hostname}"
+    if parsed_final.port:
+        origin = f"{origin}:{parsed_final.port}"
+    favicon = _safe_preview_asset("/favicon.ico", f"{origin}/")
 
     return BookmarkResponse(
         url=url,
