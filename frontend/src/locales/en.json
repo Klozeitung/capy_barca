@@ -372,7 +372,25 @@
       "rollupFunctionLastValue": "Last value",
       "rollupFunctionEarliestDate": "Earliest date",
       "rollupFunctionLatestDate": "Latest date",
-      "rollupFunctionDateRange": "Date range"
+      "rollupFunctionDateRange": "Date range",
+      "keyingEnable": "Keyed property",
+      "keyingHint": "Sort this relation's linked entries by a property of the target database, shown beside each entry.",
+      "keyingProperty": "Key property",
+      "keyingPropertySelect": "Select a property",
+      "keyingNoKeyable": "The target database has no property that can serve as a key. Date, number, select and text properties are supported.",
+      "keyingOrder": "Order",
+      "keyingOrderAsc": "Ascending",
+      "keyingOrderDesc": "Descending",
+      "keyingEmpty": "Entries without a value",
+      "keyingEmptyFirst": "First",
+      "keyingEmptyLast": "Last",
+      "keyingErrorProperty": "Choose a key property, or turn keying off.",
+      "keyingDangling": "The selected key property no longer exists. Choose another one.",
+      "keyingBlockedByTimeline": "Not available: a timelined relation cannot also be keyed.",
+      "keyingBlockedByNuance": "Not available: a nuanced relation cannot also be keyed.",
+      "keyingBlockedByMirror": "Not available: the mirror property is timelined or nuanced.",
+      "keyingBlocksOthers": "Not available while this relation is keyed.",
+      "keyingMirrorKeyed": "Not available: the mirror property is keyed. A keyed relation restricts the other side to vanilla or keyed."
     },
     "viewSettings": {
       "title": "View settings",
@@ -579,7 +597,11 @@
       "modeAll": "Show all",
       "modeNow": "Show now (coming soon)",
       "modeCustom": "Show custom date (coming soon)"
-    }
+    },
+    "deleteColumnKeyedTitle": "Reset keyed relations?",
+    "deleteColumnKeyedBody": "Deleting this property resets the following relations to their unsorted state:",
+    "deleteColumnKeyedItem": "{property} in {database}",
+    "changeIcon": "Change icon"
   },
   "propertySection": {
     "title": "Properties",
@@ -730,7 +752,8 @@
     "databasesTitle": "Databases",
     "databasesOverview": "A database stores entries as rows and properties as typed columns (text, number, date, select, relation, rollup, and more). The same data can appear through different views — table, calendar, and others — each with its own filters and sorting.",
     "databasesDates": "Your date format is set under Settings → Date and applies everywhere; a single date property can override it in its own settings. Date fields cover the years 1 to 9999.",
-    "databasesGroups": "In the properties side panel you can organise properties into groups. Custom groups fold and unfold, rename on double-click, and reorder by drag-and-drop via the handle on the right of the group header. The default group always stays on top."
+    "databasesGroups": "In the properties side panel you can organise properties into groups. Custom groups fold and unfold, rename on double-click, and reorder by drag-and-drop via the handle on the right of the group header. The default group always stays on top.",
+    "databasesKeying": "A relation property can be keyed: choose a property of the target database to sort the relation's entries by. The chosen value is shown beside each entry."
   },
   "synchedBlock": {
     "originLabel": "Synced",

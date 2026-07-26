@@ -35,11 +35,11 @@ export interface PropertySchema {
   type: string
   config: Record<string, unknown> | null
   position: number
-  /** Property group name. Default: "Standard". Used for side-panel grouping (#21). */
+  /** Property group name. Default: "Standard". Used for side-panel grouping. */
   group: string
 }
 
-// ── Select option types (#27) ─────────────────────────────────────────────────
+// ── Select option types ───────────────────────────────────────────────────────
 
 export const SELECT_OPTION_COLORS = [
   { key: 'default', label: 'Default' },
@@ -120,12 +120,32 @@ export interface DatabaseInfo {
  * Relation cells store only the linked entry IDs; their chips need a title.
  * Resolving titles from the paginated `entries` cache breaks once a relation
  * points past a database's display limit, so these descriptors are fetched and
- * cached separately, independently of any pagination (#27).
+ * cached separately, independently of any pagination.
  */
 export interface RelationTitle {
   id: string
   title: string | null
   database_id: string
+  /**
+   * Raw value of the property requested via ``value_schema_id``, present only
+   * on a key-value resolve. Null when none was requested, the property does
+   * not resolve, or the entry stores no value for it.
+   */
+  value?: Record<string, unknown> | null
+}
+
+/**
+ * One relation property that is keyed on a given property of another database.
+ *
+ * Returned by GET /schemas/{id}/key-references. Deleting or retyping that
+ * property resets every relation listed here to vanilla, so the delete
+ * confirmation can name them instead of warning in the abstract.
+ */
+export interface KeyReference {
+  schema_id: string
+  schema_name: string
+  database_id: string
+  database_title: string | null
 }
 
 // ── View types ────────────────────────────────────────────────────────────────
@@ -432,7 +452,7 @@ export const useDatabaseStore = defineStore('database', () => {
    *
    * Populated by ``resolveEntryTitles`` via POST /entries/resolve-titles and
    * kept deliberately separate from ``entries`` so a target database's
-   * paginated display limit never drops a relation chip (#27).
+   * paginated display limit never drops a relation chip.
    */
   const relationTitles = ref<Record<string, RelationTitle>>({})
 
@@ -443,6 +463,31 @@ export const useDatabaseStore = defineStore('database', () => {
    * server has actually been asked.
    */
   const resolvedRelationIds = ref<Set<string>>(new Set())
+
+  /**
+   * Raw key values of relation targets, for keyed relations.
+   *
+   * Keyed by ``"<keyPropertyId>:<entryId>"`` rather than by entry id alone,
+   * because two relations may key the same entry on different properties.
+   * Kept separate from ``relationTitles`` for the same reason that cache exists
+   * at all: the values are fetched on the display-limit-independent resolver
+   * path, never read off the paginated ``entries`` cache.
+   */
+  const relationKeyValues = ref<Record<string, Record<string, unknown> | null>>({})
+
+  /** Composite keys for which a key-value round-trip has completed. */
+  const resolvedKeyValueIds = ref<Set<string>>(new Set())
+
+  /** Cache key for the key-value maps above. */
+  function keyValueCacheKey(keyPropertyId: string, entryId: string): string {
+    return `${keyPropertyId}:${entryId}`
+  }
+
+  /**
+   * In-flight schema fetches, so the many relation cells of one column do not
+   * each issue their own request for the same target database's schemas.
+   */
+  const schemaFetches = new Map<string, Promise<PropertySchema[]>>()
 
   // ── All databases ─────────────────────────────────────────────────────────
 
@@ -518,6 +563,47 @@ export const useDatabaseStore = defineStore('database', () => {
     // Values embedded in entries are now stale – re-fetch entries too.
     if (entries.value[databaseId] !== undefined) {
       await fetchEntries(databaseId)
+    }
+  }
+
+  /**
+   * Return the schemas for *databaseId*, fetching them once if not cached.
+   *
+   * A keyed relation needs the target database's schemas to resolve its key
+   * property, and every cell of that column would otherwise request them
+   * independently on first render. Concurrent callers share one in-flight
+   * promise.
+   */
+  async function ensureSchemas(databaseId: string): Promise<PropertySchema[]> {
+    const cached = schemas.value[databaseId]
+    if (cached !== undefined) return cached
+    const inFlight = schemaFetches.get(databaseId)
+    if (inFlight) return inFlight
+    const request = fetchSchemas(databaseId).finally(() => {
+      schemaFetches.delete(databaseId)
+    })
+    schemaFetches.set(databaseId, request)
+    return request
+  }
+
+  /**
+   * List the relation properties keyed on *schemaId*.
+   *
+   * Pre-flight for a destructive property edit: the returned relations are the
+   * ones a delete would reset to vanilla, so the confirmation can name them.
+   * A failure yields an empty list — the backend clears the references either
+   * way, so a transient error must not block the delete.
+   */
+  async function listKeyReferences(
+    databaseId: string,
+    schemaId: string,
+  ): Promise<KeyReference[]> {
+    try {
+      return await apiClient.get<KeyReference[]>(
+        `/api/databases/${databaseId}/schemas/${schemaId}/key-references`,
+      )
+    } catch {
+      return []
     }
   }
 
@@ -609,6 +695,61 @@ export const useDatabaseStore = defineStore('database', () => {
     } catch {
       for (const id of wanted) {
         if (!(id in relationTitles.value)) resolvedRelationIds.value.delete(id)
+      }
+    }
+  }
+
+  /**
+   * Resolve the key values of a keyed relation's linked entries and cache them
+   * in ``relationKeyValues``.
+   *
+   * Shares the resolve-titles endpoint via its ``value_schema_id`` parameter,
+   * which keeps the permission check and the active/non-template filter in one
+   * place. It deliberately does *not* share ``resolveEntryTitles``: that
+   * function skips ids whose titles are already cached, which would leave a
+   * keyed cell without values for exactly the entries it has already rendered.
+   *
+   * Ids the server does not return are marked resolved with a null value, so
+   * the sort treats them as empty instead of waiting forever. Failures are
+   * swallowed and the attempted-marker rolled back, so a transient error does
+   * not permanently pin the cell to seniority order.
+   */
+  async function resolveEntryKeyValues(
+    databaseId: string,
+    ids: string[],
+    keyPropertyId: string,
+    force = false,
+  ): Promise<void> {
+    if (ids.length === 0 || !keyPropertyId) return
+    const wanted = force
+      ? ids
+      : ids.filter(
+          (id) => !resolvedKeyValueIds.value.has(keyValueCacheKey(keyPropertyId, id)),
+        )
+    if (wanted.length === 0) return
+    for (const id of wanted) {
+      resolvedKeyValueIds.value.add(keyValueCacheKey(keyPropertyId, id))
+    }
+    try {
+      const result = await apiClient.post<RelationTitle[]>(
+        `/api/databases/${databaseId}/entries/resolve-titles`,
+        { ids: wanted, value_schema_id: keyPropertyId },
+      )
+      const returned = new Set(result.map((r) => r.id))
+      for (const r of result) {
+        relationKeyValues.value[keyValueCacheKey(keyPropertyId, r.id)] = r.value ?? null
+      }
+      for (const id of wanted) {
+        if (!returned.has(id)) {
+          relationKeyValues.value[keyValueCacheKey(keyPropertyId, id)] = null
+        }
+      }
+    } catch {
+      for (const id of wanted) {
+        const cacheKey = keyValueCacheKey(keyPropertyId, id)
+        if (!(cacheKey in relationKeyValues.value)) {
+          resolvedKeyValueIds.value.delete(cacheKey)
+        }
       }
     }
   }
@@ -721,22 +862,39 @@ export const useDatabaseStore = defineStore('database', () => {
     return id in relationTitles.value
   }
 
+  /**
+   * Raw key value cached for *entryId* under *keyPropertyId*, or ``null`` when
+   * none is known yet or the entry stores none. The keyed cell treats null as
+   * an empty key, which is also the correct reading while a resolve is still
+   * in flight: the entry sorts into the empty group and moves once the value
+   * arrives.
+   */
+  function getRelationKeyValue(
+    keyPropertyId: string,
+    entryId: string,
+  ): Record<string, unknown> | null {
+    return relationKeyValues.value[keyValueCacheKey(keyPropertyId, entryId)] ?? null
+  }
+
   return {
     // State
     schemas,
     entries,
     allDatabases,
     relationTitles,
+    relationKeyValues,
 
     // Database list
     fetchAllDatabases,
 
     // Schema operations
     fetchSchemas,
+    ensureSchemas,
     createSchema,
     updateSchema,
     deleteSchema,
     getSchemas,
+    listKeyReferences,
 
     // Entry operations
     fetchEntries,
@@ -747,10 +905,14 @@ export const useDatabaseStore = defineStore('database', () => {
     upsertValue,
     getEntries,
 
-    // Relation-chip title resolution (#27)
+    // Relation-chip title resolution
     resolveEntryTitles,
     getRelationTitle,
     isRelationResolved,
     hasRelationEntry,
+
+    // Keyed-relation key values
+    resolveEntryKeyValues,
+    getRelationKeyValue,
   }
 })

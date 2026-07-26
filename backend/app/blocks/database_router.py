@@ -58,6 +58,23 @@ When ``config.direction == "bilateral_self"``:
   back to A in the same property (symmetric relation).
 * All sync is handled by the same ``_sync_bilateral_relation`` helper.
 
+Relation keying
+---------------
+A relation property may nominate a *key property* of its target database, at
+``config.keying``.  The key property serves at once as the sort key for the
+relation's linked entries and as the value rendered beside each of them, so a
+plot relation can read chronologically instead of in insertion order.
+
+Keying is a read-side pointer, not edge data.  It never participates in
+bilateral synchronisation, never rewrites stored ``related_ids``, and is
+invisible to rollups traversing the relation.  Both sides of a bilateral
+relation configure it independently.
+
+Because the pointer lives inside a JSON blob it cannot be a foreign key.
+Deleting the referenced property, retyping it out of the supported set, or
+deleting its database resets every referring relation to vanilla in the same
+transaction (see ``_clear_keying_for_property``).
+
 Sub-item hierarchy (parent_item / sub_item)
 -------------------------------------------
 Every database automatically receives a linked ``parent_item`` /
@@ -150,6 +167,19 @@ _RELATION_FAMILY_TYPES: frozenset[str] = frozenset(
         "relation",
         "parent_item",
         "sub_item",
+    }
+)
+
+# Property types a relation may be keyed on.  Each has a total order that the
+# frontend comparator can apply: dates and numbers naturally, select by option
+# order rather than label, text lexicographically.  A property retyped out of
+# this set drops the keying config of every relation referring to it.
+_KEYABLE_PROPERTY_TYPES: frozenset[str] = frozenset(
+    {
+        "date",
+        "number",
+        "select",
+        "text",
     }
 )
 
@@ -278,11 +308,20 @@ class EntryTitleRequest(BaseModel):
     """
     POST body for the /entries/resolve-titles endpoint.
 
-    ids – entry IDs to resolve to lightweight descriptors.  IDs that do not
-          correspond to an active, non-template entry of the target database
-          are silently omitted from the response.
+    ids             – entry IDs to resolve to lightweight descriptors.  IDs
+                      that do not correspond to an active, non-template entry
+                      of the target database are silently omitted from the
+                      response.
+    value_schema_id – optional property of the target database whose raw value
+                      is returned alongside each descriptor.  Used by keyed
+                      relations, which need the key value of every linked
+                      entry to sort and render it.  A schema that does not
+                      belong to the target database yields ``None`` values
+                      rather than an error, so a dangling key pointer degrades
+                      to seniority order instead of breaking the cell.
     """
     ids: list[uuid.UUID] = []
+    value_schema_id: Optional[uuid.UUID] = None
 
 
 class EntryTitleResponse(BaseModel):
@@ -292,10 +331,29 @@ class EntryTitleResponse(BaseModel):
     Carries only what a chip needs (``id``, ``title``, ``database_id``); the
     title is read from ``Block.content['title']`` and may be ``None`` for an
     untitled entry.
+
+    ``value`` holds the raw property value requested via ``value_schema_id``
+    and is ``None`` whenever none was requested, the property does not resolve,
+    or the entry has no value stored for it.
     """
     id: uuid.UUID
     title: Optional[str]
     database_id: uuid.UUID
+    value: Optional[dict] = None
+
+
+class KeyReferenceResponse(BaseModel):
+    """
+    One relation property that keys on a given property of another database.
+
+    Returned by the key-references pre-flight so a delete confirmation can name
+    the relations it is about to reset, rather than merely reporting that some
+    exist.
+    """
+    schema_id: uuid.UUID
+    schema_name: str
+    database_id: uuid.UUID
+    database_title: Optional[str]
 
 
 # ─── Readonly-property helpers ────────────────────────────────────────────────
@@ -1497,6 +1555,125 @@ def _sync_bilateral_relation_timeline(
             repo.upsert_value(db, page_id=uid, schema_id=mirror_schema.id, value=None)
 
 
+# ─── Relation keying helpers ──────────────────────────────────────────────────
+
+
+def _is_keying_enabled(config: Optional[dict]) -> bool:
+    """True when *config* carries an active keying block."""
+    keying = (config or {}).get("keying")
+    return isinstance(keying, dict) and keying.get("enabled") is True
+
+
+def _has_nuance_enabled(config: Optional[dict]) -> bool:
+    """True when *config* carries an active nuance block."""
+    nuance = (config or {}).get("nuance")
+    return isinstance(nuance, dict) and nuance.get("enabled") is True
+
+
+def _validate_relation_mode_exclusivity(config: Optional[dict]) -> None:
+    """
+    Enforce the relation mode matrix.
+
+    A relation property is exactly one of:
+
+        vanilla | timelined | nuanced | timelined + nuanced | keyed
+
+    Keying combines with nothing.
+
+    This is a deliberate scope constraint, not a data-model limitation.  The
+    combination is representable and nothing in the storage format would break;
+    it is withheld because no established use case exists for it yet, and an
+    unexercised combination is an untestable surface — edge cases nobody
+    triggers on purpose, bugs nobody can reproduce on demand.  Keeping the
+    reachable state space small enough to actually verify is worth more here
+    than the extra freedom.  Revisit when a concrete use case exists: this
+    check is the only thing gating it.
+    """
+    if not _is_keying_enabled(config):
+        return
+    cfg = config or {}
+    if cfg.get("hasTimeline") is True:
+        raise HTTPException(
+            status_code=422,
+            detail="A keyed relation cannot also be timelined",
+        )
+    if _has_nuance_enabled(cfg):
+        raise HTTPException(
+            status_code=422,
+            detail="A keyed relation cannot also be nuanced",
+        )
+
+
+def _assert_relation_cross_side_lock(db: Session, schema, effective_config: Optional[dict]) -> None:
+    """
+    Enforce the mode lock across the two sides of a bilateral relation.
+
+    Timeline and nuance data live on the edge and are therefore inherently
+    bilateral: both sides read the same slots and the same per-link labels.
+    Keying does not — it is a read-side pointer into the target database, so
+    the sides configure it independently, and two keyed sides pointing at
+    different properties are explicitly valid.
+
+    The lock is the consequence of that asymmetry.  A keyed side renders its
+    key value in the left zone of the cell and has nowhere to put edge data, so
+    the opposite side of a keyed relation is restricted to vanilla or keyed;
+    turning it timelined or nuanced is rejected.
+
+    Unilateral relations have no opposite side and are unaffected.  For
+    ``bilateral_self`` the mirror is the schema itself, which the local
+    exclusivity check already covers.
+    """
+    mirror = _get_mirror_schema(db, schema)
+    if mirror is None or mirror.id == schema.id:
+        return
+
+    mirror_config = mirror.config or {}
+    cfg = effective_config or {}
+
+    wants_timeline = cfg.get("hasTimeline") is True
+    wants_nuance = _has_nuance_enabled(cfg)
+
+    if _is_keying_enabled(mirror_config) and (wants_timeline or wants_nuance):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"The mirror property '{mirror.name}' is keyed. A keyed relation "
+                f"restricts the other side to vanilla or keyed."
+            ),
+        )
+
+    if _is_keying_enabled(cfg) and (
+        mirror_config.get("hasTimeline") is True or _has_nuance_enabled(mirror_config)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"The mirror property '{mirror.name}' is timelined or nuanced. "
+                f"Keying requires the other side to be vanilla or keyed."
+            ),
+        )
+
+
+def _clear_keying_for_property(db: Session, key_property_id: uuid.UUID) -> list:
+    """
+    Reset every relation that keys on *key_property_id* back to vanilla and
+    return the affected schemas.
+
+    Called when the referenced property is deleted or retyped out of the
+    keyable set.  Clearing is an actual schema write rather than a display-time
+    fallback: a config pointing at something that no longer exists would
+    otherwise survive in the database and reappear in the settings modal as a
+    blank key property.  The cell keeps its own runtime fallback for races and
+    legacy data.
+    """
+    affected = repo.list_relation_schemas_by_key_property(db, key_property_id)
+    for referrer in affected:
+        referrer_config = dict(referrer.config or {})
+        referrer_config["keying"] = {"enabled": False}
+        repo.update_schema(db, referrer, config=referrer_config)
+    return affected
+
+
 # ─── Database list endpoint ───────────────────────────────────────────────────
 
 
@@ -1583,6 +1760,9 @@ async def create_schema(
                 status_code=422,
                 detail="This formula / rollup creates a circular dependency",
             )
+
+    if payload.type == "relation":
+        _validate_relation_mode_exclusivity(payload.config)
 
     # Track whether a mirror schema was created so we know whether to
     # broadcast a schema-update event to the target database after commit.
@@ -1700,6 +1880,22 @@ async def update_schema(
                 detail="This formula / rollup creates a circular dependency",
             )
 
+    # Relation mode gates run before anything is written, so a rejected
+    # combination leaves the schema untouched.  The mirror is resolved from the
+    # pre-update config, which is where the currently existing mirror lives.
+    if effective_type == "relation" and payload.config is not None:
+        _validate_relation_mode_exclusivity(effective_config)
+        _assert_relation_cross_side_lock(db, schema, effective_config)
+
+    # A property retyped out of the keyable set can no longer serve as a sort
+    # key.  Every relation keyed on it is reset to vanilla in this transaction.
+    _retyped_out_of_keyable = (
+        payload.type is not None
+        and payload.type != schema.type
+        and schema.type in _KEYABLE_PROPERTY_TYPES
+        and payload.type not in _KEYABLE_PROPERTY_TYPES
+    )
+
     try:
         updated = repo.update_schema(
             db,
@@ -1711,6 +1907,9 @@ async def update_schema(
         )
         if payload.group is not None:
             updated.group = payload.group
+
+        if _retyped_out_of_keyable:
+            _clear_keying_for_property(db, schema_id)
 
         # ── Formula prop() reference rename ──────────────────────────────────
         #
@@ -1845,6 +2044,21 @@ async def update_schema(
                                         mirror_cfg["nuance"] = {"enabled": False}
                                     repo.update_schema(db, mirror, config=mirror_cfg)
 
+                        # There is deliberately no Case E for keying.
+                        #
+                        # Cases C and D propagate because timeline slots and
+                        # nuance labels are edge data: both sides read the same
+                        # stored structure, so the sides must agree on it.
+                        # Keying is a read-side pointer into the target
+                        # database and touches no edge, so the two sides
+                        # configure it independently — cdb.plot keyed on
+                        # pdb.date alongside pdb.characters keyed on
+                        # cdb.firstAppearance is a valid and intended pairing.
+                        # Propagating it here would collapse that into a single
+                        # shared setting and, worse, write a key_property_id
+                        # from one database into a relation pointing at the
+                        # other, where it resolves to nothing.
+
                         # Ensure the mirror schema exists (covers the edge case
                         # where config was updated from unilateral → bilateral).
                         current_mirror_name = new_mirror_name or old_mirror_name
@@ -1945,6 +2159,12 @@ def delete_schema(
     """
     Delete a property schema and cascade-delete all associated values.
 
+    Relations keyed on this property are reset to vanilla in the same
+    transaction.  This happens unconditionally, independent of whether the
+    client ran the key-references pre-flight first: the pre-flight exists so a
+    confirmation dialog can name the affected relations, while this is the
+    guarantee that no dangling key pointer survives the delete.
+
     Returns 204 No Content on success.
     """
     _get_database_or_raise(db, database_id)
@@ -1955,11 +2175,66 @@ def delete_schema(
             detail=f"Schema {schema_id} not found in database {database_id}",
         )
     try:
+        _clear_keying_for_property(db, schema_id)
         repo.delete_schema(db, schema)
         db.commit()
     except Exception:
         db.rollback()
         raise
+
+
+@database_router.get(
+    "/{database_id}/schemas/{schema_id}/key-references",
+    response_model=list[KeyReferenceResponse],
+)
+def list_key_references(
+    database_id: uuid.UUID,
+    schema_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _session: uuid.UUID = Depends(require_session),
+):
+    """
+    List the relation properties that are keyed on this property.
+
+    Pre-flight for destructive edits: deleting this property, or retyping it
+    out of the keyable set, resets every relation listed here to vanilla.  The
+    frontend calls this before it deletes so the confirmation can name the
+    relations and their databases instead of warning in the abstract.
+
+    Returns an empty list for a property nothing keys on, which is the common
+    case and leaves the existing two-step delete affordance untouched.
+    """
+    _get_database_or_raise(db, database_id)
+    schema = repo.get_schema(db, schema_id)
+    if schema is None or schema.database_id != database_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Schema {schema_id} not found in database {database_id}",
+        )
+
+    references = repo.list_relation_schemas_by_key_property(db, schema_id)
+    if not references:
+        return []
+
+    # Resolve each referring relation's own database title for the dialog.
+    titles: dict[uuid.UUID, Optional[str]] = {}
+    for referrer in references:
+        if referrer.database_id in titles:
+            continue
+        block = repo.get_block(db, referrer.database_id)
+        titles[referrer.database_id] = (
+            (block.content or {}).get("title") if block is not None else None
+        )
+
+    return [
+        KeyReferenceResponse(
+            schema_id=referrer.id,
+            schema_name=referrer.name,
+            database_id=referrer.database_id,
+            database_title=titles.get(referrer.database_id),
+        )
+        for referrer in references
+    ]
 
 
 # ─── Formula validate endpoint ────────────────────────────────────────────────
@@ -2189,14 +2464,28 @@ def resolve_entry_titles(
     Relation cells store only the target entry IDs.  Resolving their titles
     from the paginated entry listing breaks down once a relation points past
     the active display limit, because the limited page never contains the
-    linked entry (#27).  This endpoint loads exactly the requested IDs in a
-    single query, independent of any limit, so a chip renders regardless of the
-    target database's pagination position of its entry.
+    linked entry.  This endpoint loads exactly the requested IDs in a single
+    query, independent of any limit, so a chip renders regardless of the target
+    database's pagination position of its entry.
 
     Only active, non-template entries that are direct children of
     ``database_id`` are returned; unknown, trashed or foreign IDs are silently
     omitted, which doubles as the soft-deleted-entry filter the relation cell
     relied on before.
+
+    Key values
+    ----------
+    When ``value_schema_id`` is supplied, each descriptor also carries the raw
+    value stored for that property.  Keyed relations need this to sort and
+    render their linked entries, and they need it on exactly this path: reading
+    key values off the paginated entry cache would reintroduce the display-limit
+    blind spot this endpoint exists to close, silently and only for large target
+    databases.
+
+    A ``value_schema_id`` that does not resolve to a property of this database
+    yields ``None`` values rather than an error, so a key pointer left dangling
+    by a concurrent delete degrades the cell to seniority order instead of
+    breaking it.
 
     Permission
     ----------
@@ -2216,11 +2505,26 @@ def resolve_entry_titles(
         state="active",
         exclude_types=frozenset({"entry_template"}),
     )
+    if not blocks:
+        return []
+
+    values_by_entry: dict[uuid.UUID, Optional[dict]] = {}
+    if payload.value_schema_id is not None:
+        value_schema = repo.get_schema(db, payload.value_schema_id)
+        if value_schema is not None and value_schema.database_id == database_id:
+            values_map = repo.list_values_for_pages(db, [block.id for block in blocks])
+            for entry_id, property_values in values_map.items():
+                for pv in property_values:
+                    if pv.property_schema_id == payload.value_schema_id:
+                        values_by_entry[entry_id] = pv.value
+                        break
+
     return [
         EntryTitleResponse(
             id=block.id,
             title=(block.content or {}).get("title"),
             database_id=database_id,
+            value=values_by_entry.get(block.id),
         )
         for block in blocks
     ]

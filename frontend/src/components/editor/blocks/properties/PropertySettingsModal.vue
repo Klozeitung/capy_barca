@@ -13,7 +13,7 @@
  * date          – name + includeTime flag + hasEndDate flag
  * select        – name + mode (single | multiple) + options list
  * relation      – name + target database + direction (unilateral | bilateral)
- *                 + mirror property name (bilateral only)
+ *                 + mirror property name (bilateral only) + keying
  * file          – name only
  * email         – name only
  * phone         – name only
@@ -34,7 +34,16 @@
  * date:     { includeTime: boolean, hasEndDate: boolean }
  * select:   { mode: 'single' | 'multiple', options: string[] }
  * relation: { target_database_id: string, direction: 'unilateral' | 'bilateral',
- *             mirror_property_name: string | null }
+ *             mirror_property_name: string | null,
+ *             keying: { enabled, key_property_id, key_order, key_empty_first } }
+ *
+ * Relation mode matrix
+ * --------------------
+ * A relation is exactly one of vanilla | timelined | nuanced |
+ * timelined + nuanced | keyed. The controls below enforce that locally and the
+ * backend enforces it authoritatively; the modal only makes the reason visible.
+ * Because timeline and nuance are edge data and therefore shared by both sides
+ * of a bilateral relation, a keyed mirror also locks them out on this side.
  * id:       { prefix: string, next_id: number }  (next_id managed by backend)
  */
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
@@ -42,6 +51,7 @@ import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useDatabaseStore, type PropertySchema, type SelectOption, normalizeSelectOption, optionColorStyle, SELECT_OPTION_COLORS } from '@/stores/database'
 import { getSchemaIcon } from '@/stores/propertyTypes'
+import { isKeyableProperty } from './cells/cellUtils'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
@@ -72,8 +82,7 @@ const description = ref<string>(
   (props.schema.config?.description as string | undefined) ?? '',
 )
 
-// group (#21) – wird im Sidepanel über drag and drop gesetzt, hier nur für reference
-// const group = ref<string>(props.schema.group ?? 'Standard')
+// Group is set in the side panel via drag and drop, not here.
 
 // number
 const numberFormat = ref<'plain' | 'euro'>(
@@ -88,7 +97,7 @@ const dateHasEndDate = ref<boolean>(
   (props.schema.config?.hasEndDate as boolean | undefined) ?? false,
 )
 // New date properties default to the global user preference; existing
-// properties keep whatever explicit token they were saved with (#10).
+// properties keep whatever explicit token they were saved with.
 const dateFormat = ref<string>(
   (props.schema.config?.dateFormat as string | undefined) ?? 'global',
 )
@@ -100,7 +109,7 @@ const DATE_FORMATS = [
   'YYYY-DD-MM',
 ] as const
 
-// select — options stored as SelectOption[] (#27); normalises legacy string[] transparently
+// select — options stored as SelectOption[]; normalises legacy string[] transparently
 const selectMode = ref<'single' | 'multiple'>(
   (props.schema.config?.mode as 'single' | 'multiple' | undefined) ?? 'single',
 )
@@ -141,6 +150,104 @@ const newNuanceOption = ref('')
 
 const isBilateralRelation = computed(() => relationDirection.value === 'bilateral')
 const nuanceLocked = computed(() => (props.schema.config?.nuance as Record<string, unknown> | undefined)?.enabled === true)
+
+// ── Relation keying ───────────────────────────────────────────────────────────
+//
+// Keying nominates a property of the target database that serves at once as the
+// sort key for the relation's linked entries and as the value rendered beside
+// each of them. Unlike timeline and nuance it is a read-side pointer, not edge
+// data, so it is fully reversible and each side of a bilateral relation
+// configures it independently.
+
+const _keyingCfg = (props.schema.config?.keying as Record<string, unknown> | undefined) ?? {}
+const keyingEnabled = ref<boolean>(_keyingCfg.enabled === true)
+const keyingPropertyId = ref<string>(
+  typeof _keyingCfg.key_property_id === 'string' ? _keyingCfg.key_property_id : '',
+)
+const keyingOrder = ref<'asc' | 'desc'>(_keyingCfg.key_order === 'desc' ? 'desc' : 'asc')
+const keyingEmptyFirst = ref<boolean>(_keyingCfg.key_empty_first === true)
+const keyingError = ref('')
+
+/** Schemas of the relation's target database, loaded on mount. */
+const relationTargetSchemas = ref<PropertySchema[]>([])
+
+/** Those of them that can serve as a key property. */
+const keyableTargetSchemas = computed(() =>
+  relationTargetSchemas.value.filter(isKeyableProperty),
+)
+
+/** True once the target schemas are loaded and the pointer is among them. */
+const keyingPropertyResolves = computed(
+  () =>
+    keyingPropertyId.value !== '' &&
+    keyableTargetSchemas.value.some(s => s.id === keyingPropertyId.value),
+)
+
+/**
+ * A pointer that survived the deletion or retyping of its target.
+ *
+ * Disabled keying keeps its pointer so re-enabling is one click, which means
+ * the pointer can go stale while dormant. Surfacing it here is what stops the
+ * modal from silently re-arming a dead selection.
+ */
+const keyingPropertyDangling = computed(
+  () =>
+    keyingPropertyId.value !== '' &&
+    relationTargetSchemas.value.length > 0 &&
+    !keyingPropertyResolves.value,
+)
+
+/**
+ * The opposite side of a bilateral relation, resolved by mirror property name.
+ * Null for unilateral and bilateral_self relations, which have no distinct
+ * counterpart to lock against.
+ */
+const mirrorSchema = computed<PropertySchema | null>(() => {
+  if (relationDirection.value !== 'bilateral') return null
+  const mirrorName = mirrorPropertyName.value.trim() || props.schema.name
+  return (
+    relationTargetSchemas.value.find(
+      s => s.type === 'relation' && s.name === mirrorName,
+    ) ?? null
+  )
+})
+
+const mirrorIsKeyed = computed(
+  () =>
+    (mirrorSchema.value?.config?.keying as Record<string, unknown> | undefined)
+      ?.enabled === true,
+)
+
+const mirrorIsTimelinedOrNuanced = computed(() => {
+  const config = mirrorSchema.value?.config
+  if (!config) return false
+  return (
+    config.hasTimeline === true ||
+    (config.nuance as Record<string, unknown> | undefined)?.enabled === true
+  )
+})
+
+/** Why keying cannot be switched on right now, or '' when it can. */
+const keyingBlockedReason = computed<string>(() => {
+  if (hasTimeline.value) return t('db.settings.keyingBlockedByTimeline')
+  if (nuanceEnabled.value) return t('db.settings.keyingBlockedByNuance')
+  if (mirrorIsTimelinedOrNuanced.value) return t('db.settings.keyingBlockedByMirror')
+  return ''
+})
+
+/** Why timeline and nuance cannot be switched on right now, or ''. */
+const modeBlockedByKeyingReason = computed<string>(() => {
+  if (keyingEnabled.value) return t('db.settings.keyingBlocksOthers')
+  if (mirrorIsKeyed.value) return t('db.settings.keyingMirrorKeyed')
+  return ''
+})
+
+// Turning keying on clears a stale pointer so the picker opens empty rather
+// than showing a selection that no longer resolves.
+watch(keyingEnabled, (enabled) => {
+  keyingError.value = ''
+  if (enabled && keyingPropertyDangling.value) keyingPropertyId.value = ''
+})
 
 // id
 const idPrefix = ref<string>(
@@ -557,11 +664,11 @@ const rollupSchemaId = ref<string>(
 const rollupFunction = ref<string>(
   (props.schema.config?.function as string | undefined) ?? 'count',
 )
-// Function-type badge (ERL / SUM …) shown in the cell — off by default (#10).
+// Function-type badge (ERL / SUM …) shown in the cell — off by default.
 const rollupShowTypeBadge = ref<boolean>(
   (props.schema.config?.show_type_badge as boolean | undefined) ?? false,
 )
-// Chip wrapping for relation / rollup cells — off by default (#12).
+// Chip layout for relation / rollup cells — off by default.
 const wrapContent = ref<boolean>(
   (props.schema.config?.wrapContent as boolean | undefined) ?? false,
 )
@@ -648,6 +755,15 @@ const isSubItemPairType = computed(() =>
 onMounted(async () => {
   if (props.schema.type === 'relation') {
     await dbStore.fetchAllDatabases()
+    // The keying picker lists properties of the target database, and the mode
+    // lock needs the mirror schema's config. Both come from the same fetch.
+    const relationTargetId =
+      (props.schema.config?.target_database_id as string | undefined) ?? props.databaseId
+    try {
+      relationTargetSchemas.value = await dbStore.ensureSchemas(relationTargetId)
+    } catch {
+      relationTargetSchemas.value = []
+    }
   }
   // Load schemas for formula chip list and rollup relation picker
   if (props.schema.type === 'formula' || props.schema.type === 'rollup') {
@@ -682,6 +798,18 @@ async function save() {
   }
   nameError.value = ''
   isSaving.value = true
+
+  // Keying must point at a property that exists, or it is silently inert.
+  if (
+    props.schema.type === 'relation' &&
+    keyingEnabled.value &&
+    !keyingPropertyResolves.value
+  ) {
+    keyingError.value = t('db.settings.keyingErrorProperty')
+    isSaving.value = false
+    return
+  }
+  keyingError.value = ''
 
   let config: Record<string, unknown> | null = props.schema.config
 
@@ -725,6 +853,24 @@ async function save() {
                 : {}),
             }
           : { enabled: false },
+        // A disabled block keeps its pointer so re-enabling is one click, but
+        // only while the pointer still resolves — a dead one would reappear in
+        // the picker as a blank selection.
+        keying: keyingEnabled.value
+          ? {
+              enabled: true,
+              key_property_id: keyingPropertyId.value,
+              key_order: keyingOrder.value,
+              key_empty_first: keyingEmptyFirst.value,
+            }
+          : keyingPropertyResolves.value
+            ? {
+                enabled: false,
+                key_property_id: keyingPropertyId.value,
+                key_order: keyingOrder.value,
+                key_empty_first: keyingEmptyFirst.value,
+              }
+            : { enabled: false },
       }
       break
     case 'formula':
@@ -794,7 +940,7 @@ async function save() {
     await dbStore.updateSchema(props.databaseId, props.schema.id, {
       name: trimmedName,
       config,
-      // group: group.value – wird im Sidepanel über drag and drop gesetzt, hier nur für reference
+      // Group is set in the side panel via drag and drop, not here.
     })
     emit('close')
   } catch {
@@ -888,19 +1034,6 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
           <p class="psm__hint">{{ t('db.settings.descriptionHint') }}</p>
         </div>
 
-        <!-- Group (#21) – wird im Sidepanel über drag and drop gesetzt, hier nur für reference
-        <div class="psm__field">
-          <label class="psm__label">{{ t('db.settings.groupLabel') }}</label>
-          <input
-            v-model="group"
-            class="psm__input"
-            placeholder="Standard"
-            @keydown.enter.prevent="save"
-            @keydown.escape.prevent="emit('close')"
-          />
-          <p class="psm__hint">{{ t('db.settings.groupHint') }}</p>
-        </div>
-        -->
 
         <!-- ── Number ──────────────────────────────────────────────────────── -->
         <template v-if="schema.type === 'number'">
@@ -964,7 +1097,7 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
                 <Icon icon="mdi:drag-horizontal-variant" width="14" height="14" class="psm__option-drag" />
                 <!-- Chip preview with color -->
                 <span class="psm__option-chip" :style="optionColorStyle(opt.color)">{{ opt.label }}</span>
-                <!-- Color dot picker (#27) -->
+                <!-- Color dot picker -->
                 <div class="psm__color-dots">
                   <button
                     v-for="c in SELECT_OPTION_COLORS"
@@ -1078,20 +1211,110 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
             <p class="psm__hint">{{ t('db.settings.wrapContentHint') }}</p>
           </div>
 
+          <!-- Keyed property: sort the linked entries by a target property -->
+          <div class="psm__field">
+            <label
+              class="psm__check-label"
+              :class="{ 'psm__check-label--disabled': !!keyingBlockedReason && !keyingEnabled }"
+            >
+              <input
+                type="checkbox"
+                v-model="keyingEnabled"
+                class="psm__checkbox"
+                :disabled="!!keyingBlockedReason && !keyingEnabled"
+              />
+              {{ t('db.settings.keyingEnable') }}
+            </label>
+            <p class="psm__hint">{{ t('db.settings.keyingHint') }}</p>
+            <p
+              v-if="!!keyingBlockedReason && !keyingEnabled"
+              class="psm__hint psm__hint--warning"
+            >
+              {{ keyingBlockedReason }}
+            </p>
+
+            <template v-if="keyingEnabled">
+              <label class="psm__label psm__nuance-sublabel">
+                {{ t('db.settings.keyingProperty') }}
+              </label>
+              <select
+                v-if="keyableTargetSchemas.length > 0"
+                v-model="keyingPropertyId"
+                class="psm__input"
+              >
+                <option value="">{{ t('db.settings.keyingPropertySelect') }}</option>
+                <option v-for="s in keyableTargetSchemas" :key="s.id" :value="s.id">
+                  {{ s.name }}
+                </option>
+              </select>
+              <p v-else class="psm__hint psm__hint--warning">
+                {{ t('db.settings.keyingNoKeyable') }}
+              </p>
+              <p v-if="keyingPropertyDangling" class="psm__hint psm__hint--warning">
+                {{ t('db.settings.keyingDangling') }}
+              </p>
+              <p v-if="keyingError" class="psm__hint psm__hint--warning">
+                {{ keyingError }}
+              </p>
+
+              <label class="psm__label psm__nuance-sublabel">
+                {{ t('db.settings.keyingOrder') }}
+              </label>
+              <div class="psm__nuance-orient">
+                <button
+                  type="button"
+                  class="psm__nuance-orient-btn"
+                  :class="{ 'psm__nuance-orient-btn--active': keyingOrder === 'asc' }"
+                  @click="keyingOrder = 'asc'"
+                >{{ t('db.settings.keyingOrderAsc') }}</button>
+                <button
+                  type="button"
+                  class="psm__nuance-orient-btn"
+                  :class="{ 'psm__nuance-orient-btn--active': keyingOrder === 'desc' }"
+                  @click="keyingOrder = 'desc'"
+                >{{ t('db.settings.keyingOrderDesc') }}</button>
+              </div>
+
+              <label class="psm__label psm__nuance-sublabel">
+                {{ t('db.settings.keyingEmpty') }}
+              </label>
+              <div class="psm__nuance-orient">
+                <button
+                  type="button"
+                  class="psm__nuance-orient-btn"
+                  :class="{ 'psm__nuance-orient-btn--active': keyingEmptyFirst }"
+                  @click="keyingEmptyFirst = true"
+                >{{ t('db.settings.keyingEmptyFirst') }}</button>
+                <button
+                  type="button"
+                  class="psm__nuance-orient-btn"
+                  :class="{ 'psm__nuance-orient-btn--active': !keyingEmptyFirst }"
+                  @click="keyingEmptyFirst = false"
+                >{{ t('db.settings.keyingEmptyLast') }}</button>
+              </div>
+            </template>
+          </div>
+
           <!-- Nuanced property (irreversible once enabled) -->
           <div class="psm__field">
-            <label class="psm__check-label" :class="{ 'psm__check-label--disabled': nuanceLocked }">
+            <label class="psm__check-label" :class="{ 'psm__check-label--disabled': nuanceLocked || (!!modeBlockedByKeyingReason && !nuanceEnabled) }">
               <input
                 type="checkbox"
                 v-model="nuanceEnabled"
                 class="psm__checkbox"
-                :disabled="nuanceLocked"
+                :disabled="nuanceLocked || (!!modeBlockedByKeyingReason && !nuanceEnabled)"
               />
               {{ t('db.settings.nuanceEnable') }}
             </label>
             <p class="psm__hint">{{ t('db.settings.nuanceHint') }}</p>
             <p v-if="nuanceLocked" class="psm__hint psm__hint--warning">
               {{ t('db.settings.nuanceLocked') }}
+            </p>
+            <p
+              v-else-if="!!modeBlockedByKeyingReason && !nuanceEnabled"
+              class="psm__hint psm__hint--warning"
+            >
+              {{ modeBlockedByKeyingReason }}
             </p>
 
             <template v-if="nuanceEnabled">
@@ -1422,18 +1645,27 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
         <template v-if="isTimelineEligible">
           <div class="psm__field psm__field--divider">
             <label class="psm__label">{{ t('db.timeline.hasTimeline') }}</label>
-            <label class="psm__check-label" :class="{ 'psm__check-label--disabled': !!schema.config?.hasTimeline }">
+            <label
+              class="psm__check-label"
+              :class="{ 'psm__check-label--disabled': !!schema.config?.hasTimeline || (!!modeBlockedByKeyingReason && !hasTimeline) }"
+            >
               <input
                 type="checkbox"
                 v-model="hasTimeline"
                 class="psm__checkbox"
-                :disabled="!!schema.config?.hasTimeline"
+                :disabled="!!schema.config?.hasTimeline || (!!modeBlockedByKeyingReason && !hasTimeline)"
               />
               {{ t('db.timeline.hasTimeline') }}
             </label>
             <p class="psm__hint">{{ t('db.timeline.hasTimelineHint') }}</p>
             <p v-if="schema.config?.hasTimeline" class="psm__hint psm__hint--warning">
               {{ t('db.timeline.disableBlocked') }}
+            </p>
+            <p
+              v-else-if="!!modeBlockedByKeyingReason && !hasTimeline"
+              class="psm__hint psm__hint--warning"
+            >
+              {{ modeBlockedByKeyingReason }}
             </p>
             <p v-else-if="hasTimeline" class="psm__hint psm__hint--warning">
               {{ t('db.timeline.migrateWarning') }}
@@ -1722,7 +1954,7 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
   white-space: nowrap;
 }
 
-/* Chip preview for select option (#27) */
+/* Chip preview for select option */
 .psm__option-chip {
   border-radius: 3px;
   padding: 1px 7px;
@@ -1735,7 +1967,7 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
   text-overflow: ellipsis;
 }
 
-/* Color dot strip (#27) */
+/* Color dot strip */
 .psm__color-dots {
   display: flex;
   gap: 3px;

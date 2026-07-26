@@ -5,6 +5,14 @@
  *
  * All functions close over the reactive parameters supplied at creation time,
  * so they always operate on the currently displayed data and active view.
+ *
+ * Keyed relations
+ * ---------------
+ * A keyed relation column exports in key order, each linked entry prefixed by
+ * its key value. Both the titles and the key values come from the same
+ * unpaginated fetch of the target databases, so the export needs no separate
+ * resolver round-trip; only the target schemas are added, to know the key
+ * property's type and formatting.
  */
 import { ref, type ComputedRef } from 'vue'
 import * as XLSX from 'xlsx'
@@ -14,7 +22,11 @@ import type { PropertySchema, DatabaseEntry, DatabaseView } from '@/stores/datab
 import type { Block } from '@/stores/blocks'
 import { useDatabaseStore } from '@/stores/database'
 import { useUsersStore } from '@/stores/users'
-import { displayValue } from '@/components/editor/blocks/properties/cells/cellUtils'
+import {
+  displayValue,
+  getKeyingConfig,
+  type RelationKeyResolver,
+} from '@/components/editor/blocks/properties/cells/cellUtils'
 
 interface OrderedColumn {
   key: string
@@ -34,6 +46,41 @@ export function buildCsvHeader(
 ): string {
   const trimmed = (description ?? '').trim()
   return trimmed ? `${name} [${descriptionPrefix}: ${trimmed}]` : name
+}
+
+/**
+ * Build the key-value lookups a keyed relation needs for plain-text rendering.
+ *
+ * Pure on purpose: the composable collects the target databases' schemas and
+ * entries from the store and hands them in, which keeps the mapping itself
+ * unit-testable and free of Pinia.
+ *
+ * Both maps are flat across all target databases. Property ids are unique
+ * workspace-wide, so a single ``schemaId -> schema`` map cannot collide, and
+ * key values are keyed by the pair so two relations may key the same entry on
+ * different properties without overwriting each other.
+ */
+export function buildRelationKeyResolver(
+  targetSchemas: PropertySchema[],
+  targetEntries: DatabaseEntry[],
+): RelationKeyResolver {
+  const schemaById = new Map<string, PropertySchema>()
+  for (const schema of targetSchemas) schemaById.set(schema.id, schema)
+
+  const valueByPair = new Map<string, Record<string, unknown>>()
+  for (const entry of targetEntries) {
+    for (const [schemaId, value] of Object.entries(entry.values ?? {})) {
+      if (value && typeof value === 'object') {
+        valueByPair.set(`${schemaId}:${entry.id}`, value as Record<string, unknown>)
+      }
+    }
+  }
+
+  return {
+    schemaFor: (keyPropertyId: string) => schemaById.get(keyPropertyId) ?? null,
+    valueFor: (keyPropertyId: string, entryId: string) =>
+      valueByPair.get(`${keyPropertyId}:${entryId}`) ?? null,
+  }
 }
 
 export function useExport(options: {
@@ -62,6 +109,25 @@ export function useExport(options: {
   // ── Helpers ─────────────────────────────────────────────────────────────────
 
   /**
+   * Collect the target databases referenced by the exported relation columns.
+   *
+   * ``fetchEntries`` hits the unpaginated listing, so after this the store holds
+   * every linked entry of every target database with its full values — which is
+   * why keyed relations need no separate resolver round-trip on this path.
+   */
+  function relationTargetDatabaseIds(): Set<string> {
+    const targetDbIds = new Set<string>()
+    for (const c of orderedColumns.value) {
+      const columnSchema = c.schema
+      if (columnSchema !== null && columnSchema.type === 'relation') {
+        const tdb = columnSchema.config?.target_database_id as string | undefined
+        if (tdb) targetDbIds.add(tdb)
+      }
+    }
+    return targetDbIds
+  }
+
+  /**
    * Build an entry-id → title resolver for relation columns.
    *
    * Relation values store only target entry IDs, so titles must be looked up
@@ -71,14 +137,7 @@ export function useExport(options: {
    */
   async function buildEntryTitleResolver(): Promise<(id: string) => string> {
     const titleMap = new Map<string, string>()
-    const targetDbIds = new Set<string>()
-    for (const c of orderedColumns.value) {
-      if (c.schema?.type === 'relation') {
-        const tdb = c.schema.config?.target_database_id as string | undefined
-        if (tdb) targetDbIds.add(tdb)
-      }
-    }
-    for (const dbId of targetDbIds) {
+    for (const dbId of relationTargetDatabaseIds()) {
       try {
         await dbStore.fetchEntries(dbId)
       } catch {
@@ -92,6 +151,40 @@ export function useExport(options: {
     return (id: string) => titleMap.get(id) ?? ''
   }
 
+  /**
+   * Build the key-value lookups for the exported keyed relation columns, or
+   * ``undefined`` when no exported column is keyed.
+   *
+   * The entries are already in the store from the title resolver above; only
+   * the target databases' schemas have to be added, so the key property's type
+   * and its own formatting (date format, number format, select labels) apply
+   * exactly as they would in its own column.
+   */
+  async function buildKeyResolver(): Promise<RelationKeyResolver | undefined> {
+    const keyedTargetDbIds = new Set<string>()
+    for (const c of orderedColumns.value) {
+      const columnSchema = c.schema
+      if (columnSchema === null || columnSchema.type !== 'relation') continue
+      if (getKeyingConfig(columnSchema) === null) continue
+      const tdb = columnSchema.config?.target_database_id as string | undefined
+      if (tdb) keyedTargetDbIds.add(tdb)
+    }
+    if (keyedTargetDbIds.size === 0) return undefined
+
+    const targetSchemas: PropertySchema[] = []
+    const targetEntries: DatabaseEntry[] = []
+    for (const dbId of keyedTargetDbIds) {
+      try {
+        targetSchemas.push(...(await dbStore.ensureSchemas(dbId)))
+      } catch {
+        // best-effort: an unresolved key property degrades the column to the
+        // vanilla export instead of failing the whole download.
+      }
+      targetEntries.push(...dbStore.getEntries(dbId))
+    }
+    return buildRelationKeyResolver(targetSchemas, targetEntries)
+  }
+
   async function getExportData(): Promise<{ headers: string[]; descriptions: string[]; rows: string[][] }> {
     const cols    = orderedColumns.value
     const headers = cols.map(c => c.schema ? c.schema.name : nameColLabel)
@@ -102,11 +195,13 @@ export function useExport(options: {
     // Pre-warm the resolvers used by displayValue for relation and user columns.
     await usersStore.loadUsers()
     const resolveTitle = await buildEntryTitleResolver()
+    // Runs after the title resolver so the target entries are already loaded.
+    const keyResolver = await buildKeyResolver()
 
     const rows = filteredAndSortedEntries.value.map((entry) =>
       cols.map(c =>
         c.schema
-          ? displayValue(entry, c.schema, usersStore.resolveUser, resolveTitle)
+          ? displayValue(entry, c.schema, usersStore.resolveUser, resolveTitle, keyResolver)
           : (entry.content?.title as string | undefined) ?? ''
       )
     )
@@ -216,7 +311,7 @@ export function useExport(options: {
     showExportMenu.value = false
   }
 
-  // ── ICS (#53) ───────────────────────────────────────────────────────────────
+  // ── ICS ─────────────────────────────────────────────────────────────────────
 
   function _isoToIcsValue(iso: string): string {
     if (iso.includes('T')) {

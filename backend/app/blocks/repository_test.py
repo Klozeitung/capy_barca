@@ -473,6 +473,133 @@ def test_list_schemas_empty_for_new_database(db, database_block):
     assert schemas == []
 
 
+# ─── list_relation_schemas_by_key_property ────────────────────────────────────
+#
+# Keying stores a read-side pointer at config.keying.key_property_id, which no
+# foreign key can protect. The scan is what deleting or retyping the referenced
+# property relies on to find its referrers, so it has to be exact about which
+# configs count as a reference and which do not.
+
+
+def _keyed_relation(db, database_id, name, target_database_id, key_property_id,
+                    position=1.0, enabled=True):
+    """Create a relation schema keyed on *key_property_id* of the target DB."""
+    return repo.create_schema(
+        db,
+        database_id=database_id,
+        name=name,
+        type="relation",
+        position=position,
+        config={
+            "target_database_id": str(target_database_id),
+            "direction": "unilateral",
+            "keying": {
+                "enabled": enabled,
+                "key_property_id": str(key_property_id),
+                "key_order": "asc",
+                "key_empty_first": False,
+            },
+        },
+    )
+
+
+def test_list_relation_schemas_by_key_property_empty_when_unreferenced(db, schema):
+    assert repo.list_relation_schemas_by_key_property(db, schema.id) == []
+
+
+def test_list_relation_schemas_by_key_property_finds_referrer(db, workspace, database_block, schema):
+    other_db = repo.create_block(db, type="database", position=3.0, parent_id=workspace.id)
+    relation = _keyed_relation(db, other_db.id, "Linked", database_block.id, schema.id)
+    db.commit()
+
+    result = repo.list_relation_schemas_by_key_property(db, schema.id)
+    assert [r.id for r in result] == [relation.id]
+
+
+def test_list_relation_schemas_by_key_property_scans_across_databases(db, workspace, database_block, schema):
+    """A referrer lives in another database than the property it keys on."""
+    db_b = repo.create_block(db, type="database", position=3.0, parent_id=workspace.id)
+    db_c = repo.create_block(db, type="database", position=4.0, parent_id=workspace.id)
+    _keyed_relation(db, db_b.id, "From B", database_block.id, schema.id)
+    _keyed_relation(db, db_c.id, "From C", database_block.id, schema.id)
+    db.commit()
+
+    result = repo.list_relation_schemas_by_key_property(db, schema.id)
+    assert {r.name for r in result} == {"From B", "From C"}
+
+
+def test_list_relation_schemas_by_key_property_ignores_other_key_property(db, workspace, database_block, schema):
+    other_prop = repo.create_schema(
+        db, database_id=database_block.id, name="Rank", type="number", position=2.0
+    )
+    db.commit()
+    other_db = repo.create_block(db, type="database", position=3.0, parent_id=workspace.id)
+    _keyed_relation(db, other_db.id, "Linked", database_block.id, other_prop.id)
+    db.commit()
+
+    assert repo.list_relation_schemas_by_key_property(db, schema.id) == []
+
+
+def test_list_relation_schemas_by_key_property_ignores_disabled_keying(db, workspace, database_block, schema):
+    """A relation reset to vanilla keeps its pointer but is no longer a referrer."""
+    other_db = repo.create_block(db, type="database", position=3.0, parent_id=workspace.id)
+    _keyed_relation(db, other_db.id, "Linked", database_block.id, schema.id, enabled=False)
+    db.commit()
+
+    assert repo.list_relation_schemas_by_key_property(db, schema.id) == []
+
+
+def test_list_relation_schemas_by_key_property_ignores_relation_without_keying(db, workspace, database_block, schema):
+    other_db = repo.create_block(db, type="database", position=3.0, parent_id=workspace.id)
+    repo.create_schema(
+        db,
+        database_id=other_db.id,
+        name="Plain",
+        type="relation",
+        position=1.0,
+        config={"target_database_id": str(database_block.id), "direction": "unilateral"},
+    )
+    db.commit()
+
+    assert repo.list_relation_schemas_by_key_property(db, schema.id) == []
+
+
+def test_list_relation_schemas_by_key_property_tolerates_null_config(db, workspace, database_block, schema):
+    other_db = repo.create_block(db, type="database", position=3.0, parent_id=workspace.id)
+    repo.create_schema(
+        db, database_id=other_db.id, name="NoConfig", type="relation", position=1.0
+    )
+    db.commit()
+
+    assert repo.list_relation_schemas_by_key_property(db, schema.id) == []
+
+
+def test_list_relation_schemas_by_key_property_ignores_non_relation_types(db, workspace, database_block, schema):
+    """Only relation schemas can be keyed; a keying block elsewhere is inert."""
+    other_db = repo.create_block(db, type="database", position=3.0, parent_id=workspace.id)
+    repo.create_schema(
+        db,
+        database_id=other_db.id,
+        name="Impostor",
+        type="text",
+        position=1.0,
+        config={"keying": {"enabled": True, "key_property_id": str(schema.id)}},
+    )
+    db.commit()
+
+    assert repo.list_relation_schemas_by_key_property(db, schema.id) == []
+
+
+def test_list_relation_schemas_by_key_property_ordered_by_position(db, workspace, database_block, schema):
+    other_db = repo.create_block(db, type="database", position=3.0, parent_id=workspace.id)
+    _keyed_relation(db, other_db.id, "Second", database_block.id, schema.id, position=2.0)
+    _keyed_relation(db, other_db.id, "First", database_block.id, schema.id, position=1.0)
+    db.commit()
+
+    result = repo.list_relation_schemas_by_key_property(db, schema.id)
+    assert [r.name for r in result] == ["First", "Second"]
+
+
 # ─── list_values_for_pages ────────────────────────────────────────────────────
 
 
@@ -1043,7 +1170,7 @@ def test_query_entries_text_not_contains_includes_entries_with_no_value(db, work
     assert entries[0].id == e_no_val.id
 
 
-# ─── Formula filter (#32) ─────────────────────────────────────────────────────
+# ─── Formula filter ───────────────────────────────────────────────────────────
 
 
 def _make_formula_schema(db, database_block, name="FormulaCol", position=99.0):

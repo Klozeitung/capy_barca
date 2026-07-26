@@ -10,16 +10,26 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 
 ## Features
 
+### The Basics
+
 - **Pages and blocks** hierarchical workspace with rich-text pages, headings, lists, code blocks, and file attachments
 - **Databases** structured tables with custom property types (text, select, date, relation, formula, rollup, and more), filters, sorting, and multiple views per database
-- **Property timelining** any database property can be given a timeline: values are stored as date-ranged slots rather than a single value. Example: In Notion, you could only put "City A" in a relation property for a character in a world-building database, but if that location were to change, you wouldn't be able to see the previous cities the character resided in. With CapyBarca you can display a full history within a single property ("timelining a property"). Atm rollups and formulas will only use the most recent value but specific and broad querying is a planned feature.
-- **Nuanced Relations**: relation properties are able to track qualifiers, so called "Nuances". Example: In Notion, you could only put "organisation X" into the relation property "organisation" in a character database. CapyBarca allows you to qualify that relation. Now you not only can set it to "**organisation X** *as* **rank A**", but you can combine nuancing and timelining, enabling you to track the career of your character within not only one, but any number of organisations. Of course, nuancing (and timelining) has a lot more nifty use cases.
-- **Automations** rule-based triggers that act on database entries
-- **Comments** inline comments on pages and database entries
-- **Collaborative editing** real-time document collaboration via integrated Collabora Online (WOPI)
 - **Backup and restore** portable `.capy` backup files covering database, uploads, and configuration; full restore via a single script
 - **Multi-user** admin and member roles, optional self-registration
 - **Supported Languages**: English, German
+- **Exports**: Export your data (the current view) to pdf or csv with ease.
+
+### Advanced features
+
+- **Automations** rule-based triggers that act on database entries
+- **Comments** inline comments on pages and database entries
+- **Collaborative editing** real-time document collaboration via integrated Collabora Online (WOPI)
+
+### CapyBarca specific features
+
+- **Property timelining** any database property can be given a timeline: values are stored as date-ranged slots rather than a single value. Example: In Notion, you could only put "City A" in a relation property for a character in a world-building database, but if that location were to change, you wouldn't be able to see the previous cities the character resided in. With CapyBarca you can display a full history within a single property ("timelining a property"). Atm rollups and formulas will only use the most recent value but specific and broad querying is a planned feature.
+- **Nuanced Relations**: relation properties are able to track qualifiers, so called "Nuances". Example: In Notion, you could only put "organisation X" into the relation property "organisation" in a character database. CapyBarca allows you to qualify that relation. Now you not only can set it to "**organisation X** *as* **rank A**", but you can combine nuancing and timelining, enabling you to track the career of your character within not only one, but any number of organisations. Of course, nuancing (and timelining) has a lot more nifty use cases.
+- **Keyed Relations**: A rollup within a relation property, providing data from the target relation entries to sort them by. For example, a plot property normally suffers from all plot beats being sorted by seniority, i.e. the order you added them to the list. Your plot beats will show up in a non chronological order. By keying them to their own date properties, they will now be listed next to their respective dates in chronological order - or whatever order you like to apply.
 
 ---
 
@@ -29,7 +39,7 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 - [Docker](https://docs.docker.com/engine/install/) with Compose v2
 - [Tailscale](https://tailscale.com/download) connected and running, with HTTPS certificates enabled
 
-CapyBarca is designed for private self-hosting over Tailscale. It uses Tailscale's HTTPS certificate infrastructure and is not intended to be exposed on the public internet.
+CapyBarca is designed for private self-hosting over Tailscale. It uses Tailscale's HTTPS certificate infrastructure and is not intended to be exposed on the public internet. This is a deliberate safety layer as the software is still in pre release. A non tailscale option will be added by version 1.*, until then it is strongly advised to not strip the additional security layer that tailscale provides to your data stored within CapyBarca.
 
 ---
 

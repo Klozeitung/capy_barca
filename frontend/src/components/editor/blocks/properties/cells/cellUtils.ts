@@ -6,6 +6,10 @@
  * - getTimelineDisplayMode  – read the persisted display mode from a schema
  * - resolveTimelineValue    – extract the "now" (last slot) value from a _timeline object
  * - getAllTimelineRelatedIds – collect all related IDs across all timeline slots
+ * - getKeyingConfig         – read a relation schema's keying config
+ * - sortIdsByKey            – order linked relation ids by their key value
+ * - formatKeyValue          – render a key value for the relation cell's left zone
+ * - RelationKeyResolver     – lookup pair a plain-text export needs for keyed relations
  * - getCellValue            – extract the raw value object for a given schema column
  * - displayValue            – render a human-readable string for any property type
  * - formatRollupExport      – plain-text rollup rendering (export)
@@ -156,6 +160,182 @@ export function formatNuancedRelation(
   return nuance.orientation === 'appended' ? `${title} ${group}` : `${group} ${title}`
 }
 
+// ── Relation keying ───────────────────────────────────────────────────────────
+//
+// A keyed relation nominates a property of its target database that acts at
+// once as the sort key for the linked entries and as the value rendered beside
+// each of them.  Everything here is a pure view transform: the caller supplies
+// the resolved key values, and the stored ``related_ids`` order is never
+// touched, so reverting a relation to vanilla restores insertion order intact.
+
+/** Property types a relation may be keyed on. Mirrors the backend's set. */
+export const KEYABLE_PROPERTY_TYPES = ['date', 'number', 'select', 'text'] as const
+
+export type KeyOrder = 'asc' | 'desc'
+
+export interface KeyingConfig {
+  /** Property of the target database used as sort key and displayed value. */
+  keyPropertyId: string
+  order: KeyOrder
+  /** Whether entries without a key value sort before the rest instead of after. */
+  emptyFirst: boolean
+}
+
+/** True when *schema* may serve as the key property of a relation. */
+export function isKeyableProperty(schema: PropertySchema): boolean {
+  return (KEYABLE_PROPERTY_TYPES as readonly string[]).includes(schema.type)
+}
+
+/**
+ * Read a relation schema's keying config, or ``null`` when keying is off.
+ *
+ * A config that is enabled but carries no property id is treated as absent, so
+ * a pointer left incomplete or cleared degrades the cell to seniority order
+ * rather than to an error.
+ */
+export function getKeyingConfig(schema: PropertySchema): KeyingConfig | null {
+  const raw = schema.config?.keying as Record<string, unknown> | undefined
+  if (!raw || raw.enabled !== true) return null
+  const keyPropertyId =
+    typeof raw.key_property_id === 'string' ? raw.key_property_id : ''
+  if (!keyPropertyId) return null
+  return {
+    keyPropertyId,
+    order: raw.key_order === 'desc' ? 'desc' : 'asc',
+    emptyFirst: raw.key_empty_first === true,
+  }
+}
+
+/** Labels of a select property's options, in their configured order. */
+function selectOptionLabels(keySchema: PropertySchema): string[] {
+  const raw = (keySchema.config?.options as unknown[] | undefined) ?? []
+  return raw.map(o =>
+    typeof o === 'string' ? o : String((o as Record<string, unknown>)?.label ?? ''),
+  )
+}
+
+/**
+ * Reduce a raw property value to the scalar the comparator orders by, or
+ * ``null`` when the entry has no usable key value.
+ *
+ * Per type:
+ *   date   – the canonical ISO ``start`` boundary, which sorts lexicographically
+ *   number – the numeric value
+ *   select – the index of the option in its configured order, so sorting
+ *            follows the option order rather than the alphabet. A multi-select
+ *            sorts by its earliest option; a label that is no longer among the
+ *            options counts as empty.
+ *   text   – the trimmed text
+ */
+export function keyComparable(
+  value: Record<string, unknown> | null | undefined,
+  keySchema: PropertySchema | null | undefined,
+): string | number | null {
+  if (!value || !keySchema) return null
+  switch (keySchema.type) {
+    case 'date': {
+      const start = value.start
+      return typeof start === 'string' && start !== '' ? start : null
+    }
+    case 'number': {
+      const n = value.number
+      if (typeof n === 'number') return Number.isFinite(n) ? n : null
+      if (typeof n === 'string' && n.trim() !== '') {
+        const parsed = Number(n)
+        return Number.isFinite(parsed) ? parsed : null
+      }
+      return null
+    }
+    case 'select': {
+      const labels = selectOptionLabels(keySchema)
+      const mode = (keySchema.config?.mode as string | undefined) ?? 'single'
+      const selected =
+        mode === 'multiple'
+          ? ((value.options as string[] | undefined) ?? [])
+          : [(value.option as string | undefined) ?? '']
+      const indices = selected
+        .map(label => labels.indexOf(label))
+        .filter(i => i >= 0)
+      return indices.length > 0 ? Math.min(...indices) : null
+    }
+    case 'text':
+    default: {
+      const text = value.text
+      return typeof text === 'string' && text.trim() !== '' ? text : null
+    }
+  }
+}
+
+/**
+ * Compare two key scalars.
+ *
+ * Numbers compare numerically; strings via ``localeCompare`` so text keys
+ * honour the locale's collation. Canonical ISO dates are lexicographically
+ * ordered and the backend zero-pads every component, so the same string
+ * comparison is correct for them.
+ */
+function compareKeyScalars(a: string | number, b: string | number): number {
+  if (typeof a === 'number' && typeof b === 'number') return a - b
+  return String(a).localeCompare(String(b))
+}
+
+/**
+ * Order *ids* by their key value.
+ *
+ * Entries without a key value are grouped together and placed before or after
+ * the rest per ``emptyFirst``; that placement is independent of ``order``, so
+ * reversing the sort does not also flip where the blanks land. Ties, and the
+ * order within the empty group, fall back to the incoming sequence — the stored
+ * seniority order — because the sort is stable.
+ *
+ * Returns the input unchanged when the key property cannot be resolved, which
+ * is the degradation path for a pointer whose target was deleted.
+ */
+export function sortIdsByKey(
+  ids: string[],
+  keyValueFor: (id: string) => Record<string, unknown> | null | undefined,
+  keySchema: PropertySchema | null | undefined,
+  config: KeyingConfig,
+): string[] {
+  if (!keySchema) return ids
+  const rows = ids.map(id => ({ id, key: keyComparable(keyValueFor(id), keySchema) }))
+  const filled = rows.filter(r => r.key !== null)
+  const blank = rows.filter(r => r.key === null)
+  const direction = config.order === 'desc' ? -1 : 1
+  filled.sort((a, b) => direction * compareKeyScalars(a.key!, b.key!))
+  const ordered = config.emptyFirst ? [...blank, ...filled] : [...filled, ...blank]
+  return ordered.map(r => r.id)
+}
+
+/**
+ * Render a key value for display in the cell's left zone.
+ *
+ * Delegates to ``formatSlotScalar`` so the key property's own configuration
+ * applies — its date format and time flag, its number format, its select
+ * labels — exactly as it would in its own column.
+ */
+export function formatKeyValue(
+  value: Record<string, unknown> | null | undefined,
+  keySchema: PropertySchema | null | undefined,
+): string {
+  if (!value || !keySchema) return ''
+  return formatSlotScalar(value, keySchema)
+}
+
+/**
+ * Lookup pair a plain-text renderer needs to reproduce a keyed relation.
+ *
+ * The cell reads key values from the store; an export has no component context
+ * and pre-loads the target databases instead, so ``displayValue`` takes the two
+ * lookups as a parameter rather than reaching for a store itself.
+ */
+export interface RelationKeyResolver {
+  /** The target database's key property, or null when it cannot be resolved. */
+  schemaFor: (keyPropertyId: string) => PropertySchema | null
+  /** Raw key value stored for a linked entry, or null when it has none. */
+  valueFor: (keyPropertyId: string, entryId: string) => Record<string, unknown> | null
+}
+
 // ── Value accessor ────────────────────────────────────────────────────────────
 
 export function getCellValue(
@@ -303,7 +483,7 @@ export interface DateRangeResult {
 /**
  * Type guard: true when a formula/computed result is a canonical date-range
  * object (``{start, end}`` with an ISO ``start``). Used so date results render
- * like a date cell instead of leaking raw JSON (#43).
+ * like a date cell instead of leaking raw JSON.
  */
 export function isDateRangeResult(r: unknown): r is DateRangeResult {
   if (r === null || typeof r !== 'object' || Array.isArray(r)) return false
@@ -466,11 +646,19 @@ export function formatFormulaExport(
   return String(r)
 }
 
+/**
+ * Render a property value as plain text, as used by the CSV / XLSX / PDF export.
+ *
+ * ``keyResolver`` is optional and only consulted for keyed relations. Without
+ * it — and for every existing caller, which passes four arguments — a keyed
+ * relation exports exactly as a vanilla one: linked titles in stored order.
+ */
 export function displayValue(
   entry: DatabaseEntry,
   schema: PropertySchema,
   resolveUser?: (userId: string) => string,
   resolveEntryTitle?: (entryId: string) => string,
+  keyResolver?: RelationKeyResolver,
 ): string {
   const raw = getRawCellValue(entry, schema.id)
   if (raw === null || raw === undefined) return ''
@@ -598,12 +786,40 @@ export function displayValue(
     case 'relation': case 'parent_item': case 'sub_item': {
       const ids = (val.related_ids as string[] | undefined) ?? []
       if (ids.length === 0) return ''
+
+      const titleOf = (id: string): string => {
+        const title = resolveEntryTitle?.(id)
+        return title && title.trim() ? title : id
+      }
+
+      // Keyed relations export in key order, each entry prefixed by its key
+      // value, mirroring the two-zone cell. The separator matches the timeline
+      // "all" export because the layout it reproduces is the same one.
+      //
+      // The mode guard repeats the cell's: keying is exclusive with timeline
+      // and nuance, so legacy data carrying both exports the established way
+      // rather than a third variant only the export would ever produce.
+      const keyingCfg =
+        schema.type === 'relation' && !schema.config?.hasTimeline && !nuanceCfg
+          ? getKeyingConfig(schema)
+          : null
+      const keySchema =
+        keyingCfg && keyResolver ? keyResolver.schemaFor(keyingCfg.keyPropertyId) : null
+      if (keyingCfg !== null && keyResolver !== undefined && keySchema !== null) {
+        const keyPropertyId = keyingCfg.keyPropertyId
+        const resolver = keyResolver
+        const keyValueFor = (id: string) => resolver.valueFor(keyPropertyId, id)
+        return sortIdsByKey(ids, keyValueFor, keySchema, keyingCfg)
+          .map(id => {
+            const label = formatKeyValue(keyValueFor(id), keySchema)
+            return label ? `${label}: ${titleOf(id)}` : titleOf(id)
+          })
+          .filter(Boolean)
+          .join(' · ')
+      }
+
       return ids
-        .map(id => {
-          const title = resolveEntryTitle?.(id)
-          const base = title && title.trim() ? title : id
-          return formatNuancedRelation(base, nuanceLabelFor(val, id), nuanceCfg)
-        })
+        .map(id => formatNuancedRelation(titleOf(id), nuanceLabelFor(val, id), nuanceCfg))
         .join(', ')
     }
 

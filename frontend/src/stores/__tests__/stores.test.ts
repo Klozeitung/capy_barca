@@ -830,7 +830,7 @@ describe('useDatabaseStore', () => {
     )
   })
 
-  // ── resolveEntryTitles (#27) ─────────────────────────────────────────────────
+  // ── resolveEntryTitles ───────────────────────────────────────────────────────
 
   it('resolveEntryTitles posts missing ids and caches descriptors', async () => {
     vi.mocked(apiClient.post).mockResolvedValueOnce([
@@ -988,5 +988,194 @@ describe('useDatabaseStore', () => {
     ])
     await store.fetchAllDatabases()
     expect(store.allDatabases).toHaveLength(2)
+  })
+
+  // ── ensureSchemas ────────────────────────────────────────────────────────────
+
+  it('ensureSchemas fetches once and serves the cache afterwards', async () => {
+    vi.mocked(apiClient.get).mockResolvedValueOnce([makeSchema()])
+
+    const store = useDatabaseStore()
+    await store.ensureSchemas('db-1')
+    await store.ensureSchemas('db-1')
+
+    expect(apiClient.get).toHaveBeenCalledTimes(1)
+    expect(store.getSchemas('db-1')).toHaveLength(1)
+  })
+
+  it('ensureSchemas shares one request across concurrent callers', async () => {
+    // Every keyed cell of a column asks on first render; they must not each
+    // issue their own request for the same target database.
+    vi.mocked(apiClient.get).mockResolvedValueOnce([makeSchema()])
+
+    const store = useDatabaseStore()
+    await Promise.all([
+      store.ensureSchemas('db-1'),
+      store.ensureSchemas('db-1'),
+      store.ensureSchemas('db-1'),
+    ])
+
+    expect(apiClient.get).toHaveBeenCalledTimes(1)
+  })
+
+  // ── listKeyReferences ────────────────────────────────────────────────────────
+
+  it('listKeyReferences returns the relations keyed on a property', async () => {
+    const references = [
+      {
+        schema_id: 'schema-plot',
+        schema_name: 'Plot',
+        database_id: 'db-characters',
+        database_title: 'Characters',
+      },
+    ]
+    vi.mocked(apiClient.get).mockResolvedValueOnce(references)
+
+    const store = useDatabaseStore()
+    const result = await store.listKeyReferences('db-plotbeats', 'schema-date')
+
+    expect(apiClient.get).toHaveBeenCalledWith(
+      '/api/databases/db-plotbeats/schemas/schema-date/key-references',
+    )
+    expect(result).toEqual(references)
+  })
+
+  it('listKeyReferences yields an empty list on failure', async () => {
+    // The backend clears the references either way, so a transient error must
+    // not block the delete behind an unanswerable dialog.
+    vi.mocked(apiClient.get).mockRejectedValueOnce(new Error('offline'))
+
+    const store = useDatabaseStore()
+    expect(await store.listKeyReferences('db-1', 'schema-1')).toEqual([])
+  })
+
+  // ── resolveEntryKeyValues ────────────────────────────────────────────────────
+
+  it('resolveEntryKeyValues posts the key property and caches the values', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce([
+      { id: 'e1', title: 'Beat A', database_id: 'db-1', value: { start: '2136-08-14' } },
+    ])
+
+    const store = useDatabaseStore()
+    await store.resolveEntryKeyValues('db-1', ['e1'], 'schema-date')
+
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/api/databases/db-1/entries/resolve-titles',
+      { ids: ['e1'], value_schema_id: 'schema-date' },
+    )
+    expect(store.getRelationKeyValue('schema-date', 'e1')).toEqual({ start: '2136-08-14' })
+  })
+
+  it('resolveEntryKeyValues is a no-op without ids or a key property', async () => {
+    const store = useDatabaseStore()
+    await store.resolveEntryKeyValues('db-1', [], 'schema-date')
+    await store.resolveEntryKeyValues('db-1', ['e1'], '')
+    expect(apiClient.post).not.toHaveBeenCalled()
+  })
+
+  it('resolveEntryKeyValues skips ids already resolved for that key property', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce([
+      { id: 'e1', title: 'A', database_id: 'db-1', value: { number: 1 } },
+    ])
+
+    const store = useDatabaseStore()
+    await store.resolveEntryKeyValues('db-1', ['e1'], 'schema-rank')
+    await store.resolveEntryKeyValues('db-1', ['e1'], 'schema-rank')
+
+    expect(apiClient.post).toHaveBeenCalledTimes(1)
+  })
+
+  it('resolveEntryKeyValues caches per key property, not per entry', async () => {
+    // Two relations may key the same entry on different properties; the second
+    // must not be served the first one's value.
+    vi.mocked(apiClient.post)
+      .mockResolvedValueOnce([
+        { id: 'e1', title: 'A', database_id: 'db-1', value: { start: '2136-08-14' } },
+      ])
+      .mockResolvedValueOnce([
+        { id: 'e1', title: 'A', database_id: 'db-1', value: { number: 3 } },
+      ])
+
+    const store = useDatabaseStore()
+    await store.resolveEntryKeyValues('db-1', ['e1'], 'schema-date')
+    await store.resolveEntryKeyValues('db-1', ['e1'], 'schema-rank')
+
+    expect(apiClient.post).toHaveBeenCalledTimes(2)
+    expect(store.getRelationKeyValue('schema-date', 'e1')).toEqual({ start: '2136-08-14' })
+    expect(store.getRelationKeyValue('schema-rank', 'e1')).toEqual({ number: 3 })
+  })
+
+  it('resolveEntryKeyValues does not share the title cache dedupe', async () => {
+    // resolveEntryTitles skips ids whose titles are known. If key values rode
+    // along on that marker, a keyed cell would get no values for exactly the
+    // entries it has already rendered.
+    vi.mocked(apiClient.post)
+      .mockResolvedValueOnce([{ id: 'e1', title: 'A', database_id: 'db-1' }])
+      .mockResolvedValueOnce([
+        { id: 'e1', title: 'A', database_id: 'db-1', value: { start: '2136-08-14' } },
+      ])
+
+    const store = useDatabaseStore()
+    await store.resolveEntryTitles('db-1', ['e1'])
+    await store.resolveEntryKeyValues('db-1', ['e1'], 'schema-date')
+
+    expect(apiClient.post).toHaveBeenCalledTimes(2)
+    expect(store.getRelationKeyValue('schema-date', 'e1')).toEqual({ start: '2136-08-14' })
+  })
+
+  it('resolveEntryKeyValues records a null value for an entry the server omits', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce([])
+
+    const store = useDatabaseStore()
+    await store.resolveEntryKeyValues('db-1', ['gone'], 'schema-date')
+
+    expect(store.getRelationKeyValue('schema-date', 'gone')).toBeNull()
+  })
+
+  it('resolveEntryKeyValues records null when the entry stores no value', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce([
+      { id: 'e1', title: 'A', database_id: 'db-1', value: null },
+    ])
+
+    const store = useDatabaseStore()
+    await store.resolveEntryKeyValues('db-1', ['e1'], 'schema-date')
+
+    expect(store.getRelationKeyValue('schema-date', 'e1')).toBeNull()
+  })
+
+  it('resolveEntryKeyValues retries after a failed request', async () => {
+    vi.mocked(apiClient.post)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce([
+        { id: 'e1', title: 'A', database_id: 'db-1', value: { number: 5 } },
+      ])
+
+    const store = useDatabaseStore()
+    await store.resolveEntryKeyValues('db-1', ['e1'], 'schema-rank')
+    expect(store.getRelationKeyValue('schema-rank', 'e1')).toBeNull()
+
+    await store.resolveEntryKeyValues('db-1', ['e1'], 'schema-rank')
+    expect(store.getRelationKeyValue('schema-rank', 'e1')).toEqual({ number: 5 })
+  })
+
+  it('resolveEntryKeyValues refetches known ids when forced', async () => {
+    vi.mocked(apiClient.post)
+      .mockResolvedValueOnce([
+        { id: 'e1', title: 'A', database_id: 'db-1', value: { start: '2136-08-14' } },
+      ])
+      .mockResolvedValueOnce([
+        { id: 'e1', title: 'A', database_id: 'db-1', value: { start: '2199-12-31' } },
+      ])
+
+    const store = useDatabaseStore()
+    await store.resolveEntryKeyValues('db-1', ['e1'], 'schema-date')
+    await store.resolveEntryKeyValues('db-1', ['e1'], 'schema-date', true)
+
+    expect(store.getRelationKeyValue('schema-date', 'e1')).toEqual({ start: '2199-12-31' })
+  })
+
+  it('getRelationKeyValue returns null for an unknown pair', () => {
+    const store = useDatabaseStore()
+    expect(store.getRelationKeyValue('schema-date', 'nobody')).toBeNull()
   })
 })

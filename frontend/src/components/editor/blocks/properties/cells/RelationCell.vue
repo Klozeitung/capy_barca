@@ -6,29 +6,33 @@
  *
  * Value shape: ``{ related_ids: string[] }`` or ``null``.
  *
- * The component fetches entries of the target database on every picker open.
- * If entries are already cached they are shown immediately while a silent
- * background refresh runs; an explicit loading spinner is only shown when no
- * cached entries exist yet.
+ * The component fetches entries of the target database on every picker open,
+ * so entries never go stale when several views share the same target database
+ * or it was mutated since the last open. Cached entries are shown immediately
+ * while a silent background refresh runs; the explicit loading spinner appears
+ * only when nothing is cached yet.
  *
  * Chip titles, however, are resolved through the store's dedicated
  * ``resolveEntryTitles`` path (POST /entries/resolve-titles), not from the
  * paginated entry cache. This decouples chip rendering from a target
  * database's display limit so a chip renders even when the linked entry sits
- * past the first page of its database (#27).
+ * past the first page of its database.
+ *
+ * A document-level click-away listener closes the picker. It is registered via
+ * nextTick so the opening click is not caught, and removed when the picker
+ * closes or the component unmounts.
+ *
+ * Keyed mode
+ * ----------
+ * When ``config.keying`` is active the cell renders a two-zone grid: the key
+ * value of each linked entry on the left, its chip on the right, ordered by
+ * that value. The sort is a view transform — the stored ``related_ids`` order
+ * is never rewritten, so reverting the property to vanilla restores insertion
+ * order intact. Key values travel the same limit-independent resolver as chip
+ * titles, for the same reason.
  *
  * Bilateral sync is performed server-side; the component only needs to emit
  * the updated ``related_ids`` for the current entry.
- *
- * Changes
- * -------
- * #55  Click-away closes the picker: a document-level listener is registered
- *      (via nextTick so the opening click is not caught) whenever isOpen is
- *      true and removed when it becomes false or the component unmounts.
- * #56  openPicker always triggers fetchEntries so that entries are not stale
- *      when multiple views share the same target database or the target DB
- *      has been mutated since the last open. The loading spinner is shown
- *      only when no cached entries exist.
  */
 import { ref, computed, onUnmounted, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -44,6 +48,9 @@ import {
   getTimelineDisplayMode,
   getNuanceConfig,
   formatPeriodKey,
+  getKeyingConfig,
+  sortIdsByKey,
+  formatKeyValue,
 } from './cellUtils'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
@@ -68,8 +75,10 @@ const blockStore = useBlockStore()
 
 const hasTimeline = computed(() => !!(props.schema.config?.hasTimeline))
 
-// Chip wrapping is opt-in per relation property (#12). Off by default: chips
-// stay on a single line and clip within the cell border; on: chips wrap.
+// Chip layout is opt-in per relation property. Off (the default): chips flow
+// horizontally and wrap onto further lines within the column width, each
+// truncated with an ellipsis. On: every chip sits on its own line and shows its
+// full title.
 const wrapContent = computed(() => props.schema.config?.wrapContent === true)
 const timelineOpen = ref(false)
 const anchorRect = ref<DOMRect | undefined>()
@@ -121,7 +130,7 @@ const timelineSlotGroups = computed<SlotGroup[]>(() => {
  * blank on first render, and once resolved only when the id maps to an active
  * target entry. Ids that resolved to nothing (trashed / foreign) are hidden,
  * replacing the previous "present in the paginated cache" filter that broke
- * past the display limit (#27).
+ * past the display limit.
  */
 function isRelationVisible(id: string): boolean {
   return !dbStore.isRelationResolved(id) || dbStore.hasRelationEntry(id)
@@ -190,7 +199,7 @@ const targetEntries = computed(() => dbStore.getEntries(targetDatabaseId.value))
  *
  * Visibility is driven by the dedicated title resolver (see
  * ``isRelationVisible``), not the paginated entry cache, so chips render
- * regardless of where the linked entry sits in its target database (#27).
+ * regardless of where the linked entry sits in its target database.
  */
 const displayedRelatedIds = computed<string[]>(() =>
   relatedIds.value.filter(isRelationVisible),
@@ -203,6 +212,86 @@ watch(
   [relatedIds, targetDatabaseId],
   ([ids, dbId]) => {
     if (ids.length > 0) dbStore.resolveEntryTitles(dbId, ids)
+  },
+  { immediate: true },
+)
+
+// ── Keying ────────────────────────────────────────────────────────────────────
+//
+// A keyed relation orders its linked entries by a property of the target
+// database and renders that property's value beside each chip. The mode is
+// exclusive with timeline and nuance; the backend enforces that, and the guard
+// below repeats it so legacy data carrying both never renders two layouts at
+// once — it falls back to the established one.
+
+const keyingCfg = computed(() => getKeyingConfig(props.schema))
+
+const isKeyed = computed(
+  () => !!keyingCfg.value && !hasTimeline.value && !nuanceCfg.value,
+)
+
+/**
+ * The target database's schema serving as key property, or null when it cannot
+ * be resolved — schemas not loaded yet, or a pointer whose target was deleted.
+ * Either way the cell degrades to seniority order with no left zone.
+ */
+const keySchema = computed<PropertySchema | null>(() => {
+  const cfg = keyingCfg.value
+  if (!cfg) return null
+  return (
+    dbStore
+      .getSchemas(targetDatabaseId.value)
+      .find(s => s.id === cfg.keyPropertyId) ?? null
+  )
+})
+
+interface KeyedRow {
+  id: string
+  label: string
+}
+
+/**
+ * Chips in key order, each paired with its rendered key value.
+ *
+ * Sorting happens here and nowhere else: ``related_ids`` is read, never
+ * written, so the stored insertion order survives untouched.
+ */
+const keyedRows = computed<KeyedRow[]>(() => {
+  const cfg = keyingCfg.value
+  if (!cfg) return []
+  const schema = keySchema.value
+  const ids = displayedRelatedIds.value
+  if (!schema) return ids.map(id => ({ id, label: '' }))
+  const sorted = sortIdsByKey(
+    ids,
+    id => dbStore.getRelationKeyValue(cfg.keyPropertyId, id),
+    schema,
+    cfg,
+  )
+  return sorted.map(id => ({
+    id,
+    label: formatKeyValue(dbStore.getRelationKeyValue(cfg.keyPropertyId, id), schema),
+  }))
+})
+
+// The key property lives in the target database, whose schemas a relation cell
+// otherwise never needs. ``ensureSchemas`` shares one request across all cells
+// of the column instead of issuing one per row.
+watch(
+  [isKeyed, targetDatabaseId],
+  ([keyed, dbId]) => {
+    if (keyed && dbId) dbStore.ensureSchemas(dbId)
+  },
+  { immediate: true },
+)
+
+// Resolve the key values themselves, on the same display-limit-independent
+// path as the chip titles.
+watch(
+  [relatedIds, targetDatabaseId, () => keyingCfg.value?.keyPropertyId ?? ''],
+  ([ids, dbId, keyPropertyId]) => {
+    if (!keyPropertyId || ids.length === 0) return
+    dbStore.resolveEntryKeyValues(dbId, ids, keyPropertyId)
   },
   { immediate: true },
 )
@@ -275,7 +364,7 @@ async function openPicker() {
   searchQuery.value = ''
   isOpen.value = true
 
-  // #56: Always fetch to stay in sync across views.
+  // Always fetch so entries stay in sync across views.
   if (targetEntries.value.length === 0) {
     isLoading.value = true
     await dbStore.fetchEntries(targetDatabaseId.value)
@@ -298,7 +387,7 @@ function closePicker() {
 // its own handler on top, so Escape closes that first.
 useEscapeKey(closePicker, isOpen)
 
-// ── Click-away (#55) ──────────────────────────────────────────────────────────
+// ── Click-away ────────────────────────────────────────────────────────────────
 
 function onDocumentClick(event: MouseEvent) {
   // Ignore clicks that originate inside the picker (already stopped) or
@@ -331,7 +420,7 @@ function isSelected(entryId: string): boolean {
 }
 
 function getEntryTitle(id: string): string {
-  // Prefer the dedicated relation-title resolver (#27); it is independent of
+  // Prefer the dedicated relation-title resolver; it is independent of
   // the target database's display limit. Fall back to the paginated entry
   // cache (covers freshly created entries before their resolve completes) and
   // finally to the localized "untitled" label.
@@ -427,7 +516,7 @@ async function createAndLink() {
 const sideViewEntryId = ref<string | null>(null)
 
 function openRelatedEntry(id: string): void {
-  // #14: The clicked chip lives inside cellEl, so the picker's click-away
+  // The clicked chip lives inside cellEl, so the picker's click-away
   // handler ignores it and would leave the picker open behind the side view.
   // Dismiss any open picker / timeline editor explicitly before opening.
   closePicker()
@@ -443,8 +532,15 @@ function closeSideView(): void {
 async function onSideViewRefresh(): Promise<void> {
   await dbStore.fetchEntries(targetDatabaseId.value)
   // Force-refresh resolved chip titles so an edited (or trashed) linked entry
-  // updates its chip immediately (#27).
+  // updates its chip immediately.
   await dbStore.resolveEntryTitles(targetDatabaseId.value, relatedIds.value, true)
+  // The edit may have changed the key value, which also changes the row order.
+  const keyPropertyId = keyingCfg.value?.keyPropertyId
+  if (keyPropertyId) {
+    await dbStore.resolveEntryKeyValues(
+      targetDatabaseId.value, relatedIds.value, keyPropertyId, true,
+    )
+  }
 }
 </script>
 
@@ -504,6 +600,51 @@ async function onSideViewRefresh(): Promise<void> {
           @click.stop="openTimeline($event)"
         >
           <Icon icon="mdi:clock-outline" width="12" height="12" />
+        </button>
+      </div>
+    </template>
+
+    <!-- keyed mode: key value left, chip right, ordered by the key -->
+    <template v-else-if="isKeyed">
+      <div
+        class="rel-cell__keyed-list"
+        :class="{ 'rel-cell__keyed-list--stack': wrapContent }"
+      >
+        <div
+          v-for="row in keyedRows"
+          :key="row.id"
+          class="rel-cell__keyed-row"
+        >
+          <span class="rel-cell__key-label" :title="row.label">
+            {{ row.label || '—' }}
+          </span>
+          <div class="rel-cell__key-chip">
+            <span class="rel-cell__tag">
+              <span
+                class="rel-cell__tag-open"
+                :title="getEntryTitle(row.id)"
+                @click.stop="openRelatedEntry(row.id)"
+              >
+                <Icon icon="mdi:file-outline" width="10" height="10" class="rel-cell__tag-icon" />
+                <span class="rel-cell__tag-text">{{ getEntryTitle(row.id) }}</span>
+              </span>
+              <button
+                class="rel-cell__tag-remove"
+                :aria-label="t('db.relation.removeLink')"
+                @click="removeRelated(row.id, $event)"
+              >
+                <Icon icon="mdi:close" width="10" height="10" />
+              </button>
+            </span>
+          </div>
+        </div>
+        <button
+          v-if="!isOpen"
+          class="rel-cell__add-btn rel-cell__add-btn--keyed"
+          :aria-label="t('db.relation.addLink')"
+          @click.stop="openPicker"
+        >
+          <Icon icon="mdi:plus" width="13" height="13" />
         </button>
       </div>
     </template>
@@ -779,6 +920,65 @@ async function onSideViewRefresh(): Promise<void> {
   font-style: italic;
 }
 
+/* ── Keyed mode ──────────────────────────────────────────────────────────── */
+/*
+ * The same two-zone grid as the timeline "all" layout: key value left, chip
+ * right, with the left column sized to the widest label so every chip starts at
+ * the same x. Each row uses display: contents to contribute both cells directly
+ * as grid items.
+ *
+ * Two deliberate differences from the timeline slot label. First, the label is
+ * width-capped: a date or number key is short, but a text key is
+ * arbitrary-length and an uncapped max-content column would starve the chip
+ * column, inverting the hierarchy — the entry is the payload, the key value is
+ * the orientation aid. Second, the label may wrap, which a period boundary
+ * never had to.
+ */
+.rel-cell__keyed-list {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 6px;
+  row-gap: 3px;
+  padding: 4px 8px;
+  align-items: start;
+}
+
+.rel-cell__keyed-row {
+  display: contents;
+}
+
+.rel-cell__key-label {
+  font-size: 0.68rem;
+  color: var(--color-text-muted);
+  padding-top: 4px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rel-cell__key-chip {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.rel-cell__add-btn--keyed {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+/*
+ * wrapContent on: the key value shows in full and breaks across lines within
+ * its capped column, matching the chip's own switch from ellipsis to full title.
+ */
+.rel-cell__keyed-list--stack .rel-cell__key-label {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: break-word;
+}
+
 /* ── Tags ────────────────────────────────────────────────────────────────── */
 /*
  * Default (wrapContent off): chips flow horizontally and wrap onto new lines
@@ -842,19 +1042,22 @@ async function onSideViewRefresh(): Promise<void> {
  * ellipsis used in the default flow layout.
  */
 .rel-cell__tags--stack .rel-cell__tag,
-.rel-cell__slot-chips--stack .rel-cell__tag {
+.rel-cell__slot-chips--stack .rel-cell__tag,
+.rel-cell__keyed-list--stack .rel-cell__tag {
   max-width: 100%;
   align-items: flex-start;
 }
 
 .rel-cell__tags--stack .rel-cell__tag-open,
-.rel-cell__slot-chips--stack .rel-cell__tag-open {
+.rel-cell__slot-chips--stack .rel-cell__tag-open,
+.rel-cell__keyed-list--stack .rel-cell__tag-open {
   overflow: visible;
   align-items: flex-start;
 }
 
 .rel-cell__tags--stack .rel-cell__tag-text,
-.rel-cell__slot-chips--stack .rel-cell__tag-text {
+.rel-cell__slot-chips--stack .rel-cell__tag-text,
+.rel-cell__keyed-list--stack .rel-cell__tag-text {
   white-space: normal;
   overflow: visible;
   text-overflow: clip;

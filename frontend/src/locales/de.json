@@ -351,7 +351,33 @@
       "rollupFunctionLastValue": "Letzter Wert",
       "rollupFunctionEarliestDate": "Frühestes Datum",
       "rollupFunctionLatestDate": "Spätestes Datum",
-      "rollupFunctionDateRange": "Datumsbereich"
+      "rollupFunctionDateRange": "Datumsbereich",
+      "keyingEnable": "Gekeyte Eigenschaft",
+      "keyingHint": "Sortiert die verknüpften Einträge dieser Relation nach einer Eigenschaft der Zieldatenbank, die neben jedem Eintrag angezeigt wird.",
+      "keyingProperty": "Key-Eigenschaft",
+      "keyingPropertySelect": "Eigenschaft wählen",
+      "keyingNoKeyable": "Die Zieldatenbank hat keine Eigenschaft, die als Key dienen kann. Unterstützt werden Datum, Zahl, Auswahl und Text.",
+      "keyingOrder": "Reihenfolge",
+      "keyingOrderAsc": "Aufsteigend",
+      "keyingOrderDesc": "Absteigend",
+      "keyingEmpty": "Einträge ohne Wert",
+      "keyingEmptyFirst": "Zuerst",
+      "keyingEmptyLast": "Zuletzt",
+      "keyingErrorProperty": "Wähle eine Key-Eigenschaft oder deaktiviere das Keying.",
+      "keyingDangling": "Die gewählte Key-Eigenschaft existiert nicht mehr. Bitte eine andere wählen.",
+      "keyingBlockedByTimeline": "Nicht verfügbar: Eine Relation mit Timeline kann nicht zusätzlich gekeyt werden.",
+      "keyingBlockedByNuance": "Nicht verfügbar: Eine nuancierte Relation kann nicht zusätzlich gekeyt werden.",
+      "keyingBlockedByMirror": "Nicht verfügbar: Die Gegenseite hat eine Timeline oder Nuancen.",
+      "keyingBlocksOthers": "Nicht verfügbar, solange diese Relation gekeyt ist.",
+      "keyingMirrorKeyed": "Nicht verfügbar: Die Gegenseite ist gekeyt. Eine gekeyte Relation lässt auf der anderen Seite nur vanilla oder gekeyt zu.",
+      "relationDirection": "Richtung",
+      "relationUnilateral": "Einseitig",
+      "relationBilateral": "Beidseitig",
+      "relationBilateralSelf": "Beidseitig (auf sich selbst)",
+      "relationSelf": "Diese Datenbank",
+      "relationMirrorName": "Name der Gegen-Eigenschaft",
+      "relationMirrorPlaceholder": "z. B. Charaktere",
+      "relationMirrorHint": "Diese Eigenschaft wird automatisch in der Zieldatenbank angelegt und synchron gehalten."
     },
     "viewSettings": {
       "title": "Ansicht-Einstellungen",
@@ -558,7 +584,11 @@
       "modeAll": "Alle anzeigen",
       "modeNow": "Aktuellen anzeigen (demnächst)",
       "modeCustom": "Benutzerdefinierten Zeitpunkt (demnächst)"
-    }
+    },
+    "deleteColumnKeyedTitle": "Gekeyte Relationen zurücksetzen?",
+    "deleteColumnKeyedBody": "Das Löschen dieser Eigenschaft setzt die folgenden Relationen in den unsortierten Zustand zurück:",
+    "deleteColumnKeyedItem": "{property} in {database}",
+    "changeIcon": "Symbol ändern"
   },
   "propertySection": {
     "title": "Eigenschaften",
@@ -709,7 +739,8 @@
     "databasesTitle": "Datenbanken",
     "databasesOverview": "Eine Datenbank speichert Einträge als Zeilen und Properties als typisierte Spalten (Text, Zahl, Datum, Auswahl, Relation, Rollup und mehr). Dieselben Daten lassen sich über verschiedene Ansichten zeigen — Tabelle, Kalender und weitere — jeweils mit eigenen Filtern und Sortierung.",
     "databasesDates": "Das Datumsformat legst du unter Einstellungen → Datum fest; es gilt überall, eine einzelne Datums-Property kann es in ihren Einstellungen überschreiben. Datumsfelder decken die Jahre 1 bis 9999 ab.",
-    "databasesGroups": "In der Eigenschaften-Seitenleiste lassen sich Properties zu Gruppen zusammenfassen. Eigene Gruppen kannst du ein- und ausklappen, per Doppelklick umbenennen und über den Ziehpunkt rechts im Gruppenkopf per Drag-and-drop neu anordnen. Die Standardgruppe bleibt immer oben."
+    "databasesGroups": "In der Eigenschaften-Seitenleiste lassen sich Properties zu Gruppen zusammenfassen. Eigene Gruppen kannst du ein- und ausklappen, per Doppelklick umbenennen und über den Ziehpunkt rechts im Gruppenkopf per Drag-and-drop neu anordnen. Die Standardgruppe bleibt immer oben.",
+    "databasesKeying": "Eine Relations-Eigenschaft kann gekeyt werden: Wähle eine Eigenschaft der Zieldatenbank, nach der die Einträge der Relation sortiert werden. Der gewählte Wert wird neben jedem Eintrag angezeigt."
   },
   "synchedBlock": {
     "originLabel": "Synced",

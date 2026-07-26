@@ -37,6 +37,7 @@ import {
   type ViewFilter,
   type FilterOperator,
   type EntryQueryFilterGroup,
+  type KeyReference,
 } from '@/stores/database'
 import { isReadonlyPropertyType } from '@/stores/propertyTypes'
 
@@ -53,6 +54,7 @@ import SortPanel from './subcomponents/SortPanel.vue'
 // ── Other components ──────────────────────────────────────────────────────────
 import AddSchemaPanel from './properties/AddSchemaPanel.vue'
 import PropertySettingsModal from './properties/PropertySettingsModal.vue'
+import KeyReferenceDeleteDialog from './properties/KeyReferenceDeleteDialog.vue'
 import RelationCell from './properties/cells/RelationCell.vue'
 import ViewSettingsModal from './properties/ViewSettingsModal.vue'
 import CalendarView from './CalendarView.vue'
@@ -81,7 +83,7 @@ const PREF_VIEWS       = 'views'
 const PREF_ACTIVE_VIEW = 'active_view'
 
 // Window event emitted by BlockPropertySection when a property added from the
-// side panel must be hidden in every view of this database (#25). Kept as a
+// side panel must be hidden in every view of this database. Kept as a
 // plain string literal shared by both components to avoid a new shared module.
 const DB_HIDE_SCHEMA_EVENT = 'capybarca:db-hide-schema-in-views'
 
@@ -119,7 +121,7 @@ const isLoading = ref(true)
 const displayedEntries = ref<DatabaseEntry[]>([])
 const totalEntries     = ref(0)
 
-// ── Name search (#31) ─────────────────────────────────────────────────────────
+// ── Name search ───────────────────────────────────────────────────────────────
 
 // A magnifier toggle in the toolbar expands into a text field that filters the
 // rendered entries by name (case-insensitive substring match). It narrows only
@@ -673,7 +675,7 @@ function _onDbSchemaUpdated(e: Event): void {
 }
 
 /**
- * #25: A property added from the property section (side panel / full-page
+ * A property added from the property section (side panel / full-page
  * entry view) must be hidden in every view of this database. That schema is
  * created on the same client, so it is already in the store by the time the
  * standard "remote schema" path runs — that path only reacts to
@@ -801,13 +803,49 @@ function closeSettings()                        { settingsSchema.value = null }
 
 const deletingSchemaId = ref<string | null>(null)
 
-function promptDeleteSchema(schemaId: string)  { deletingSchemaId.value = schemaId }
+/**
+ * Relations keyed on the column about to be deleted.
+ *
+ * Empty for almost every column, in which case the inline check / cancel pair
+ * behaves exactly as before. When it is not empty the inline confirmation is
+ * skipped in favour of a dialog that names the relations losing their sort
+ * order — information two small buttons cannot carry.
+ */
+const keyReferences = ref<KeyReference[]>([])
+const keyDeleteSchemaId = ref<string | null>(null)
+
+const keyDeleteSchemaName = computed(
+  () => dbStore.getSchemas(props.blockId).find(s => s.id === keyDeleteSchemaId.value)?.name ?? '',
+)
+
+async function promptDeleteSchema(schemaId: string): Promise<void> {
+  // Pre-flight before arming: a deliberate click, not something a render does.
+  const references = await dbStore.listKeyReferences(props.blockId, schemaId)
+  if (references.length > 0) {
+    keyReferences.value = references
+    keyDeleteSchemaId.value = schemaId
+    return
+  }
+  deletingSchemaId.value = schemaId
+}
+
 function cancelDeleteSchema()                  { deletingSchemaId.value = null }
 
 async function confirmDeleteSchema(schemaId: string): Promise<void> {
   deletingSchemaId.value = null
   await dbStore.deleteSchema(props.blockId, schemaId)
   await queryFromActiveView()
+}
+
+function cancelKeyDelete(): void {
+  keyDeleteSchemaId.value = null
+  keyReferences.value = []
+}
+
+async function confirmKeyDelete(): Promise<void> {
+  const schemaId = keyDeleteSchemaId.value
+  cancelKeyDelete()
+  if (schemaId) await confirmDeleteSchema(schemaId)
 }
 
 // ── Column drag-and-drop reorder ──────────────────────────────────────────────
@@ -1515,7 +1553,7 @@ function computeAggregation(
 // ── Wrap column toggle ────────────────────────────────────────────────────────
 
 // Column types whose cells render chips (relation family + rollup). These
-// manage their own chip-wrapping via a per-property setting (#12), so the
+// manage their own chip layout via a per-property setting, so the
 // per-view line-wrap header button is not offered for them.
 const CHIP_COLUMN_TYPES = new Set(['relation', 'parent_item', 'sub_item', 'rollup'])
 
@@ -1760,7 +1798,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
         </div>
 
         <div class="db__toolbar-right">
-          <!-- Name search (#31) -->
+          <!-- Name search -->
           <div class="db__toolbar-item">
             <button
               v-if="!nameSearchActive"
@@ -1919,7 +1957,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                         <div class="db__th-icon-wrap">
                           <button
                             class="db__th-icon-btn"
-                            :title="t('db.changeIcon', 'Symbol \u00e4ndern')"
+                            :title="t('db.changeIcon')"
                             @click.stop="openSchemaIconPicker(col.schema!, $event)"
                           >
                             <Icon :icon="getSchemaIcon(col.schema!)" width="14" height="14" class="db__th-type-icon" />
@@ -2428,6 +2466,14 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
       @close="closeSettings"
     />
 
+    <KeyReferenceDeleteDialog
+      v-if="keyDeleteSchemaId"
+      :references="keyReferences"
+      :property-name="keyDeleteSchemaName"
+      @confirm="confirmKeyDelete"
+      @cancel="cancelKeyDelete"
+    />
+
     <!-- ── Side view panel ────────────────────────────────────────────────── -->
     <SideView
       v-if="sideViewEntryId"
@@ -2470,7 +2516,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
 @import '@/assets/DatabaseBlock.css';
 
 /*
- * #92: Prevent the flex algorithm in .main-view from compressing .db to
+ * Prevent the flex algorithm in .main-view from compressing .db to
  * viewport height. With flex-shrink: 1 (default), .main-view's fixed height
  * caused .db — and everything inside it including CalendarView — to be
  * clamped to ~417 px, clipping the lower calendar rows entirely.
@@ -2538,7 +2584,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
   background: var(--color-hover);
 }
 
-/* ── Name search (#31) ───────────────────────────────────────────────────── */
+/* ── Name search ─────────────────────────────────────────────────────────── */
 .db__toolbar-btn--icon {
   padding: 4px 6px;
 }

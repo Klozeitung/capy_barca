@@ -265,6 +265,7 @@ const permissionModes = [
                 <p class="hm__permissions-intro">{{ t('help.databasesOverview') }}</p>
                 <p class="hm__permissions-intro">{{ t('help.databasesDates') }}</p>
                 <p class="hm__permissions-intro">{{ t('help.databasesGroups') }}</p>
+                <p class="hm__permissions-intro">{{ t('help.databasesKeying') }}</p>
               </div>
             </template>
 

@@ -42,6 +42,7 @@ import {
   type PropertySchema,
   type DatabaseEntry,
   type DatabaseView,
+  type KeyReference,
 } from '@/stores/database'
 import { isReadonlyPropertyType, getSchemaIcon } from '@/stores/propertyTypes'
 import {
@@ -55,6 +56,7 @@ import {
 import AddSchemaPanel from '@/components/editor/blocks/properties/AddSchemaPanel.vue'
 import PropertySettingsModal from '@/components/editor/blocks/properties/PropertySettingsModal.vue'
 import PropertyVisibilityModal, { type VisibilityMode } from './PropertyVisibilityModal.vue'
+import KeyReferenceDeleteDialog from '@/components/editor/blocks/properties/KeyReferenceDeleteDialog.vue'
 import CheckboxCell from '@/components/editor/blocks/properties/cells/CheckboxCell.vue'
 import SelectCell from '@/components/editor/blocks/properties/cells/SelectCell.vue'
 import MultiSelectCell from '@/components/editor/blocks/properties/cells/MultiSelectCell.vue'
@@ -76,7 +78,7 @@ const PREF_VISIBILITY = 'property_sideview_visibility'
 // Shared with DatabaseBlock: the persisted list of database views.
 const PREF_VIEWS = 'views'
 // Window event consumed by a live DatabaseBlock to hide a freshly added
-// property in its in-memory views (#25). Mirrors the constant in DatabaseBlock.
+// property in its in-memory views. Mirrors the constant in DatabaseBlock.
 const DB_HIDE_SCHEMA_EVENT = 'capybarca:db-hide-schema-in-views'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
@@ -338,17 +340,52 @@ function closeSettings(): void {
 const confirmDeleteId = ref<string | null>(null)
 let confirmDeleteTimer: ReturnType<typeof setTimeout> | null = null
 
-function requestDelete(schemaId: string): void {
+/**
+ * Relations keyed on the property about to be deleted.
+ *
+ * Empty for the overwhelming majority of properties, in which case the
+ * established two-step click-to-confirm is used unchanged. When it is not
+ * empty the two-step is skipped in favour of a dialog that names the relations
+ * losing their sort order, which a repeated click cannot convey.
+ */
+const keyReferences = ref<KeyReference[]>([])
+const keyDeleteSchemaId = ref<string | null>(null)
+
+const keyDeleteSchemaName = computed(
+  () => schemas.value.find(s => s.id === keyDeleteSchemaId.value)?.name ?? '',
+)
+
+async function requestDelete(schemaId: string): Promise<void> {
   if (confirmDeleteId.value === schemaId) {
     // Second click: actually delete.
     if (confirmDeleteTimer) { clearTimeout(confirmDeleteTimer); confirmDeleteTimer = null }
     confirmDeleteId.value = null
-    dbStore.deleteSchema(props.databaseId, schemaId)
+    await dbStore.deleteSchema(props.databaseId, schemaId)
     return
   }
+
+  // Pre-flight on the first click only: a deliberate user action, not a render.
+  const references = await dbStore.listKeyReferences(props.databaseId, schemaId)
+  if (references.length > 0) {
+    keyReferences.value = references
+    keyDeleteSchemaId.value = schemaId
+    return
+  }
+
   confirmDeleteId.value = schemaId
   if (confirmDeleteTimer) clearTimeout(confirmDeleteTimer)
   confirmDeleteTimer = setTimeout(() => { confirmDeleteId.value = null }, 3000)
+}
+
+function cancelKeyDelete(): void {
+  keyDeleteSchemaId.value = null
+  keyReferences.value = []
+}
+
+async function confirmKeyDelete(): Promise<void> {
+  const schemaId = keyDeleteSchemaId.value
+  cancelKeyDelete()
+  if (schemaId) await dbStore.deleteSchema(props.databaseId, schemaId)
 }
 
 // ── Add property (per group) ──────────────────────────────────────────────────
@@ -370,7 +407,7 @@ async function onAddSchemaPanelClose(newSchemaId?: string): Promise<void> {
     await dbStore.updateSchema(props.databaseId, newSchemaId, { group: targetGroup })
   }
 
-  // #25: A property added from the property section is hidden in *all*
+  // A property added from the property section is hidden in *all*
   // database views; the table renders it only after the user opts in via the
   // view settings. (When added from a DatabaseBlock view it is hidden in every
   // view except the active one — that path lives in DatabaseBlock.)
@@ -989,6 +1026,14 @@ async function onGroupHeaderDrop(e: DragEvent, groupName: string): Promise<void>
       @close="showVisibilityModal = false"
       @update="onVisibilityUpdate"
     />
+
+    <KeyReferenceDeleteDialog
+      v-if="keyDeleteSchemaId"
+      :references="keyReferences"
+      :property-name="keyDeleteSchemaName"
+      @confirm="confirmKeyDelete"
+      @cancel="cancelKeyDelete"
+    />
   </div>
 </template>
 
@@ -1273,7 +1318,7 @@ async function onGroupHeaderDrop(e: DragEvent, groupName: string): Promise<void>
 }
 
 /*
- * #17: Checkbox cells center themselves for the table layout (.db__checkbox
+ * Checkbox cells center themselves for the table layout (.db__checkbox
  * uses margin: 0 auto; the timeline variant centers via flex). In the
  * left-aligned property section they must sit flush left instead of awkwardly
  * in the middle of the value column.

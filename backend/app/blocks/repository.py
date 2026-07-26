@@ -518,7 +518,7 @@ def _build_filter_clause(f: FilterDescriptor):
             return (~has_true) if wants_true else has_true
         return None
 
-    # ── Formula (result_type-aware) (#32) ────────────────────────────────────
+    # ── Formula (result_type-aware) ──────────────────────────────────────────
     if schema_type == 'formula':
         result_type = f.formula_result_type or 'text'
         raw_expr = PV.value['result']
@@ -1046,6 +1046,54 @@ def list_schemas(db: Session, database_id: uuid.UUID) -> list[PropertySchema]:
         .order_by(PropertySchema.position)
     )
     return list(db.scalars(stmt).all())
+
+
+def list_relation_schemas_by_key_property(
+    db: Session,
+    key_property_id: uuid.UUID,
+) -> list[PropertySchema]:
+    """
+    Return every relation PropertySchema whose keying config points at
+    *key_property_id*, ordered by database and position.
+
+    Keying stores a read-side pointer into the target database at
+    ``config.keying.key_property_id``.  Because it lives inside a JSON blob the
+    reference cannot be expressed as a foreign key, so deleting or retyping the
+    referenced property has to be resolved by scanning for referrers.
+
+    The scan is derived state on purpose.  A boolean marker on the referenced
+    property would have to be cleared on every path that disables keying, and
+    would silently desynchronise the moment one of those paths is missed; it
+    also could not name the affected relations, only assert that some exist.
+
+    Only *enabled* keying blocks count as a reference.  A relation that was
+    reset to vanilla but kept its pointer — the settings modal preserves the
+    selection so re-enabling is one click — is dormant: nothing reads it, and
+    deleting the pointed-at property changes nothing the user can observe.
+    Reporting it would make the delete confirmation name relations it does not
+    actually alter.
+
+    Filtering happens in Python rather than through a JSON path predicate: the
+    candidate set is just the relation schemas of the workspace, and a Python
+    filter behaves identically on PostgreSQL and on the SQLite used by the
+    test suite.
+    """
+    target = str(key_property_id)
+    stmt = (
+        select(PropertySchema)
+        .where(PropertySchema.type == "relation")
+        .order_by(PropertySchema.database_id, PropertySchema.position)
+    )
+    result: list[PropertySchema] = []
+    for schema in db.scalars(stmt).all():
+        keying = (schema.config or {}).get("keying")
+        if not isinstance(keying, dict):
+            continue
+        if keying.get("enabled") is not True:
+            continue
+        if str(keying.get("key_property_id") or "") == target:
+            result.append(schema)
+    return result
 
 
 def create_schema(
