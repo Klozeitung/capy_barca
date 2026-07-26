@@ -1,7 +1,19 @@
 """
 Automations router.
 
-HTTP interface for automation CRUD.  All endpoints require a valid session.
+HTTP interface for automation CRUD.
+
+Authorization
+-------------
+An automation belongs to a ``database_id``, which is a block. Reaching the
+automation therefore means reaching that block, and every endpoint asks
+``require_block_access`` about it. Listing filters to the databases the caller
+can reach rather than refusing outright, so a member sees their own automations
+and nothing else.
+
+The single-item endpoints look the automation up before they can ask the
+question at all — the ``database_id`` is only known once the row is loaded — so
+an unknown id answers 404 and an unreachable one answers 403.
 
 GET    /api/automations                  list automations (optional ?database_id=)
 GET    /api/automations/{id}             get one automation
@@ -18,8 +30,9 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.automations import automations_repository as repo
-from app.blocks.router import get_db
-from app.session.deps import require_session
+from app.permissions import repository as perm_repo
+from app.session.deps import get_current_user, get_db, require_block_access
+from app.users.model import User
 
 automations_router = APIRouter(prefix="/api/automations", tags=["automations"])
 
@@ -60,26 +73,37 @@ class AutomationResponse(BaseModel):
 def list_automations(
     database_id: Optional[uuid.UUID] = None,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
-    Return all automations, optionally scoped to a single database.
+    Return all automations the caller may reach, optionally scoped to one database.
 
     Pass ``?database_id=<uuid>`` to retrieve only the automations that
-    belong to a specific database block.
+    belong to a specific database block; an unreachable one answers 403.
+    Without the parameter the result is filtered rather than refused, which is
+    the same shape ``list_children`` uses in the block router.
     """
-    return repo.list_automations(db, database_id=database_id)
+    if database_id is not None:
+        require_block_access(db, database_id, current_user)
+        return repo.list_automations(db, database_id=database_id)
+
+    return [
+        automation
+        for automation in repo.list_automations(db)
+        if perm_repo.can_user_access(db, automation.database_id, current_user)
+    ]
 
 
 @automations_router.get("/{automation_id}", response_model=AutomationResponse)
 def get_automation(
     automation_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     automation = repo.get_automation(db, automation_id)
     if automation is None:
         raise HTTPException(status_code=404, detail="Automation not found")
+    require_block_access(db, automation.database_id, current_user)
     return automation
 
 
@@ -87,8 +111,9 @@ def get_automation(
 def create_automation(
     payload: AutomationCreate,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
+    require_block_access(db, payload.database_id, current_user)
     automation = repo.create_automation(
         db,
         database_id=payload.database_id,
@@ -107,11 +132,12 @@ def update_automation(
     automation_id: uuid.UUID,
     payload: AutomationUpdate,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     automation = repo.get_automation(db, automation_id)
     if automation is None:
         raise HTTPException(status_code=404, detail="Automation not found")
+    require_block_access(db, automation.database_id, current_user)
     repo.update_automation(
         db,
         automation,
@@ -129,11 +155,12 @@ def update_automation(
 def delete_automation(
     automation_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     automation = repo.get_automation(db, automation_id)
     if automation is None:
         raise HTTPException(status_code=404, detail="Automation not found")
+    require_block_access(db, automation.database_id, current_user)
     repo.delete_automation(db, automation)
     db.commit()
 
@@ -144,12 +171,13 @@ def delete_automation(
 def toggle_automation(
     automation_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: str = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """Flip the ``enabled`` flag without requiring the caller to know its current state."""
     automation = repo.get_automation(db, automation_id)
     if automation is None:
         raise HTTPException(status_code=404, detail="Automation not found")
+    require_block_access(db, automation.database_id, current_user)
     repo.update_automation(db, automation, enabled=not automation.enabled)
     db.commit()
     db.refresh(automation)
