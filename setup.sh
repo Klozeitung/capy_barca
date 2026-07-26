@@ -20,7 +20,7 @@ echo ""
 #   ./setup.sh -recovery          (manual or via restore.sh)
 #   CAPYBARCA_RECOVERY=1 ./setup.sh  (programmatic)
 #
-# In recovery mode the GitHub SSH setup and .env interaction are skipped.
+# In recovery mode the .env interaction is skipped.
 # Instead the database is restored from recovery/import/db.sql.gz.
 
 if [[ "${1:-}" == "-recovery" ]]; then
@@ -75,72 +75,6 @@ echo -e "${GREEN}[OK] Docker found.${NC}"
 echo ""
 echo "Stopping running CapyBarca containers..."
 docker compose down 2>/dev/null || true
-
-
-# ─── GitHub SSH ───────────────────────────────────────────────────────────────
-# (skipped in recovery mode)
-
-if [ "${CAPYBARCA_RECOVERY}" != "1" ]; then
-
-echo ""
-echo "Checking GitHub SSH authentication..."
-
-REMOTE_URL=$(git remote get-url origin 2>/dev/null || true)
-SSH_KEY="$HOME/.ssh/id_ed25519"
-SSH_CONFIG="$HOME/.ssh/config"
-SSH_HOST_ALIAS="github-capybarca"
-
-# Ensure SSH key exists
-if [ ! -f "$SSH_KEY" ]; then
-    echo "No SSH key found. Creating new key..."
-    mkdir -p "$HOME/.ssh"
-    chmod 700 "$HOME/.ssh"
-    ssh-keygen -t ed25519 -f "$SSH_KEY" -N "" -C "capybarca@$(hostname)"
-    echo -e "${GREEN}[OK] SSH key created.${NC}"
-else
-    echo -e "${GREEN}[OK] SSH key found: ${SSH_KEY}${NC}"
-fi
-
-# Add host alias to ~/.ssh/config if not already present
-if ! grep -q "Host ${SSH_HOST_ALIAS}" "$SSH_CONFIG" 2>/dev/null; then
-    echo "" >> "$SSH_CONFIG"
-    echo "Host ${SSH_HOST_ALIAS}" >> "$SSH_CONFIG"
-    echo "    HostName github.com" >> "$SSH_CONFIG"
-    echo "    User git" >> "$SSH_CONFIG"
-    echo "    IdentityFile ${SSH_KEY}" >> "$SSH_CONFIG"
-    chmod 600 "$SSH_CONFIG"
-    echo -e "${GREEN}[OK] SSH config entry for ${SSH_HOST_ALIAS} written.${NC}"
-else
-    echo -e "${GREEN}[OK] SSH config entry for ${SSH_HOST_ALIAS} already exists.${NC}"
-fi
-
-# Switch remote URL to github-capybarca alias
-REPO_PATH=$(echo "$REMOTE_URL" | sed 's|https://github.com/||;s|git@github.com:||;s|git@github-capybarca:||')
-TARGET_URL="git@${SSH_HOST_ALIAS}:${REPO_PATH}"
-if [ "$REMOTE_URL" != "$TARGET_URL" ]; then
-    git remote set-url origin "$TARGET_URL"
-    echo -e "${GREEN}[OK] Remote URL switched to ${TARGET_URL}.${NC}"
-else
-    echo -e "${GREEN}[OK] Remote URL already correct.${NC}"
-fi
-
-# Test GitHub SSH connection
-echo ""
-echo "Testing SSH connection to GitHub..."
-if ssh -T -o StrictHostKeyChecking=accept-new "${SSH_HOST_ALIAS}" 2>&1 | grep -q "successfully authenticated"; then
-    echo -e "${GREEN}[OK] SSH connection to GitHub works.${NC}"
-else
-    echo -e "${YELLOW}SSH connection not confirmed. Is the key added to GitHub?${NC}"
-    echo ""
-    echo -e "${CYAN}Add this public key to your GitHub account:${NC}"
-    echo -e "${CYAN}  https://github.com/settings/ssh/new${NC}"
-    echo ""
-    cat "${SSH_KEY}.pub"
-    echo ""
-    read -p "Press Enter once you have added the key to GitHub..."
-fi
-
-fi  # end: not recovery mode
 
 # ─── Helper functions ─────────────────────────────────────────────────────────
 
