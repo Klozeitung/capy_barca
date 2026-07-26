@@ -110,12 +110,14 @@ Key variables:
 | Variable | Description |
 |---|---|
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Database credentials |
-| `PORT_FRONTEND` | Port CapyBarca is served on (default: 1701) |
+| `PORT_FRONTEND` | Port CapyBarca is served on (default: 1701). Must be above 1023 — the containers run unprivileged and cannot bind privileged ports |
 | `PORT_DB` | Host-side port for local database maintenance. Published on `127.0.0.1` only; containers always talk to PostgreSQL on 5432 over the internal network |
 | `SECRET_KEY` | Session signing key — keep this secret |
 | `TAILSCALE_IP` / `TAILSCALE_HOSTNAME` | Your Tailscale network address |
 | `ALLOW_NEW_USERS` | `true` to allow self-registration on the login page |
 | `DEBUG` | Development only, default `false`. `true` starts uvicorn with `--reload` and issues the session cookie **without** the `Secure` flag. Leave it off on any real instance |
+| `APP_UID` / `APP_GID` | The account the containers run as. Set automatically by `setup.sh` from the user running it, so that `static/uploads` stays writable from the container and from `restore.sh` alike. Not meant to be edited by hand |
+| `FORWARDED_ALLOW_IPS` | Which peers may set `X-Forwarded-For`, used to identify clients for rate limiting. Default `*`, which is safe because the backend port is reachable only inside the Compose network and nginx overwrites the header. Narrow it to the nginx container address to exclude other containers as well |
 
 ---
 
@@ -124,6 +126,8 @@ Key variables:
 - **Frontend**: Vue 3, TypeScript, Vite, vue-i18n, Pinia
 - **Backend**: Python, FastAPI, SQLAlchemy, Alembic, PostgreSQL
 - **Infrastructure**: Docker Compose, nginx, Collabora Online
+
+All containers run as an unprivileged user rather than as root. `setup.sh` aligns the container account with the host account that owns the repository and adjusts the ownership of `ssl/` and `static/uploads/` accordingly. Run it as your normal user, not with `sudo`; it escalates on its own where that is required.
 
 ---
 

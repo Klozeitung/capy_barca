@@ -188,6 +188,14 @@ get_missing_vars() {
 }
 
 write_env() {
+    # The container user is never asked for: it is always the account running
+    # this script, because that account owns the repository and the
+    # bind-mounted directories the containers read and write.
+    local APP_UID_VALUE
+    local APP_GID_VALUE
+    APP_UID_VALUE=$(id -u)
+    APP_GID_VALUE=$(id -g)
+
     cat > .env << EOF
 # PostgreSQL
 POSTGRES_USER=${1}
@@ -216,6 +224,17 @@ TAILSCALE_HOSTNAME=${9}
 # User management
 # true = allow self-registration via the login page
 ALLOW_NEW_USERS=${10}
+
+# Container user
+# Both containers run as this account instead of root. Managed by setup.sh on
+# every start; editing these by hand is pointless.
+APP_UID=${APP_UID_VALUE}
+APP_GID=${APP_GID_VALUE}
+
+# Peers whose X-Forwarded-For header uvicorn trusts. The default is safe
+# because the backend port is reachable only inside the Compose network and
+# nginx overwrites the header. See README.
+FORWARDED_ALLOW_IPS=*
 EOF
     echo -e "${GREEN}[OK] .env saved.${NC}"
 }
@@ -516,10 +535,68 @@ if [ "${CAPYBARCA_RECOVERY}" = "1" ]; then
     fi
 fi
 
+# ─── Container user ───────────────────────────────────────────────────────────
+#
+# Both containers run as this account rather than as root. It has to be the
+# host account that owns the repository, otherwise the bind-mounted uploads
+# directory is writable from only one side. The values are re-derived on every
+# start instead of trusted: an .env kept from an older installation does not
+# carry them at all, and one restored from a backup carries the source
+# machine's values.
+
+APP_UID=$(id -u)
+APP_GID=$(id -g)
+
+set_env_value() {
+    local KEY=$1
+    local VALUE=$2
+    if grep -q "^${KEY}=" .env 2>/dev/null; then
+        sed -i "s|^${KEY}=.*|${KEY}=${VALUE}|" .env
+    else
+        printf '%s=%s\n' "${KEY}" "${VALUE}" >> .env
+    fi
+}
+
+if [ "${APP_UID}" = "0" ]; then
+    echo ""
+    echo -e "${YELLOW}[WARNING] setup.sh is running as root.${NC}"
+    echo "  The containers would then run as root too, which defeats the point"
+    echo "  of the unprivileged images. Run setup.sh as your normal user - it"
+    echo "  escalates with sudo only where that is actually required."
+fi
+
+if [ "$(read_env_value APP_UID)" != "${APP_UID}" ] || [ "$(read_env_value APP_GID)" != "${APP_GID}" ]; then
+    echo ""
+    set_env_value APP_UID "${APP_UID}"
+    set_env_value APP_GID "${APP_GID}"
+    echo -e "${GREEN}[OK] Container user set to ${APP_UID}:${APP_GID}.${NC}"
+fi
+
 # Load ports and hostname for later use
 PORT_BACKEND=$(read_env_value PORT_BACKEND)
 PORT_FRONTEND=$(read_env_value PORT_FRONTEND)
 TAILSCALE_HOSTNAME=$(read_env_value TAILSCALE_HOSTNAME)
+
+# ─── Privileged ports ─────────────────────────────────────────────────────────
+#
+# nginx and uvicorn no longer run as root and therefore cannot bind ports below
+# 1024. This is checked before the build rather than warned about afterwards,
+# because the containers would start, fail to bind and restart in a loop, which
+# is considerably harder to read than this message.
+
+for PORT_ENTRY in "PORT_FRONTEND:${PORT_FRONTEND}" "PORT_BACKEND:${PORT_BACKEND}"; do
+    PORT_NAME="${PORT_ENTRY%%:*}"
+    PORT_VALUE="${PORT_ENTRY#*:}"
+    if [ -n "${PORT_VALUE}" ] && [ "${PORT_VALUE}" -lt 1024 ] 2>/dev/null; then
+        echo ""
+        echo -e "${RED}[ERROR] ${PORT_NAME}=${PORT_VALUE} is a privileged port.${NC}"
+        echo "  The containers run as an unprivileged user and cannot bind ports"
+        echo "  below 1024. Choose a port above 1023 (defaults: 1701 frontend,"
+        echo "  17012 backend) by running setup.sh and selecting"
+        echo "  'Edit individual fields'."
+        exit 1
+    fi
+done
 
 # ─── SSL certificates ─────────────────────────────────────────────────────────
 
@@ -593,6 +670,64 @@ else
         fi
     fi
 fi
+
+# ─── Host file ownership ──────────────────────────────────────────────────────
+#
+# Everything the non-root containers read or write on the host has to belong to
+# the container user:
+#
+#   ssl/cert.pem, ssl/key.pem  read by nginx and by uvicorn for TLS
+#   static/uploads/            written by the backend, read by backup.sh and
+#                              written by restore.sh on the host
+#
+# The certificate is frequently owned by root, because 'tailscale cert' needs
+# elevated rights on most systems and the fallback above runs it under sudo.
+# The fixup therefore runs on every start, not only after issuing a
+# certificate, and escalates only when the unprivileged attempt fails.
+
+echo ""
+echo "Checking host file ownership for the container user (${APP_UID}:${APP_GID})..."
+
+take_ownership() {
+    local TARGET=$1
+    [ -e "${TARGET}" ] || return 0
+    if chown -R "${APP_UID}:${APP_GID}" "${TARGET}" 2>/dev/null; then
+        return 0
+    fi
+    echo -e "${YELLOW}[WARNING] ${TARGET} needs elevated permissions, using sudo...${NC}"
+    if ! sudo chown -R "${APP_UID}:${APP_GID}" "${TARGET}"; then
+        echo -e "${RED}[ERROR] Could not change the owner of ${TARGET}.${NC}"
+        echo "  Run manually and start setup.sh again:"
+        echo "    sudo chown -R ${APP_UID}:${APP_GID} ${TARGET}"
+        exit 1
+    fi
+}
+
+set_mode() {
+    local TARGET=$1
+    local MODE=$2
+    [ -f "${TARGET}" ] || return 0
+    if chmod "${MODE}" "${TARGET}" 2>/dev/null; then
+        return 0
+    fi
+    if ! sudo chmod "${MODE}" "${TARGET}"; then
+        echo -e "${RED}[ERROR] Could not set the mode of ${TARGET}.${NC}"
+        echo "  Run manually and start setup.sh again:"
+        echo "    sudo chmod ${MODE} ${TARGET}"
+        exit 1
+    fi
+}
+
+mkdir -p static/uploads
+take_ownership "static/uploads"
+take_ownership "ssl"
+
+# The private key stays unreadable for everyone outside the container user's
+# group; the certificate itself is public.
+set_mode "ssl/key.pem" 640
+set_mode "ssl/cert.pem" 644
+
+echo -e "${GREEN}[OK] Ownership of ssl/ and static/uploads/ is correct.${NC}"
 
 # ─── Docker ───────────────────────────────────────────────────────────────────
 

@@ -19,7 +19,14 @@ services:
       start_period: 10s
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      # The image bakes in the user it runs as. setup.sh keeps APP_UID/APP_GID
+      # in .env in sync with the host account that owns the repository, so the
+      # bind-mounted uploads directory stays writable from both sides.
+      args:
+        APP_UID: "${APP_UID:-1000}"
+        APP_GID: "${APP_GID:-1000}"
     restart: unless-stopped
     env_file: .env
     environment:
@@ -38,7 +45,13 @@ services:
         condition: service_healthy
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      # Same account as the backend so both containers can read ssl/key.pem,
+      # which is owner- and group-readable only.
+      args:
+        APP_UID: "${APP_UID:-1000}"
+        APP_GID: "${APP_GID:-1000}"
     restart: unless-stopped
     environment:
       PORT_BACKEND: "${PORT_BACKEND:-17012}"
