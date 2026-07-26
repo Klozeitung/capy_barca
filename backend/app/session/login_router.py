@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from app.security.limiter import limiter
 from app.session.session import create_token, revoke_token, validate_token
+from app.users.password_rules import ExistingPassword
 
 login_router = APIRouter()
 
@@ -49,7 +50,11 @@ def set_session_cookie(response: Response, token: str) -> None:
 
 class LoginRequest(BaseModel):
     username: str
-    password: str
+    # Bounded because bcrypt refuses anything past 72 bytes and raises rather
+    # than returning a mismatch. Without the bound an over-long password turns
+    # a failed login into a 500. No minimum: an account created before the
+    # minimum existed still has to be able to sign in.
+    password: ExistingPassword
 
 
 @login_router.post("/api/login")

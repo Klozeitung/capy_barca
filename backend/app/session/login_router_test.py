@@ -137,6 +137,31 @@ def test_login_rate_limit_resets_after_storage_clear():
     assert response.status_code == 200
 
 
+@pytest.mark.parametrize("password", ["a" * 73, "ä" * 40, "🙂" * 20])
+def test_login_rejects_a_password_bcrypt_would_refuse(password):
+    """
+    bcrypt raises on anything past 72 bytes rather than reporting a mismatch,
+    so an over-long password turned a failed login into a 500. Not in the
+    audit's list for this finding, but the same defect as the one it names.
+    """
+    response = client.post(
+        "/api/login", json={"username": "capybarca", "password": password}
+    )
+    assert response.status_code == 422
+
+
+def test_login_still_accepts_a_short_legacy_password():
+    """
+    No minimum on the login field. An account created before the minimum
+    existed has to remain able to sign in, otherwise it can never reach the
+    password change either.
+    """
+    response = client.post(
+        "/api/login", json={"username": "capybarca", "password": "geheim"}
+    )
+    assert response.status_code == 200
+
+
 # ─── Verify ──────────────────────────────────────────────────────────────────
 
 def test_verify_returns_401_without_cookie():

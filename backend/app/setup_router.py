@@ -2,17 +2,24 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Cookie, HTTPException, Response
+from fastapi import APIRouter, Cookie, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from app.database.database import SessionLocal
+from app.security.limiter import limiter
 from app.session.login_router import set_session_cookie
 from app.session.session import create_token, validate_token
 from app.session.user_registration import create_admin
 from app.users import repository as user_repo
 from app.users.model import User
+from app.users.password_rules import NewPassword
 
 setup_router = APIRouter()
+
+# Self-registration hands out an account, so it is throttled like the login
+# route. Initial admin registration is one-shot by construction: it refuses
+# once any user exists.
+_SIGNUP_RATE_LIMIT = os.getenv("SIGNUP_RATE_LIMIT", "5/minute")
 
 # Path to the backup script template served via GET /api/backup/script.
 # Defined at module level so tests can monkeypatch it.
@@ -40,12 +47,15 @@ def _allow_new_users() -> bool:
 
 class RegisterRequest(BaseModel):
     username: str = Field(min_length=1)
-    password: str = Field(min_length=1)
+    # The initial administrator used to be the one account that could be
+    # created with a one-character password, which is exactly the account
+    # worth protecting most.
+    password: NewPassword
 
 
 class SignupRequest(BaseModel):
     username: str = Field(min_length=1)
-    password: str = Field(min_length=8)
+    password: NewPassword
 
 
 @setup_router.get("/api/setup-status")
@@ -82,7 +92,8 @@ def register(payload: RegisterRequest, response: Response):
 
 
 @setup_router.post("/api/signup")
-def signup(payload: SignupRequest, response: Response):
+@limiter.limit(_SIGNUP_RATE_LIMIT)
+def signup(request: Request, payload: SignupRequest, response: Response):
     """
     Self-registration for new users.
 

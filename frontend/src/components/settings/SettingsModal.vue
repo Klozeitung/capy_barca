@@ -234,7 +234,7 @@ function openReset(userId: string): void {
 
 async function saveResetPw(user: UserRow): Promise<void> {
   if (resetPwValue.value.length < 8) {
-    resetPwFeedback.value = { id: user.id, msg: 'Mind. 8 Zeichen erforderlich.', ok: false }
+    resetPwFeedback.value = { id: user.id, msg: t('settings.usersResetPwTooShort'), ok: false }
     return
   }
   resetPwSaving.value = true
@@ -245,7 +245,7 @@ async function saveResetPw(user: UserRow): Promise<void> {
     openResetPw.value = null
     resetPwValue.value = ''
   } catch {
-    resetPwFeedback.value = { id: user.id, msg: 'Fehler beim Zurücksetzen.', ok: false }
+    resetPwFeedback.value = { id: user.id, msg: t('settings.usersResetPwError'), ok: false }
   } finally {
     resetPwSaving.value = false
   }
@@ -290,7 +290,7 @@ async function createUser(): Promise<void> {
   } catch (e) {
     const msg =
       e instanceof ApiError && e.status === 409
-        ? 'Benutzername bereits vergeben.'
+        ? t('settings.usersCreateTaken')
         : t('settings.usersCreateError')
     newUserFeedback.value = { msg, ok: false }
   } finally {
@@ -322,7 +322,7 @@ function handleBackdropClick(e: MouseEvent): void {
 <template>
   <Teleport to="body">
     <div class="settings-modal__backdrop" @click="handleBackdropClick">
-      <div class="settings-modal" role="dialog" aria-modal="true" aria-label="Einstellungen">
+      <div class="settings-modal" role="dialog" aria-modal="true" :aria-label="t('settings.title')">
 
         <!-- Header -->
         <div class="settings-modal__header">
@@ -330,7 +330,7 @@ function handleBackdropClick(e: MouseEvent): void {
             <Icon icon="mdi:cog-outline" width="16" height="16" />
             Einstellungen
           </span>
-          <button class="settings-modal__close" aria-label="Schliessen" @click="closeSettings">
+          <button class="settings-modal__close" :aria-label="t('settings.close')" @click="closeSettings">
             <Icon icon="mdi:close" width="16" height="16" />
           </button>
         </div>
@@ -379,7 +379,7 @@ function handleBackdropClick(e: MouseEvent): void {
               @click="auth.isAdmin && (activeSection = 'backup')"
             >
               <Icon icon="mdi:backup-restore" width="15" height="15" class="settings-nav__icon" />
-              <span>Backup</span>
+              <span>{{ t('settings.backup') }}</span>
               <Icon
                 v-if="!auth.isAdmin"
                 icon="mdi:lock-outline"
@@ -713,14 +713,14 @@ function handleBackdropClick(e: MouseEvent): void {
                         v-model="newUsername"
                         class="users-new__input"
                         type="text"
-                        placeholder="Benutzername"
+                        :placeholder="t('settings.usersNewUsernamePlaceholder')"
                         autocomplete="off"
                       />
                       <input
                         v-model="newPassword"
                         class="users-new__input"
                         type="password"
-                        placeholder="Passwort (mind. 8 Zeichen)"
+                        :placeholder="t('settings.usersNewPasswordPlaceholder')"
                         autocomplete="new-password"
                       />
                       <p v-if="newPassword && newPassword.length < 8" class="users-new__hint">

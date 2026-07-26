@@ -27,6 +27,21 @@ from app.users.repository import create_user
 anon_client = TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """
+    Clear the shared rate-limit counter before each test.
+
+    The password change endpoint is throttled and every client here presents
+    the same address, so without this the later tests would fail on budget the
+    earlier ones spent.
+    """
+    from app.security.limiter import limiter
+
+    limiter._storage.reset()
+    yield
+
+
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
 
@@ -142,6 +157,94 @@ def test_change_password_too_short_returns_422(admin_client):
         json={"current_password": "geheim", "new_password": "kurz"},
     )
     assert response.status_code == 422
+
+
+# ── Password rules ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("password", ["a" * 73, "ä" * 40, "🙂" * 20])
+def test_change_password_rejects_a_new_password_bcrypt_would_refuse(
+    admin_client, password
+):
+    """
+    bcrypt raises past 72 bytes instead of reporting a mismatch, so these used
+    to surface as a 500. The last two are the reason the bound counts bytes:
+    both are well under 72 characters.
+    """
+    response = admin_client.patch(
+        "/api/users/me/password",
+        json={"current_password": "geheim", "new_password": password},
+    )
+    assert response.status_code == 422
+
+
+def test_change_password_rejects_an_over_long_current_password(admin_client):
+    """The field that is only ever verified needs the same bound."""
+    response = admin_client.patch(
+        "/api/users/me/password",
+        json={"current_password": "a" * 73, "new_password": "neues_pw_123"},
+    )
+    assert response.status_code == 422
+
+
+def test_change_password_accepts_a_new_password_at_the_byte_ceiling(admin_client):
+    response = admin_client.patch(
+        "/api/users/me/password",
+        json={"current_password": "geheim", "new_password": "a" * 72},
+    )
+    assert response.status_code == 204
+
+
+def test_change_password_accepts_a_short_current_password(admin_client):
+    """
+    No minimum on the current password. The account in this fixture predates
+    the minimum, and requiring eight here would leave it unable to move off
+    its short password at all.
+    """
+    response = admin_client.patch(
+        "/api/users/me/password",
+        json={"current_password": "geheim", "new_password": "neues_pw_123"},
+    )
+    assert response.status_code == 204
+
+
+def test_create_user_rejects_an_over_long_password(admin_client):
+    response = admin_client.post(
+        "/api/users",
+        json={"username": "new_member", "password": "a" * 73, "role": "member"},
+    )
+    assert response.status_code == 422
+
+
+def test_admin_reset_rejects_an_over_long_password(admin_client):
+    with s.SessionLocal() as db:
+        user = create_user(db, "reset_target", "geheim", role="member")
+        db.commit()
+        user_id = user.id
+    response = admin_client.patch(
+        f"/api/users/{user_id}/password", json={"new_password": "a" * 73}
+    )
+    assert response.status_code == 422
+
+
+def test_change_password_rate_limit_blocks_after_threshold(admin_client):
+    """
+    The endpoint verifies the current password, which makes it an oracle for
+    anyone holding a stolen session. Throttled for the same reason login is.
+    """
+    import app.users.router as users_router_module
+
+    threshold = int(users_router_module._PASSWORD_CHANGE_RATE_LIMIT.split("/")[0])
+    for _ in range(threshold):
+        admin_client.patch(
+            "/api/users/me/password",
+            json={"current_password": "falsch", "new_password": "neues_pw_123"},
+        )
+    response = admin_client.patch(
+        "/api/users/me/password",
+        json={"current_password": "falsch", "new_password": "neues_pw_123"},
+    )
+    assert response.status_code == 429
 
 
 # ── GET /api/users ────────────────────────────────────────────────────────────

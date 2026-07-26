@@ -1,18 +1,30 @@
 """
 User management router.
+
+Password fields use the shared types from ``app.users.password_rules`` rather
+than plain strings, so that the minimum length and bcrypt's 72-byte ceiling are
+stated once for the whole application instead of per endpoint.
 """
+import os
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.security.limiter import limiter
 from app.session.deps import get_current_user, get_db, require_admin, require_session
 from app.users import repository as user_repo
 from app.users.model import User
+from app.users.password_rules import ExistingPassword, NewPassword
 
 users_router = APIRouter(prefix="/api/users", tags=["users"])
+
+# Changing a password checks the current one, which makes this endpoint a
+# password oracle for anyone who has taken over a session. Throttled for the
+# same reason /api/login is.
+_PASSWORD_CHANGE_RATE_LIMIT = os.getenv("PASSWORD_CHANGE_RATE_LIMIT", "5/minute")
 
 # Canonical display date-format tokens a user may choose as their global
 # preference. These govern frontend rendering only; dates are always stored
@@ -41,7 +53,7 @@ class UserResponse(BaseModel):
 
 class CreateUserRequest(BaseModel):
     username: str = Field(min_length=1)
-    password: str = Field(min_length=8)
+    password: NewPassword
     role: str = Field(default="member", pattern="^(admin|member)$")
 
 
@@ -54,12 +66,14 @@ class ChangeDateFormatRequest(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str = Field(min_length=8)
+    # The current password carries only the upper bound: an account created
+    # before the minimum existed must still be able to change its password.
+    current_password: ExistingPassword
+    new_password: NewPassword
 
 
 class AdminResetPasswordRequest(BaseModel):
-    new_password: str = Field(min_length=8)
+    new_password: NewPassword
 
 
 class ChangeRoleRequest(BaseModel):
@@ -102,7 +116,7 @@ def change_own_username(
         if user_repo.get_by_username(db, payload.username) is not None:
             raise HTTPException(
                 status_code=409,
-                detail=f"Benutzername '{payload.username}' ist bereits vergeben",
+                detail=f"Username '{payload.username}' is already taken",
             )
         user_repo.update_username(db, current_user, payload.username)
         db.commit()
@@ -111,14 +125,16 @@ def change_own_username(
 
 
 @users_router.patch("/me/password", status_code=204)
+@limiter.limit(_PASSWORD_CHANGE_RATE_LIMIT)
 def change_own_password(
+    request: Request,
     payload: ChangePasswordRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Change own password. Requires the correct current password."""
     if not user_repo.verify_password(payload.current_password, current_user.password_hash):
-        raise HTTPException(status_code=401, detail="Aktuelles Passwort ist falsch")
+        raise HTTPException(status_code=401, detail="The current password is incorrect")
     user_repo.update_password(db, current_user, payload.new_password)
     db.commit()
 
@@ -163,7 +179,7 @@ def create_user(
     if user_repo.get_by_username(db, payload.username) is not None:
         raise HTTPException(
             status_code=409,
-            detail=f"Benutzername '{payload.username}' ist bereits vergeben",
+            detail=f"Username '{payload.username}' is already taken",
         )
     user = user_repo.create_user(db, payload.username, payload.password, role=payload.role)
     db.commit()
@@ -183,10 +199,10 @@ def change_user_role(
 ):
     """Change the role of another user (admin only). Cannot change own role."""
     if user_id == current_admin.id:
-        raise HTTPException(status_code=409, detail="Eigene Rolle kann nicht geändert werden")
+        raise HTTPException(status_code=409, detail="You cannot change your own role")
     user = user_repo.get_by_id(db, user_id)
     if user is None:
-        raise HTTPException(status_code=404, detail="Benutzer nicht gefunden")
+        raise HTTPException(status_code=404, detail="User not found")
     user_repo.update_role(db, user, payload.role)
     db.commit()
     db.refresh(user)
@@ -203,7 +219,7 @@ def admin_reset_password(
     """Admin force-reset another user's password (no current password required)."""
     user = user_repo.get_by_id(db, user_id)
     if user is None:
-        raise HTTPException(status_code=404, detail="Benutzer nicht gefunden")
+        raise HTTPException(status_code=404, detail="User not found")
     user_repo.update_password(db, user, payload.new_password)
     db.commit()
 
@@ -218,10 +234,10 @@ def deactivate_user(
     if user_id == current_admin.id:
         raise HTTPException(
             status_code=409,
-            detail="Du kannst dein eigenes Konto nicht deaktivieren",
+            detail="You cannot deactivate your own account",
         )
     user = user_repo.get_by_id(db, user_id)
     if user is None:
-        raise HTTPException(status_code=404, detail="Benutzer nicht gefunden")
+        raise HTTPException(status_code=404, detail="User not found")
     user_repo.deactivate(db, user)
     db.commit()

@@ -14,6 +14,9 @@ _BASE_URL = "https://testserver"
 
 client = TestClient(app, base_url=_BASE_URL)
 
+# Long enough for the minimum the initial administrator now has to meet.
+VALID_PASSWORD = "geheim-1234"
+
 
 # isolated_db (autouse) from conftest.py handles per-test DB isolation.
 # No .env patching is needed – configured state is derived from the users table.
@@ -29,6 +32,15 @@ def cookie_attributes(response) -> set:
     """
     header = response.headers["set-cookie"]
     return {part.strip().split("=")[0].lower() for part in header.split(";")[1:]}
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """Signup is throttled and every test here shares one client address."""
+    from app.security.limiter import limiter
+
+    limiter._storage.reset()
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -59,12 +71,12 @@ def test_setup_status_returns_configured():
 
 
 def test_register_returns_200():
-    response = client.post("/api/register", json={"username": "capybarca", "password": "geheim"})
+    response = client.post("/api/register", json={"username": "capybarca", "password": VALID_PASSWORD})
     assert response.status_code == 200
 
 
 def test_register_response_body():
-    response = client.post("/api/register", json={"username": "capybarca", "password": "geheim"})
+    response = client.post("/api/register", json={"username": "capybarca", "password": VALID_PASSWORD})
     data = response.json()
     assert data["success"] is True
     assert data["username"] == "capybarca"
@@ -72,7 +84,7 @@ def test_register_response_body():
 
 
 def test_register_sets_session_cookie():
-    response = client.post("/api/register", json={"username": "capybarca", "password": "geheim"})
+    response = client.post("/api/register", json={"username": "capybarca", "password": VALID_PASSWORD})
     assert "session" in response.cookies
 
 
@@ -84,7 +96,7 @@ def test_register_cookie_has_secure_flag_outside_debug(monkeypatch):
     helper is actually reached from this call site.
     """
     monkeypatch.delenv("DEBUG", raising=False)
-    response = client.post("/api/register", json={"username": "capybarca", "password": "geheim"})
+    response = client.post("/api/register", json={"username": "capybarca", "password": VALID_PASSWORD})
     attributes = cookie_attributes(response)
     assert "secure" in attributes
     assert "httponly" in attributes
@@ -92,12 +104,12 @@ def test_register_cookie_has_secure_flag_outside_debug(monkeypatch):
 
 def test_register_cookie_omits_secure_flag_in_debug_mode(monkeypatch):
     monkeypatch.setenv("DEBUG", "true")
-    response = client.post("/api/register", json={"username": "capybarca", "password": "geheim"})
+    response = client.post("/api/register", json={"username": "capybarca", "password": VALID_PASSWORD})
     assert "secure" not in cookie_attributes(response)
 
 
 def test_register_session_cookie_is_valid():
-    client.post("/api/register", json={"username": "capybarca", "password": "geheim"})
+    client.post("/api/register", json={"username": "capybarca", "password": VALID_PASSWORD})
     verify_resp = client.get("/api/verify")
     assert verify_resp.status_code == 200
 
@@ -106,18 +118,95 @@ def test_register_blocked_when_already_configured():
     with s.SessionLocal() as db:
         create_user(db, "capybarca", "geheim", role="admin")
         db.commit()
-    response = client.post("/api/register", json={"username": "other", "password": "other"})
+    response = client.post("/api/register", json={"username": "other", "password": VALID_PASSWORD})
     assert response.status_code == 403
 
 
 def test_register_returns_422_on_empty_username():
-    response = client.post("/api/register", json={"username": "", "password": "geheim"})
+    response = client.post("/api/register", json={"username": "", "password": VALID_PASSWORD})
     assert response.status_code == 422
 
 
 def test_register_returns_422_on_empty_password():
     response = client.post("/api/register", json={"username": "capybarca", "password": ""})
     assert response.status_code == 422
+
+
+# ─── Password rules ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("password", ["", "a", "kurz", "1234567"])
+def test_register_rejects_a_password_below_the_minimum(password):
+    """
+    The initial administrator used to be the one account creatable with a
+    single character, while every other route already required eight.
+    """
+    resp = client.post(
+        "/api/register", json={"username": "capybarca", "password": password}
+    )
+    assert resp.status_code == 422
+
+
+def test_register_accepts_a_password_at_the_minimum():
+    resp = client.post("/api/register", json={"username": "capybarca", "password": "12345678"})
+    assert resp.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "password",
+    [
+        "a" * 73,      # one byte past what bcrypt accepts
+        "ä" * 40,      # forty characters, eighty bytes
+        "🙂" * 20,      # twenty characters, eighty bytes
+    ],
+)
+def test_register_rejects_a_password_bcrypt_would_refuse(password):
+    """
+    Without the bound these reach bcrypt, which raises rather than returning a
+    mismatch, and the caller gets a 500 out of an ordinary registration.
+    """
+    resp = client.post(
+        "/api/register", json={"username": "capybarca", "password": password}
+    )
+    assert resp.status_code == 422
+
+
+def test_register_accepts_a_password_at_the_byte_ceiling():
+    resp = client.post("/api/register", json={"username": "capybarca", "password": "a" * 72})
+    assert resp.status_code == 200
+
+
+# ─── Signup ───────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def signup_enabled(monkeypatch):
+    """Enable self-registration and seed the admin that signup requires."""
+    monkeypatch.setenv("ALLOW_NEW_USERS", "true")
+    with s.SessionLocal() as db:
+        create_user(db, "capybarca", "geheim", role="admin")
+        db.commit()
+    yield
+
+
+def test_signup_rejects_an_over_long_password(signup_enabled):
+    resp = client.post("/api/signup", json={"username": "newbie", "password": "a" * 73})
+    assert resp.status_code == 422
+
+
+def test_signup_rate_limit_blocks_after_threshold(signup_enabled):
+    """
+    Self-registration hands out accounts, so it is throttled like the login
+    route. The requests below are rejected on their merits; what is asserted
+    is that the budget is consumed regardless.
+    """
+    import app.setup_router as sr
+
+    threshold = int(sr._SIGNUP_RATE_LIMIT.split("/")[0])
+    for i in range(threshold):
+        client.post("/api/signup", json={"username": f"newbie{i}", "password": VALID_PASSWORD})
+    resp = client.post("/api/signup", json={"username": "last", "password": VALID_PASSWORD})
+    assert resp.status_code == 429
 
 
 # ─── Backup script download ───────────────────────────────────────────────────

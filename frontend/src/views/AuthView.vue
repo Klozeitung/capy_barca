@@ -28,7 +28,7 @@ onMounted(async () => {
     allowNewUsers.value = data.allow_new_users
     mode.value = data.configured ? 'login' : 'register'
   } catch {
-    error.value = 'Verbindung zum Server fehlgeschlagen.'
+    error.value = t('auth.connectionFailed')
   }
 })
 
@@ -52,13 +52,17 @@ function switchToLogin(): void {
 async function handleSubmit(): Promise<void> {
   error.value = ''
 
-  if ((mode.value === 'register' || mode.value === 'signup') && password.value !== passwordConfirm.value) {
-    error.value = 'Passwörter stimmen nicht überein.'
+  const isNewAccount = mode.value === 'register' || mode.value === 'signup'
+
+  if (isNewAccount && password.value !== passwordConfirm.value) {
+    error.value = t('auth.passwordMismatch')
     return
   }
 
-  if (mode.value === 'signup' && password.value.length < 8) {
-    error.value = 'Das Passwort muss mindestens 8 Zeichen lang sein.'
+  // Checked for the initial administrator as well, not only for signup. That
+  // account used to be the one the server let through with a single character.
+  if (isNewAccount && password.value.length < 8) {
+    error.value = t('auth.passwordTooShort')
     return
   }
 
@@ -81,19 +85,23 @@ async function handleSubmit(): Promise<void> {
   } catch (e) {
     if (e instanceof ApiError) {
       if (e.status === 401) {
-        error.value = 'Ungültige Anmeldedaten.'
+        error.value = t('auth.invalidCredentials')
       } else if (e.status === 409) {
-        error.value = 'Dieser Benutzername ist bereits vergeben.'
+        error.value = t('auth.usernameTaken')
       } else if (e.status === 403) {
         error.value = t('auth.signupDisabled')
+      } else if (e.status === 429) {
+        error.value = t('auth.tooManyAttempts')
       } else if (e.status === 422) {
-        error.value = 'Das Passwort muss mindestens 8 Zeichen lang sein.'
+        // Covers both bounds: the client already catches a short password, so
+        // what reaches here is usually one past bcrypt's 72-byte ceiling.
+        error.value = t('auth.passwordInvalid')
       } else {
         error.value =
-          mode.value === 'login' ? 'Ungültige Anmeldedaten.' : 'Registrierung fehlgeschlagen.'
+          mode.value === 'login' ? t('auth.invalidCredentials') : t('auth.registerFailed')
       }
     } else {
-      error.value = 'Verbindung zum Server fehlgeschlagen.'
+      error.value = t('auth.connectionFailed')
     }
   } finally {
     loading.value = false
@@ -101,16 +109,16 @@ async function handleSubmit(): Promise<void> {
 }
 
 function headingText(): string {
-  if (mode.value === 'login') return 'Anmelden'
-  if (mode.value === 'register') return 'Einrichten'
+  if (mode.value === 'login') return t('auth.loginTitle')
+  if (mode.value === 'register') return t('auth.registerTitle')
   return t('auth.signupTitle')
 }
 
 function submitLabel(): string {
   if (loading.value) return '...'
-  if (mode.value === 'login') return 'Anmelden'
+  if (mode.value === 'login') return t('auth.loginTitle')
   if (mode.value === 'signup') return t('auth.signupTitle')
-  return 'Zugang anlegen'
+  return t('auth.registerSubmit')
 }
 </script>
 
@@ -129,17 +137,17 @@ function submitLabel(): string {
       <img src="/CapyBarca.png" alt="CapyBarca" class="logo" />
       <h1>{{ headingText() }}</h1>
 
-      <p v-if="mode === 'register'" class="hint">Willkommen. Lege jetzt deinen Zugang an.</p>
+      <p v-if="mode === 'register'" class="hint">{{ t('auth.registerHint') }}</p>
       <p v-if="mode === 'signup'" class="hint">{{ t('auth.signupHint') }}</p>
       <p v-if="error" class="error">{{ error }}</p>
 
       <form @submit.prevent="handleSubmit">
         <div class="field">
-          <label for="username">Benutzername</label>
+          <label for="username">{{ t('auth.username') }}</label>
           <input id="username" v-model="username" type="text" autocomplete="username" required />
         </div>
         <div class="field">
-          <label for="password">Passwort</label>
+          <label for="password">{{ t('auth.password') }}</label>
           <input
             id="password"
             v-model="password"
@@ -149,7 +157,7 @@ function submitLabel(): string {
           />
         </div>
         <div v-if="mode === 'register' || mode === 'signup'" class="field">
-          <label for="password-confirm">Passwort bestätigen</label>
+          <label for="password-confirm">{{ t('auth.passwordConfirm') }}</label>
           <input
             id="password-confirm"
             v-model="passwordConfirm"

@@ -2,11 +2,13 @@
 import { ref, onMounted } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { apiClient, ApiError } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 
+const { t } = useI18n()
 const router = useRouter()
 const auth = useAuthStore()
 
@@ -36,7 +38,7 @@ async function saveUsername(): Promise<void> {
   usernameError.value = ''
   usernameSuccess.value = false
   if (!newUsername.value.trim()) {
-    usernameError.value = 'Benutzername darf nicht leer sein.'
+    usernameError.value = t('profile.usernameEmpty')
     return
   }
   usernameSaving.value = true
@@ -46,9 +48,9 @@ async function saveUsername(): Promise<void> {
     usernameSuccess.value = true
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) {
-      usernameError.value = 'Dieser Benutzername ist bereits vergeben.'
+      usernameError.value = t('profile.usernameTaken')
     } else {
-      usernameError.value = 'Speichern fehlgeschlagen.'
+      usernameError.value = t('profile.saveFailed')
     }
   } finally {
     usernameSaving.value = false
@@ -61,15 +63,15 @@ async function savePassword(): Promise<void> {
   passwordError.value = ''
   passwordSuccess.value = false
   if (!currentPassword.value || !newPassword.value) {
-    passwordError.value = 'Alle Felder sind erforderlich.'
+    passwordError.value = t('profile.allFieldsRequired')
     return
   }
   if (newPassword.value !== newPasswordConfirm.value) {
-    passwordError.value = 'Neue Passwörter stimmen nicht überein.'
+    passwordError.value = t('profile.passwordMismatch')
     return
   }
   if (newPassword.value.length < 8) {
-    passwordError.value = 'Das neue Passwort muss mindestens 8 Zeichen lang sein.'
+    passwordError.value = t('profile.passwordTooShort')
     return
   }
   passwordSaving.value = true
@@ -84,9 +86,13 @@ async function savePassword(): Promise<void> {
     newPasswordConfirm.value = ''
   } catch (e) {
     if (e instanceof ApiError && e.status === 401) {
-      passwordError.value = 'Aktuelles Passwort ist falsch.'
+      passwordError.value = t('profile.currentPasswordWrong')
+    } else if (e instanceof ApiError && e.status === 422) {
+      passwordError.value = t('profile.passwordInvalid')
+    } else if (e instanceof ApiError && e.status === 429) {
+      passwordError.value = t('profile.tooManyAttempts')
     } else {
-      passwordError.value = 'Speichern fehlgeschlagen.'
+      passwordError.value = t('profile.saveFailed')
     }
   } finally {
     passwordSaving.value = false
@@ -119,15 +125,15 @@ function avatarLetter(name: string): string {
 <template>
   <Teleport to="body">
     <div class="pm-backdrop" @click="onBackdrop">
-      <div class="pm" role="dialog" aria-modal="true" aria-label="Profil">
+      <div class="pm" role="dialog" aria-modal="true" :aria-label="t('profile.title')">
 
         <!-- Header -->
         <div class="pm__header">
           <span class="pm__title">
             <Icon icon="mdi:account-outline" width="15" height="15" />
-            Profil
+            {{ t('profile.title') }}
           </span>
-          <button class="pm__close" aria-label="Schliessen" @click="emit('close')">
+          <button class="pm__close" :aria-label="t('profile.close')" @click="emit('close')">
             <Icon icon="mdi:close" width="15" height="15" />
           </button>
         </div>
@@ -138,7 +144,7 @@ function avatarLetter(name: string): string {
           <div class="pm__identity-text">
             <span class="pm__identity-name">{{ auth.username }}</span>
             <span class="pm__role-badge" :class="`pm__role-badge--${auth.role}`">
-              {{ auth.role === 'admin' ? 'Admin' : 'Mitglied' }}
+              {{ auth.role === 'admin' ? t('profile.roleAdmin') : t('profile.roleMember') }}
             </span>
           </div>
         </div>
@@ -147,14 +153,14 @@ function avatarLetter(name: string): string {
 
           <!-- Username section -->
           <section class="pm__section">
-            <h3 class="pm__section-title">Benutzername</h3>
+            <h3 class="pm__section-title">{{ t('profile.usernameSection') }}</h3>
             <div class="pm__row">
               <input
                 v-model="newUsername"
                 class="pm__input"
                 type="text"
                 autocomplete="username"
-                placeholder="Benutzername"
+                :placeholder="t('profile.usernamePlaceholder')"
                 @keydown.enter="saveUsername"
               />
               <button
@@ -162,20 +168,20 @@ function avatarLetter(name: string): string {
                 :disabled="usernameSaving || newUsername.trim() === auth.username"
                 @click="saveUsername"
               >
-                {{ usernameSaving ? '...' : 'Speichern' }}
+                {{ usernameSaving ? '...' : t('actions.save') }}
               </button>
             </div>
             <p v-if="usernameError" class="pm__feedback pm__feedback--error">{{ usernameError }}</p>
-            <p v-if="usernameSuccess" class="pm__feedback pm__feedback--ok">Benutzername gespeichert.</p>
+            <p v-if="usernameSuccess" class="pm__feedback pm__feedback--ok">{{ t('profile.usernameSaved') }}</p>
           </section>
 
           <div class="pm__divider" />
 
           <!-- Password section -->
           <section class="pm__section">
-            <h3 class="pm__section-title">Passwort ändern</h3>
+            <h3 class="pm__section-title">{{ t('profile.passwordSection') }}</h3>
             <div class="pm__field">
-              <label class="pm__label">Aktuelles Passwort</label>
+              <label class="pm__label">{{ t('profile.currentPassword') }}</label>
               <input
                 v-model="currentPassword"
                 class="pm__input"
@@ -184,7 +190,7 @@ function avatarLetter(name: string): string {
               />
             </div>
             <div class="pm__field">
-              <label class="pm__label">Neues Passwort</label>
+              <label class="pm__label">{{ t('profile.newPassword') }}</label>
               <input
                 v-model="newPassword"
                 class="pm__input"
@@ -193,7 +199,7 @@ function avatarLetter(name: string): string {
               />
             </div>
             <div class="pm__field">
-              <label class="pm__label">Neues Passwort bestätigen</label>
+              <label class="pm__label">{{ t('profile.newPasswordConfirm') }}</label>
               <input
                 v-model="newPasswordConfirm"
                 class="pm__input"
@@ -203,14 +209,14 @@ function avatarLetter(name: string): string {
               />
             </div>
             <p v-if="passwordError" class="pm__feedback pm__feedback--error">{{ passwordError }}</p>
-            <p v-if="passwordSuccess" class="pm__feedback pm__feedback--ok">Passwort erfolgreich geändert.</p>
+            <p v-if="passwordSuccess" class="pm__feedback pm__feedback--ok">{{ t('profile.passwordSaved') }}</p>
             <div class="pm__actions-right">
               <button
                 class="pm__btn pm__btn--primary"
                 :disabled="passwordSaving"
                 @click="savePassword"
               >
-                {{ passwordSaving ? '...' : 'Speichern' }}
+                {{ passwordSaving ? '...' : t('actions.save') }}
               </button>
             </div>
           </section>
@@ -221,7 +227,7 @@ function avatarLetter(name: string): string {
         <div class="pm__footer">
           <button class="pm__btn pm__btn--logout" @click="logout">
             <Icon icon="mdi:logout" width="14" height="14" />
-            Abmelden
+            {{ t('auth.logout') }}
           </button>
         </div>
 
