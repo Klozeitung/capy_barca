@@ -26,6 +26,9 @@
  *   Confirmed with the save button or Enter (without Shift); cancelled
  *   with Escape.
  * - Delete: trash icon per comment, with a single confirmation click.
+ * - The edit and delete controls are only rendered when the server reports
+ *   ``can_edit`` for that comment. The endpoints refuse anyone else with 403
+ *   either way; this keeps the interface from offering what it cannot deliver.
  */
 import { ref, onMounted, watch } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -50,6 +53,15 @@ interface CommentData {
   text: string
   created_at: string
   updated_at: string
+  /**
+   * Whether the current account may edit or delete this comment.
+   *
+   * Computed by the server rather than derived here. The rule is enforced on
+   * every write regardless of what the client does with this flag, so a client
+   * that got it wrong could only mislead its own user. Keeping the decision in
+   * one place also means the rule can change without touching this component.
+   */
+  can_edit: boolean
 }
 
 // ── State ──────────────────────────────────────────────────────────────────────
@@ -216,7 +228,7 @@ watch(() => props.blockId, () => loadComments())
           <div class="bcs__item-meta">
             <span class="bcs__item-author">{{ authorName(comment.author_id) }}</span>
             <span class="bcs__item-date">{{ formatDate(comment.created_at) }}</span>
-            <div class="bcs__item-actions">
+            <div v-if="comment.can_edit" class="bcs__item-actions">
               <button
                 v-if="editingId !== comment.id"
                 class="bcs__action-btn"

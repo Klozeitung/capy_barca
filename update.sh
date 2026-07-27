@@ -8,6 +8,11 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# CLEANUP=1 ./update.sh prunes the Docker build cache once the stack is back
+# up. Without it nothing is pruned. The value is handed to setup.sh explicitly
+# below rather than left to inheritance, so the contract is visible in the file
+# that documents it.
+
 echo ""
 echo "========================================"
 echo "  CapyBarca Update"
@@ -73,4 +78,4 @@ chmod +x setup.sh
 echo -e "${GREEN}[OK] setup.sh is executable.${NC}"
 
 echo ""
-CAPYBARCA_UPDATE=1 ./setup.sh
+CAPYBARCA_UPDATE=1 CLEANUP="${CLEANUP:-}" ./setup.sh

@@ -15,7 +15,7 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 - **Pages and blocks** hierarchical workspace with rich-text pages, headings, lists, code blocks, and file attachments
 - **Databases** structured tables with custom property types (text, select, date, relation, formula, rollup, and more), filters, sorting, and multiple views per database
 - **Backup and restore** portable `.capy` backup files covering database, uploads, and configuration; full restore via a single script
-- **Multi-user** admin and member roles, optional self-registration
+- **Multi-user** admin and member roles, optional self-registration, permission model per block (everyone / private / whitelist) and inheritance system
 - **Supported Languages**: English, German
 - **Exports**: Export your data (the current view) to pdf or csv with ease.
 
@@ -54,13 +54,19 @@ chmod +x setup.sh
 
 `setup.sh` will:
 
-1. Check for Docker and Tailscale
+1. Check for Docker, the Compose v2 plugin, Tailscale, python3 and curl
 2. Walk through the configuration interactively (database credentials, ports, network)
 3. Obtain an SSL certificate via Tailscale
 4. Build and start all containers
 5. Run database migrations and the test suite
 
 On first start you will be prompted to create an admin account in the browser.
+
+If you want the script to prune the docker build cache afterwards, set the environment variable CLEANUP=1:
+
+```bash
+CLEANUP=1 ./setup.sh
+```
 
 ---
 
@@ -71,6 +77,12 @@ On first start you will be prompted to create an admin account in the browser.
 ```
 
 This pulls the latest version from GitHub and re-runs `setup.sh` in update mode. Your `.env` and all data are preserved.
+
+If you want the script to prune the docker build cache afterwards, set the environment variable CLEANUP=1:
+
+```bash
+CLEANUP=1 ./update.sh
+```
 
 ---
 
@@ -110,7 +122,7 @@ Key variables:
 | Variable | Description |
 |---|---|
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Database credentials |
-| `PORT_FRONTEND` | Port CapyBarca is served on (default: 1701). Must be above 1023 — the containers run unprivileged and cannot bind privileged ports |
+| `PORT_FRONTEND` | Port CapyBarca is served on (default: 1701). Must be above 1023 — the containers run unprivileged and cannot bind privileged ports. Bound to the Tailscale address and loopback only |
 | `PORT_BACKEND` | Internal port the backend listens on (default: 17012). Reachable only inside the Compose network, never published to the host. Must be above 1023 for the same reason as `PORT_FRONTEND` |
 | `PORT_DB` | Host-side port for local database maintenance. Published on `127.0.0.1` only; containers always talk to PostgreSQL on 5432 over the internal network |
 | `SECRET_KEY` | Signing key for session cookies and, via a derived key, for the access tokens handed to Collabora. The single most valuable secret in the installation — keep it out of backups you share |
@@ -139,7 +151,7 @@ All containers run as an unprivileged user rather than as root. `setup.sh` align
 ## Transparency
 
 - **AI Usage Disclosure**: The Anthropic LLM "Claude" was used in creating this software.
-- **System Testing**: CapyBarca is not yet tested for broad system compatability. "Runs fine on mine" is all the dev can say at this point.
+- **System Testing**: CapyBarca is not yet tested for broad system compatibility. "Runs fine on mine" is all the dev can say at this point.
 
 ---
 
@@ -151,7 +163,7 @@ As Timelining and Nuancing are rather complicated features, rollups and formulas
 
 Despite heavy testing (~1948 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet. Thus, this honest disclaimer is in order:
 
-DO NOT USE FOR IRREPLACABLE DATA AND FILES. USE AT OWN RISK.
+DO NOT USE FOR IRREPLACEABLE DATA AND FILES. USE AT OWN RISK.
 
 Please use the backup system as regularly as possible.
 

@@ -22,6 +22,12 @@ echo ""
 #
 # In recovery mode the .env interaction is skipped.
 # Instead the database is restored from recovery/import/db.sql.gz.
+#
+# Two further switches, both off unless set:
+#   CAPYBARCA_UPDATE=1   .env is kept as it is instead of being offered for
+#                        editing. Set by update.sh.
+#   CLEANUP=1            The Docker build cache is pruned once the stack is up.
+#                        See the end of this file for why it is not the default.
 
 if [[ "${1:-}" == "-recovery" ]]; then
     CAPYBARCA_RECOVERY=1
@@ -919,10 +925,19 @@ echo ""
 echo "  On a first installation, open one of the addresses above. CapyBarca"
 echo "  asks for an administrator account before anything else can be used."
 echo ""
-echo "Cleaning up build cache..."
-echo ""
-docker builder prune -f
-echo ""
+# The build cache belongs to the Docker daemon, not to this project: pruning it
+# throws away layers every other container on the machine rebuilds from. That
+# is a decision for whoever runs the host, so it is opt-in rather than a
+# parting gesture of the installer.
+if [ "${CLEANUP:-}" = "1" ]; then
+    echo "Cleaning up build cache..."
+    echo ""
+    docker builder prune -f
+    echo ""
+else
+    echo "Build cache kept. Run with CLEANUP=1 to prune it afterwards."
+    echo ""
+fi
 echo "Streaming logs (Ctrl+C to stop)..."
 echo ""
 docker compose logs -f
