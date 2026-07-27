@@ -4,6 +4,10 @@ Tests for the media upload router.
 All filesystem writes are redirected to a per-test temp directory via the
 ``tmp_upload_dir`` autouse fixture, keeping the real ``static/`` tree clean.
 
+The size ceiling and the type allowlist live in ``app.media.upload``, which
+this router shares with the cover upload in ``app.blocks.router``, so the tests
+that bend the ceiling patch that module rather than this one.
+
 Authentication goes through the shared dependency in ``app.session.deps``
 rather than a router-local token check, so the tests override
 ``get_current_user`` instead of patching a module-level ``validate_token``.
@@ -383,9 +387,9 @@ def test_upload_requires_auth(anon_client):
 
 
 def test_upload_rejects_a_file_over_the_size_ceiling(http_client, tmp_upload_dir, monkeypatch):
-    import app.media.router as media_module
+    from app.media import upload as upload_module
 
-    monkeypatch.setattr(media_module, "_MAX_UPLOAD_BYTES", 1024)
+    monkeypatch.setattr(upload_module, "MAX_UPLOAD_BYTES", 1024)
     resp = _upload(
         http_client, "file", str(uuid.uuid4()), content=b"x" * 2048, filename="big.bin"
     )
@@ -393,9 +397,9 @@ def test_upload_rejects_a_file_over_the_size_ceiling(http_client, tmp_upload_dir
 
 
 def test_upload_at_the_size_ceiling_is_accepted(http_client, monkeypatch):
-    import app.media.router as media_module
+    from app.media import upload as upload_module
 
-    monkeypatch.setattr(media_module, "_MAX_UPLOAD_BYTES", 1024)
+    monkeypatch.setattr(upload_module, "MAX_UPLOAD_BYTES", 1024)
     resp = _upload(
         http_client, "file", str(uuid.uuid4()), content=b"x" * 1024, filename="exact.bin"
     )
@@ -408,9 +412,9 @@ def test_upload_over_the_ceiling_leaves_no_partial_file(http_client, tmp_upload_
     The write streams, so a refused upload has already put bytes on disk by the
     time the limit is crossed. Those must not survive the error.
     """
-    import app.media.router as media_module
+    from app.media import upload as upload_module
 
-    monkeypatch.setattr(media_module, "_MAX_UPLOAD_BYTES", 1024)
+    monkeypatch.setattr(upload_module, "MAX_UPLOAD_BYTES", 1024)
     _upload(
         http_client, "file", str(uuid.uuid4()), content=b"x" * 4096, filename="big.bin"
     )
@@ -480,18 +484,18 @@ def test_upload_allowlist_matches_the_inline_delivery_mapping():
     The two lists have to agree: a type accepted for a media block but absent
     from the inline mapping would upload and then download instead of render.
     """
-    import app.media.router as media_module
     from app.main import INLINE_MEDIA_TYPES
+    from app.media import upload as upload_module
 
-    permitted = set().union(*media_module._CATEGORY_EXTENSIONS.values())
+    permitted = set().union(*upload_module.CATEGORY_EXTENSIONS.values())
     assert permitted <= set(INLINE_MEDIA_TYPES)
 
 
 def test_upload_allowlist_excludes_svg():
-    import app.media.router as media_module
     from app.main import INLINE_MEDIA_TYPES
+    from app.media import upload as upload_module
 
-    permitted = set().union(*media_module._CATEGORY_EXTENSIONS.values())
+    permitted = set().union(*upload_module.CATEGORY_EXTENSIONS.values())
     assert ".svg" not in permitted
     assert ".svg" not in INLINE_MEDIA_TYPES
 

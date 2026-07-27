@@ -524,9 +524,9 @@ def test_put_file_refuses_a_token_whose_user_lost_access(
 def test_put_file_refuses_a_body_over_the_size_ceiling(
     wopi_client, prepared, monkeypatch
 ):
-    import app.media.router as media_module
+    from app.media import upload as upload_module
 
-    monkeypatch.setattr(media_module, "_MAX_UPLOAD_BYTES", 1024)
+    monkeypatch.setattr(upload_module, "MAX_UPLOAD_BYTES", 1024)
     resp = wopi_client.post(
         f"/api/wopi/files/{prepared['token']}/contents", content=b"x" * 4096
     )
@@ -536,9 +536,9 @@ def test_put_file_refuses_a_body_over_the_size_ceiling(
 def test_put_file_over_the_ceiling_leaves_the_document_intact(
     wopi_client, prepared, monkeypatch
 ):
-    import app.media.router as media_module
+    from app.media import upload as upload_module
 
-    monkeypatch.setattr(media_module, "_MAX_UPLOAD_BYTES", 1024)
+    monkeypatch.setattr(upload_module, "MAX_UPLOAD_BYTES", 1024)
     wopi_client.post(
         f"/api/wopi/files/{prepared['token']}/contents", content=b"x" * 4096
     )

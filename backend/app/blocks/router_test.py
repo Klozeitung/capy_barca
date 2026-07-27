@@ -811,6 +811,139 @@ def test_upload_cover_unknown_block_returns_404(http_client, tmp_path, monkeypat
     assert response.status_code == 404
 
 
+# ─── Cover upload: type and size ──────────────────────────────────────────────
+#
+# The cover endpoint used to be a second upload implementation with no type
+# allowlist and a single read() of the whole body. It now goes through
+# app.media.upload, the same path the media router uses.
+
+
+def _put_cover(http_client, block_id, filename, content=b"img", content_type="image/png"):
+    return http_client.post(
+        f"/api/blocks/{block_id}/cover",
+        files={"file": (filename, content, content_type)},
+    )
+
+
+@pytest.fixture
+def cover_page(http_client, tmp_path, monkeypatch):
+    """A page block with cover storage redirected into a temp directory."""
+    import app.media.router as media_module
+    monkeypatch.setattr(media_module, "STATIC_ROOT", tmp_path)
+
+    resp = http_client.post(
+        "/api/blocks",
+        json={"type": "page", "parent_id": str(WORKSPACE_ROOT_ID)},
+    )
+    return resp.json()["id"], tmp_path / "covers"
+
+
+@pytest.mark.parametrize(
+    "filename,content_type",
+    [
+        ("payload.svg", "image/svg+xml"),
+        ("payload.html", "text/html"),
+        ("payload.exe", "application/octet-stream"),
+        ("clip.mp4", "video/mp4"),
+        ("doc.pdf", "application/pdf"),
+    ],
+)
+def test_cover_refuses_a_type_outside_the_image_list(
+    http_client, cover_page, filename, content_type
+):
+    block_id, _ = cover_page
+    resp = _put_cover(http_client, block_id, filename, content_type=content_type)
+    assert resp.status_code == 415
+
+
+def test_cover_refuses_a_file_with_no_usable_extension(http_client, cover_page):
+    block_id, _ = cover_page
+    resp = _put_cover(
+        http_client, block_id, "noextension", content_type="application/x-unknown"
+    )
+    assert resp.status_code == 415
+
+
+def test_cover_accepts_a_name_without_an_extension_by_content_type(
+    http_client, cover_page
+):
+    """A browser that sends no filename suffix still uploads a valid PNG."""
+    block_id, covers_dir = cover_page
+    resp = _put_cover(http_client, block_id, "clipboard", content_type="image/png")
+    assert resp.status_code == 200
+    assert (covers_dir / f"{block_id}.png").exists()
+
+
+def test_refused_cover_writes_nothing_to_disk(http_client, cover_page):
+    block_id, covers_dir = cover_page
+    _put_cover(http_client, block_id, "payload.svg", content_type="image/svg+xml")
+    existing = list(covers_dir.glob("*")) if covers_dir.exists() else []
+    assert existing == []
+
+
+def test_refused_cover_leaves_the_previous_one_in_place(http_client, cover_page):
+    """
+    The type is settled before anything on disk is touched, so a rejected
+    upload must not cost the caller the cover they already had.
+    """
+    block_id, covers_dir = cover_page
+    assert _put_cover(http_client, block_id, "good.png", content=b"original").status_code == 200
+
+    _put_cover(http_client, block_id, "payload.svg", content_type="image/svg+xml")
+
+    assert (covers_dir / f"{block_id}.png").read_bytes() == b"original"
+
+
+def test_cover_over_the_size_ceiling_returns_413(http_client, cover_page, monkeypatch):
+    from app.media import upload as upload_module
+    monkeypatch.setattr(upload_module, "MAX_UPLOAD_BYTES", 16)
+
+    block_id, _ = cover_page
+    resp = _put_cover(http_client, block_id, "big.png", content=b"x" * 64)
+    assert resp.status_code == 413
+
+
+def test_oversized_cover_leaves_no_partial_file(http_client, cover_page, monkeypatch):
+    from app.media import upload as upload_module
+
+    block_id, covers_dir = cover_page
+    assert _put_cover(http_client, block_id, "small.png", content=b"ok").status_code == 200
+
+    monkeypatch.setattr(upload_module, "MAX_UPLOAD_BYTES", 16)
+    _put_cover(http_client, block_id, "big.png", content=b"x" * 64)
+
+    # The previous cover survives and no staging file is left behind.
+    assert (covers_dir / f"{block_id}.png").read_bytes() == b"ok"
+    assert list(covers_dir.glob("*.part")) == []
+    assert len(list(covers_dir.glob("*"))) == 1
+
+
+def test_cover_replacement_removes_the_other_extension(http_client, cover_page):
+    block_id, covers_dir = cover_page
+    _put_cover(http_client, block_id, "first.png", content=b"first")
+    _put_cover(http_client, block_id, "second.jpg", content=b"second", content_type="image/jpeg")
+
+    remaining = list(covers_dir.glob(f"{block_id}.*"))
+    assert len(remaining) == 1
+    assert remaining[0].suffix == ".jpg"
+    assert remaining[0].read_bytes() == b"second"
+
+
+def test_cover_replacement_with_the_same_extension_overwrites(http_client, cover_page):
+    block_id, covers_dir = cover_page
+    _put_cover(http_client, block_id, "a.png", content=b"first")
+    _put_cover(http_client, block_id, "b.png", content=b"second")
+
+    assert list(covers_dir.glob(f"{block_id}.*")) == [covers_dir / f"{block_id}.png"]
+    assert (covers_dir / f"{block_id}.png").read_bytes() == b"second"
+
+
+def test_cover_upload_leaves_no_staging_file(http_client, cover_page):
+    block_id, covers_dir = cover_page
+    _put_cover(http_client, block_id, "cover.png")
+    assert list(covers_dir.glob("*.part")) == []
+
+
 # ─── DELETE /api/blocks/{block_id}/cover ─────────────────────────────────────
 
 

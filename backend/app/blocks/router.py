@@ -453,11 +453,18 @@ async def upload_cover(
     The file is stored at:
         <STATIC_ROOT>/covers/<block_id><ext>
 
-    Any previously uploaded cover for this page (regardless of extension) is
-    deleted before writing the new file. The block's ``cover`` field is updated
-    to the static URL of the new file and the updated block is returned.
+    The upload goes through ``app.media.upload``, the same code path the media
+    router uses, so a cover is held to the image allowlist and its body is
+    streamed against the size ceiling rather than read whole. Anything the list
+    does not name is refused with 415, an oversized body with 413.
+
+    Any previously uploaded cover for this page, whatever its extension, is
+    removed once the new one is safely in place. The block's ``cover`` field is
+    updated to the static URL of the new file and the updated block is returned.
     """
     import app.media.router as media_module
+    from app.media import upload as upload_helper
+
     static_root: Path = media_module.STATIC_ROOT
 
     block = repo.get_block(db, block_id)
@@ -465,27 +472,34 @@ async def upload_cover(
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
     require_block_access(db, block_id, current_user)
 
-    # Determine extension from original filename; default to empty string.
-    original_name = file.filename or ""
-    ext = Path(original_name).suffix.lower()
+    # The type is settled before anything on disk is touched. Checking it later
+    # would mean a refused upload had already cost the caller the cover they
+    # had, which is a failure mode the check itself would have introduced.
+    ext = upload_helper.resolve_extension(file)
+    upload_helper.assert_type_permitted(ext, upload_helper.COVER_CATEGORY)
 
     covers_dir = static_root / "covers"
     covers_dir.mkdir(parents=True, exist_ok=True)
 
-    # Remove any existing cover file for this block (any extension).
+    # Streamed beside the target and moved over it only once the whole body has
+    # been accepted, so a request that trips the ceiling leaves the previous
+    # cover where it was.
+    dest = covers_dir / f"{block_id}{ext}"
+    staging = upload_helper.staging_path(covers_dir)
+    try:
+        await upload_helper.stream_to_disk(file, staging)
+        staging.replace(dest)
+    finally:
+        staging.unlink(missing_ok=True)
+
+    # Remove any earlier cover for this block that used a different extension.
     for existing in covers_dir.glob(f"{block_id}.*"):
+        if existing == dest:
+            continue
         try:
             existing.unlink()
         except OSError as exc:
             logger.warning("Could not remove old cover %s: %s", existing, exc)
-
-    # Write the new cover file.
-    dest = covers_dir / f"{block_id}{ext}"
-    try:
-        content = await file.read()
-        dest.write_bytes(content)
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not save cover: {exc}") from exc
 
     # Build the public URL (mirrors the static-mount convention used by media).
     cover_url = f"/static/uploads/covers/{block_id}{ext}"

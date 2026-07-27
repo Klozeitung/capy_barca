@@ -354,10 +354,15 @@ async def put_file(token: str, request: Request, db: Session = Depends(get_db)) 
     explicit Ctrl+S). The body is streamed to a temporary file and moved into
     place, so a failed or oversized write never leaves a truncated document.
 
-    The same ceiling as the upload endpoint applies. Reading the whole body
-    first would make the memory cost of a save the caller's choice.
+    The ceiling comes from ``app.media.upload``, the same one the upload and
+    cover endpoints enforce. Reading the whole body first would make the memory
+    cost of a save the caller's choice.
+
+    Collabora sends a raw request body rather than a multipart part, so this
+    calls ``write_stream`` directly instead of going through the multipart
+    adapter.
     """
-    import app.media.router as media_module
+    from app.media import upload as upload_helper
 
     claims = _decode_token(token)
     _authorize_claims(db, claims)
@@ -368,22 +373,9 @@ async def put_file(token: str, request: Request, db: Session = Depends(get_db)) 
     # pick it up while the write is in flight, and so a leftover from a
     # crashed save does not shadow the document afterwards.
     tmp_path = file_path.parent / f".{file_path.name}.tmp"
-    limit = media_module._MAX_UPLOAD_BYTES
-    written = 0
-    too_large = False
 
     try:
-        with tmp_path.open("wb") as sink:
-            async for chunk in request.stream():
-                written += len(chunk)
-                if written > limit:
-                    too_large = True
-                    break
-                sink.write(chunk)
-
-        if too_large:
-            raise HTTPException(status_code=413, detail="The file exceeds the upload size limit")
-
+        await upload_helper.write_stream(request.stream(), tmp_path)
         tmp_path.replace(file_path)
     finally:
         tmp_path.unlink(missing_ok=True)

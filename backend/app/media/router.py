@@ -38,7 +38,6 @@ file-to-block mapping and is out of scope here.
 """
 import asyncio
 import ipaddress
-import mimetypes
 import os
 import re
 import shutil
@@ -53,6 +52,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.media import upload as upload_helper
 from app.security.limiter import limiter
 from app.session.deps import get_current_user, get_db, require_block_access
 from app.users.model import User
@@ -64,28 +64,9 @@ MEDIA_CATEGORIES: frozenset[str] = frozenset({"image", "video", "audio", "pdf"})
 VALID_CATEGORIES: frozenset[str] = MEDIA_CATEGORIES | frozenset({"file", "drive"})
 
 # ── Upload limits and permitted types ─────────────────────────────────────────
-# The ceiling is enforced here as well as in nginx. nginx stops an oversized
-# body at the edge; this stops one that arrives by any other route and produces
-# a JSON answer the frontend can present, instead of nginx's HTML error page.
-_MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "100")) * 1024 * 1024
-_UPLOAD_CHUNK_BYTES = 1024 * 1024
-_UPLOAD_TOO_LARGE = "The file exceeds the upload size limit"
-_UPLOAD_TYPE_REFUSED = "This file type is not allowed for this block"
-
-# Extensions the four media categories accept. The list is deliberately short
-# and excludes SVG: an SVG is a document that can carry script, and an image
-# block renders its source inline.
-#
-# The 'file' and 'drive' categories take arbitrary attachments and are absent
-# here on purpose. What makes them safe is the delivery side, where anything
-# outside INLINE_MEDIA_TYPES in app/main.py is handed out as a download with
-# a neutral content type.
-_CATEGORY_EXTENSIONS: dict[str, frozenset[str]] = {
-    "image": frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp"}),
-    "video": frozenset({".mp4", ".webm", ".ogv", ".mov", ".m4v"}),
-    "audio": frozenset({".mp3", ".wav", ".ogg", ".oga", ".m4a", ".flac", ".aac"}),
-    "pdf": frozenset({".pdf"}),
-}
+# Both live in app.media.upload, which the cover upload in app.blocks.router
+# shares. See that module for why the list excludes SVG and why 'file' and
+# 'drive' are absent from it.
 
 # ── Bookmark fetching ─────────────────────────────────────────────────────────
 # One message for every refusal reason. Distinguishing "blocked address" from
@@ -426,36 +407,16 @@ async def upload_file(
     block_id_str = str(block_id)
     file_uuid = str(uuid.uuid4())
     original_name = file.filename or "upload"
-    ext = Path(original_name).suffix.lower()
-    if not ext and file.content_type:
-        ext = mimetypes.guess_extension(file.content_type) or ""
 
-    permitted = _CATEGORY_EXTENSIONS.get(category)
-    if permitted is not None and ext not in permitted:
-        raise HTTPException(status_code=415, detail=_UPLOAD_TYPE_REFUSED)
+    ext = upload_helper.resolve_extension(file)
+    upload_helper.assert_type_permitted(ext, category)
 
     stored_name = f"{file_uuid}{ext}"
     dest_dir = _storage_dir(category, block_id_str)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / stored_name
 
-    # Written in chunks rather than read whole: a single read pulls the entire
-    # upload into memory before anything is checked, so the size limit would
-    # arrive after the damage. Streaming also lets the ceiling stop the write
-    # at the moment it is crossed.
-    size = 0
-    too_large = False
-    with dest_path.open("wb") as sink:
-        while chunk := await file.read(_UPLOAD_CHUNK_BYTES):
-            size += len(chunk)
-            if size > _MAX_UPLOAD_BYTES:
-                too_large = True
-                break
-            sink.write(chunk)
-
-    if too_large:
-        dest_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=413, detail=_UPLOAD_TOO_LARGE)
+    size = await upload_helper.stream_to_disk(file, dest_path)
 
     return UploadResponse(
         file_uuid=file_uuid,

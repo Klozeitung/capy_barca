@@ -35,6 +35,7 @@ app/blocks/types_test.py
 app/blocks/computed_test.py
 app/blocks/formula_engine_test.py
 
+app/media/upload_test.py
 app/media/router_test.py
 app/wopi/router_test.py
 
