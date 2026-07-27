@@ -29,12 +29,16 @@ a socket is opened, the response body is capped, and the preview asset URLs
 handed back to the browser are restricted to https.
 
 Note on the shared namespaces: drive files live under a per-block directory,
-so the block check fully governs them. Media and file uploads land in one flat
-directory per category, and the server keeps no mapping from ``file_uuid`` back
-to its owning block. For those two categories the block check therefore governs
-where a file may be written, but a caller who already knows a ``file_uuid`` can
-still address it through any block id. Closing that needs a persisted
-file-to-block mapping and is out of scope here.
+so the block check fully governs them and they need nothing further. Media and
+file uploads land in one flat directory per category, where the path says
+nothing about ownership. Those are recorded in ``media_files`` at upload time
+and the recorded block is checked on delete, so knowing a ``file_uuid`` no
+longer lets a caller address it through some other block they can reach.
+
+A file with no row — uploaded before the table existed — cannot have its
+ownership established at all, so only an admin may act on it. There is no way
+to reconstruct the mapping for those: the flat layout is precisely what threw
+the information away.
 """
 import asyncio
 import ipaddress
@@ -53,6 +57,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.media import upload as upload_helper
+from app.media.model import MediaFile
 from app.security.limiter import limiter
 from app.session.deps import get_current_user, get_db, require_block_access
 from app.users.model import User
@@ -110,6 +115,61 @@ def _storage_dir(category: str, block_id: str) -> Path:
         return _within_root(STATIC_ROOT / "files")
     # category == "drive"
     return _within_root(STATIC_ROOT / "drives" / block_id)
+
+
+# Categories whose storage path does not identify the owning block, and which
+# therefore need a row in media_files. 'drive' is absent on purpose: its files
+# live under drives/{block_id}/, so the directory is the mapping.
+_MAPPED_CATEGORIES: frozenset[str] = VALID_CATEGORIES - frozenset({"drive"})
+
+
+def _record_media_file(
+    db: Session,
+    *,
+    file_uuid: uuid.UUID,
+    block_id: uuid.UUID,
+    category: str,
+    stored_name: str,
+) -> None:
+    """Record which block a newly stored file belongs to."""
+    db.add(
+        MediaFile(
+            file_uuid=file_uuid,
+            block_id=block_id,
+            category=category,
+            stored_name=stored_name,
+        )
+    )
+    db.commit()
+
+
+def _assert_file_belongs_to_block(
+    db: Session,
+    file_uuid: uuid.UUID,
+    block_id: uuid.UUID,
+    user: User,
+) -> None:
+    """
+    Refuse unless *file_uuid* was uploaded against *block_id*.
+
+    Reaching the block is a separate question, already answered by the caller.
+    This one stops a caller who may reach block A from naming a file that
+    belongs to block B.
+
+    Answers 404 rather than 403 throughout: a refusal must not confirm that the
+    file exists somewhere else.
+    """
+    row = db.get(MediaFile, file_uuid)
+
+    if row is None:
+        # Uploaded before the table existed. Nothing can establish ownership,
+        # so the file is admin-only rather than open to whoever asks.
+        if user.role != "admin":
+            raise HTTPException(status_code=404, detail="File not found")
+        return
+
+    if row.block_id != block_id:
+        raise HTTPException(status_code=404, detail="File not found")
 
 
 def _public_url(category: str, block_id: str, stored_name: str) -> str:
@@ -418,6 +478,15 @@ async def upload_file(
 
     size = await upload_helper.stream_to_disk(file, dest_path)
 
+    if category in _MAPPED_CATEGORIES:
+        _record_media_file(
+            db,
+            file_uuid=uuid.UUID(file_uuid),
+            block_id=block_id,
+            category=category,
+            stored_name=stored_name,
+        )
+
     return UploadResponse(
         file_uuid=file_uuid,
         url=_public_url(category, block_id_str, stored_name),
@@ -438,13 +507,17 @@ async def delete_file(
     """
     Delete a previously uploaded file identified by its UUID.
 
-    Authorization is checked before existence so that a caller without access
-    cannot use the status code to learn whether a file is there.
+    Two questions, in order: may the caller reach this block, and does this
+    file belong to it. Both are answered before existence, so a caller who
+    fails either cannot use the status code to learn whether a file is there.
     """
     if category not in VALID_CATEGORIES:
         raise HTTPException(status_code=400, detail=f"Unknown category: {category!r}")
 
     require_block_access(db, block_id, user)
+
+    if category in _MAPPED_CATEGORIES:
+        _assert_file_belongs_to_block(db, file_uuid, block_id, user)
 
     block_id_str = str(block_id)
     file_uuid_str = str(file_uuid)
@@ -458,6 +531,13 @@ async def delete_file(
 
     for path in matches:
         path.unlink(missing_ok=True)
+
+    # The mapping outlives nothing: once the bytes are gone the row only
+    # describes a file that is not there.
+    row = db.get(MediaFile, file_uuid)
+    if row is not None:
+        db.delete(row)
+        db.commit()
 
     return DeleteResponse(deleted=file_uuid_str)
 

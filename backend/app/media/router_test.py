@@ -503,7 +503,29 @@ def test_upload_allowlist_excludes_svg():
 # ─── Delete ───────────────────────────────────────────────────────────────────
 
 
-def _create_fake_file(tmp_upload_dir, category: str, block_id: str, file_uuid: str, ext: str = ".png"):
+def _create_fake_file(
+    tmp_upload_dir,
+    category: str,
+    block_id: str,
+    file_uuid: str,
+    ext: str = ".png",
+    record: bool = True,
+):
+    """
+    Put a file on disk as though it had been uploaded.
+
+    For the flat categories that means both halves of the state an upload
+    leaves behind: the bytes, and the media_files row saying which block they
+    belong to. The path alone does not say, which is the whole reason the table
+    exists, so a helper that wrote only the bytes would be staging a file that
+    cannot occur in practice.
+
+    Drive files have no row by design — drives/{block_id}/ already is the
+    mapping — so the category is checked rather than assumed.
+
+    ``record=False`` stages a file from before the table existed, which is the
+    one case where bytes without a row is the real situation.
+    """
     if category == "image":
         target_dir = tmp_upload_dir / "media" / "image"
     elif category == "file":
@@ -513,6 +535,9 @@ def _create_fake_file(tmp_upload_dir, category: str, block_id: str, file_uuid: s
     target_dir.mkdir(parents=True, exist_ok=True)
     path = target_dir / f"{file_uuid}{ext}"
     path.write_bytes(b"x")
+    if record and category != "drive":
+        # Defined further down, with the rest of the mapping helpers.
+        _seed_mapping(file_uuid, block_id, category=category, stored_name=path.name)
     return path
 
 
@@ -1219,3 +1244,174 @@ def test_move_drive_file_between_own_blocks_is_allowed(
     client = client_factory(member_user)
     resp = _move(client, file_uuid, src_block, tgt_block)
     assert resp.status_code == 200
+
+
+# ─── File-to-block mapping ────────────────────────────────────────────────────
+#
+# Media and file uploads share one flat directory per category, so the path
+# says nothing about ownership. media_files records it, and delete checks it.
+# Drive files are excluded: drives/{block_id}/ already is the mapping.
+
+
+def _mapping(file_uuid):
+    import app.database.database as db_module
+    from app.media.model import MediaFile
+
+    with db_module.SessionLocal() as db:
+        return db.get(MediaFile, uuid.UUID(str(file_uuid)))
+
+
+def _seed_mapping(file_uuid, block_id, category="image", stored_name="x.png"):
+    import app.database.database as db_module
+    from app.media.model import MediaFile
+
+    with db_module.SessionLocal() as db:
+        db.add(
+            MediaFile(
+                file_uuid=uuid.UUID(str(file_uuid)),
+                block_id=uuid.UUID(str(block_id)),
+                category=category,
+                stored_name=stored_name,
+            )
+        )
+        db.commit()
+
+
+def test_upload_records_the_owning_block(http_client):
+    block_id = _seed_block()
+    resp = _upload(http_client, "image", str(block_id), filename="cat.png", mime="image/png")
+    assert resp.status_code == 200
+
+    row = _mapping(resp.json()["file_uuid"])
+    assert row is not None
+    assert row.block_id == block_id
+    assert row.category == "image"
+    assert row.stored_name.endswith(".png")
+
+
+def test_file_category_is_recorded_too(http_client):
+    block_id = _seed_block()
+    resp = _upload(http_client, "file", str(block_id), filename="notes.bin")
+    assert _mapping(resp.json()["file_uuid"]) is not None
+
+
+def test_drive_upload_records_nothing(http_client):
+    """The directory is already the mapping; a second one would have to be kept in step."""
+    block_id = _seed_block()
+    resp = _upload(http_client, "drive", str(block_id), filename="doc.bin")
+    assert resp.status_code == 200
+    assert _mapping(resp.json()["file_uuid"]) is None
+
+
+def test_delete_through_the_owning_block_succeeds(http_client, tmp_upload_dir):
+    block_id = _seed_block()
+    file_uuid = _upload(
+        http_client, "image", str(block_id), filename="cat.png", mime="image/png"
+    ).json()["file_uuid"]
+
+    resp = http_client.delete(f"/api/media/image/{block_id}/{file_uuid}")
+    assert resp.status_code == 200
+    assert list((tmp_upload_dir / "media" / "image").glob(f"{file_uuid}*")) == []
+
+
+def test_delete_clears_the_mapping(http_client):
+    block_id = _seed_block()
+    file_uuid = _upload(
+        http_client, "image", str(block_id), filename="cat.png", mime="image/png"
+    ).json()["file_uuid"]
+
+    http_client.delete(f"/api/media/image/{block_id}/{file_uuid}")
+    assert _mapping(file_uuid) is None
+
+
+def test_delete_through_a_different_block_returns_404(http_client, tmp_upload_dir):
+    """
+    The finding this table exists for.
+
+    Both blocks resolve to 'everyone', so the block check passes for each. What
+    stops the second request is the recorded owner, not the permission layer.
+    """
+    owner_block = _seed_block()
+    other_block = _seed_block()
+    file_uuid = _upload(
+        http_client, "image", str(owner_block), filename="cat.png", mime="image/png"
+    ).json()["file_uuid"]
+
+    resp = http_client.delete(f"/api/media/image/{other_block}/{file_uuid}")
+    assert resp.status_code == 404
+    assert list((tmp_upload_dir / "media" / "image").glob(f"{file_uuid}*")) != []
+
+
+def test_refused_delete_leaves_the_mapping(http_client):
+    owner_block = _seed_block()
+    other_block = _seed_block()
+    file_uuid = _upload(
+        http_client, "image", str(owner_block), filename="cat.png", mime="image/png"
+    ).json()["file_uuid"]
+
+    http_client.delete(f"/api/media/image/{other_block}/{file_uuid}")
+    assert _mapping(file_uuid) is not None
+
+
+def test_a_file_with_no_mapping_is_refused_for_a_member(
+    client_factory, member_user, tmp_upload_dir
+):
+    """
+    Uploaded before the table existed. Nothing can establish ownership, so a
+    member is refused rather than given the benefit of the doubt.
+    """
+    block_id = _seed_block()
+    file_uuid = str(uuid.uuid4())
+    path = _create_fake_file(
+        tmp_upload_dir, "image", str(block_id), file_uuid, record=False
+    )
+
+    client = client_factory(member_user)
+    resp = client.delete(f"/api/media/image/{block_id}/{file_uuid}")
+    assert resp.status_code == 404
+    assert path.exists()
+
+
+def test_a_file_with_no_mapping_is_reachable_by_an_admin(
+    client_factory, admin_user, tmp_upload_dir
+):
+    block_id = _seed_block()
+    file_uuid = str(uuid.uuid4())
+    path = _create_fake_file(
+        tmp_upload_dir, "image", str(block_id), file_uuid, record=False
+    )
+
+    client = client_factory(admin_user)
+    resp = client.delete(f"/api/media/image/{block_id}/{file_uuid}")
+    assert resp.status_code == 200
+    assert not path.exists()
+
+
+def test_a_mapped_file_is_refused_for_an_admin_through_the_wrong_block(
+    client_factory, admin_user, tmp_upload_dir
+):
+    """Being an admin answers 'may I reach the block', not 'is this the file'."""
+    owner_block = _seed_block()
+    other_block = _seed_block()
+    file_uuid = str(uuid.uuid4())
+    path = _create_fake_file(tmp_upload_dir, "image", str(owner_block), file_uuid)
+
+    client = client_factory(admin_user)
+    resp = client.delete(f"/api/media/image/{other_block}/{file_uuid}")
+    assert resp.status_code == 404
+    assert path.exists()
+
+
+def test_drive_delete_needs_no_mapping(http_client, tmp_upload_dir):
+    """
+    Drive files were never recorded, including the ones already on disk, so the
+    admin-only rule for unmapped files must not reach them.
+    """
+    block_id = _seed_block()
+    file_uuid = _upload(
+        http_client, "drive", str(block_id), filename="doc.bin"
+    ).json()["file_uuid"]
+
+    resp = http_client.delete(f"/api/media/drive/{block_id}/{file_uuid}")
+    assert resp.status_code == 200
+    assert list((tmp_upload_dir / "drives" / str(block_id)).glob(f"{file_uuid}*")) == []

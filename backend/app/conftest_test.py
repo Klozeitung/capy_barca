@@ -83,6 +83,19 @@ def test_deps_get_db_uses_the_isolated_session():
         generator.close()
 
 
+def test_media_files_table_exists():
+    """
+    Every model has to be imported by conftest before create_all runs, or its
+    table simply is not there and the tests that need it fail somewhere far
+    from the cause.
+    """
+    from app.media.model import MediaFile
+
+    with s.SessionLocal() as db:
+        table_names = inspect(db.bind).get_table_names()
+    assert MediaFile.__tablename__ in table_names
+
+
 def test_http_client_authenticates_the_block_router(http_client):
     """
     One dependency override is enough for every router.

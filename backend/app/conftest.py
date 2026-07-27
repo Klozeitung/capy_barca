@@ -8,6 +8,7 @@ import app.blocks.models  # noqa: F401 – registers Block, PropertySchema, Prop
                            #               BlockPreference, BlockEvent with Base
 import app.permissions.model  # noqa: F401 – registers BlockPermission, BlockPermissionGrant with Base
 import app.comments.comments_models  # noqa: F401 – registers Comment with Base
+import app.media.model  # noqa: F401 – registers MediaFile with Base
 import app.comments.comments_router as comments_router_module
 import app.database.database as db_module
 import app.session.deps as deps_module
