@@ -135,6 +135,14 @@ require_tool curl "the backend health check after startup"
 
 echo -e "${GREEN}[OK] Docker, Compose v2, python3 and curl found.${NC}"
 
+# Not fatal: without openssl the certificate expiry check below cannot run.
+# An existing certificate is then used as it is, as it was before the check
+# existed, and an expired one only shows up in the browser.
+if ! command -v openssl &> /dev/null; then
+    echo -e "${YELLOW}[WARNING] openssl not found - certificate expiry cannot be checked.${NC}"
+    echo "  Install with: $(pkg_hint openssl)"
+fi
+
 # Not fatal: without ss the port check below cannot run, and ports are then
 # assumed to be free.
 if ! command -v ss &> /dev/null; then
@@ -258,7 +266,9 @@ PORT_FRONTEND=${7}
 # of the published host port, so DATABASE_URL must address that port.
 # Credentials are percent-encoded here; POSTGRES_* above stay verbatim,
 # because PostgreSQL itself receives those directly and not through a URL.
-DATABASE_URL=postgresql://${DB_USER_ENC}:${DB_PASSWORD_ENC}@db:5432/${DB_NAME_ENC}
+# The driver is named explicitly so the URL does not depend on SQLAlchemy's
+# default driver choice, which changed between releases.
+DATABASE_URL=postgresql+psycopg://${DB_USER_ENC}:${DB_PASSWORD_ENC}@db:5432/${DB_NAME_ENC}
 SECRET_KEY=${4}
 # Development only. DEBUG=true starts uvicorn with --reload and drops the
 # Secure flag from the session cookie. Production installations keep it false.
@@ -653,16 +663,27 @@ for PORT_ENTRY in "PORT_FRONTEND:${PORT_FRONTEND}" "PORT_BACKEND:${PORT_BACKEND}
 done
 
 # ─── SSL certificates ─────────────────────────────────────────────────────────
+#
+# Tailscale issues Let's Encrypt certificates, which are valid for 90 days.
+# 'tailscale cert --cert-file/--key-file' writes a one-off copy into ssl/, and
+# nothing renews that copy afterwards: tailscaled only keeps the certificates
+# it serves itself up to date. The copy is therefore checked on every run and
+# reissued once fewer than CERT_RENEW_DAYS remain. Let's Encrypt allows renewal
+# from 30 days before expiry, which is also the point tailscale itself renews.
 
-echo ""
-echo "Checking SSL certificates..."
+CERT_RENEW_DAYS=30
 
-if [ -f "ssl/cert.pem" ] && [ -f "ssl/key.pem" ]; then
-    echo -e "${GREEN}[OK] SSL certificates found.${NC}"
-else
-    echo -e "${YELLOW}No SSL certificates found.${NC}"
-    echo ""
+# Prints the tailnet DNS name of this machine, or nothing if it cannot be read.
+# Without the trailing '|| true' a non-zero exit here would abort the whole
+# script under 'set -e' before the caller can report anything, which produces
+# a silent stop with no output.
+detect_ts_hostname() {
+    tailscale status --json 2>/dev/null | python3 -c \
+        "import sys, json; d = json.load(sys.stdin); print(d['Self']['DNSName'].rstrip('.'))" \
+        2>/dev/null || true
+}
 
+require_tailscale() {
     if ! command -v tailscale &> /dev/null; then
         echo -e "${RED}[ERROR] tailscale is not installed.${NC}"
         echo "Please install Tailscale: https://tailscale.com/download"
@@ -674,6 +695,84 @@ else
         echo "Please connect with 'tailscale up' and run setup.sh again."
         exit 1
     fi
+}
+
+# Issues or renews ssl/cert.pem and ssl/key.pem for this machine's tailnet
+# name. 'tailscale cert' needs elevated rights on most systems, so the
+# unprivileged attempt falls back to sudo. The ownership fixup further down
+# hands the resulting root-owned files back to the container user.
+issue_certificate() {
+    local TS_HOSTNAME
+    TS_HOSTNAME=$(detect_ts_hostname)
+
+    if [ -z "$TS_HOSTNAME" ]; then
+        echo -e "${RED}[ERROR] Could not determine the Tailscale hostname.${NC}"
+        echo "  'tailscale status --json' returned nothing usable. Check that"
+        echo "  Tailscale is connected and MagicDNS is enabled:"
+        echo "    tailscale status"
+        exit 1
+    fi
+
+    echo "Requesting certificate for: ${TS_HOSTNAME}"
+    mkdir -p ssl
+
+    if tailscale cert --cert-file ssl/cert.pem --key-file ssl/key.pem "$TS_HOSTNAME" 2>/dev/null; then
+        echo -e "${GREEN}[OK] SSL certificate issued successfully.${NC}"
+    else
+        echo -e "${YELLOW}[WARNING] Insufficient permissions, trying with sudo...${NC}"
+        if sudo tailscale cert --cert-file ssl/cert.pem --key-file ssl/key.pem "$TS_HOSTNAME"; then
+            echo -e "${GREEN}[OK] SSL certificate issued successfully.${NC}"
+        else
+            echo -e "${RED}[ERROR] Certificate issuance failed.${NC}"
+            echo ""
+            echo "Possible causes:"
+            echo "  - HTTPS is not enabled in your Tailscale profile"
+            echo "    Check at: https://login.tailscale.com/admin/dns"
+            echo "  - MagicDNS is not enabled"
+            exit 1
+        fi
+    fi
+}
+
+# Prints the expiry date of ssl/cert.pem, or nothing if it cannot be read.
+cert_end_date() {
+    openssl x509 -enddate -noout -in ssl/cert.pem 2>/dev/null | cut -d '=' -f2- || true
+}
+
+echo ""
+echo "Checking SSL certificates..."
+
+if [ -f "ssl/cert.pem" ] && [ -f "ssl/key.pem" ]; then
+    echo -e "${GREEN}[OK] SSL certificates found.${NC}"
+
+    if command -v openssl &> /dev/null; then
+        CERT_RENEW_SECONDS=$(( CERT_RENEW_DAYS * 86400 ))
+        CERT_END=$(cert_end_date)
+
+        if [ -z "${CERT_END}" ]; then
+            # An unreadable or corrupt certificate cannot serve TLS either, so
+            # it is treated exactly like one that is about to expire.
+            echo -e "${YELLOW}[WARNING] ssl/cert.pem could not be read as a certificate. Reissuing...${NC}"
+            require_tailscale
+            issue_certificate
+        elif openssl x509 -checkend "${CERT_RENEW_SECONDS}" -noout -in ssl/cert.pem &> /dev/null; then
+            echo -e "${GREEN}[OK] Certificate valid until ${CERT_END}.${NC}"
+        else
+            if openssl x509 -checkend 0 -noout -in ssl/cert.pem &> /dev/null; then
+                echo -e "${YELLOW}[WARNING] Certificate expires on ${CERT_END}, within ${CERT_RENEW_DAYS} days. Renewing...${NC}"
+            else
+                echo -e "${YELLOW}[WARNING] Certificate expired on ${CERT_END}. Renewing...${NC}"
+            fi
+            require_tailscale
+            issue_certificate
+            echo -e "${GREEN}[OK] Certificate now valid until $(cert_end_date).${NC}"
+        fi
+    fi
+else
+    echo -e "${YELLOW}No SSL certificates found.${NC}"
+    echo ""
+
+    require_tailscale
 
     echo "CapyBarca requires HTTPS certificates."
     echo "These can be obtained automatically via Tailscale."
@@ -694,40 +793,7 @@ else
         exit 0
     fi
 
-    # Without the trailing '|| true' a non-zero exit here aborts the whole
-    # script under 'set -e' before the check below can report anything, which
-    # produces a silent stop with no output.
-    TS_HOSTNAME=$(tailscale status --json | python3 -c \
-        "import sys, json; d = json.load(sys.stdin); print(d['Self']['DNSName'].rstrip('.'))" \
-        2>/dev/null || true)
-
-    if [ -z "$TS_HOSTNAME" ]; then
-        echo -e "${RED}[ERROR] Could not determine the Tailscale hostname.${NC}"
-        echo "  'tailscale status --json' returned nothing usable. Check that"
-        echo "  Tailscale is connected and MagicDNS is enabled:"
-        echo "    tailscale status"
-        exit 1
-    fi
-
-    echo "Creating certificate for: ${TS_HOSTNAME}"
-    mkdir -p ssl
-
-    if tailscale cert --cert-file ssl/cert.pem --key-file ssl/key.pem "$TS_HOSTNAME" 2>/dev/null; then
-        echo -e "${GREEN}[OK] SSL certificate created successfully.${NC}"
-    else
-        echo -e "${YELLOW}[WARNING] Insufficient permissions, trying with sudo...${NC}"
-        if sudo tailscale cert --cert-file ssl/cert.pem --key-file ssl/key.pem "$TS_HOSTNAME"; then
-            echo -e "${GREEN}[OK] SSL certificate created successfully.${NC}"
-        else
-            echo -e "${RED}[ERROR] Certificate creation failed.${NC}"
-            echo ""
-            echo "Possible causes:"
-            echo "  - HTTPS is not enabled in your Tailscale profile"
-            echo "    Check at: https://login.tailscale.com/admin/dns"
-            echo "  - MagicDNS is not enabled"
-            exit 1
-        fi
-    fi
+    issue_certificate
 fi
 
 # ─── Host file ownership ──────────────────────────────────────────────────────
@@ -740,7 +806,8 @@ fi
 #                              written by restore.sh on the host
 #
 # The certificate is frequently owned by root, because 'tailscale cert' needs
-# elevated rights on most systems and the fallback above runs it under sudo.
+# elevated rights on most systems and the fallback above runs it under sudo,
+# both on first issuance and on renewal.
 # The fixup therefore runs on every start, not only after issuing a
 # certificate, and escalates only when the unprivileged attempt fails.
 

@@ -1,11 +1,10 @@
-import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
 
 from alembic import context
 from dotenv import load_dotenv
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import create_engine, pool
 
 # Ensure the backend root is on sys.path so app.* imports resolve correctly
 # regardless of whether Alembic is invoked from the repo root or /app in Docker.
@@ -15,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # docker-compose env_file / environment, so load_dotenv is a no-op there.
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-from app.database.database import Base  # noqa: E402
+from app.database.database import Base, engine  # noqa: E402
 
 # Register all models with Base so autogenerate can detect schema changes.
 import app.automations.automations_models  # noqa: F401, E402 – Automation
@@ -26,10 +25,16 @@ import app.session.session  # noqa: F401, E402
 
 config = context.config
 
-# Override the placeholder sqlalchemy.url from alembic.ini with the real value
-# from the environment. This is the single source of truth for the DB URL.
-database_url = os.getenv("DATABASE_URL", "sqlite:///./capybarca.db")
-config.set_main_option("sqlalchemy.url", database_url)
+# The database URL is taken from the application's engine rather than read
+# from the environment a second time. That keeps a single source of truth,
+# including the driver normalisation in app.database.database, so migrations
+# and the running application can never resolve the same DATABASE_URL to
+# different drivers.
+#
+# The URL is deliberately not written into the Alembic config. Config values
+# pass through configparser interpolation, which treats '%' as a directive,
+# and the credentials setup.sh writes are percent-encoded.
+database_url = engine.url
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -43,9 +48,8 @@ def run_migrations_offline() -> None:
 
     Useful for generating SQL scripts to review or apply manually.
     """
-    url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=url,
+        url=database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -61,11 +65,7 @@ def run_migrations_online() -> None:
     NullPool is used intentionally: Alembic's migration process is short-lived
     and should not hold connections open.
     """
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    connectable = create_engine(database_url, poolclass=pool.NullPool)
     with connectable.connect() as connection:
         context.configure(
             connection=connection,
