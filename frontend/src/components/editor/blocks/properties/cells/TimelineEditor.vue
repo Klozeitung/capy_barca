@@ -26,9 +26,9 @@
  * Positioning: Teleported to <body> and shown as a centered modal over a dimmed
  * backdrop. The panel never exceeds the viewport; overflowing content scrolls
  * within the body. The optional ``anchorRect`` prop is retained for API
- * compatibility but no longer influences placement (#39).
+ * compatibility but no longer influences placement.
  */
-import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import {
@@ -241,27 +241,33 @@ function setNuance(uid: string, range: string, label: string): void {
   }
 }
 
-const targetEntries = computed(() => {
-  const targetDbId = (props.schema.config?.target_database_id as string | undefined)
-    ?? props.databaseId
-  return dbStore.getEntries(targetDbId)
-})
-
 function targetDbId() {
   return (props.schema.config?.target_database_id as string | undefined) ?? props.databaseId
 }
 
+/**
+ * Title of a linked pool entry. Read from the store's relation-title resolver,
+ * which is independent of any view's page of the target database; falls back
+ * to the current search results and, while unresolved, to a short id.
+ */
 function entryTitle(uid: string): string {
-  const e = targetEntries.value.find(x => x.id === uid)
-  return (e?.content?.title as string | undefined) || uid.slice(0, 8) + '…'
+  if (dbStore.hasRelationEntry(uid)) {
+    return dbStore.getRelationTitle(uid) || t('main.untitled')
+  }
+  const found = filteredPoolEntries.value.find(x => x.id === uid)
+  if (found) return (found.content?.title as string | undefined) || t('main.untitled')
+  return uid.slice(0, 8) + '…'
 }
 
 // ── Pool entry picker (search + create-if-missing) ────────────────────────────
 //
-// Replaces the former <select> dropdown for choosing the linked entry. Mirrors
-// the search-and-create pattern used by RelationCell: the field filters the
-// target database's entries live and, when the query matches no existing
-// title, offers a "create & link" action that creates a new entry on the fly.
+// Mirrors the search-and-create pattern used by RelationCell: the field
+// searches the target database on the server, debounced while typing, so every
+// entry is reachable regardless of how many there are. "Create & link" is
+// offered only once the server confirms that no entry has exactly the typed
+// title, so an existing entry is never duplicated.
+
+const SEARCH_DEBOUNCE_MS = 200
 
 const poolSearchEl = ref<HTMLInputElement | null>(null)
 const poolComboEl = ref<HTMLElement | null>(null)
@@ -270,21 +276,50 @@ const poolPickerOpen = ref(false)
 const poolActiveIndex = ref(-1)
 const isCreatingPoolEntry = ref(false)
 
-const filteredPoolEntries = computed<DatabaseEntry[]>(() => {
-  const q = poolSearchQuery.value.trim().toLowerCase()
-  if (!q) return targetEntries.value
-  return targetEntries.value.filter(e =>
-    ((e.content?.title as string | undefined) ?? '').toLowerCase().includes(q),
-  )
+/** Entries matching the current search, as returned by the server. */
+const filteredPoolEntries = ref<DatabaseEntry[]>([])
+/** Whether an entry titled exactly like the searched query exists. */
+const poolExactMatch = ref(false)
+/** The trimmed query the current results belong to, or null before any. */
+const poolSearchedQuery = ref<string | null>(null)
+
+let _poolSearchTimer: ReturnType<typeof setTimeout> | null = null
+/** Incremented per request; a response that is no longer the latest is dropped. */
+let _poolSearchSeq = 0
+
+async function runPoolSearch(): Promise<void> {
+  if (_poolSearchTimer) { clearTimeout(_poolSearchTimer); _poolSearchTimer = null }
+  const query = poolSearchQuery.value.trim()
+  const seq = ++_poolSearchSeq
+  try {
+    const result = await dbStore.searchEntries(targetDbId(), query)
+    if (seq !== _poolSearchSeq) return
+    filteredPoolEntries.value = result.entries
+    poolExactMatch.value = result.exactMatch
+    poolSearchedQuery.value = query
+  } catch {
+    if (seq !== _poolSearchSeq) return
+    // Without an answer there is no way to know the entry does not exist, so
+    // nothing is offered for creation.
+    filteredPoolEntries.value = []
+    poolExactMatch.value = true
+    poolSearchedQuery.value = query
+  }
+}
+
+function schedulePoolSearch(): void {
+  if (_poolSearchTimer) clearTimeout(_poolSearchTimer)
+  _poolSearchTimer = setTimeout(() => { runPoolSearch() }, SEARCH_DEBOUNCE_MS)
+}
+
+watch(poolSearchQuery, () => {
+  if (poolPickerOpen.value) schedulePoolSearch()
 })
 
 const showCreatePoolEntry = computed(() => {
   const q = poolSearchQuery.value.trim()
   if (!q) return false
-  // Offer "create" only when the query matches no existing entry title exactly.
-  return !targetEntries.value.some(
-    e => ((e.content?.title as string | undefined) ?? '').toLowerCase() === q.toLowerCase(),
-  )
+  return poolSearchedQuery.value === q && !poolExactMatch.value
 })
 
 watch(filteredPoolEntries, () => { poolActiveIndex.value = -1 })
@@ -315,12 +350,18 @@ function scrollPoolActiveIntoView() {
 }
 
 function openPoolPicker() {
+  if (poolPickerOpen.value) return
   poolPickerOpen.value = true
+  // The search field may hold the title of the entry just picked; results are
+  // fetched for whatever it currently says.
+  runPoolSearch()
 }
 
 function closePoolPicker() {
   poolPickerOpen.value = false
   poolActiveIndex.value = -1
+  if (_poolSearchTimer) { clearTimeout(_poolSearchTimer); _poolSearchTimer = null }
+  _poolSearchSeq++
 }
 
 /** Commit an existing target entry as the linked-entry selection. */
@@ -337,12 +378,13 @@ function selectPoolUid(entry: DatabaseEntry) {
  */
 async function createAndSelectPoolEntry() {
   const title = poolSearchQuery.value.trim()
-  if (!title || isCreatingPoolEntry.value) return
+  if (!title || isCreatingPoolEntry.value || !showCreatePoolEntry.value) return
   isCreatingPoolEntry.value = true
   try {
     const newEntry = await dbStore.createEntry(targetDbId())
     await blockStore.updateBlock(newEntry.id, { content: { title } })
-    await dbStore.fetchEntries(targetDbId())
+    // Resolve the new entry's title so the pool row shows it once added.
+    await dbStore.resolveEntryTitles(targetDbId(), [newEntry.id], true)
     newPoolUid.value = newEntry.id
     poolSearchQuery.value = title
     closePoolPicker()
@@ -537,7 +579,7 @@ async function save() {
 
 // ── Dismissal ─────────────────────────────────────────────────────────────────
 //
-// The editor is a centered modal over a full-viewport backdrop (#39); a click
+// The editor is a centered modal over a full-viewport backdrop; a click
 // on the backdrop closes it (wired in the template), so no document-level
 // listener is required.
 
@@ -559,19 +601,21 @@ onMounted(async () => {
   if (isRelation.value) {
     pool.value = initPool()
     nuancePool.value = initNuancePool()
-    const tid = targetDbId()
-    if (targetEntries.value.length === 0) {
-      await dbStore.fetchEntries(tid)
-    }
+    // Titles of the already linked entries, independent of any view's page.
+    await dbStore.resolveEntryTitles(targetDbId(), pool.value.map(e => e.uid))
   } else {
     slots.value = initSlots()
   }
+})
+
+onUnmounted(() => {
+  if (_poolSearchTimer) clearTimeout(_poolSearchTimer)
 })
 </script>
 
 <template>
   <Teleport to="body">
-    <!-- #39: dimmed backdrop; clicking it closes the centered editor. -->
+    <!-- Dimmed backdrop; clicking it closes the centered editor. -->
     <div class="te__backdrop" @click="emit('close')"></div>
     <div
       class="te"
@@ -815,7 +859,7 @@ onMounted(async () => {
                 </button>
 
                 <div
-                  v-if="filteredPoolEntries.length === 0 && !showCreatePoolEntry"
+                  v-if="poolSearchedQuery === poolSearchQuery.trim() && filteredPoolEntries.length === 0 && !showCreatePoolEntry"
                   class="te__pool-results-empty"
                 >
                   {{ t('db.timeline.poolNoEntries') }}
@@ -893,13 +937,13 @@ onMounted(async () => {
 .te__backdrop {
   position: fixed;
   inset: 0;
-  /* #19: must sit above the SideView panel (z-index 900). */
+  /* Must sit above the SideView panel (z-index 900). */
   z-index: 1000;
   background: rgba(0, 0, 0, 0.35);
 }
 
 .te {
-  /* #39: centered modal that never exceeds the viewport; the body scrolls. */
+  /* Centered modal that never exceeds the viewport; the body scrolls. */
   position: fixed;
   top: 50%;
   left: 50%;

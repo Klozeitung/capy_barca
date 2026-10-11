@@ -45,13 +45,11 @@ import {
   type AutomationTrigger,
   type AutomationAction,
 } from '@/stores/automations'
-import { useDatabaseStore, type PropertySchema, type FilterOperator, type ViewFilter, type DateFilterMode, type DatabaseEntry } from '@/stores/database'
+import { useDatabaseStore, NAME_COL_KEY, type PropertySchema, type FilterOperator, type ViewFilter, type DateFilterMode, type DatabaseEntry } from '@/stores/database'
+import { useBlockStore } from '@/stores/blocks'
 import { getOperatorsForSchemaId, filterNeedsValue } from '@/composables/useFilterPanel'
 import { apiClient } from '@/api/client'
 import FilterConditionRow from './subcomponents/FilterConditionRow.vue'
-
-/** Sentinel schema id for the entry title ("Name") column, shared with the view filter. */
-const NAME_COL_KEY = '__name__'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
@@ -65,8 +63,9 @@ const emit = defineEmits<{ (e: 'close'): void }>()
 // ── Dependencies ──────────────────────────────────────────────────────────────
 
 const { t } = useI18n()
-const store   = useAutomationsStore()
-const dbStore = useDatabaseStore()
+const store      = useAutomationsStore()
+const dbStore    = useDatabaseStore()
+const blockStore = useBlockStore()
 
 // ── Data ──────────────────────────────────────────────────────────────────────
 
@@ -108,6 +107,11 @@ const ACTIONABLE_TYPES = new Set([
 
 async function ensureDbSchemas(dbId: string): Promise<void> {
   if (!dbId) return
+  // The database block carries the custom label of its name column, shown in
+  // the filter rows below. Best-effort: without it the default label applies.
+  if (!blockStore.blocks[dbId]) {
+    blockStore.fetchBlock(dbId).catch(() => {})
+  }
   if (dbStore.getSchemas(dbId).length === 0) {
     await dbStore.fetchSchemas(dbId)
   }
@@ -976,6 +980,7 @@ onMounted(async () => {
                           :schemas="actionFilterSchemas(action.targetDbId)"
                           :displayed-entries="getActionFilterEntries(action.targetDbId)"
                           :name-col-key="NAME_COL_KEY"
+                          :name-label="dbStore.getNameLabel(action.targetDbId)"
                           :show-placeholder-option="true"
                           :placeholder-label="t('automations.action.pickProperty')"
                           schema-select-class="am__select am__select--grow"

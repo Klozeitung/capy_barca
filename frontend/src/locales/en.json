@@ -276,6 +276,10 @@
   },
   "db": {
     "nameColumn": "Name",
+    "nameColumnRename": "Rename name column",
+    "nameColumnRenameHint": "Double-click to rename",
+    "expandSubItems": "Expand sub-items",
+    "collapseSubItems": "Collapse sub-items",
     "addRow": "New row",
     "openEntry": "Open entry",
     "deleteColumn": "Delete column",
@@ -496,7 +500,10 @@
     "relation": {
       "addLink": "Add link",
       "removeLink": "Remove link",
-      "noEntries": "No entries available"
+      "noEntries": "No entries available",
+      "searchPlaceholder": "Search or create…",
+      "createAndLink": "Create & link \"{query}\"",
+      "moreResults": "{shown} of {total} matches – refine your search"
     },
     "views": {
       "defaultName": "View 1",
@@ -806,7 +813,7 @@
     "permissionsNote": "Permissions are managed via the gear button in page settings. Admins always see all blocks.",
     "sectionDatabases": "Databases",
     "databasesTitle": "Databases",
-    "databasesOverview": "A database stores entries as rows and properties as typed columns (text, number, date, select, relation, rollup, and more). The same data can appear through different views — table, calendar, and others — each with its own filters and sorting.",
+    "databasesOverview": "A database stores entries as rows and properties as typed columns (text, number, date, select, relation, rollup, and more). The same data can appear through different views — table, calendar, and others — each with its own filters and sorting. Columns, the name column included, can be hidden per view in the view settings; rename the name column by double-clicking its header.",
     "databasesDates": "Your date format is set under Settings → Date and applies everywhere; a single date property can override it in its own settings. Date fields cover the years 1 to 9999.",
     "databasesGroups": "In the properties side panel you can organise properties into groups. Custom groups fold and unfold, rename on double-click, and reorder by drag-and-drop via the handle on the right of the group header. The default group always stays on top.",
     "databasesKeying": "A relation property can be keyed: choose a property of the target database to sort the relation's entries by. The chosen value is shown beside each entry."

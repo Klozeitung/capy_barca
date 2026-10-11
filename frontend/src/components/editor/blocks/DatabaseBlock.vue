@@ -38,6 +38,7 @@ import {
   type FilterOperator,
   type EntryQueryFilterGroup,
   type KeyReference,
+  NAME_COL_KEY,
 } from '@/stores/database'
 import { isReadonlyPropertyType } from '@/stores/propertyTypes'
 
@@ -78,7 +79,6 @@ import TemplateManagerPanel from './subcomponents/TemplateManagerPanel.vue'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const NAME_COL_KEY     = '__name__'
 const PREF_VIEWS       = 'views'
 const PREF_ACTIVE_VIEW = 'active_view'
 
@@ -121,25 +121,50 @@ const isLoading = ref(true)
 const displayedEntries = ref<DatabaseEntry[]>([])
 const totalEntries     = ref(0)
 
+/**
+ * Key under which this instance's query result lives in the store. Unique per
+ * instance, because the same database can be shown by several blocks at once,
+ * each with its own view, filters and page.
+ */
+const queryResultKey = `${props.blockId}:${crypto.randomUUID()}`
+
 // ── Name search ───────────────────────────────────────────────────────────────
 
-// A magnifier toggle in the toolbar expands into a text field that filters the
-// rendered entries by name (case-insensitive substring match). It narrows only
-// what is already loaded; the load-more bar still reflects the full server set.
+// A magnifier toggle in the toolbar expands into a text field that searches
+// entries by name (case-insensitive substring match). The search runs on the
+// server as an additional filter of the view query, so it reaches every entry
+// of the database, not just the loaded page, and the load-more bar, the totals
+// and the aggregations all reflect the matching set.
+const NAME_SEARCH_DEBOUNCE_MS = 250
+
 const nameSearchActive = ref(false)
 const nameSearchQuery  = ref('')
 const searchInputEl    = ref<HTMLInputElement | null>(null)
 
 // filteredAndSortedEntries is the single source the table, calendar, agenda,
-// aggregations and export all render from. Applying the name filter here keeps
-// every consumer consistent with what the user actually sees.
-const filteredAndSortedEntries = computed<DatabaseEntry[]>(() => {
-  const q = nameSearchQuery.value.trim().toLowerCase()
-  if (!q) return displayedEntries.value
-  return displayedEntries.value.filter((e) =>
-    ((e.content?.title as string | undefined) ?? '').toLowerCase().includes(q),
-  )
-})
+// aggregations and export all render from. Filtering, the name search
+// included, and sorting happen on the server, so it is the query result.
+const filteredAndSortedEntries = computed<DatabaseEntry[]>(() => displayedEntries.value)
+
+let _nameSearchTimer: ReturnType<typeof setTimeout> | null = null
+
+watch(
+  () => nameSearchQuery.value.trim(),
+  (query, previous) => {
+    if (query === previous) return
+    if (_nameSearchTimer) clearTimeout(_nameSearchTimer)
+    // Clearing the search restores the full view at once; typing is debounced.
+    if (!query) {
+      _nameSearchTimer = null
+      _resetQueryFn()
+      return
+    }
+    _nameSearchTimer = setTimeout(() => {
+      _nameSearchTimer = null
+      _resetQueryFn()
+    }, NAME_SEARCH_DEBOUNCE_MS)
+  },
+)
 
 function toggleNameSearch(): void {
   nameSearchActive.value = !nameSearchActive.value
@@ -400,8 +425,15 @@ const isUnlimitedView = computed(() =>
   activeView.value?.viewType === 'calendar',
 )
 
+/**
+ * Incremented per query. Typing in the name search fires queries in quick
+ * succession; only the response to the latest one may update the view.
+ */
+let _querySeq = 0
+
 async function queryFromActiveView(): Promise<void> {
   const view = activeView.value
+  const seq  = ++_querySeq
   const filter_groups: EntryQueryFilterGroup[] = (view?.filterGroups ?? []).map((g) => ({
     conjunction: g.conjunction,
     filters: g.filters.map((f) => {
@@ -419,15 +451,28 @@ async function queryFromActiveView(): Promise<void> {
       }
     }),
   }))
+  // The name search narrows the view: one more group, ANDed with the view's.
+  const nameQuery = nameSearchQuery.value.trim()
+  if (nameQuery) {
+    filter_groups.push({
+      conjunction: 'and',
+      filters: [{ schemaId: NAME_COL_KEY, operator: 'contains', value: nameQuery }],
+    })
+  }
   const sorts = (view?.sorts ?? []).map((s) => ({
     schemaId:  s.schemaId,
     direction: s.direction,
   }))
-  const result = await dbStore.queryEntries(props.blockId, {
-    filter_groups,
-    sorts,
-    limit: isUnlimitedView.value ? undefined : displayLimit.value,
-  })
+  const result = await dbStore.queryEntries(
+    props.blockId,
+    {
+      filter_groups,
+      sorts,
+      limit: isUnlimitedView.value ? undefined : displayLimit.value,
+    },
+    queryResultKey,
+  )
+  if (seq !== _querySeq) return
   displayedEntries.value = result.entries
   totalEntries.value     = result.total
 }
@@ -483,7 +528,7 @@ const exp = useExport({
   activeView,
   schemas,
   isCalendarView,
-  nameColLabel:  t('db.nameColumn'),
+  nameColLabel:  computed(() => nameLabel.value),
   t,
 })
 
@@ -505,11 +550,12 @@ const orderedColumns = computed<OrderedColumn[]>(() => {
   const TREE_SCHEMA_TYPES = new Set(['parent_item', 'sub_item'])
   const result: OrderedColumn[] = []
   const seen   = new Set<string>()
+  const nameHidden = hidden.has(NAME_COL_KEY)
 
   for (const id of order) {
     if (id === NAME_COL_KEY) {
-      result.push({ key: NAME_COL_KEY, schema: null })
       seen.add(NAME_COL_KEY)
+      if (!nameHidden) result.push({ key: NAME_COL_KEY, schema: null })
     } else {
       if (hidden.has(id)) continue
       const s = all.find(sc => sc.id === id)
@@ -522,10 +568,71 @@ const orderedColumns = computed<OrderedColumn[]>(() => {
       result.push({ key: s.id, schema: s })
   }
 
-  if (!seen.has(NAME_COL_KEY)) result.unshift({ key: NAME_COL_KEY, schema: null })
+  if (!seen.has(NAME_COL_KEY) && !nameHidden) result.unshift({ key: NAME_COL_KEY, schema: null })
 
   return result
 })
+
+// ── Name column visibility & label ────────────────────────────────────────────
+
+/** Whether the active view shows the name column. */
+const nameColumnVisible = computed<boolean>(
+  () => orderedColumns.value.some(c => c.key === NAME_COL_KEY),
+)
+
+/**
+ * Key of the column that takes over the name cell's row controls (fold toggle,
+ * sub-item indent, entry icon, open button) while the name column is hidden:
+ * the first visible column. Null while the name column is shown, or when no
+ * column is visible at all, in which case entries open from the row menu.
+ */
+const leadPrefixKey = computed<string | null>(() =>
+  nameColumnVisible.value ? null : (orderedColumns.value[0]?.key ?? null),
+)
+
+/** Label of the name column: the database's own, or the localized default. */
+const nameLabel = computed<string>(
+  () => dbStore.getNameLabel(props.blockId) ?? t('db.nameColumn'),
+)
+
+const renamingNameLabel = ref(false)
+const nameLabelDraft    = ref('')
+// The header sits inside the column loop, where a plain template ref would be
+// collected into an array; a function ref keeps the single element.
+const nameLabelInputEl  = ref<HTMLInputElement | null>(null)
+
+function setNameLabelInputEl(el: unknown): void {
+  nameLabelInputEl.value = el instanceof HTMLInputElement ? el : null
+}
+
+async function startNameLabelRename(): Promise<void> {
+  nameLabelDraft.value    = nameLabel.value
+  renamingNameLabel.value = true
+  await nextTick()
+  nameLabelInputEl.value?.focus()
+  nameLabelInputEl.value?.select()
+}
+
+function cancelNameLabelRename(): void {
+  renamingNameLabel.value = false
+}
+
+/**
+ * Store the name column's label on the database block. An empty label, or the
+ * localized default itself, clears the custom label, so the column follows
+ * the interface language again.
+ */
+async function commitNameLabelRename(): Promise<void> {
+  if (!renamingNameLabel.value) return
+  renamingNameLabel.value = false
+  const trimmed = nameLabelDraft.value.trim()
+  const custom  = trimmed && trimmed !== t('db.nameColumn') ? trimmed : null
+  if (custom === dbStore.getNameLabel(props.blockId)) return
+  const content: Record<string, unknown> = { ...block.value?.content }
+  if (custom) content.nameLabel = custom
+  else delete content.nameLabel
+  await blockStore.updateBlock(props.blockId, { content })
+}
 
 // ── Sticky header & frozen columns ────────────────────────────────────────────
 
@@ -760,6 +867,8 @@ onUnmounted(() => {
   _frozenRO = null
   resizeCleanup()
   if (_tipTimer) clearTimeout(_tipTimer)
+  if (_nameSearchTimer) clearTimeout(_nameSearchTimer)
+  dbStore.releaseQueryResult(queryResultKey)
 })
 
 // ── View switching (orchestrates multiple composables) ────────────────────────
@@ -1011,6 +1120,12 @@ function openRowContextMenu(e: MouseEvent, entry: DatabaseEntry): void {
 
 function closeRowContextMenu(): void {
   rowContextMenu.value = { visible: false, x: 0, y: 0, entryId: null }
+}
+
+function contextMenuOpenEntry(): void {
+  const id = rowContextMenu.value.entryId
+  closeRowContextMenu()
+  if (id) sideViewEntryId.value = id
 }
 
 async function contextMenuDuplicateEntry(): Promise<void> {
@@ -1331,6 +1446,45 @@ function deriveInitialValuesFromFilters(): {
   return { values: result, name: derivedName }
 }
 
+// Column types whose cell opens an inline editor when activated, and can
+// therefore take the focus of a freshly created row.
+const INLINE_EDIT_TYPES = new Set(['text', 'number', 'select', 'date', 'email', 'phone', 'url'])
+
+function isInlineEditable(schema: PropertySchema): boolean {
+  if (!INLINE_EDIT_TYPES.has(schema.type)) return false
+  if (schema.type === 'select' && schema.config?.mode === 'multiple') return false
+  // Timelined cells open the timeline editor instead of an inline field.
+  return !schema.config?.hasTimeline
+}
+
+/**
+ * Put the cursor into a freshly created row.
+ *
+ * With the name column shown, its field opens, pre-filled with a name derived
+ * from the view's filters. With the name column hidden, a derived name is
+ * saved directly and the first visible column that edits inline is activated
+ * instead; without one, the row is only scrolled into view.
+ */
+async function focusNewEntry(entryId: string, derivedName: string | null): Promise<void> {
+  if (nameColumnVisible.value) {
+    editingNameId.value = entryId
+    nameDraft.value     = derivedName ?? ''
+    await nextTick()
+    const input = document.querySelector<HTMLElement>(`[data-entry-id="${entryId}"] .db__cell-input`)
+    input?.scrollIntoView({ block: 'nearest' })
+    input?.focus()
+    return
+  }
+
+  if (derivedName) {
+    await blockStore.updateBlock(entryId, { content: { title: derivedName } })
+  }
+  const target = orderedColumns.value.find(c => c.schema !== null && isInlineEditable(c.schema))
+  if (target?.schema) setActiveCell(entryId, target.schema.id)
+  await nextTick()
+  document.querySelector<HTMLElement>(`[data-entry-id="${entryId}"]`)?.scrollIntoView({ block: 'nearest' })
+}
+
 async function addRow() {
   if (isAddingRow.value) return
   isAddingRow.value = true
@@ -1345,12 +1499,7 @@ async function addRow() {
       )
     }
     await queryFromActiveView()
-    editingNameId.value = created.id
-    nameDraft.value     = name ?? ''
-    await nextTick()
-    const input = document.querySelector<HTMLElement>(`[data-entry-id="${created.id}"] .db__cell-input`)
-    input?.scrollIntoView({ block: 'nearest' })
-    input?.focus()
+    await focusNewEntry(created.id, name)
   } finally {
     isAddingRow.value = false
   }
@@ -1592,12 +1741,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
       )
     }
     await queryFromActiveView()
-    editingNameId.value = created.id
-    nameDraft.value     = name ?? ''
-    await nextTick()
-    const input = document.querySelector<HTMLElement>(`[data-entry-id="${created.id}"] .db__cell-input`)
-    input?.scrollIntoView({ block: 'nearest' })
-    input?.focus()
+    await focusNewEntry(created.id, name)
   } finally {
     isAddingRow.value = false
   }
@@ -1712,6 +1856,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
               :schemas="schemas"
               :displayed-entries="displayedEntries"
               :name-col-key="NAME_COL_KEY"
+              :name-label="nameLabel"
               @group-conjunction-change="onGroupConjunctionChange"
               @remove-group="removeGroup"
               @filter-schema-change="onFilterSchemaChange"
@@ -1742,6 +1887,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
               :active-view="activeView"
               :schemas="schemas"
               :name-col-key="NAME_COL_KEY"
+              :name-label="nameLabel"
               @add-sort="addSort"
               @remove-sort="removeSort"
               @sort-schema-change="onSortSchemaChange"
@@ -1908,7 +2054,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                       'db__th--frozen':    isFrozenCol(NAME_COL_KEY),
                     }"
                     :style="{ ...colStyle(NAME_COL_KEY), ...frozenColStyle(NAME_COL_KEY) }"
-                    draggable="true"
+                    :draggable="!renamingNameLabel"
                     @dragstart="onColDragStart($event, NAME_COL_KEY)"
                     @dragover="onColDragOver($event, NAME_COL_KEY)"
                     @dragleave="onColDragLeave(NAME_COL_KEY)"
@@ -1916,8 +2062,25 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                     @dragend="onColDragEnd"
                   >
                     <div class="db__th-inner">
-                      <span class="db__th-label">
-                        <span class="db__th-name">{{ t('db.nameColumn') }}</span>
+                      <input
+                        v-if="renamingNameLabel"
+                        :ref="setNameLabelInputEl"
+                        v-model="nameLabelDraft"
+                        class="db__th-rename-input"
+                        :placeholder="t('db.nameColumn')"
+                        :aria-label="t('db.nameColumnRename')"
+                        @blur="commitNameLabelRename"
+                        @keydown.enter.prevent="commitNameLabelRename"
+                        @keydown.escape.prevent="cancelNameLabelRename"
+                        @click.stop
+                      />
+                      <span v-else class="db__th-label">
+                        <span
+                          class="db__th-name"
+                          @dblclick.stop="hideTip(); startNameLabelRename()"
+                          @mouseenter="showTip($event, t('db.nameColumnRenameHint'))"
+                          @mouseleave="hideTip"
+                        >{{ nameLabel }}</span>
                       </span>
                       <button
                         class="db__th-btn"
@@ -2080,7 +2243,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                         v-if="subItemChildrenMap.has(entry.id)"
                         class="db__fold-btn"
                         :class="{ 'db__fold-btn--folded': foldedEntries.has(entry.id) }"
-                        :title="foldedEntries.has(entry.id) ? 'Expand' : 'Collapse'"
+                        :title="foldedEntries.has(entry.id) ? t('db.expandSubItems') : t('db.collapseSubItems')"
                         @click.stop="toggleFold(entry.id)"
                       >
                         <Icon icon="mdi:chevron-down" width="12" height="12" />
@@ -2117,19 +2280,65 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                     </div>
                   </td>
                   <td v-else class="db__td" :class="{ 'db__td--wrap': isWrapped(col.key), 'db__td--frozen': isFrozenCol(col.key) }" :style="frozenColStyle(col.key)" @click="onCellClick(entry, col.schema!)">
-                    <CheckboxCell   v-if="col.schema!.type === 'checkbox'"                                                               :entry="entry" :schema="col.schema!" :database-id="blockId" />
-                    <SelectCell     v-else-if="col.schema!.type === 'select' && (col.schema!.config?.mode ?? 'single') === 'single'"     :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
-                    <MultiSelectCell v-else-if="col.schema!.type === 'select' && col.schema!.config?.mode === 'multiple'"                :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
-                    <DateCell       v-else-if="col.schema!.type === 'date'"                                                              :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" @saved="queryFromActiveView" />
-                    <RelationCell   v-else-if="col.schema!.type === 'relation'"                                                          :schema="col.schema!" :entry="entry" :database-id="blockId" @change="handleRelationChange(entry, col.schema!, $event)" />
-                    <RelationCell   v-else-if="col.schema!.type === 'parent_item'"                                                       :schema="col.schema!" :entry="entry" :database-id="blockId" @change="handleRelationChange(entry, col.schema!, $event)" />
-                    <RelationCell   v-else-if="col.schema!.type === 'sub_item'"                                                          :schema="col.schema!" :entry="entry" :database-id="blockId" :readonly="true" />
-                    <LinkCell       v-else-if="col.schema!.type === 'email' || col.schema!.type === 'phone' || col.schema!.type === 'url'" :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
-                    <FileCell       v-else-if="col.schema!.type === 'file'"                                                              :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
-                    <ReadonlyCell   v-else-if="isReadonlyPropertyType(col.schema!.type)"                                                 :entry="entry" :schema="col.schema!" />
-                    <RollupCell     v-else-if="col.schema!.type === 'rollup'"                                                            :entry="entry" :schema="col.schema!" />
-                    <FormulaCell    v-else-if="col.schema!.type === 'formula'"                                                           :entry="entry" :schema="col.schema!" />
-                    <TextCell       v-else                                                                                                :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
+                    <!--
+                      While the name column is hidden, the first visible column carries the
+                      row controls the name cell would otherwise hold.
+                    -->
+                    <div class="db__cell-wrap" :class="{ 'db__cell-wrap--lead': col.key === leadPrefixKey }">
+                      <div v-if="col.key === leadPrefixKey" class="db__lead-prefix" @click.stop>
+                        <!-- Sub-item depth indent and fold toggle, as in the name cell -->
+                        <span
+                          v-if="depth > 0"
+                          class="db__sub-indent"
+                          :style="{ width: (depth * 20) + 'px' }"
+                          aria-hidden="true"
+                        />
+                        <button
+                          v-if="subItemChildrenMap.has(entry.id)"
+                          class="db__fold-btn"
+                          :class="{ 'db__fold-btn--folded': foldedEntries.has(entry.id) }"
+                          :title="foldedEntries.has(entry.id) ? t('db.expandSubItems') : t('db.collapseSubItems')"
+                          @click.stop="toggleFold(entry.id)"
+                        >
+                          <Icon icon="mdi:chevron-down" width="12" height="12" />
+                        </button>
+                        <span v-else class="db__fold-placeholder" aria-hidden="true" />
+                        <div class="db__entry-icon-wrap">
+                          <button
+                            class="db__entry-icon-btn"
+                            :title="t('main.addIcon')"
+                            @click.stop="openEntryIconPicker(entry, $event)"
+                          >
+                            <Icon :icon="entryIcon(entry)" class="db__entry-icon" width="14" height="14" />
+                          </button>
+                          <IconPicker
+                            v-if="entryIconPickerEntryId === entry.id"
+                            :model-value="entryIcon(entry)"
+                            :trigger-rect="entryIconPickerRect"
+                            @update:model-value="onEntryIconUpdate"
+                            @close="entryIconPickerEntryId = null"
+                          />
+                        </div>
+                        <button class="db__open-btn" :title="t('db.openEntry')" @click.stop="openEntry(entry)">
+                          <Icon icon="mdi:arrow-top-right" width="12" height="12" />
+                        </button>
+                      </div>
+                      <div class="db__cell-body">
+                        <CheckboxCell   v-if="col.schema!.type === 'checkbox'"                                                               :entry="entry" :schema="col.schema!" :database-id="blockId" />
+                        <SelectCell     v-else-if="col.schema!.type === 'select' && (col.schema!.config?.mode ?? 'single') === 'single'"     :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
+                        <MultiSelectCell v-else-if="col.schema!.type === 'select' && col.schema!.config?.mode === 'multiple'"                :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
+                        <DateCell       v-else-if="col.schema!.type === 'date'"                                                              :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" @saved="queryFromActiveView" />
+                        <RelationCell   v-else-if="col.schema!.type === 'relation'"                                                          :schema="col.schema!" :entry="entry" :database-id="blockId" @change="handleRelationChange(entry, col.schema!, $event)" />
+                        <RelationCell   v-else-if="col.schema!.type === 'parent_item'"                                                       :schema="col.schema!" :entry="entry" :database-id="blockId" @change="handleRelationChange(entry, col.schema!, $event)" />
+                        <RelationCell   v-else-if="col.schema!.type === 'sub_item'"                                                          :schema="col.schema!" :entry="entry" :database-id="blockId" :readonly="true" />
+                        <LinkCell       v-else-if="col.schema!.type === 'email' || col.schema!.type === 'phone' || col.schema!.type === 'url'" :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
+                        <FileCell       v-else-if="col.schema!.type === 'file'"                                                              :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
+                        <ReadonlyCell   v-else-if="isReadonlyPropertyType(col.schema!.type)"                                                 :entry="entry" :schema="col.schema!" />
+                        <RollupCell     v-else-if="col.schema!.type === 'rollup'"                                                            :entry="entry" :schema="col.schema!" />
+                        <FormulaCell    v-else-if="col.schema!.type === 'formula'"                                                           :entry="entry" :schema="col.schema!" />
+                        <TextCell       v-else                                                                                                :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
+                      </div>
+                    </div>
                   </td>
                 </template>
                 <td class="db__td db__td--add"></td>
@@ -2271,19 +2480,48 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                       </div>
                     </td>
                     <td v-else class="db__td" :class="{ 'db__td--wrap': isWrapped(col.key), 'db__td--frozen': isFrozenCol(col.key) }" :style="frozenColStyle(col.key)" @click="onCellClick(entry, col.schema!)">
-                      <CheckboxCell   v-if="col.schema!.type === 'checkbox'"                                                               :entry="entry" :schema="col.schema!" :database-id="blockId" />
-                      <SelectCell     v-else-if="col.schema!.type === 'select' && (col.schema!.config?.mode ?? 'single') === 'single'"     :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
-                      <MultiSelectCell v-else-if="col.schema!.type === 'select' && col.schema!.config?.mode === 'multiple'"                :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
-                      <DateCell       v-else-if="col.schema!.type === 'date'"                                                              :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" @saved="queryFromActiveView" />
-                      <RelationCell   v-else-if="col.schema!.type === 'relation'"                                                          :schema="col.schema!" :entry="entry" :database-id="blockId" @change="handleRelationChange(entry, col.schema!, $event)" />
-                      <RelationCell   v-else-if="col.schema!.type === 'parent_item'"                                                       :schema="col.schema!" :entry="entry" :database-id="blockId" @change="handleRelationChange(entry, col.schema!, $event)" />
-                      <RelationCell   v-else-if="col.schema!.type === 'sub_item'"                                                          :schema="col.schema!" :entry="entry" :database-id="blockId" :readonly="true" />
-                      <LinkCell       v-else-if="col.schema!.type === 'email' || col.schema!.type === 'phone' || col.schema!.type === 'url'" :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
-                      <FileCell       v-else-if="col.schema!.type === 'file'"                                                              :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
-                      <ReadonlyCell   v-else-if="isReadonlyPropertyType(col.schema!.type)"                                                 :entry="entry" :schema="col.schema!" />
-                      <RollupCell     v-else-if="col.schema!.type === 'rollup'"                                                            :entry="entry" :schema="col.schema!" />
-                      <FormulaCell    v-else-if="col.schema!.type === 'formula'"                                                           :entry="entry" :schema="col.schema!" />
-                      <TextCell       v-else                                                                                                :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
+                      <!--
+                        While the name column is hidden, the first visible column carries the
+                        row controls the name cell would otherwise hold.
+                      -->
+                      <div class="db__cell-wrap" :class="{ 'db__cell-wrap--lead': col.key === leadPrefixKey }">
+                        <div v-if="col.key === leadPrefixKey" class="db__lead-prefix" @click.stop>
+                          <div class="db__entry-icon-wrap">
+                            <button
+                              class="db__entry-icon-btn"
+                              :title="t('main.addIcon')"
+                              @click.stop="openEntryIconPicker(entry, $event)"
+                            >
+                              <Icon :icon="entryIcon(entry)" class="db__entry-icon" width="14" height="14" />
+                            </button>
+                            <IconPicker
+                              v-if="entryIconPickerEntryId === entry.id"
+                              :model-value="entryIcon(entry)"
+                              :trigger-rect="entryIconPickerRect"
+                              @update:model-value="onEntryIconUpdate"
+                              @close="entryIconPickerEntryId = null"
+                            />
+                          </div>
+                          <button class="db__open-btn" :title="t('db.openEntry')" @click.stop="openEntry(entry)">
+                            <Icon icon="mdi:arrow-top-right" width="12" height="12" />
+                          </button>
+                        </div>
+                        <div class="db__cell-body">
+                          <CheckboxCell   v-if="col.schema!.type === 'checkbox'"                                                               :entry="entry" :schema="col.schema!" :database-id="blockId" />
+                          <SelectCell     v-else-if="col.schema!.type === 'select' && (col.schema!.config?.mode ?? 'single') === 'single'"     :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
+                          <MultiSelectCell v-else-if="col.schema!.type === 'select' && col.schema!.config?.mode === 'multiple'"                :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
+                          <DateCell       v-else-if="col.schema!.type === 'date'"                                                              :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" @saved="queryFromActiveView" />
+                          <RelationCell   v-else-if="col.schema!.type === 'relation'"                                                          :schema="col.schema!" :entry="entry" :database-id="blockId" @change="handleRelationChange(entry, col.schema!, $event)" />
+                          <RelationCell   v-else-if="col.schema!.type === 'parent_item'"                                                       :schema="col.schema!" :entry="entry" :database-id="blockId" @change="handleRelationChange(entry, col.schema!, $event)" />
+                          <RelationCell   v-else-if="col.schema!.type === 'sub_item'"                                                          :schema="col.schema!" :entry="entry" :database-id="blockId" :readonly="true" />
+                          <LinkCell       v-else-if="col.schema!.type === 'email' || col.schema!.type === 'phone' || col.schema!.type === 'url'" :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
+                          <FileCell       v-else-if="col.schema!.type === 'file'"                                                              :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
+                          <ReadonlyCell   v-else-if="isReadonlyPropertyType(col.schema!.type)"                                                 :entry="entry" :schema="col.schema!" />
+                          <RollupCell     v-else-if="col.schema!.type === 'rollup'"                                                            :entry="entry" :schema="col.schema!" />
+                          <FormulaCell    v-else-if="col.schema!.type === 'formula'"                                                           :entry="entry" :schema="col.schema!" />
+                          <TextCell       v-else                                                                                                :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
+                        </div>
+                      </div>
                     </td>
                   </template>
                   <td class="db__td db__td--add"></td>
@@ -2430,6 +2668,10 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
         :style="{ top: rowContextMenu.y + 'px', left: rowContextMenu.x + 'px' }"
         @click.stop
       >
+        <button class="db__row-ctx-item" @click="contextMenuOpenEntry">
+          <Icon icon="mdi:arrow-top-right" width="13" height="13" />
+          {{ t('db.openEntry') }}
+        </button>
         <button class="db__row-ctx-item" @click="contextMenuDuplicateEntry">
           <Icon icon="mdi:content-copy" width="13" height="13" />
           {{ t('actions.duplicate') }}
@@ -2582,6 +2824,54 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
 
 .db__row--sub-item:hover > td {
   background: var(--color-hover);
+}
+
+/* ── Lead prefix (row controls while the name column is hidden) ──────────── */
+/*
+ * Every data cell's content sits in .db__cell-wrap > .db__cell-body. Both
+ * are layout-neutral (display: contents) so cell components lay out exactly
+ * as if they were direct children of the <td>. Only in the first visible
+ * column, while the name column is hidden, does the wrapper become a flex row
+ * that puts the row controls in front of the cell.
+ */
+.db__cell-wrap,
+.db__cell-body {
+  display: contents;
+}
+
+.db__cell-wrap--lead {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.db__cell-wrap--lead > .db__cell-body {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+
+.db__lead-prefix {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding-left: 8px;
+}
+
+.db__cell-wrap--lead:hover .db__open-btn { opacity: 1; }
+
+/* ── Name column header rename ───────────────────────────────────────────── */
+.db__th-rename-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: 1px solid var(--color-accent);
+  border-radius: 2px;
+  font: inherit;
+  color: var(--color-text);
+  padding: 0 3px;
 }
 
 /* ── Name search ─────────────────────────────────────────────────────────── */

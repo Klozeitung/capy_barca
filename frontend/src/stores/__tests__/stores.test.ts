@@ -1179,3 +1179,331 @@ describe('useDatabaseStore', () => {
     expect(store.getRelationKeyValue('schema-date', 'nobody')).toBeNull()
   })
 })
+
+// ── Database Store: view results, search, live updates ───────────────────────
+
+describe('useDatabaseStore view query results', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('queryEntries does not write the full entry cache', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ entries: [makeEntry()], total: 500 })
+
+    const store = useDatabaseStore()
+    await store.queryEntries('db-1', { filter_groups: [], sorts: [], limit: 100 })
+
+    // A page of a database must never stand in for the whole of it.
+    expect(store.entries['db-1']).toBeUndefined()
+  })
+
+  it('queryEntries keeps a keyed result and returns that stored list', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ entries: [makeEntry()], total: 1 })
+
+    const store = useDatabaseStore()
+    const result = await store.queryEntries(
+      'db-1', { filter_groups: [], sorts: [] }, 'view-a',
+    )
+
+    expect(store.queryResults['view-a'].databaseId).toBe('db-1')
+    expect(result.entries).toBe(store.queryResults['view-a'].entries)
+    expect(result.total).toBe(1)
+  })
+
+  it('a late response to an older query does not replace a newer result', async () => {
+    let resolveOld: (v: unknown) => void = () => {}
+    vi.mocked(apiClient.post)
+      .mockImplementationOnce(() => new Promise((r) => { resolveOld = r }))
+      .mockResolvedValueOnce({ entries: [makeEntry({ id: 'new' })], total: 1 })
+
+    const store = useDatabaseStore()
+    const older = store.queryEntries('db-1', { filter_groups: [], sorts: [] }, 'view-a')
+    await store.queryEntries('db-1', { filter_groups: [], sorts: [] }, 'view-a')
+    resolveOld({ entries: [makeEntry({ id: 'old' })], total: 1 })
+    await older
+
+    expect(store.queryResults['view-a'].entries.map((e) => e.id)).toEqual(['new'])
+  })
+
+  it('releaseQueryResult drops the keyed result', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ entries: [makeEntry()], total: 1 })
+
+    const store = useDatabaseStore()
+    await store.queryEntries('db-1', { filter_groups: [], sorts: [] }, 'view-a')
+    store.releaseQueryResult('view-a')
+
+    expect(store.queryResults['view-a']).toBeUndefined()
+  })
+
+  it('getEntries falls back to the rows open views have loaded', async () => {
+    vi.mocked(apiClient.post)
+      .mockResolvedValueOnce({ entries: [makeEntry({ id: 'a' }), makeEntry({ id: 'b' })], total: 2 })
+      .mockResolvedValueOnce({ entries: [makeEntry({ id: 'b' }), makeEntry({ id: 'c' })], total: 2 })
+
+    const store = useDatabaseStore()
+    await store.queryEntries('db-1', { filter_groups: [], sorts: [] }, 'view-a')
+    await store.queryEntries('db-1', { filter_groups: [], sorts: [] }, 'view-b')
+
+    expect(store.getEntries('db-1').map((e) => e.id)).toEqual(['a', 'b', 'c'])
+    expect(store.getEntries('db-2')).toEqual([])
+  })
+
+  it('getEntries prefers the full list once it is loaded', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ entries: [makeEntry({ id: 'a' })], total: 1 })
+    vi.mocked(apiClient.get).mockResolvedValueOnce([
+      makeEntry({ id: 'a' }), makeEntry({ id: 'z' }),
+    ])
+
+    const store = useDatabaseStore()
+    await store.queryEntries('db-1', { filter_groups: [], sorts: [] }, 'view-a')
+    await store.fetchEntries('db-1')
+
+    expect(store.getEntries('db-1').map((e) => e.id)).toEqual(['a', 'z'])
+  })
+
+  it('upsertValue patches the rows of every view of that database', async () => {
+    vi.mocked(apiClient.post)
+      .mockResolvedValueOnce({ entries: [makeEntry({ id: 'e1', values: {} })], total: 1 })
+      .mockResolvedValueOnce({ entries: [makeEntry({ id: 'e1', values: {} })], total: 1 })
+    vi.mocked(apiClient.put).mockResolvedValueOnce(undefined)
+
+    const store = useDatabaseStore()
+    await store.queryEntries('db-1', { filter_groups: [], sorts: [] }, 'view-a')
+    await store.queryEntries('db-2', { filter_groups: [], sorts: [] }, 'view-other-db')
+    await store.upsertValue('db-1', 'e1', 'schema-1', { text: 'Hi' })
+
+    expect(store.queryResults['view-a'].entries[0].values['schema-1']).toEqual({ text: 'Hi' })
+    // Same entry id in another database is a different entry.
+    expect(store.queryResults['view-other-db'].entries[0].values['schema-1']).toBeUndefined()
+  })
+})
+
+describe('useDatabaseStore.searchEntries', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('searches titles on the server, ordered by title, limited', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ entries: [], total: 0 })
+
+    const store = useDatabaseStore()
+    await store.searchEntries('db-1', '  nap ', 20)
+
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/api/databases/db-1/entries/query',
+      expect.objectContaining({
+        filter_groups: [{
+          conjunction: 'and',
+          filters: [expect.objectContaining({ schema_id: '__name__', operator: 'contains', value: 'nap' })],
+        }],
+        sorts: [{ schema_id: '__name__', direction: 'asc' }],
+        limit: 20,
+      }),
+    )
+  })
+
+  it('an empty query lists entries without a filter and never matches exactly', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ entries: [makeEntry()], total: 1 })
+
+    const store = useDatabaseStore()
+    const result = await store.searchEntries('db-1', '   ')
+
+    expect(vi.mocked(apiClient.post).mock.calls[0][1]).toMatchObject({ filter_groups: [] })
+    expect(result.exactMatch).toBe(false)
+    expect(apiClient.post).toHaveBeenCalledTimes(1)
+  })
+
+  it('answers exactMatch from the page when the page holds every match', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      entries: [makeEntry({ content: { title: 'Napoleon' } })],
+      total: 1,
+    })
+
+    const store = useDatabaseStore()
+    const result = await store.searchEntries('db-1', 'napoleon')
+
+    expect(result.exactMatch).toBe(true)
+    expect(apiClient.post).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks the server for an exact title when matches exceed the page', async () => {
+    // The exact title sits past the first page: it must still be found, or
+    // the picker would offer to create a duplicate.
+    vi.mocked(apiClient.post)
+      .mockResolvedValueOnce({
+        entries: [makeEntry({ content: { title: 'Napoleon I' } })],
+        total: 120,
+      })
+      .mockResolvedValueOnce({ entries: [makeEntry()], total: 1 })
+
+    const store = useDatabaseStore()
+    const result = await store.searchEntries('db-1', 'Napoleon', 1)
+
+    expect(result.exactMatch).toBe(true)
+    expect(vi.mocked(apiClient.post).mock.calls[1][1]).toMatchObject({
+      filter_groups: [{ filters: [expect.objectContaining({ operator: 'eq', value: 'Napoleon' })] }],
+      limit: 1,
+    })
+  })
+
+  it('reports no exact match when neither page nor server has one', async () => {
+    vi.mocked(apiClient.post)
+      .mockResolvedValueOnce({ entries: [makeEntry({ content: { title: 'Napoleon I' } })], total: 120 })
+      .mockResolvedValueOnce({ entries: [], total: 0 })
+
+    const store = useDatabaseStore()
+    const result = await store.searchEntries('db-1', 'Napoleon', 1)
+
+    expect(result.exactMatch).toBe(false)
+  })
+
+  it('does not cache search results', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ entries: [makeEntry()], total: 1 })
+
+    const store = useDatabaseStore()
+    await store.searchEntries('db-1', 'x')
+
+    expect(store.entries['db-1']).toBeUndefined()
+    expect(Object.keys(store.queryResults)).toEqual([])
+  })
+})
+
+describe('useDatabaseStore._applyEntryEvent', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  async function storeWithChip() {
+    vi.mocked(apiClient.post).mockResolvedValueOnce([
+      { id: 'e1', title: 'Old', database_id: 'db-target' },
+    ])
+    const store = useDatabaseStore()
+    await store.resolveEntryTitles('db-target', ['e1'])
+    return store
+  }
+
+  it('content_updated renames the relation chip', async () => {
+    const store = await storeWithChip()
+
+    store._applyEntryEvent(makePayload('content_updated', {
+      block_id: 'e1',
+      after: makeBlock({ id: 'e1', content: { title: 'New' } }),
+    }))
+
+    expect(store.getRelationTitle('e1')).toBe('New')
+  })
+
+  it('content_updated renames the row in views and in the full list', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ entries: [makeEntry({ id: 'e1' })], total: 1 })
+    const store = useDatabaseStore()
+    await store.queryEntries('db-1', { filter_groups: [], sorts: [] }, 'view-a')
+    store.entries['db-1'] = [makeEntry({ id: 'e1' })]
+
+    store._applyEntryEvent(makePayload('content_updated', {
+      block_id: 'e1',
+      after: makeBlock({ id: 'e1', content: { title: 'Renamed' } }),
+    }))
+
+    expect(store.queryResults['view-a'].entries[0].content?.title).toBe('Renamed')
+    expect(store.entries['db-1'][0].content?.title).toBe('Renamed')
+  })
+
+  it('reverted is applied like content_updated', async () => {
+    const store = await storeWithChip()
+
+    store._applyEntryEvent(makePayload('reverted', {
+      block_id: 'e1',
+      after: makeBlock({ id: 'e1', content: { title: 'Back' } }),
+    }))
+
+    expect(store.getRelationTitle('e1')).toBe('Back')
+  })
+
+  it('a title removed by the edit becomes an untitled chip, not a stale one', async () => {
+    const store = await storeWithChip()
+
+    store._applyEntryEvent(makePayload('content_updated', {
+      block_id: 'e1',
+      after: makeBlock({ id: 'e1', content: {} }),
+    }))
+
+    expect(store.hasRelationEntry('e1')).toBe(true)
+    expect(store.getRelationTitle('e1')).toBeNull()
+  })
+
+  it('trashing the target drops its chip, restoring resolves it again', async () => {
+    const store = await storeWithChip()
+
+    store._applyEntryEvent(makePayload('state_changed', {
+      block_id: 'e1', before: { state: 'active' }, after: { state: 'trash' },
+    }))
+    expect(store.hasRelationEntry('e1')).toBe(false)
+
+    vi.mocked(apiClient.post).mockResolvedValueOnce([
+      { id: 'e1', title: 'Old', database_id: 'db-target' },
+    ])
+    store._applyEntryEvent(makePayload('state_changed', {
+      block_id: 'e1', before: { state: 'trash' }, after: { state: 'active' },
+    }))
+    await vi.waitFor(() => expect(store.hasRelationEntry('e1')).toBe(true))
+    expect(apiClient.post).toHaveBeenLastCalledWith(
+      '/api/databases/db-target/entries/resolve-titles',
+      { ids: ['e1'] },
+    )
+  })
+
+  it('purged drops the chip', async () => {
+    const store = await storeWithChip()
+
+    store._applyEntryEvent(makePayload('purged', { block_id: 'e1' }))
+
+    expect(store.hasRelationEntry('e1')).toBe(false)
+  })
+
+  it('reacts to WebSocket block events dispatched on window', async () => {
+    const store = await storeWithChip()
+
+    window.dispatchEvent(new CustomEvent(WS_BLOCK_EVENT, {
+      detail: makePayload('content_updated', {
+        block_id: 'e1',
+        after: makeBlock({ id: 'e1', content: { title: 'Via socket' } }),
+      }),
+    }))
+
+    expect(store.getRelationTitle('e1')).toBe('Via socket')
+  })
+
+  it('ignores events for blocks it does not know', () => {
+    const store = useDatabaseStore()
+    store._applyEntryEvent(makePayload('content_updated', {
+      block_id: 'unknown',
+      after: makeBlock({ id: 'unknown', content: { title: 'X' } }),
+    }))
+    expect(store.hasRelationEntry('unknown')).toBe(false)
+  })
+})
+
+describe('useDatabaseStore.getNameLabel', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('returns the custom label of the database block', () => {
+    const blocks = useBlockStore()
+    blocks.blocks['db-1'] = makeBlock({ id: 'db-1', type: 'database', content: { nameLabel: ' Date ' } })
+    expect(useDatabaseStore().getNameLabel('db-1')).toBe('Date')
+  })
+
+  it('returns null without a label, for a blank one, or for an unknown block', () => {
+    const blocks = useBlockStore()
+    blocks.blocks['db-1'] = makeBlock({ id: 'db-1', type: 'database', content: { title: 'T' } })
+    blocks.blocks['db-2'] = makeBlock({ id: 'db-2', type: 'database', content: { nameLabel: '  ' } })
+    const store = useDatabaseStore()
+    expect(store.getNameLabel('db-1')).toBeNull()
+    expect(store.getNameLabel('db-2')).toBeNull()
+    expect(store.getNameLabel('nope')).toBeNull()
+  })
+})

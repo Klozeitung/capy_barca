@@ -17,6 +17,7 @@ Authorization tests live at the end of the file. They cover the object-level
 guard that every block-addressed endpoint now applies.
 """
 import uuid
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -342,6 +343,164 @@ def test_update_block_unknown_id_returns_404(http_client):
         json={"content": {}},
     )
     assert response.status_code == 404
+
+
+# ─── Renaming a database entry ───────────────────────────────────────────────
+#
+# Relation chips show the linked entry's title, and formulas that pass a
+# relation through store those titles in their result. Renaming the linked
+# entry has to recompute those values and notify the open views.
+
+
+@pytest.fixture
+def captured_broadcasts(monkeypatch):
+    """Record every block event the router broadcasts, as (event_type, after)."""
+    import app.blocks.router as router_module
+
+    events: list[tuple[str, Any]] = []
+
+    async def _capture(*, event_type, block_id, before, after, **_kwargs):
+        events.append((event_type, after))
+        return 0
+
+    monkeypatch.setattr(router_module, "broadcast_block_event", _capture)
+    return events
+
+
+def _entries_updated_for(events) -> set[str]:
+    return {
+        after["database_id"]
+        for event_type, after in events
+        if event_type == "database_entries_updated"
+    }
+
+
+@pytest.fixture
+def linked_databases(http_client):
+    """
+    Two databases: ``places`` holds the entry that gets renamed; ``people`` has
+    a relation into ``places`` and a formula that passes that relation through,
+    so the formula's stored result carries the place's title.
+    """
+    from app.blocks import repository as repo
+    from app.blocks.computed import compute_all_for_entry
+
+    with s.SessionLocal() as db:
+        places = repo.create_block(
+            db, type="database", position=1.0, parent_id=WORKSPACE_ROOT_ID,
+        )
+        place = repo.create_block(
+            db, type="page", position=1.0, parent_id=places.id,
+            content={"title": "Old name"},
+        )
+        people = repo.create_block(
+            db, type="database", position=2.0, parent_id=WORKSPACE_ROOT_ID,
+        )
+        rel = repo.create_schema(
+            db, database_id=people.id, name="Place", type="relation",
+            position=1.0, config={"target_database_id": str(places.id)},
+        )
+        formula = repo.create_schema(
+            db, database_id=people.id, name="Place formula", type="formula",
+            position=2.0, config={"expression": "prop('Place')"},
+        )
+        person = repo.create_block(
+            db, type="page", position=1.0, parent_id=people.id,
+            content={"title": "Person"},
+        )
+        repo.upsert_value(
+            db, page_id=person.id, schema_id=rel.id,
+            value={"related_ids": [str(place.id)]},
+        )
+        compute_all_for_entry(db, people.id, person.id)
+        db.commit()
+        return {
+            "places": str(places.id),
+            "place": str(place.id),
+            "people": str(people.id),
+            "person": person.id,
+            "formula": formula.id,
+        }
+
+
+def _formula_titles(ids) -> list[str]:
+    from app.blocks import repository as repo
+
+    with s.SessionLocal() as db:
+        pv = repo.get_value(db, ids["person"], ids["formula"])
+        return [chip["title"] for chip in pv.value["result"]]
+
+
+def test_renaming_an_entry_recomputes_formulas_that_show_its_title(
+    http_client, linked_databases, captured_broadcasts,
+):
+    ids = linked_databases
+    assert _formula_titles(ids) == ["Old name"]
+
+    response = http_client.patch(
+        f"/api/blocks/{ids['place']}", json={"content": {"title": "New name"}},
+    )
+
+    assert response.status_code == 200
+    assert _formula_titles(ids) == ["New name"]
+
+
+def test_renaming_an_entry_notifies_its_own_and_dependent_databases(
+    http_client, linked_databases, captured_broadcasts,
+):
+    ids = linked_databases
+    http_client.patch(
+        f"/api/blocks/{ids['place']}", json={"content": {"title": "New name"}},
+    )
+
+    assert _entries_updated_for(captured_broadcasts) == {ids["places"], ids["people"]}
+    # The content event still goes out first, as before.
+    assert captured_broadcasts[0][0] == "content_updated"
+
+
+def test_unchanged_title_triggers_no_cascade(
+    http_client, linked_databases, captured_broadcasts,
+):
+    ids = linked_databases
+    http_client.patch(
+        f"/api/blocks/{ids['place']}",
+        json={"content": {"title": "Old name", "note": "x"}},
+    )
+
+    assert _entries_updated_for(captured_broadcasts) == set()
+
+
+def test_renaming_a_page_outside_a_database_triggers_no_cascade(
+    http_client, captured_broadcasts,
+):
+    page_id = http_client.post(
+        "/api/blocks", json={"type": "page", "parent_id": str(WORKSPACE_ROOT_ID)},
+    ).json()["id"]
+    captured_broadcasts.clear()
+
+    http_client.patch(f"/api/blocks/{page_id}", json={"content": {"title": "Renamed"}})
+
+    assert _entries_updated_for(captured_broadcasts) == set()
+
+
+def test_reverting_a_rename_recomputes_dependents(
+    http_client, linked_databases, captured_broadcasts,
+):
+    ids = linked_databases
+    http_client.patch(
+        f"/api/blocks/{ids['place']}", json={"content": {"title": "New name"}},
+    )
+    history = http_client.get(f"/api/blocks/{ids['place']}/history").json()
+    rename_event = next(e for e in history if e["event_type"] == "content_updated")
+    captured_broadcasts.clear()
+
+    response = http_client.post(
+        f"/api/blocks/{ids['place']}/revert/{rename_event['id']}",
+    )
+
+    assert response.status_code == 200
+    assert _formula_titles(ids) == ["Old name"]
+    assert _entries_updated_for(captured_broadcasts) == {ids["places"], ids["people"]}
 
 
 # ─── PATCH /api/blocks/{block_id}/appearance ─────────────────────────────────

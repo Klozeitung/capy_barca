@@ -79,10 +79,12 @@ Public API
 Resource limits
 ---------------
 Formulas are written by authenticated users and run on the server, so an
-expression is bounded before it is allowed to consume anything:
+expression is bounded by its structure before it is allowed to consume
+anything. Its length is deliberately not bounded: work grows with nesting,
+chaining and exponentiation, all of which are capped below, while a long but
+flat expression – an ``ifs()`` with many branches, say – is linear to lex,
+parse and evaluate.
 
-  * length          – an expression past ``MAX_EXPRESSION_LENGTH`` characters
-                      is refused by the lexer, before a parser ever sees it.
   * nesting         – the parser carries a depth counter and raises
                       ``FormulaError`` at ``MAX_PARSE_DEPTH``. Without it,
                       deeply nested parentheses exhaust the interpreter stack
@@ -96,7 +98,7 @@ expression is bounded before it is allowed to consume anything:
                       the number it would produce. ``9^9^9`` is three
                       characters of input and an unbounded amount of work.
 
-All three raise ``FormulaError``, so every caller that already handles a bad
+All of them raise ``FormulaError``, so every caller that already handles a bad
 formula handles these as well. The three public entry points guarantee that:
 whatever happens inside, what leaves them is a ``FormulaError``.
 """
@@ -119,9 +121,7 @@ FormulaValue = Any  # number | str | bool | datetime | None
 # ── Resource limits ───────────────────────────────────────────────────────────
 # Deliberately generous: a hand-written formula does not come close to any of
 # them, while each bounds a way for one expression to occupy the server.
-
-MAX_EXPRESSION_LENGTH = 2000
-
+#
 # Two separate bounds, because two different shapes of expression end up as
 # depth in the AST, and the AST is what the evaluator walks recursively.
 #
@@ -135,8 +135,12 @@ MAX_EXPRESSION_LENGTH = 2000
 #
 # They add rather than multiply along any one path, so the deepest reachable
 # tree is roughly the sum of the two and stays well inside the interpreter's
-# own recursion limit.
-MAX_PARSE_DEPTH = 64
+# own recursion limit. The parser spends about three interpreter frames per
+# nesting level and the evaluator about two, so 128 levels plus a full chain
+# keep a wide margin below Python's default limit of 1000 frames even after
+# the web stack and the recompute cascade have taken their share. That allows
+# roughly 120 nested if() calls, which hand-written formulas do not approach.
+MAX_PARSE_DEPTH = 128
 MAX_OPERATOR_CHAIN = 200
 
 # Bounds for '^'. The exponent cap alone is not enough, because the base can
@@ -237,12 +241,6 @@ _ESCAPE_MAP: dict[str, str] = {
 
 
 def _lex(src: str) -> list[Token]:
-    if len(src) > MAX_EXPRESSION_LENGTH:
-        raise FormulaError(
-            f"Expression is too long: {len(src)} characters, "
-            f"the limit is {MAX_EXPRESSION_LENGTH}"
-        )
-
     tokens: list[Token] = []
     i = 0
     n = len(src)

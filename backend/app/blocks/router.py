@@ -257,6 +257,50 @@ def _block_to_dict(block) -> dict:
     }
 
 
+def _cascade_entry_title_change(db: Session, block, before_content: Optional[dict]) -> list[str]:
+    """
+    Recompute what depends on a database entry's title after it changed.
+
+    Relation chips render the linked entry's title, and formulas and rollups
+    that pass a relation through store those titles in their result. A rename
+    therefore has to recompute every entry whose computed values read this
+    entry, in this database and in others, before the transaction commits.
+
+    Returns the IDs of the databases whose entries now differ, the entry's own
+    database included, so the caller can broadcast ``database_entries_updated``
+    for each after the commit. Returns an empty list when *block* is not an
+    entry of a database or its title did not change.
+    """
+    before_title = (before_content or {}).get("title")
+    after_title = (block.content or {}).get("title")
+    if before_title == after_title:
+        return []
+    if block.parent_id is None or block.type == "entry_template":
+        return []
+    parent = repo.get_block(db, block.parent_id)
+    if parent is None or parent.type != "database":
+        return []
+
+    affected: list[str] = [str(parent.id)]
+    compute_same_db_rollup_dependents(db, parent.id, block.id)
+    for dep_id in compute_cross_db_dependents(db, parent.id, block.id):
+        dep_id_str = str(dep_id)
+        if dep_id_str not in affected:
+            affected.append(dep_id_str)
+    return affected
+
+
+async def _broadcast_entries_updated(database_ids: list[str]) -> None:
+    """Tell open views of each database in *database_ids* to re-query."""
+    for db_id_str in database_ids:
+        await broadcast_block_event(
+            event_type="database_entries_updated",
+            block_id=db_id_str,
+            before=None,
+            after={"database_id": db_id_str},
+        )
+
+
 # ─── Error translation ────────────────────────────────────────────────────────
 
 
@@ -382,7 +426,13 @@ async def update_block(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Update type, content, position, or state of a block."""
+    """
+    Update type, content, position, or state of a block.
+
+    Renaming a database entry also recomputes the formulas and rollups that
+    show its title elsewhere, and notifies the open views of every database
+    whose entries changed as a result.
+    """
     before_block = repo.get_block(db, block_id)
     if before_block is None:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
@@ -391,6 +441,9 @@ async def update_block(
         before_snapshot = _block_to_dict(before_block)
         update_kwargs = payload.model_dump(exclude_none=True)
         block = service.update_block_fields(db, block_id, **update_kwargs)
+        affected_db_ids = _cascade_entry_title_change(
+            db, block, before_snapshot.get("content"),
+        )
         db.commit()
         db.refresh(block)
         await broadcast_block_event(
@@ -399,6 +452,7 @@ async def update_block(
             before=before_snapshot,
             after=_block_to_dict(block),
         )
+        await _broadcast_entries_updated(affected_db_ids)
         return block
     except Exception as exc:
         db.rollback()
@@ -938,7 +992,8 @@ async def revert_event(
 
     Only fields present in the ``before`` snapshot are modified. Structural
     changes (move, delete) are not reverted via this endpoint – use the
-    dedicated move/restore endpoints for those.
+    dedicated move/restore endpoints for those. A revert that changes a
+    database entry's title cascades like a rename through ``update_block``.
     """
     block = repo.get_block(db, block_id)
     if block is None:
@@ -965,6 +1020,9 @@ async def revert_event(
         if "cover" in before:
             block.cover = before["cover"]
         db.flush()
+        affected_db_ids = _cascade_entry_title_change(
+            db, block, before_snapshot.get("content"),
+        )
         db.commit()
         db.refresh(block)
         await broadcast_block_event(
@@ -973,6 +1031,7 @@ async def revert_event(
             before=before_snapshot,
             after=_block_to_dict(block),
         )
+        await _broadcast_entries_updated(affected_db_ids)
         return block
     except Exception as exc:
         db.rollback()

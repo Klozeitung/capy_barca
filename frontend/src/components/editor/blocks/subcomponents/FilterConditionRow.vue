@@ -47,6 +47,8 @@ const props = withDefaults(defineProps<{
   filter:           ViewFilter
   schemas:          PropertySchema[]
   nameColKey:       string
+  /** Custom label of the name column; the localized default when absent. */
+  nameLabel?:       string | null
   displayedEntries?: DatabaseEntry[]
   /** Optional leading disabled option (used by the automations modal). */
   showPlaceholderOption?: boolean
@@ -60,6 +62,7 @@ const props = withDefaults(defineProps<{
   numberInputClass?:    string
   narrowInputClass?:    string
 }>(), {
+  nameLabel:             null,
   displayedEntries:      () => [],
   showPlaceholderOption: false,
   placeholderLabel:      '',
@@ -141,7 +144,7 @@ function isNumberFilter(): boolean {
     @change="emit('schema-change', ($event.target as HTMLSelectElement).value)"
   >
     <option v-if="showPlaceholderOption" value="" disabled>{{ placeholderLabel }}</option>
-    <option :value="nameColKey">{{ t('db.nameColumn') }}</option>
+    <option :value="nameColKey">{{ nameLabel || t('db.nameColumn') }}</option>
     <option v-for="s in schemas" :key="s.id" :value="s.id">{{ s.name }}</option>
   </select>
 

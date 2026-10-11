@@ -243,6 +243,42 @@ def _value_key(schema_type: str) -> str:
     return 'text'   # text and all other fallback types
 
 
+# Escape character for LIKE patterns built from user input. Declared explicitly
+# on every LIKE because PostgreSQL and SQLite disagree on whether a backslash
+# escapes by default.
+_LIKE_ESCAPE = '\\'
+
+
+def _escape_like(value: str) -> str:
+    """
+    Escape the LIKE wildcards in *value* so it matches literally.
+
+    Without this a search for "50%" matches anything starting with "50", and
+    every "_" matches any single character. The escape character itself is
+    escaped first so that a literal backslash survives as well.
+    """
+    return (
+        value.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+        .replace('%', _LIKE_ESCAPE + '%')
+        .replace('_', _LIKE_ESCAPE + '_')
+    )
+
+
+def _like_contains(expr, value: str):
+    """``expr LIKE '%value%'`` with *value* matched literally."""
+    return expr.like(f'%{_escape_like(value)}%', escape=_LIKE_ESCAPE)
+
+
+def _like_starts_with(expr, value: str):
+    """``expr LIKE 'value%'`` with *value* matched literally."""
+    return expr.like(f'{_escape_like(value)}%', escape=_LIKE_ESCAPE)
+
+
+def _like_ends_with(expr, value: str):
+    """``expr LIKE '%value'`` with *value* matched literally."""
+    return expr.like(f'%{_escape_like(value)}', escape=_LIKE_ESCAPE)
+
+
 def _text_operator_clause(expr, operator: str, value: str):
     """
     Return a SQLAlchemy boolean clause for a text operator applied directly
@@ -262,13 +298,13 @@ def _text_operator_clause(expr, operator: str, value: str):
     if operator == 'is_not_empty':
         return and_(expr.is_not(None), expr != '')
     if operator == 'contains':
-        return and_(expr.is_not(None), lower_expr.like(f'%{lv}%'))
+        return and_(expr.is_not(None), _like_contains(lower_expr, lv))
     if operator == 'not_contains':
-        return or_(expr.is_(None), ~lower_expr.like(f'%{lv}%'))
+        return or_(expr.is_(None), ~_like_contains(lower_expr, lv))
     if operator == 'starts_with':
-        return and_(expr.is_not(None), lower_expr.like(f'{lv}%'))
+        return and_(expr.is_not(None), _like_starts_with(lower_expr, lv))
     if operator == 'ends_with':
-        return and_(expr.is_not(None), lower_expr.like(f'%{lv}'))
+        return and_(expr.is_not(None), _like_ends_with(lower_expr, lv))
     if operator == 'eq':
         return and_(expr.is_not(None), lower_expr == lv)
     if operator == 'neq':
@@ -465,12 +501,13 @@ def _build_filter_clause(f: FilterDescriptor):
             return None
         options_str = PV.value['options'].as_string()
         # Use lower() on both sides so the match is case-insensitive in
-        # PostgreSQL (where LIKE is case-sensitive by default).
-        needle = f'%"{f.value.lower()}"%'
+        # PostgreSQL (where LIKE is case-sensitive by default). The label is
+        # wrapped in its JSON quotes so that only a whole option matches.
+        option_match = _like_contains(func.lower(options_str), f'"{f.value.lower()}"')
         if f.operator == 'contains':
-            return pv_base().where(func.lower(options_str).like(needle)).exists()
+            return pv_base().where(option_match).exists()
         if f.operator == 'not_contains':
-            return ~pv_base().where(func.lower(options_str).like(needle)).exists()
+            return ~pv_base().where(option_match).exists()
         return None
 
     # ── Number / ID (numeric comparisons) ────────────────────────────────────
@@ -593,15 +630,15 @@ def _build_filter_clause(f: FilterDescriptor):
         str_expr = func.lower(raw_expr.as_string())
         lv = f.value.lower()
         if f.operator == 'not_contains':
-            return ~pv_base().where(str_expr.like(f'%{lv}%')).exists()
+            return ~pv_base().where(_like_contains(str_expr, lv)).exists()
         if f.operator == 'neq':
             return ~pv_base().where(str_expr == lv).exists()
         if f.operator == 'contains':
-            return pv_base().where(str_expr.like(f'%{lv}%')).exists()
+            return pv_base().where(_like_contains(str_expr, lv)).exists()
         if f.operator == 'starts_with':
-            return pv_base().where(str_expr.like(f'{lv}%')).exists()
+            return pv_base().where(_like_starts_with(str_expr, lv)).exists()
         if f.operator == 'ends_with':
-            return pv_base().where(str_expr.like(f'%{lv}')).exists()
+            return pv_base().where(_like_ends_with(str_expr, lv)).exists()
         if f.operator == 'eq':
             return pv_base().where(str_expr == lv).exists()
         return None
@@ -616,17 +653,17 @@ def _build_filter_clause(f: FilterDescriptor):
     # Positive operators are built lazily to avoid constructing all six
     # correlated subqueries against the same PV alias simultaneously.
     if f.operator == 'not_contains':
-        return ~pv_base().where(func.lower(PV.value[vk].as_string()).like(f'%{lv}%')).exists()
+        return ~pv_base().where(_like_contains(func.lower(PV.value[vk].as_string()), lv)).exists()
     if f.operator == 'neq':
         return ~pv_base().where(func.lower(PV.value[vk].as_string()) == lv).exists()
 
     str_expr = func.lower(PV.value[vk].as_string())
     if f.operator == 'contains':
-        return pv_base().where(str_expr.like(f'%{lv}%')).exists()
+        return pv_base().where(_like_contains(str_expr, lv)).exists()
     if f.operator == 'starts_with':
-        return pv_base().where(str_expr.like(f'{lv}%')).exists()
+        return pv_base().where(_like_starts_with(str_expr, lv)).exists()
     if f.operator == 'ends_with':
-        return pv_base().where(str_expr.like(f'%{lv}')).exists()
+        return pv_base().where(_like_ends_with(str_expr, lv)).exists()
     if f.operator == 'eq':
         return pv_base().where(str_expr == lv).exists()
     return None

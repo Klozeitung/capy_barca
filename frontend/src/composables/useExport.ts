@@ -4,7 +4,9 @@
  * CSV / XLSX / PDF / ICS export for a database view.
  *
  * All functions close over the reactive parameters supplied at creation time,
- * so they always operate on the currently displayed data and active view.
+ * so they always operate on the currently displayed data and active view. The
+ * export is what the view shows: its columns are the view's visible columns,
+ * the name column included only while it is shown.
  *
  * Keyed relations
  * ---------------
@@ -90,8 +92,12 @@ export function useExport(options: {
   activeView:               ComputedRef<DatabaseView | null>
   schemas:                  ComputedRef<PropertySchema[]>
   isCalendarView:           ComputedRef<boolean>
-  /** Pass the result of t('db.nameColumn') and t('main.untitled') at call site. */
-  nameColLabel: string
+  /**
+   * Header of the name column: the database's custom label, or the localized
+   * default. Reactive so that a rename applies to the next export without
+   * recreating the composable.
+   */
+  nameColLabel: ComputedRef<string>
   t: (key: string, ...args: unknown[]) => string
 }) {
   const {
@@ -187,7 +193,7 @@ export function useExport(options: {
 
   async function getExportData(): Promise<{ headers: string[]; descriptions: string[]; rows: string[][] }> {
     const cols    = orderedColumns.value
-    const headers = cols.map(c => c.schema ? c.schema.name : nameColLabel)
+    const headers = cols.map(c => c.schema ? c.schema.name : nameColLabel.value)
     const descriptions = cols.map(c =>
       (c.schema?.config?.description as string | undefined)?.trim() ?? ''
     )

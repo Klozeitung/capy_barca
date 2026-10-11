@@ -7,8 +7,16 @@
  * State structure
  * ---------------
  * schemas      – keyed by databaseId → ordered list of PropertySchema
- * entries      – keyed by databaseId → ordered list of DatabaseEntry
+ * entries      – keyed by databaseId → the complete, unpaginated entry list,
+ *                present only once ``fetchEntries`` has loaded it
+ * queryResults – keyed by a caller-chosen result key → the (possibly
+ *                paginated) entries of one view query, see ``queryEntries``
  * allDatabases – flat list of DatabaseInfo (id + title), used by relation pickers
+ *
+ * The two entry caches are kept apart on purpose. A view shows a page of its
+ * database; a relation picker or an export needs the whole database or a
+ * search across it. When both shared one cache, a view's page silently became
+ * everything the picker could see.
  *
  * View types (DatabaseView, ViewFilter, ViewSort) are defined here so that
  * DatabaseBlock and any future view-aware components share a single source of
@@ -20,11 +28,22 @@
  * After any mutation the affected collection is re-fetched from the server.
  * This keeps the implementation simple and correct; optimistic updates would
  * complicate conflict handling for schema renames and position reordering.
+ * The exceptions are cell values (``upsertValue``) and entry titles, which
+ * arrive over the WebSocket: both are patched in place in every cached copy
+ * of the entry, so views, side panels and relation chips agree immediately.
  */
-import { ref } from 'vue'
+import { ref, onScopeDispose } from 'vue'
 import { defineStore } from 'pinia'
 import { apiClient } from '@/api/client'
 import { useDatabaseTemplatesStore } from '@/stores/databaseTemplates'
+import { useBlockStore } from '@/stores/blocks'
+import { WS_BLOCK_EVENT, type BlockEventPayload } from '@/stores/ws'
+
+/** Pseudo schema id of the lead property, the entry title shown as "Name". */
+export const NAME_COL_KEY = '__name__'
+
+/** Page size for the entry search used by relation pickers. */
+export const ENTRY_SEARCH_LIMIT = 50
 
 // ── Domain types ──────────────────────────────────────────────────────────────
 
@@ -281,9 +300,9 @@ export interface FilterGroup {
  *   at the end; stale IDs (deleted schemas) are silently skipped.
  *
  * ``colWidths`` – maps column key → pixel width, persisted after every resize.
- * ``hiddenColumns`` – list of column keys (schema IDs) hidden in this view.
- *   Readonly system schemas are hidden by default in every new view.
- *   The Name column ('__name__') is never added here; it is always visible.
+ * ``hiddenColumns`` – list of column keys hidden in this view: schema IDs and,
+ *   when the Name column is hidden, '__name__'. Readonly system schemas are
+ *   hidden by default in every new view; the Name column is shown by default.
  */
 export interface DatabaseView {
   id: string
@@ -307,7 +326,7 @@ export interface DatabaseView {
    */
   filters?: ViewFilter[]
   sorts: ViewSort[]
-  /** Schema IDs that are not rendered in this view. */
+  /** Column keys (schema IDs or '__name__') that are not rendered in this view. */
   hiddenColumns: string[]
   /**
    * For viewType === 'calendar': the schema ID of the date property used to
@@ -435,14 +454,47 @@ export interface EntryQueryResponse {
   total: number
 }
 
+/** Result of ``searchEntries``. */
+export interface EntrySearchResult {
+  /** Matching entries ordered by title, at most the requested limit. */
+  entries: DatabaseEntry[]
+  /** Number of matching entries in the whole database. */
+  total: number
+  /**
+   * Whether an entry titled exactly like the query exists (case-insensitive),
+   * determined across the whole database, not just the returned page. Always
+   * false for an empty query.
+   */
+  exactMatch: boolean
+}
+
+/** One view's query result, held under the key its caller chose. */
+interface QueryResultSlot {
+  databaseId: string
+  entries: DatabaseEntry[]
+}
+
 // ── Store ─────────────────────────────────────────────────────────────────────
 
 export const useDatabaseStore = defineStore('database', () => {
   /** Property schemas keyed by database block ID. */
   const schemas = ref<Record<string, PropertySchema[]>>({})
 
-  /** Database entries (page-type blocks + values) keyed by database block ID. */
+  /**
+   * Complete entry lists (page-type blocks + values) keyed by database block
+   * ID. Only ``fetchEntries`` writes here, so a list present here is always
+   * the whole database.
+   */
   const entries = ref<Record<string, DatabaseEntry[]>>({})
+
+  /**
+   * View query results keyed by the caller's result key. A view's result is
+   * paginated and filtered, so it lives apart from ``entries`` and never
+   * stands in for the whole database. Kept in the store rather than in the
+   * view so that ``upsertValue`` and title updates reach the rows a view
+   * renders.
+   */
+  const queryResults = ref<Record<string, QueryResultSlot>>({})
 
   /** All database blocks available in the workspace (id + title). */
   const allDatabases = ref<DatabaseInfo[]>([])
@@ -617,7 +669,8 @@ export const useDatabaseStore = defineStore('database', () => {
     return result
   }
 
-  async function queryEntries(
+  /** POST /entries/query with the request serialised to the API's snake_case. */
+  async function _postQuery(
     databaseId: string,
     request: EntryQueryRequest,
   ): Promise<EntryQueryResponse> {
@@ -641,12 +694,94 @@ export const useDatabaseStore = defineStore('database', () => {
       limit: request.limit ?? 10_000,
       offset: request.offset ?? 0,
     }
-    const result = await apiClient.post<EntryQueryResponse>(
+    return apiClient.post<EntryQueryResponse>(
       `/api/databases/${databaseId}/entries/query`,
       body,
     )
-    entries.value[databaseId] = result.entries
-    return result
+  }
+
+  /** Latest request per result key; see ``queryEntries``. */
+  const _queryGenerations = new Map<string, number>()
+
+  /**
+   * Run a server-side view query: filtered, sorted and paginated.
+   *
+   * When *resultKey* is given, the result is kept under that key in
+   * ``queryResults`` and the returned ``entries`` are that stored list, so
+   * in-place updates from ``upsertValue`` and from WebSocket title changes
+   * reach the rows the caller renders. A view passes a key unique to itself
+   * and releases it with ``releaseQueryResult`` when it unmounts.
+   *
+   * The result never touches ``entries``: a page of a database must not be
+   * mistaken for the whole of it.
+   */
+  async function queryEntries(
+    databaseId: string,
+    request: EntryQueryRequest,
+    resultKey?: string,
+  ): Promise<EntryQueryResponse> {
+    if (!resultKey) return _postQuery(databaseId, request)
+
+    // Queries for one key can overlap (a search typed quickly). Only the
+    // latest may replace the stored result, or an older response arriving
+    // late would put stale rows back.
+    const generation = (_queryGenerations.get(resultKey) ?? 0) + 1
+    _queryGenerations.set(resultKey, generation)
+    const result = await _postQuery(databaseId, request)
+    if (_queryGenerations.get(resultKey) !== generation) return result
+    queryResults.value[resultKey] = { databaseId, entries: result.entries }
+    return { entries: queryResults.value[resultKey].entries, total: result.total }
+  }
+
+  /** Drop the view query result held under *resultKey*. */
+  function releaseQueryResult(resultKey: string): void {
+    delete queryResults.value[resultKey]
+    _queryGenerations.delete(resultKey)
+  }
+
+  /**
+   * Search a database's entries by title on the server.
+   *
+   * Used by relation pickers, which must reach every entry of the target
+   * database rather than whatever page some view happens to have loaded. An
+   * empty query lists the first *limit* entries by title.
+   *
+   * ``exactMatch`` decides whether a picker may offer to create an entry with
+   * the query as its title. It is answered from the returned page when that
+   * page holds every match, and by one more exact-title query otherwise, so an
+   * existing entry past the page is never duplicated.
+   *
+   * Nothing is cached: search results are transient and belong to the picker.
+   */
+  async function searchEntries(
+    databaseId: string,
+    query: string,
+    limit: number = ENTRY_SEARCH_LIMIT,
+  ): Promise<EntrySearchResult> {
+    const q = query.trim()
+    const nameFilter = (operator: FilterOperator): EntryQueryFilterGroup[] =>
+      q ? [{ conjunction: 'and', filters: [{ schemaId: NAME_COL_KEY, operator, value: q }] }] : []
+
+    const result = await _postQuery(databaseId, {
+      filter_groups: nameFilter('contains'),
+      sorts: [{ schemaId: NAME_COL_KEY, direction: 'asc' }],
+      limit,
+    })
+    if (!q) return { entries: result.entries, total: result.total, exactMatch: false }
+
+    const wanted = q.toLowerCase()
+    let exactMatch = result.entries.some(
+      (e) => ((e.content?.title as string | undefined) ?? '').toLowerCase() === wanted,
+    )
+    if (!exactMatch && result.total > result.entries.length) {
+      const exact = await _postQuery(databaseId, {
+        filter_groups: nameFilter('eq'),
+        sorts: [],
+        limit: 1,
+      })
+      exactMatch = exact.total > 0
+    }
+    return { entries: result.entries, total: result.total, exactMatch }
   }
 
   /**
@@ -804,14 +939,11 @@ export const useDatabaseStore = defineStore('database', () => {
     value: Record<string, unknown> | null,
   ): Promise<void> {
     // Optimistic local update so the cell does not flicker back on blur.
-    // Covers both regular entries and entry_template blocks.
-    const localEntries = entries.value[databaseId]
-    if (localEntries) {
-      const row = localEntries.find((e) => e.id === entryId)
-      if (row) {
-        row.values[schemaId] = value
-      }
-    }
+    // Reaches the full entry list as well as every view result of this
+    // database, and entry_template blocks below.
+    _forEachCachedEntry(entryId, databaseId, (row) => {
+      row.values[schemaId] = value
+    })
 
     // Also update the template store optimistically so the property picker
     // in DatabaseTemplateEditor reflects changes immediately.
@@ -830,6 +962,107 @@ export const useDatabaseStore = defineStore('database', () => {
     )
   }
 
+  // ── In-place entry updates ────────────────────────────────────────────────
+
+  /**
+   * Call *fn* with every cached copy of *entryId*: in the full entry lists and
+   * in every view result. Restricted to one database when *databaseId* is
+   * given; WebSocket events do not say which database a block belongs to, so
+   * they search all of them.
+   */
+  function _forEachCachedEntry(
+    entryId: string,
+    databaseId: string | null,
+    fn: (row: DatabaseEntry) => void,
+  ): void {
+    const lists: DatabaseEntry[][] = []
+    if (databaseId !== null) {
+      const full = entries.value[databaseId]
+      if (full) lists.push(full)
+    } else {
+      lists.push(...Object.values(entries.value))
+    }
+    for (const slot of Object.values(queryResults.value)) {
+      if (databaseId === null || slot.databaseId === databaseId) lists.push(slot.entries)
+    }
+    for (const list of lists) {
+      const row = list.find((e) => e.id === entryId)
+      if (row) fn(row)
+    }
+  }
+
+  /**
+   * Database a trashed relation target belonged to, remembered so that its
+   * chip can be resolved again when the entry is restored.
+   */
+  const trashedRelationDatabase = new Map<string, string>()
+
+  /**
+   * Apply a block WebSocket event to the entry caches and relation chips.
+   *
+   * * ``content_updated`` / ``reverted`` – the entry's content (its title) is
+   *   copied into every cached row and into its relation-chip descriptor.
+   *   This is what makes a rename show on chips in other views at once, on
+   *   this client and on every other one.
+   * * ``state_changed`` – trashing drops the chip; restoring resolves it again.
+   * * ``purged`` – the chip is dropped for good.
+   *
+   * Values are not patched here: value changes arrive as
+   * ``database_entries_updated``, which views answer by re-querying.
+   */
+  function _applyEntryEvent(payload: BlockEventPayload): void {
+    const id = payload.block_id
+    if (!id) return
+
+    switch (payload.event_type) {
+      case 'content_updated':
+      case 'reverted': {
+        const after = payload.after as { content?: Record<string, unknown> | null } | null
+        if (!after || !('content' in after)) return
+        const content = after.content ?? null
+        _forEachCachedEntry(id, null, (row) => {
+          row.content = content
+        })
+        const descriptor = relationTitles.value[id]
+        if (descriptor) {
+          const title = content?.title
+          descriptor.title = typeof title === 'string' ? title : null
+        }
+        return
+      }
+      case 'state_changed': {
+        const state = (payload.after as { state?: string } | null)?.state
+        if (state === 'trash') {
+          const descriptor = relationTitles.value[id]
+          if (descriptor) {
+            trashedRelationDatabase.set(id, descriptor.database_id)
+            delete relationTitles.value[id]
+          }
+        } else if (state === 'active') {
+          const databaseId = trashedRelationDatabase.get(id)
+          if (databaseId) {
+            trashedRelationDatabase.delete(id)
+            resolveEntryTitles(databaseId, [id], true)
+          }
+        }
+        return
+      }
+      case 'purged':
+        trashedRelationDatabase.delete(id)
+        delete relationTitles.value[id]
+        return
+    }
+  }
+
+  function _onWsBlockEvent(e: Event): void {
+    _applyEntryEvent((e as CustomEvent<BlockEventPayload>).detail)
+  }
+
+  window.addEventListener(WS_BLOCK_EVENT, _onWsBlockEvent)
+  onScopeDispose(() => {
+    window.removeEventListener(WS_BLOCK_EVENT, _onWsBlockEvent)
+  })
+
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   /** Return the schemas for *databaseId*, or an empty array if not loaded. */
@@ -837,9 +1070,42 @@ export const useDatabaseStore = defineStore('database', () => {
     return schemas.value[databaseId] ?? []
   }
 
-  /** Return the entries for *databaseId*, or an empty array if not loaded. */
+  /**
+   * Return the cached entries of *databaseId*, for looking up an entry that is
+   * already on screen.
+   *
+   * This is the complete list once ``fetchEntries`` has loaded it. Until then
+   * it is the union of the rows the open views of that database have loaded,
+   * so a side panel opened from a table finds its entry without fetching the
+   * whole database. It is therefore not a list of every entry; a caller that
+   * needs every entry calls ``fetchEntries``, and one that needs to search
+   * calls ``searchEntries``.
+   */
   function getEntries(databaseId: string): DatabaseEntry[] {
-    return entries.value[databaseId] ?? []
+    const full = entries.value[databaseId]
+    if (full) return full
+    const seen = new Set<string>()
+    const union: DatabaseEntry[] = []
+    for (const slot of Object.values(queryResults.value)) {
+      if (slot.databaseId !== databaseId) continue
+      for (const entry of slot.entries) {
+        if (seen.has(entry.id)) continue
+        seen.add(entry.id)
+        union.push(entry)
+      }
+    }
+    return union
+  }
+
+  /**
+   * The custom label of a database's lead property ("Name"), or ``null`` when
+   * none is set and the localized default applies. Stored as ``nameLabel`` in
+   * the database block's content; read from the block store, so the database
+   * block must be loaded there.
+   */
+  function getNameLabel(databaseId: string): string | null {
+    const raw = useBlockStore().blocks[databaseId]?.content?.nameLabel
+    return typeof raw === 'string' && raw.trim() ? raw.trim() : null
   }
 
   /**
@@ -880,6 +1146,7 @@ export const useDatabaseStore = defineStore('database', () => {
     // State
     schemas,
     entries,
+    queryResults,
     allDatabases,
     relationTitles,
     relationKeyValues,
@@ -899,11 +1166,17 @@ export const useDatabaseStore = defineStore('database', () => {
     // Entry operations
     fetchEntries,
     queryEntries,
+    releaseQueryResult,
+    searchEntries,
     createEntry,
     duplicateEntry,
     seedReadonlySchemas,
     upsertValue,
     getEntries,
+    getNameLabel,
+
+    // WebSocket (exposed for tests)
+    _applyEntryEvent,
 
     // Relation-chip title resolution
     resolveEntryTitles,

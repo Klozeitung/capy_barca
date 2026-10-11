@@ -10,7 +10,6 @@ from datetime import datetime as _DT, timezone
 import pytest
 
 from app.blocks.formula_engine import (
-    MAX_EXPRESSION_LENGTH,
     MAX_OPERATOR_CHAIN,
     MAX_PARSE_DEPTH,
     MAX_POWER_EXPONENT,
@@ -1927,7 +1926,6 @@ def test_deep_nesting_does_not_reach_the_interpreter_stack():
     and are not prepared for one.
     """
     expression = _nested(400)
-    assert len(expression) < MAX_EXPRESSION_LENGTH
     result = evaluate(expression, {})
     assert result.error is not None
     assert "recursion" not in result.error.lower()
@@ -1950,8 +1948,31 @@ def test_deep_nesting_raises_formula_error_on_every_entry_point(entry_point):
 def test_deep_function_nesting_is_a_formula_error():
     """Nesting through function arguments counts the same as parentheses."""
     expression = "abs(" * 200 + "1" + ")" * 200
-    assert len(expression) < MAX_EXPRESSION_LENGTH
     assert "nested too deeply" in err(expression)
+
+
+def _nested_ifs(levels: int) -> str:
+    """
+    A chain of else-if branches written as nested if() calls, each with a
+    compound condition: the shape long hand-written formulas actually take.
+    """
+    expression = "0"
+    for i in range(levels):
+        expression = f"if(prop('A') > {i} and prop('B') == 'x', {i}, {expression})"
+    return expression
+
+
+def test_realistic_else_if_chain_well_past_the_old_bound_is_accepted():
+    """
+    The previous cap of 64 levels refused a chain of about 62 nested if()
+    calls. The current cap leaves room for twice that.
+    """
+    assert ev(_nested_ifs(120), {"A": 0, "B": "y"}) == 0
+    assert ev(_nested_ifs(120), {"A": 200, "B": "x"}) == 119
+
+
+def test_else_if_chain_past_the_limit_is_a_formula_error():
+    assert "nested too deeply" in err(_nested_ifs(MAX_PARSE_DEPTH + 5), {"A": 0})
 
 
 def test_long_right_associative_chain_is_a_formula_error():
@@ -1982,37 +2003,37 @@ def test_very_long_prefix_run_does_not_reach_the_interpreter_stack():
 
 
 # ── Expression length ─────────────────────────────────────────────────────────
+#
+# Length is not a bound of its own. A long expression is only refused when its
+# structure is: too deeply nested or too long an operator chain.
 
 
-def test_expression_at_the_length_limit_is_accepted():
-    """
-    Padded with whitespace rather than more operators. A chain long enough to
-    fill the character budget runs into the chain bound first, which is a
-    different rule and has its own tests below.
-    """
-    expression = "1 + 1" + " " * (MAX_EXPRESSION_LENGTH - 5)
-    assert len(expression) == MAX_EXPRESSION_LENGTH
-    assert evaluate(expression, {}).error is None
+def _long_flat_ifs(pairs: int) -> str:
+    """An ifs() with many condition/value pairs: long, but flat."""
+    branches = ", ".join(f"prop('N') == {i}, 'value {i}'" for i in range(pairs))
+    return f"ifs({branches}, 'none')"
 
 
-def test_expression_past_the_length_limit_is_refused():
-    expression = "1" + "+1" * MAX_EXPRESSION_LENGTH
-    assert "too long" in err(expression)
+def test_long_flat_expression_is_accepted():
+    expression = _long_flat_ifs(400)
+    assert len(expression) > 10_000
+    assert ev(expression, {"N": 399}) == "value 399"
+    assert ev(expression, {"N": 1000}) == "none"
 
 
 @pytest.mark.parametrize("entry_point", [validate_syntax, extract_prop_names])
-def test_over_long_expression_raises_formula_error_on_every_entry_point(entry_point):
-    with pytest.raises(FormulaError):
-        entry_point("1" + "+1" * MAX_EXPRESSION_LENGTH)
+def test_long_flat_expression_passes_every_entry_point(entry_point):
+    entry_point(_long_flat_ifs(400))
 
 
-def test_length_limit_is_checked_before_parsing():
-    """
-    Refused by the lexer, so an over-long expression never reaches the parser
-    at all rather than being parsed and then rejected.
-    """
-    message = err("(" * MAX_EXPRESSION_LENGTH + ")" * MAX_EXPRESSION_LENGTH)
-    assert "too long" in message
+def test_long_expression_padded_with_whitespace_is_accepted():
+    assert ev("1 + 1" + " " * 50_000) == 2
+
+
+def test_long_expression_still_bounded_by_structure():
+    """Removing the length cap must not remove the structural bounds."""
+    message = err("(" * 5000 + ")" * 5000)
+    assert "nested too deeply" in message
 
 
 # ── Operator chains ───────────────────────────────────────────────────────────
@@ -2038,12 +2059,10 @@ def test_chain_past_the_bound_is_a_formula_error():
 
 def test_very_long_chain_does_not_reach_the_interpreter_stack():
     """
-    This is the case that exposed the gap: the expression is well inside the
-    character budget and its parse depth never exceeds two, yet evaluating it
-    used to exhaust the stack.
+    This is the case that exposed the gap: the expression is short and its
+    parse depth never exceeds two, yet evaluating it used to exhaust the stack.
     """
     expression = "1" + "+1" * 900
-    assert len(expression) < MAX_EXPRESSION_LENGTH
     result = evaluate(expression, {})
     assert result.error is not None
     assert "recursion" not in result.error.lower()

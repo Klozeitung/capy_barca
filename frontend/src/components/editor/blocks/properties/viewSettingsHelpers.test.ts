@@ -8,11 +8,25 @@ function col(key: string, name = key, isName = false): OrderableColumn {
 const NAME = '__name__'
 
 describe('orderAndSplitColumns', () => {
-  it('keeps the name column first and always visible', () => {
+  it('keeps the name column first when it is shown', () => {
     const cols = [col('z', 'Zeta'), col(NAME, 'Name', true), col('a', 'Alpha')]
-    const { visible, hidden } = orderAndSplitColumns(cols, new Set([NAME]))
+    const { visible, hidden } = orderAndSplitColumns(cols, new Set())
     expect(visible[0].key).toBe(NAME)
     expect(hidden.some((c) => c.key === NAME)).toBe(false)
+  })
+
+  it('moves a hidden name column to the front of the hidden group', () => {
+    const cols = [col('z', 'Zeta'), col(NAME, 'Name', true), col('a', 'Alpha')]
+    const { visible, hidden } = orderAndSplitColumns(cols, new Set([NAME, 'z']))
+    expect(visible.map((c) => c.key)).toEqual(['a'])
+    expect(hidden.map((c) => c.key)).toEqual([NAME, 'z'])
+  })
+
+  it('pins the name column regardless of its label', () => {
+    // A renamed lead property still leads; it is not sorted alphabetically.
+    const cols = [col('a', 'Alpha'), col(NAME, 'Zulu date', true)]
+    const { visible } = orderAndSplitColumns(cols, new Set())
+    expect(visible.map((c) => c.key)).toEqual([NAME, 'a'])
   })
 
   it('sorts visible non-name columns alphabetically by name', () => {

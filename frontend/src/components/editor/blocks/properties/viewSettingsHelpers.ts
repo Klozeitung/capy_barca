@@ -18,14 +18,14 @@ export interface OrderableColumn {
   key: string
   /** Display name, used as the alphabetical sort key. */
   name: string
-  /** True for the always-visible name column, which has no visibility toggle. */
+  /** True for the lead (name) column, which is pinned first in its group. */
   isName: boolean
 }
 
 export interface SplitColumns<T extends OrderableColumn> {
-  /** Visible columns. The name column is always first, the rest alphabetical. */
+  /** Visible columns. The name column comes first when shown, the rest alphabetical. */
   visible: T[]
-  /** Hidden columns, alphabetical. */
+  /** Hidden columns. The name column comes first when hidden, the rest alphabetical. */
   hidden: T[]
 }
 
@@ -34,15 +34,14 @@ export interface SplitColumns<T extends OrderableColumn> {
  * and a hidden group.
  *
  * Ordering rules:
- * - The name column is always first within the visible group; it is the
- *   entry's anchor and is never folded into the alphabetical run.
+ * - The name column is the entry's anchor and is never folded into the
+ *   alphabetical run: it comes first in whichever group it falls into.
  * - Every other column is sorted alphabetically by `name`, case-insensitively
  *   and with natural numeric ordering (e.g. "Item 2" before "Item 10").
  *
  * Splitting rules:
- * - The name column is always visible (it has no toggle).
- * - Every other column lands in `hidden` when its key is in `hiddenKeys`,
- *   otherwise in `visible`. Each group keeps the alphabetical order.
+ * - Every column, the name column included, lands in `hidden` when its key is
+ *   in `hiddenKeys`, otherwise in `visible`. Each group keeps the order above.
  *
  * The input array is never mutated.
  */
@@ -60,7 +59,10 @@ export function orderAndSplitColumns<T extends OrderableColumn>(
   const visible: T[] = []
   const hidden: T[] = []
 
-  if (nameCol) visible.push(nameCol)
+  if (nameCol) {
+    if (hiddenKeys.has(nameCol.key)) hidden.push(nameCol)
+    else visible.push(nameCol)
+  }
 
   for (const col of rest) {
     if (hiddenKeys.has(col.key)) hidden.push(col)

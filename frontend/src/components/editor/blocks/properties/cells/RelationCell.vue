@@ -6,11 +6,12 @@
  *
  * Value shape: ``{ related_ids: string[] }`` or ``null``.
  *
- * The component fetches entries of the target database on every picker open,
- * so entries never go stale when several views share the same target database
- * or it was mutated since the last open. Cached entries are shown immediately
- * while a silent background refresh runs; the explicit loading spinner appears
- * only when nothing is cached yet.
+ * The picker searches the target database on the server (``searchEntries``),
+ * debounced while the user types. It therefore reaches every entry of the
+ * target database, however many there are and whichever page any view of it
+ * has loaded. "Create & link" is offered only when the server confirms that no
+ * entry carries exactly the typed title, so an existing entry is never
+ * duplicated. Results are fetched afresh on every open and never cached.
  *
  * Chip titles, however, are resolved through the store's dedicated
  * ``resolveEntryTitles`` path (POST /entries/resolve-titles), not from the
@@ -192,8 +193,6 @@ function nuanceStyle(label: string): Record<string, string> {
   return opt?.color ? optionColorStyle(opt.color) : {}
 }
 
-const targetEntries = computed(() => dbStore.getEntries(targetDatabaseId.value))
-
 /**
  * IDs rendered as chips in the cell.
  *
@@ -308,21 +307,69 @@ const isCreating = ref(false)
 const activeIndex = ref(-1)
 const searchQuery = ref('')
 
-const filteredEntries = computed(() => {
-  const q = searchQuery.value.trim().toLowerCase()
-  if (!q) return targetEntries.value
-  return targetEntries.value.filter(e =>
-    ((e.content?.title as string | undefined) ?? '').toLowerCase().includes(q),
-  )
+// ── Server-side search ────────────────────────────────────────────────────────
+
+/** Delay between the last keystroke and the search request. */
+const SEARCH_DEBOUNCE_MS = 200
+
+/** Entries matching the current search, as returned by the server. */
+const filteredEntries = ref<DatabaseEntry[]>([])
+/** Number of matches in the whole target database; may exceed those shown. */
+const searchTotal = ref(0)
+/** Whether an entry titled exactly like the searched query exists. */
+const exactMatch = ref(false)
+/** The trimmed query the current results belong to, or null before any. */
+const searchedQuery = ref<string | null>(null)
+
+let _searchTimer: ReturnType<typeof setTimeout> | null = null
+/** Incremented per request; a response that is no longer the latest is dropped. */
+let _searchSeq = 0
+
+async function runSearch(): Promise<void> {
+  if (_searchTimer) { clearTimeout(_searchTimer); _searchTimer = null }
+  const query = searchQuery.value.trim()
+  const seq = ++_searchSeq
+  // The spinner is only for the very first load; later searches keep the
+  // previous results on screen until the new ones arrive.
+  if (searchedQuery.value === null) isLoading.value = true
+  try {
+    const result = await dbStore.searchEntries(targetDatabaseId.value, query)
+    if (seq !== _searchSeq) return
+    filteredEntries.value = result.entries
+    searchTotal.value = result.total
+    exactMatch.value = result.exactMatch
+    searchedQuery.value = query
+  } catch {
+    if (seq !== _searchSeq) return
+    // On failure offer nothing to create: without an answer from the server
+    // there is no way to know the entry does not exist already.
+    filteredEntries.value = []
+    searchTotal.value = 0
+    exactMatch.value = true
+    searchedQuery.value = query
+  } finally {
+    if (seq === _searchSeq) isLoading.value = false
+  }
+}
+
+function scheduleSearch(): void {
+  if (_searchTimer) clearTimeout(_searchTimer)
+  _searchTimer = setTimeout(() => { runSearch() }, SEARCH_DEBOUNCE_MS)
+}
+
+watch(searchQuery, () => {
+  if (isOpen.value) scheduleSearch()
 })
 
+/**
+ * Offer "create & link" only once the results for exactly the typed query are
+ * in and the server reported no entry with that title. Showing it earlier
+ * would let a fast Enter create a duplicate of an entry that exists.
+ */
 const showCreate = computed(() => {
   const q = searchQuery.value.trim()
   if (!q) return false
-  // Show "create" when the query doesn't exactly match any existing entry title.
-  return !targetEntries.value.some(
-    e => ((e.content?.title as string | undefined) ?? '').toLowerCase() === q.toLowerCase(),
-  )
+  return searchedQuery.value === q && !exactMatch.value
 })
 
 watch(filteredEntries, () => { activeIndex.value = -1 })
@@ -362,23 +409,27 @@ async function openPicker() {
     pickerStyle.value = { top: `${top}px`, left: `${left}px` }
   }
   searchQuery.value = ''
+  filteredEntries.value = []
+  searchTotal.value = 0
+  exactMatch.value = false
+  searchedQuery.value = null
   isOpen.value = true
 
-  // Always fetch so entries stay in sync across views.
-  if (targetEntries.value.length === 0) {
-    isLoading.value = true
-    await dbStore.fetchEntries(targetDatabaseId.value)
-    isLoading.value = false
-  } else {
-    dbStore.fetchEntries(targetDatabaseId.value)
-  }
-
+  // Fresh results on every open, so entries never go stale across views.
+  const initialSearch = runSearch()
   await nextTick()
   searchInputEl.value?.focus()
+  await initialSearch
 }
 
 function closePicker() {
   isOpen.value = false
+  // Cleared while closed so the query watcher does not search again on reopen.
+  searchQuery.value = ''
+  if (_searchTimer) { clearTimeout(_searchTimer); _searchTimer = null }
+  // Invalidate any request still in flight.
+  _searchSeq++
+  isLoading.value = false
 }
 
 // Close the picker on Escape via the shared overlay stack, so it wins over any
@@ -411,6 +462,7 @@ watch(isOpen, async (open) => {
 
 onUnmounted(() => {
   document.removeEventListener('click', onDocumentClick)
+  if (_searchTimer) clearTimeout(_searchTimer)
 })
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -421,12 +473,12 @@ function isSelected(entryId: string): boolean {
 
 function getEntryTitle(id: string): string {
   // Prefer the dedicated relation-title resolver; it is independent of
-  // the target database's display limit. Fall back to the paginated entry
-  // cache (covers freshly created entries before their resolve completes) and
+  // the target database's display limit. Fall back to the current search
+  // results (covers an entry just picked before its resolve completes) and
   // finally to the localized "untitled" label.
   const resolved = dbStore.getRelationTitle(id)
   if (resolved) return resolved
-  const found = targetEntries.value.find(e => e.id === id)
+  const found = filteredEntries.value.find(e => e.id === id)
   return (found?.content?.title as string | undefined) || t('main.untitled')
 }
 
@@ -495,12 +547,14 @@ function removeRelated(entryId: string, event: MouseEvent) {
  */
 async function createAndLink() {
   const title = searchQuery.value.trim()
-  if (!title || isCreating.value) return
+  if (!title || isCreating.value || !showCreate.value) return
   isCreating.value = true
   try {
     const newEntry = await dbStore.createEntry(targetDatabaseId.value)
     await blockStore.updateBlock(newEntry.id, { content: { title } })
-    await dbStore.fetchEntries(targetDatabaseId.value)
+    // Resolve the new chip's title right away rather than waiting for the
+    // relatedIds watcher, which would skip an id it has not seen resolve.
+    await dbStore.resolveEntryTitles(targetDatabaseId.value, [newEntry.id], true)
     toggleEntry(newEntry.id)
     searchQuery.value = ''
     await nextTick()
@@ -528,9 +582,8 @@ function closeSideView(): void {
   sideViewEntryId.value = null
 }
 
-/** Re-fetch target entries after an edit so chips stay up to date. */
+/** Refresh chip titles and key values after the linked entry was edited. */
 async function onSideViewRefresh(): Promise<void> {
-  await dbStore.fetchEntries(targetDatabaseId.value)
   // Force-refresh resolved chip titles so an edited (or trashed) linked entry
   // updates its chip immediately.
   await dbStore.resolveEntryTitles(targetDatabaseId.value, relatedIds.value, true)
@@ -748,7 +801,7 @@ async function onSideViewRefresh(): Promise<void> {
             ref="searchInputEl"
             v-model="searchQuery"
             class="rel-cell__search"
-            placeholder="Search..."
+            :placeholder="t('db.relation.searchPlaceholder')"
             @keydown.up.prevent="onKeyNav"
             @keydown.down.prevent="onKeyNav"
             @keydown.enter.prevent="
@@ -788,12 +841,20 @@ async function onSideViewRefresh(): Promise<void> {
             {{ (e.content?.title as string | undefined) || t('main.untitled') }}
           </button>
 
-          <!-- Empty state: no entries in target DB at all -->
+          <!-- Empty state: the target database has no entries at all -->
           <div
-            v-if="targetEntries.length === 0 && !showCreate"
+            v-if="filteredEntries.length === 0 && searchedQuery === ''"
             class="rel-cell__picker-empty"
           >
             {{ t('db.relation.noEntries') }}
+          </div>
+
+          <!-- More matches than shown: ask for a narrower search -->
+          <div
+            v-if="searchTotal > filteredEntries.length"
+            class="rel-cell__picker-empty"
+          >
+            {{ t('db.relation.moreResults', { shown: filteredEntries.length, total: searchTotal }) }}
           </div>
 
           <!-- No search match — offer create & link -->
@@ -807,7 +868,7 @@ async function onSideViewRefresh(): Promise<void> {
             @mouseenter="activeIndex = filteredEntries.length"
           >
             <Icon icon="mdi:plus-circle-outline" width="13" height="13" />
-            Create & link "{{ searchQuery.trim() }}"
+            {{ t('db.relation.createAndLink', { query: searchQuery.trim() }) }}
           </button>
         </template>
         <button class="rel-cell__picker-close" @click="closePicker">

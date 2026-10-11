@@ -17,11 +17,14 @@ from app.blocks.computed import (
     _aggregate,
     _extract_scalar,
     _infer_result_type,
+    _relation_target_database_id,
     _resolve_formula_relation,
     _resolve_relation_entries,
     _serialise_formula_result,
     build_dependency_graph,
     compute_all_for_entry,
+    compute_cross_db_dependents,
+    compute_same_db_rollup_dependents,
     has_any_cycle,
     topological_order,
 )
@@ -113,7 +116,8 @@ def test_dependency_graph_survives_a_pathological_expression():
     assert graph[schema_id] == set()
 
 
-def test_dependency_graph_survives_an_over_long_expression():
+def test_dependency_graph_survives_an_over_long_operator_chain():
+    """A chain past the operator-chain bound is unparseable, not a 500."""
     schema_id = uuid.uuid4()
     schemas = [
         SchemaLike(
@@ -124,6 +128,18 @@ def test_dependency_graph_survives_an_over_long_expression():
         )
     ]
     assert build_dependency_graph(schemas)[schema_id] == set()
+
+
+def test_dependency_graph_resolves_a_long_flat_expression():
+    """Length alone no longer stops the graph from seeing a formula's deps."""
+    price = SchemaLike(id=uuid.uuid4(), name="Price", type="number", config=None)
+    branches = ", ".join(f"prop('Price') == {i}, {i}" for i in range(300))
+    formula = SchemaLike(
+        id=uuid.uuid4(), name="Bucket", type="formula",
+        config={"expression": f"ifs({branches}, -1)"},
+    )
+    graph = build_dependency_graph([price, formula])
+    assert graph[formula.id] == {price.id}
 
 
 def test_infer_result_type_date_range_dict():
@@ -1554,3 +1570,182 @@ def test_rollup_over_date_show_original_emits_iso_string(db, database_block, ent
     pv = repo.get_value(db, entry.id, roll.id)
     assert pv is not None
     assert pv.value.get("result") == ["2025-01-01"]
+
+
+# ─── Dependent recompute after a linked entry changes ─────────────────────────
+#
+# A formula that passes a relation through stores the linked entries' titles.
+# When a linked entry changes, the entries that read it are recomputed; that
+# has to include databases that reach the entry only through a formula, not
+# just through a rollup.
+
+
+def _rename(db, block, title: str) -> None:
+    block.content = {"title": title}
+    db.commit()
+
+
+def _chip_titles(db, entry_id, schema_id) -> list[str]:
+    pv = repo.get_value(db, entry_id, schema_id)
+    return [chip["title"] for chip in pv.value["result"]]
+
+
+def test_relation_target_of_a_plain_relation():
+    target = uuid.uuid4()
+    schema = SchemaLike(
+        id=uuid.uuid4(), name="Rel", type="relation",
+        config={"target_database_id": str(target)},
+    )
+    assert _relation_target_database_id(schema) == target
+
+
+def test_relation_target_of_a_hierarchy_mirror_is_its_own_database():
+    class _Hierarchy:
+        type = "parent_item"
+        config: dict = {}
+        database_id = uuid.uuid4()
+
+    assert _relation_target_database_id(_Hierarchy()) == _Hierarchy.database_id
+
+
+def test_relation_target_missing_or_malformed_is_none():
+    no_target = SchemaLike(id=uuid.uuid4(), name="R", type="relation", config={})
+    bad_target = SchemaLike(
+        id=uuid.uuid4(), name="R", type="relation",
+        config={"target_database_id": "not-a-uuid"},
+    )
+    assert _relation_target_database_id(no_target) is None
+    assert _relation_target_database_id(bad_target) is None
+
+
+@pytest.fixture
+def formula_only_link(db, workspace):
+    """
+    ``people`` reaches ``places`` only through a formula, no rollup at all.
+    """
+    places = repo.create_block(db, type="database", position=1.0, parent_id=workspace.id)
+    place = repo.create_block(db, type="page", position=1.0, parent_id=places.id)
+    place.content = {"title": "Old"}
+    people = repo.create_block(db, type="database", position=2.0, parent_id=workspace.id)
+    rel = repo.create_schema(
+        db, database_id=people.id, name="Place", type="relation",
+        position=1.0, config={"target_database_id": str(places.id)},
+    )
+    formula = repo.create_schema(
+        db, database_id=people.id, name="Where", type="formula",
+        position=2.0, config={"expression": "prop('Place')"},
+    )
+    linked = repo.create_block(db, type="page", position=1.0, parent_id=people.id)
+    unlinked = repo.create_block(db, type="page", position=2.0, parent_id=people.id)
+    repo.upsert_value(
+        db, page_id=linked.id, schema_id=rel.id,
+        value={"related_ids": [str(place.id)]},
+    )
+    db.commit()
+    compute_all_for_entry(db, people.id, linked.id)
+    compute_all_for_entry(db, people.id, unlinked.id)
+    db.commit()
+    return places, place, people, linked, unlinked, formula
+
+
+def test_cross_db_cascade_finds_formula_only_dependents(db, formula_only_link):
+    places, place, people, linked, unlinked, formula = formula_only_link
+    _rename(db, place, "New")
+
+    affected = compute_cross_db_dependents(db, places.id, place.id)
+    db.commit()
+
+    assert affected == [people.id]
+    assert _chip_titles(db, linked.id, formula.id) == ["New"]
+
+
+def test_cross_db_cascade_skips_entries_not_linking_to_the_change(db, formula_only_link):
+    places, place, people, linked, unlinked, formula = formula_only_link
+    before = repo.get_value(db, unlinked.id, formula.id).value
+    _rename(db, place, "New")
+
+    compute_cross_db_dependents(db, places.id, place.id)
+    db.commit()
+
+    assert repo.get_value(db, unlinked.id, formula.id).value == before
+
+
+def test_cross_db_cascade_ignores_formulas_without_a_relation(db, workspace):
+    places = repo.create_block(db, type="database", position=1.0, parent_id=workspace.id)
+    place = repo.create_block(db, type="page", position=1.0, parent_id=places.id)
+    other = repo.create_block(db, type="database", position=2.0, parent_id=workspace.id)
+    repo.create_schema(
+        db, database_id=other.id, name="Calc", type="formula",
+        position=1.0, config={"expression": "1 + 1"},
+    )
+    db.commit()
+
+    assert compute_cross_db_dependents(db, places.id, place.id) == []
+
+
+def test_cross_db_cascade_still_finds_rollup_dependents(db, workspace):
+    places = repo.create_block(db, type="database", position=1.0, parent_id=workspace.id)
+    place = repo.create_block(db, type="page", position=1.0, parent_id=places.id)
+    place.content = {"title": "Old"}
+    people = repo.create_block(db, type="database", position=2.0, parent_id=workspace.id)
+    rel = repo.create_schema(
+        db, database_id=people.id, name="Place", type="relation",
+        position=1.0, config={"target_database_id": str(places.id)},
+    )
+    region = repo.create_schema(
+        db, database_id=places.id, name="Region", type="text", position=1.0, config=None,
+    )
+    roll = repo.create_schema(
+        db, database_id=people.id, name="Regions", type="rollup", position=2.0,
+        config={
+            "relation_schema_id": str(rel.id),
+            "rollup_schema_id": str(region.id),
+            "function": "show_original",
+        },
+    )
+    repo.upsert_value(db, page_id=place.id, schema_id=region.id, value={"text": "North"})
+    person = repo.create_block(db, type="page", position=1.0, parent_id=people.id)
+    repo.upsert_value(
+        db, page_id=person.id, schema_id=rel.id,
+        value={"related_ids": [str(place.id)]},
+    )
+    db.commit()
+    compute_all_for_entry(db, people.id, person.id)
+    db.commit()
+    assert repo.get_value(db, person.id, roll.id).value["result"] == ["North"]
+    repo.upsert_value(db, page_id=place.id, schema_id=region.id, value={"text": "South"})
+    db.commit()
+
+    assert compute_cross_db_dependents(db, places.id, place.id) == [people.id]
+    db.commit()
+    assert repo.get_value(db, person.id, roll.id).value["result"] == ["South"]
+
+
+def test_same_db_cascade_finds_formula_dependents(db, database_block):
+    target = repo.create_block(db, type="page", position=1.0, parent_id=database_block.id)
+    target.content = {"title": "Old"}
+    rel = repo.create_schema(
+        db, database_id=database_block.id, name="Rel", type="relation",
+        position=1.0, config={"target_database_id": str(database_block.id)},
+    )
+    formula = repo.create_schema(
+        db, database_id=database_block.id, name="RelFormula", type="formula",
+        position=2.0, config={"expression": "prop('Rel')"},
+    )
+    source = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
+    repo.upsert_value(
+        db, page_id=source.id, schema_id=rel.id,
+        value={"related_ids": [str(target.id)]},
+    )
+    db.commit()
+    compute_all_for_entry(db, database_block.id, source.id)
+    db.commit()
+    _rename(db, target, "New")
+
+    assert compute_same_db_rollup_dependents(db, database_block.id, target.id) is True
+    db.commit()
+    assert _chip_titles(db, source.id, formula.id) == ["New"]
+
+
+def test_same_db_cascade_without_dependents_reports_nothing(db, database_block, entry):
+    assert compute_same_db_rollup_dependents(db, database_block.id, entry.id) is False

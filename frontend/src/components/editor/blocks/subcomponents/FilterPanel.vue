@@ -23,6 +23,8 @@ defineProps<{
   schemas:          PropertySchema[]
   displayedEntries: DatabaseEntry[]
   nameColKey:       string
+  /** Custom label of the name column; the localized default when absent. */
+  nameLabel?:       string | null
 }>()
 
 const emit = defineEmits<{
@@ -82,6 +84,7 @@ const { t } = useI18n()
           :schemas="schemas"
           :displayed-entries="displayedEntries"
           :name-col-key="nameColKey"
+          :name-label="nameLabel"
           @schema-change="(v: string) => emit('filter-schema-change', group.id, filter.id, v)"
           @operator-change="(v: FilterOperator) => emit('filter-operator-change', group.id, filter.id, v)"
           @value-change="(v: string) => emit('filter-value-change', group.id, filter.id, v)"

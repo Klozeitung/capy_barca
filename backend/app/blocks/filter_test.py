@@ -261,6 +261,77 @@ class TestTextSchemaFilters:
         assert e1.id in _ids(entries) and e2.id in _ids(entries)
 
 
+# ─── LIKE wildcards in user input ─────────────────────────────────────────────
+#
+# Text operators are built on LIKE. The characters LIKE treats as wildcards
+# ('%', '_') and its escape character ('\') must match themselves when they
+# appear in what the user typed.
+
+
+class TestLikeWildcardsMatchLiterally:
+
+    @pytest.fixture
+    def titles(self, db, database_block):
+        percent = _entry(db, database_block, "50% done", pos=1.0)
+        plain = _entry(db, database_block, "500 done", pos=2.0)
+        underscore = _entry(db, database_block, "a_b", pos=3.0)
+        axb = _entry(db, database_block, "axb", pos=4.0)
+        backslash = _entry(db, database_block, "c:\\temp", pos=5.0)
+        return percent, plain, underscore, axb, backslash
+
+    def test_name_contains_percent(self, db, database_block, titles):
+        percent, plain, *_ = titles
+        entries, _ = _run(db, database_block, [_name_f("contains", "50%")])
+        assert _ids(entries) == {percent.id}
+
+    def test_name_contains_underscore(self, db, database_block, titles):
+        _, _, underscore, axb, _ = titles
+        entries, _ = _run(db, database_block, [_name_f("contains", "a_b")])
+        assert _ids(entries) == {underscore.id}
+
+    def test_name_contains_backslash(self, db, database_block, titles):
+        *_, backslash = titles
+        entries, _ = _run(db, database_block, [_name_f("contains", "c:\\t")])
+        assert _ids(entries) == {backslash.id}
+
+    def test_name_starts_with_percent(self, db, database_block, titles):
+        percent, *_ = titles
+        entries, _ = _run(db, database_block, [_name_f("starts_with", "50%")])
+        assert _ids(entries) == {percent.id}
+
+    def test_name_ends_with_underscore_pattern(self, db, database_block, titles):
+        _, _, underscore, *_ = titles
+        entries, _ = _run(db, database_block, [_name_f("ends_with", "_b")])
+        assert _ids(entries) == {underscore.id}
+
+    def test_name_not_contains_underscore(self, db, database_block, titles):
+        _, _, underscore, axb, _ = titles
+        entries, _ = _run(db, database_block, [_name_f("not_contains", "a_b")])
+        assert underscore.id not in _ids(entries)
+        assert axb.id in _ids(entries)
+
+    def test_text_schema_contains_percent(self, db, database_block):
+        schema = _schema(db, database_block, "Note", "text")
+        hit = _entry(db, database_block, pos=1.0)
+        miss = _entry(db, database_block, pos=2.0)
+        _val(db, hit, schema, {"text": "rate 5%"})
+        _val(db, miss, schema, {"text": "rate 50"})
+        flt = _f(str(schema.id), "contains", "5%", schema_type="text")
+        entries, _ = _run(db, database_block, [flt])
+        assert _ids(entries) == {hit.id}
+
+    def test_multi_select_contains_underscore(self, db, database_block):
+        config = {"mode": "multiple", "options": [{"label": "a_b"}, {"label": "axb"}]}
+        schema = _schema(db, database_block, "Tags", "select", config)
+        hit = _entry(db, database_block, pos=1.0)
+        miss = _entry(db, database_block, pos=2.0)
+        _val(db, hit, schema, {"options": ["a_b"]})
+        _val(db, miss, schema, {"options": ["axb"]})
+        flt = _f(str(schema.id), "contains", "a_b", schema_type="select", schema_config=config)
+        entries, _ = _run(db, database_block, [flt])
+        assert _ids(entries) == {hit.id}
+
+
 # ─── Number schema filters ────────────────────────────────────────────────────
 
 
@@ -744,12 +815,12 @@ class TestDatetimeSchemaFilters:
 
 
 
-# ─── date 'between' filter (#60) ──────────────────────────────────────────────
+# ─── date 'between' filter ───────────────────────────────────────────────────
 
 
 class TestDateBetweenFilter:
     """
-    #60: 'between' matches entries whose date falls within [start, end] inclusive.
+    'between' matches entries whose date falls within [start, end] inclusive.
 
     Both bounds are exact ISO date strings stored in value / value2.
     An incomplete filter (either bound missing) must silently return no results
@@ -1140,14 +1211,14 @@ class TestSortEdgeCases:
         assert titles == sorted(titles, key=str.lower, reverse=True)
 
 
-# ─── Date sort tests (#70) ────────────────────────────────────────────────────
+# ─── Date sort tests ────────────────────────────────────────────────────────
 
 
 class TestDateSort:
     """
     Sort tests for date, created_time and last_edited_time schema types.
 
-    Issue #70: dates were being compared as plain strings with no guarantee of
+    Dates were being compared as plain strings with no guarantee of
     chronological order.  The sort must compare ISO-8601 values chronologically,
     NOT alphabetically by the display format (DD.MM.YYYY would put "17.09.2189"
     before "18.03.2000" because "17" < "18").
@@ -1156,7 +1227,7 @@ class TestDateSort:
     # ── date type ─────────────────────────────────────────────────────────────
 
     def test_sort_by_date_asc_is_chronological(self, db, database_block):
-        """#70: 18.03.2000 (2000-03-18) must sort BEFORE 17.09.2189 (2189-09-17)."""
+        """18.03.2000 (2000-03-18) must sort BEFORE 17.09.2189 (2189-09-17)."""
         schema  = _schema(db, database_block, "Due", "date")
         e_early = _entry(db, database_block, pos=1.0)
         e_late  = _entry(db, database_block, pos=2.0)

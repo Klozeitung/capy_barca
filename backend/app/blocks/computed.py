@@ -987,76 +987,145 @@ def compute_all_for_entry(
 # ─── Cross-database cascade ───────────────────────────────────────────────────
 
 
-def compute_cross_db_dependents(
+def _relation_target_database_id(rel_schema: Any) -> Optional[uuid.UUID]:
+    """
+    Return the database a relation-style schema points at, or ``None``.
+
+    ``relation`` schemas store their target in ``config.target_database_id``.
+    The hierarchy mirrors ``parent_item`` / ``sub_item`` carry no target in
+    their config because they always link entries of their own database, so
+    their own ``database_id`` is the target.
+    """
+    target_raw = (rel_schema.config or {}).get("target_database_id")
+    if target_raw:
+        try:
+            return uuid.UUID(str(target_raw))
+        except ValueError:
+            return None
+    if rel_schema.type in ("parent_item", "sub_item"):
+        return getattr(rel_schema, "database_id", None)
+    return None
+
+
+def _relations_read_by_computed(
     db: Session,
+    schemas: list[Any],
     source_database_id: uuid.UUID,
-    changed_entry_id: uuid.UUID,
-) -> list[uuid.UUID]:
+) -> set[uuid.UUID]:
     """
-    Re-evaluate entries in *other* databases whose rollup schemas pull data
-    from ``source_database_id`` and reference ``changed_entry_id``.
+    Return the IDs of relation-style schemas among *schemas* that point at
+    ``source_database_id`` and are read by a computed schema of the same
+    database.
 
-    Walk:
-      1. For every database that is not ``source_database_id``:
-      2.   For every rollup schema in that database:
-      3.     Resolve its ``relation_schema_id`` → check whether the relation
-             points to ``source_database_id``.
-      4.     If yes, find entries whose relation value includes
-             ``changed_entry_id`` and call ``compute_all_for_entry`` for them.
+    Two readers exist:
 
-    Returns the list of database IDs (de-duplicated, excluding
-    ``source_database_id``) in which at least one entry was recomputed.
-    The caller is responsible for committing and broadcasting.
+    * a rollup reads the relation named by ``config.relation_schema_id``;
+    * a formula reads every relation it references through ``prop('…')``.
+
+    The formula case matters because a formula that passes a relation through
+    stores the linked entries' titles in its result. Without it, a database
+    that shows those titles only through a formula would never be found and
+    its stored titles would stay stale after the linked entry is renamed.
     """
-    all_databases = repo.list_databases(db)
-    affected_db_ids: list[uuid.UUID] = []
-    changed_entry_id_str = str(changed_entry_id)
+    by_id: dict[uuid.UUID, Any] = {s.id: s for s in schemas}
+    by_name: dict[str, Any] = {s.name: s for s in schemas}
 
-    for database in all_databases:
-        if database.id == source_database_id:
-            continue
+    def _points_at_source(rel_schema: Any) -> bool:
+        return _relation_target_database_id(rel_schema) == source_database_id
 
-        schemas = repo.list_schemas(db, database.id)
-
-        # Collect rollup schemas that pull from source_database_id
-        for schema in schemas:
-            if schema.type != "rollup":
-                continue
-            config = schema.config or {}
-            rel_id_raw = config.get("relation_schema_id")
+    result: set[uuid.UUID] = set()
+    for schema in schemas:
+        if schema.type == "rollup":
+            rel_id_raw = (schema.config or {}).get("relation_schema_id")
             if not rel_id_raw:
                 continue
             try:
                 rel_schema_id = uuid.UUID(str(rel_id_raw))
             except ValueError:
                 continue
+            rel_schema = by_id.get(rel_schema_id) or repo.get_schema(db, rel_schema_id)
+            if rel_schema is not None and _points_at_source(rel_schema):
+                result.add(rel_schema.id)
 
-            rel_schema = repo.get_schema(db, rel_schema_id)
-            if rel_schema is None:
-                continue
-            target_raw = (rel_schema.config or {}).get("target_database_id")
-            if not target_raw:
+        elif schema.type == "formula":
+            expression = (schema.config or {}).get("expression", "")
+            if not expression:
                 continue
             try:
-                target_db_id = uuid.UUID(str(target_raw))
-            except ValueError:
+                names = extract_prop_names(expression)
+            except FormulaError:
                 continue
+            for name in names:
+                dep = by_name.get(name)
+                if (
+                    dep is not None
+                    and dep.type in _RELATION_COL_TYPES
+                    and _points_at_source(dep)
+                ):
+                    result.add(dep.id)
 
-            if target_db_id != source_database_id:
+    return result
+
+
+def _entries_linking_to(
+    db: Session,
+    database_id: uuid.UUID,
+    rel_schema_ids: set[uuid.UUID],
+    changed_entry_id: uuid.UUID,
+) -> list[uuid.UUID]:
+    """
+    Return the active entries of *database_id* whose value for any relation in
+    *rel_schema_ids* includes ``changed_entry_id``, in position order.
+    """
+    if not rel_schema_ids:
+        return []
+    changed_entry_id_str = str(changed_entry_id)
+    linking: list[uuid.UUID] = []
+    for entry in repo.list_children(db, database_id, state="active"):
+        for rel_schema_id in rel_schema_ids:
+            rel_pv = repo.get_value(db, entry.id, rel_schema_id)
+            if not rel_pv or not rel_pv.value:
                 continue
+            if _entry_id_in_relation_value(changed_entry_id_str, rel_pv.value):
+                linking.append(entry.id)
+                break
+    return linking
 
-            # This rollup pulls from source_database_id via rel_schema_id.
-            # Find entries in this database whose relation value contains
-            # changed_entry_id.
-            entries = repo.list_children(db, database.id, state="active")
-            for entry in entries:
-                rel_pv = repo.get_value(db, entry.id, rel_schema_id)
-                if not rel_pv or not rel_pv.value:
-                    continue
-                if _entry_id_in_relation_value(changed_entry_id_str, rel_pv.value):
-                    compute_all_for_entry(db, database.id, entry.id)
-                    if database.id not in affected_db_ids:
-                        affected_db_ids.append(database.id)
+
+def compute_cross_db_dependents(
+    db: Session,
+    source_database_id: uuid.UUID,
+    changed_entry_id: uuid.UUID,
+) -> list[uuid.UUID]:
+    """
+    Re-evaluate entries in *other* databases whose computed schemas read data
+    from ``source_database_id`` and link to ``changed_entry_id``.
+
+    Walk:
+      1. For every database that is not ``source_database_id``:
+      2.   Collect the relations into ``source_database_id`` that a rollup or a
+           formula of that database reads (see ``_relations_read_by_computed``).
+      3.   Find entries whose value for one of those relations includes
+           ``changed_entry_id`` and call ``compute_all_for_entry`` for each,
+           once per entry.
+
+    Returns the list of database IDs (de-duplicated, excluding
+    ``source_database_id``) in which at least one entry was recomputed.
+    The caller is responsible for committing and broadcasting.
+    """
+    affected_db_ids: list[uuid.UUID] = []
+
+    for database in repo.list_databases(db):
+        if database.id == source_database_id:
+            continue
+
+        schemas = repo.list_schemas(db, database.id)
+        rel_schema_ids = _relations_read_by_computed(db, schemas, source_database_id)
+        entry_ids = _entries_linking_to(db, database.id, rel_schema_ids, changed_entry_id)
+        for entry_id in entry_ids:
+            compute_all_for_entry(db, database.id, entry_id)
+        if entry_ids and database.id not in affected_db_ids:
+            affected_db_ids.append(database.id)
 
     return affected_db_ids
 
@@ -1067,61 +1136,24 @@ def compute_same_db_rollup_dependents(
     changed_entry_id: uuid.UUID,
 ) -> bool:
     """
-    Re-evaluate entries in the *same* database whose rollup schemas aggregate
+    Re-evaluate entries in the *same* database whose computed schemas read
     data from a self-referential relation that includes ``changed_entry_id``.
 
     ``compute_cross_db_dependents`` explicitly skips the source database, so
     this function fills that gap.  Whenever entry A changes, any sibling entry
-    B in the same database that has a rollup pulling from A via a
+    B in the same database that has a rollup or formula reading A via a
     self-referential relation must also be recomputed.
 
     Returns ``True`` if at least one entry was recomputed.
     The caller is responsible for committing.
     """
     schemas = repo.list_schemas(db, database_id)
-    schema_by_id: dict[uuid.UUID, Any] = {s.id: s for s in schemas}
-    changed_entry_id_str = str(changed_entry_id)
+    rel_schema_ids = _relations_read_by_computed(db, schemas, database_id)
     recomputed = False
-
-    for schema in schemas:
-        if schema.type != "rollup":
+    for entry_id in _entries_linking_to(db, database_id, rel_schema_ids, changed_entry_id):
+        if entry_id == changed_entry_id:
+            # The changed entry itself is recomputed by its caller.
             continue
-        config = schema.config or {}
-        rel_id_raw = config.get("relation_schema_id")
-        if not rel_id_raw:
-            continue
-        try:
-            rel_schema_id = uuid.UUID(str(rel_id_raw))
-        except ValueError:
-            continue
-
-        rel_schema = schema_by_id.get(rel_schema_id)
-        if rel_schema is None:
-            continue
-        target_raw = (rel_schema.config or {}).get("target_database_id")
-        if not target_raw:
-            continue
-        try:
-            target_db_id = uuid.UUID(str(target_raw))
-        except ValueError:
-            continue
-
-        if target_db_id != database_id:
-            # Cross-database relation — handled by compute_cross_db_dependents.
-            continue
-
-        # Self-referential relation: find sibling entries that link to
-        # changed_entry_id and recompute each one.
-        entries = repo.list_children(db, database_id, state="active")
-        for entry in entries:
-            if entry.id == changed_entry_id:
-                # Already recomputed by compute_all_for_entry — skip.
-                continue
-            rel_pv = repo.get_value(db, entry.id, rel_schema_id)
-            if not rel_pv or not rel_pv.value:
-                continue
-            if _entry_id_in_relation_value(changed_entry_id_str, rel_pv.value):
-                compute_all_for_entry(db, database_id, entry.id)
-                recomputed = True
-
+        compute_all_for_entry(db, database_id, entry_id)
+        recomputed = True
     return recomputed

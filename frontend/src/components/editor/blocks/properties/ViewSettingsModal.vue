@@ -24,7 +24,7 @@ import { ref, computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import type { DatabaseView, PropertySchema, ViewType } from '@/stores/database'
-import { useDatabaseStore, clampFrozenColumns, MAX_FROZEN_COLUMNS } from '@/stores/database'
+import { useDatabaseStore, clampFrozenColumns, MAX_FROZEN_COLUMNS, NAME_COL_KEY } from '@/stores/database'
 import { getPropertyTypeIcon, isReadonlyPropertyType } from '@/stores/propertyTypes'
 import { orderAndSplitColumns } from './viewSettingsHelpers'
 
@@ -199,11 +199,17 @@ function setViewType(type: ViewType): void {
 
 // ── Working copy of hiddenColumns ─────────────────────────────────────────────
 
-// Name column is always visible — no toggle for it.
-const NAME_COL_KEY = '__name__'
-
+// The name column can be hidden like any other, which suits views where the
+// entry title carries no information (e.g. one row per date with a value).
+// It is listed under its custom label when the database has one.
 const allColumns = computed(() => [
-  { key: NAME_COL_KEY, name: t('db.nameColumn'), icon: 'mdi:text', isReadonly: false, isName: true },
+  {
+    key: NAME_COL_KEY,
+    name: dbStore.getNameLabel(props.databaseId) ?? t('db.nameColumn'),
+    icon: 'mdi:text',
+    isReadonly: false,
+    isName: true,
+  },
   ...props.schemas.map(s => ({
     key: s.id,
     name: s.name,
@@ -215,7 +221,7 @@ const allColumns = computed(() => [
 
 /**
  * Columns sorted alphabetically by name and split into a visible group and a
- * hidden group (#29). The split is reactive to ``hidden`` so toggling a
+ * hidden group. The split is reactive to ``hidden`` so toggling a
  * property immediately moves its row between the two groups.
  */
 const orderedColumns = computed(() =>
@@ -252,8 +258,9 @@ function hideAllReadonly() {
 }
 
 function hideAll() {
-  // Hide every toggleable column. The name column has no toggle and is always
-  // visible, so it is never added to the hidden set.
+  // Hide every property column. The name column is left as it is: hiding it
+  // is a deliberate per-view decision, made with its own toggle, not a side
+  // effect of a bulk action.
   const updated = new Set(hidden.value)
   for (const col of allColumns.value) {
     if (!col.isName) updated.add(col.key)
@@ -418,9 +425,7 @@ function hideAll() {
                 <span v-if="col.isReadonly" class="vsm__prop-badge">
                   {{ t('db.viewSettings.system') }}
                 </span>
-                <!-- Name column is always visible, no toggle -->
                 <button
-                  v-if="!col.isName"
                   class="vsm__toggle"
                   :class="{ 'vsm__toggle--on': isVisible(col.key) }"
                   :title="isVisible(col.key) ? t('db.viewSettings.hide') : t('db.viewSettings.show')"
@@ -432,9 +437,6 @@ function hideAll() {
                     height="15"
                   />
                 </button>
-                <span v-else class="vsm__toggle-always">
-                  <Icon icon="mdi:eye-outline" width="15" height="15" />
-                </span>
               </li>
 
               <!-- Hidden group label -->
@@ -728,7 +730,7 @@ function hideAll() {
   background: var(--color-surface);
 }
 
-/* "Not shown" indicator: hidden properties are dimmed (#29). */
+/* "Not shown" indicator: hidden properties are dimmed. */
 .vsm__prop-row--hidden {
   opacity: 0.5;
 }
@@ -737,7 +739,7 @@ function hideAll() {
   opacity: 0.8;
 }
 
-/* Group separators inside the property list (#29). */
+/* Group separators inside the property list. */
 .vsm__prop-group-label {
   list-style: none;
   font-size: 0.66rem;
@@ -796,15 +798,6 @@ function hideAll() {
 
 .vsm__toggle--on {
   color: var(--color-accent);
-}
-
-.vsm__toggle-always {
-  padding: 3px;
-  color: var(--color-accent);
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  opacity: 0.5;
 }
 
 /* ── View type grid ──────────────────────────────────────────────────────── */
