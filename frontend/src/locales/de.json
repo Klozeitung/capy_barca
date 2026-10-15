@@ -819,7 +819,7 @@
     "databasesDates": "Das Datumsformat legst du unter Einstellungen → Datum fest; es gilt überall, eine einzelne Datums-Property kann es in ihren Einstellungen überschreiben. Datumsfelder decken die Jahre 1 bis 9999 ab.",
     "databasesGroups": "In der Eigenschaften-Seitenleiste lassen sich Properties zu Gruppen zusammenfassen. Eigene Gruppen kannst du ein- und ausklappen, per Doppelklick umbenennen und über den Ziehpunkt rechts im Gruppenkopf per Drag-and-drop neu anordnen. Die Standardgruppe bleibt immer oben.",
     "databasesKeying": "Eine Relations-Eigenschaft kann gekeyt werden: Wähle eine Eigenschaft der Zieldatenbank, nach der die Einträge der Relation sortiert werden. Der gewählte Wert wird neben jedem Eintrag angezeigt.",
-    "databasesViewDescription": "Jede Ansicht kann eine eigene Beschreibung haben: Klicke in den Bereich unter der Toolbar, um sie zu schreiben, und klicke daneben, um sie zu speichern. Sie wird mit exportiert — im PDF unter dem Titel, in CSV und Excel im Kopf der ersten Spalte."
+    "databasesViewDescription": "Jede Ansicht kann eine eigene Beschreibung haben: Klicke in den Bereich unter der Toolbar, um sie zu schreiben, und klicke daneben, um sie zu speichern. Sie wird mit exportiert — im PDF unter dem Titel, in CSV und Excel im Kopf der Name-Spalte (bzw. der ersten Spalte, solange die Name-Spalte ausgeblendet ist)."
   },
   "synchedBlock": {
     "originLabel": "Synced",

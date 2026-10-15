@@ -11,10 +11,11 @@
  * View description
  * ----------------
  * A view's description travels with every table export. CSV and XLSX carry it
- * as a bracketed marker on the header of the lead column (the first exported
- * column), alongside the property-description markers; the PDF prints it
- * beneath the title, as the view shows it beneath the toolbar. A view without
- * a description exports exactly as before.
+ * as a bracketed marker on the header of the lead property, the name column,
+ * wherever the view places it; while the name column is hidden, the first
+ * exported column takes the marker instead. The PDF prints it beneath the
+ * title, as the view shows it beneath the toolbar. A view without a
+ * description exports exactly as before.
  *
  * Keyed relations
  * ---------------
@@ -30,7 +31,7 @@ import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import type { PropertySchema, DatabaseEntry, DatabaseView } from '@/stores/database'
 import type { Block } from '@/stores/blocks'
-import { useDatabaseStore } from '@/stores/database'
+import { useDatabaseStore, NAME_COL_KEY } from '@/stores/database'
 import { useUsersStore } from '@/stores/users'
 import {
   displayValue,
@@ -75,23 +76,36 @@ export function appendViewDescriptionMarker(
 }
 
 /**
+ * Index of the column that carries the view description in a CSV / XLSX
+ * header: the name column, wherever the view has moved it. Columns can be
+ * reordered freely, so the position alone says nothing. While the name column
+ * is hidden, the first exported column stands in for it; ``-1`` when nothing
+ * is exported at all.
+ */
+export function viewDescriptionColumnIndex(columnKeys: string[]): number {
+  const nameIndex = columnKeys.indexOf(NAME_COL_KEY)
+  if (nameIndex !== -1) return nameIndex
+  return columnKeys.length > 0 ? 0 : -1
+}
+
+/**
  * Build the header row of a CSV / XLSX export.
  *
  * Every header carries its property description (see ``buildCsvHeader``); the
- * first one, the lead column, additionally carries the view description. The
- * lead column is whichever column the view exports first: the name column
- * while it is shown, otherwise the first visible property.
+ * header at *leadIndex* (see ``viewDescriptionColumnIndex``) additionally
+ * carries the view description.
  */
 export function buildExportHeaderRow(
   headers: string[],
   descriptions: string[],
+  leadIndex: number,
   viewDescription: string,
   descriptionPrefix: string,
   viewDescriptionPrefix: string,
 ): string[] {
   return headers.map((h, i) => {
     const withDescription = buildCsvHeader(h, descriptions[i] ?? '', descriptionPrefix)
-    return i === 0
+    return i === leadIndex
       ? appendViewDescriptionMarker(withDescription, viewDescription, viewDescriptionPrefix)
       : withDescription
   })
@@ -277,10 +291,12 @@ export function useExport(options: {
   async function getExportData(): Promise<{
     headers: string[]
     descriptions: string[]
+    leadIndex: number
     viewDescription: string
     rows: string[][]
   }> {
     const cols    = orderedColumns.value
+    const leadIndex = viewDescriptionColumnIndex(cols.map(c => c.key))
     const headers = cols.map(c => c.schema ? c.schema.name : nameColLabel.value)
     const descriptions = cols.map(c =>
       (c.schema?.config?.description as string | undefined)?.trim() ?? ''
@@ -300,18 +316,20 @@ export function useExport(options: {
           : (entry.content?.title as string | undefined) ?? ''
       )
     )
-    return { headers, descriptions, viewDescription, rows }
+    return { headers, descriptions, leadIndex, viewDescription, rows }
   }
 
   /** Header row shared by the CSV and XLSX exports. */
   function exportHeaderRow(
     headers: string[],
     descriptions: string[],
+    leadIndex: number,
     viewDescription: string,
   ): string[] {
     return buildExportHeaderRow(
       headers,
       descriptions,
+      leadIndex,
       viewDescription,
       t('db.export.descriptionPrefix'),
       t('db.export.viewDescriptionPrefix'),
@@ -339,8 +357,8 @@ export function useExport(options: {
   // ── Exports ─────────────────────────────────────────────────────────────────
 
   async function exportCSV(): Promise<void> {
-    const { headers, descriptions, viewDescription, rows } = await getExportData()
-    const headerRow = exportHeaderRow(headers, descriptions, viewDescription)
+    const { headers, descriptions, leadIndex, viewDescription, rows } = await getExportData()
+    const headerRow = exportHeaderRow(headers, descriptions, leadIndex, viewDescription)
     const escape = (s: string) => `"${s.replace(/"/g, '""')}"`
     const lines  = [headerRow, ...rows].map((row) => row.map(escape).join(','))
     _downloadBlob(lines.join('\r\n'), `${dbFilename()}.csv`, 'text/csv;charset=utf-8;')
@@ -348,8 +366,8 @@ export function useExport(options: {
   }
 
   async function exportExcel(): Promise<void> {
-    const { headers, descriptions, viewDescription, rows } = await getExportData()
-    const headerRow = exportHeaderRow(headers, descriptions, viewDescription)
+    const { headers, descriptions, leadIndex, viewDescription, rows } = await getExportData()
+    const headerRow = exportHeaderRow(headers, descriptions, leadIndex, viewDescription)
     const ws = XLSX.utils.aoa_to_sheet([headerRow, ...rows])
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'Data')
