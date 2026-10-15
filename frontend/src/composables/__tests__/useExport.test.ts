@@ -184,3 +184,65 @@ describe('buildEntryTitleLookup', () => {
     expect(lookup('e1')).toBe('First')
   })
 })
+
+// ── View description in CSV / XLSX headers ────────────────────────────────────
+//
+// The view description rides on the header of the lead column, the first
+// exported column, as a bracketed marker next to the property-description
+// marker. A view without a description exports exactly as before.
+
+import { appendViewDescriptionMarker, buildExportHeaderRow } from '@/composables/useExport'
+
+describe('appendViewDescriptionMarker', () => {
+  it('returns the header unchanged for an empty description', () => {
+    expect(appendViewDescriptionMarker('Name', '', 'Global description')).toBe('Name')
+    expect(appendViewDescriptionMarker('Name', '  \n ', 'Global description')).toBe('Name')
+  })
+
+  it('appends a bracketed marker', () => {
+    expect(appendViewDescriptionMarker('Name', 'Open tasks', 'Global description')).toBe(
+      'Name [Global description: Open tasks]',
+    )
+  })
+
+  it('collapses line breaks into single spaces', () => {
+    expect(
+      appendViewDescriptionMarker('Name', 'First line\n\n  Second line', 'Global description'),
+    ).toBe('Name [Global description: First line Second line]')
+  })
+
+  it('uses the supplied prefix verbatim', () => {
+    expect(appendViewDescriptionMarker('Name', 'x', 'Note')).toBe('Name [Note: x]')
+  })
+})
+
+describe('buildExportHeaderRow', () => {
+  it('leaves headers untouched without any descriptions', () => {
+    expect(buildExportHeaderRow(['Name', 'Status'], ['', ''], '', 'Description', 'Global description'))
+      .toEqual(['Name', 'Status'])
+  })
+
+  it('puts the view description on the first header only', () => {
+    expect(
+      buildExportHeaderRow(['Name', 'Status'], ['', ''], 'Open tasks', 'Description', 'Global description'),
+    ).toEqual(['Name [Global description: Open tasks]', 'Status'])
+  })
+
+  it('keeps property descriptions on every column', () => {
+    expect(
+      buildExportHeaderRow(['Name', 'Status'], ['', 'Workflow stage'], '', 'Description', 'Global description'),
+    ).toEqual(['Name', 'Status [Description: Workflow stage]'])
+  })
+
+  it('places the view marker after the lead column\'s own description', () => {
+    // With the name column hidden, the first exported column is a property
+    // that may carry a description of its own.
+    expect(
+      buildExportHeaderRow(['Status'], ['Workflow stage'], 'Open tasks', 'Description', 'Global description'),
+    ).toEqual(['Status [Description: Workflow stage] [Global description: Open tasks]'])
+  })
+
+  it('returns an empty row when no column is exported', () => {
+    expect(buildExportHeaderRow([], [], 'Open tasks', 'Description', 'Global description')).toEqual([])
+  })
+})

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   clampFrozenColumns,
   isStickyHeaderEnabled,
+  normalizeViewDescription,
   MAX_FROZEN_COLUMNS,
 } from '@/stores/database'
 
@@ -58,5 +59,28 @@ describe('isStickyHeaderEnabled', () => {
 
   it('respects an explicit false (opt-out)', () => {
     expect(isStickyHeaderEnabled({ stickyHeader: false })).toBe(false)
+  })
+})
+
+// ── normalizeViewDescription ──────────────────────────────────────────────────
+
+describe('normalizeViewDescription', () => {
+  it('trims surrounding whitespace', () => {
+    expect(normalizeViewDescription('  Open tasks  ')).toBe('Open tasks')
+  })
+
+  it('keeps inner line breaks', () => {
+    expect(normalizeViewDescription('First line\nSecond line')).toBe('First line\nSecond line')
+  })
+
+  it('converts Windows and old Mac line endings to plain newlines', () => {
+    expect(normalizeViewDescription('a\r\nb\rc')).toBe('a\nb\nc')
+  })
+
+  it('returns an empty string for blank input', () => {
+    expect(normalizeViewDescription('')).toBe('')
+    expect(normalizeViewDescription('   \n\t ')).toBe('')
+    expect(normalizeViewDescription(undefined)).toBe('')
+    expect(normalizeViewDescription(null)).toBe('')
   })
 })

@@ -16,8 +16,9 @@
  *
  * Subcomponents
  * -------------
- * FilterPanel  – filter UI (template + styles live in DatabaseBlock.css)
- * SortPanel    – sort UI
+ * FilterPanel      – filter UI (template + styles live in DatabaseBlock.css)
+ * SortPanel        – sort UI
+ * ViewDescription  – per-view description between toolbar and view content
  */
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -51,6 +52,7 @@ import { useExport } from '@/composables/useExport'
 // ── Subcomponents ─────────────────────────────────────────────────────────────
 import FilterPanel from './subcomponents/FilterPanel.vue'
 import SortPanel from './subcomponents/SortPanel.vue'
+import ViewDescription from './subcomponents/ViewDescription.vue'
 
 // ── Other components ──────────────────────────────────────────────────────────
 import AddSchemaPanel from './properties/AddSchemaPanel.vue'
@@ -407,6 +409,7 @@ const {
   onTabDragStart, onTabDragOver, onTabDragLeave, onTabDrop, onTabDragEnd,
   openViewTabMenu, promptDeleteView, cancelDeleteView, confirmDeleteView,
   duplicateView, onViewUpdated,
+  saveViewDescription,
   openViewSettings, closeViewSettings,
   addSort, removeSort, onSortSchemaChange, onSortDirectionChange,
 } = vm
@@ -1157,7 +1160,7 @@ async function saveTitle() {
   const current = (block.value?.content?.title as string | undefined) ?? ''
   if (trimmed === current) return
   await blockStore.updateBlock(props.blockId, {
-    content: { ...(block.value?.content ?? {}), title: trimmed },
+    content: { ...block.value?.content, title: trimmed },
   })
 }
 
@@ -1185,7 +1188,7 @@ async function onSchemaIconUpdate(schema: PropertySchema, newIcon: string | null
   schemaIconPickerKey.value  = null
   schemaIconPickerRect.value = null
   await dbStore.updateSchema(props.blockId, schema.id, {
-    config: { ...(schema.config ?? {}), icon: newIcon ?? undefined },
+    config: { ...schema.config, icon: newIcon ?? undefined },
   })
 }
 
@@ -1239,7 +1242,7 @@ async function saveNameEdit(entry: DatabaseEntry) {
   const current = (entry.content?.title as string | undefined) ?? ''
   if (trimmed === current) return
   await blockStore.updateBlock(entry.id, {
-    content: { ...(entry.content ?? {}), title: trimmed },
+    content: { ...entry.content, title: trimmed },
   })
   await queryFromActiveView()
 }
@@ -1544,7 +1547,7 @@ const aggPickerKey = ref<string | null>(null)
 function setAggregation(colKey: string, fn: AggregationType): void {
   const view = activeView.value
   if (!view) return
-  view.columnAggregations = { ...(view.columnAggregations ?? {}), [colKey]: fn }
+  view.columnAggregations = { ...view.columnAggregations, [colKey]: fn }
   saveViews()
   aggPickerKey.value = null
 }
@@ -2025,6 +2028,20 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
           </div>
         </div>
       </div>
+
+      <!-- ── View description ───────────────────────────────────────────── -->
+      <!--
+        Keyed by view so switching tabs never carries an open edit over. The
+        component reports the id of the view it was rendered for, so a blur
+        caused by clicking another tab still saves into the edited view.
+      -->
+      <ViewDescription
+        v-if="activeView"
+        :key="activeView.id"
+        :view-id="activeView.id"
+        :description="activeView.description ?? ''"
+        @save="saveViewDescription"
+      />
 
       <!-- ── Table view ──────────────────────────────────────────────────── -->
       <template v-if="!activeView || activeView.viewType === 'table'">

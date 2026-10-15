@@ -2,7 +2,8 @@
  * useViewManager
  *
  * Owns all database-view state: the views array, active view, rename flow,
- * tab drag-reorder, tab action menu, view settings modal, and sort management.
+ * tab drag-reorder, tab action menu, view description, view settings modal,
+ * and sort management.
  *
  * Caller (DatabaseBlock.vue) is responsible for orchestrating cross-composable
  * side-effects such as syncing column widths and re-querying entries after a
@@ -11,7 +12,12 @@
 import { ref, computed, nextTick, type ComputedRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useBlockStore } from '@/stores/blocks'
-import type { PropertySchema, DatabaseView, ViewType } from '@/stores/database'
+import {
+  normalizeViewDescription,
+  type PropertySchema,
+  type DatabaseView,
+  type ViewType,
+} from '@/stores/database'
 
 // ── View-type icon map (exported so template can reference it) ────────────────
 
@@ -252,6 +258,24 @@ export function useViewManager(options: {
     await saveViews()
   }
 
+  /**
+   * Store the description of the view *viewId*.
+   *
+   * The view is addressed by id rather than through ``activeView`` because the
+   * edit is committed on blur, and a click on another view tab blurs the field
+   * before the tab switch runs. An empty description removes the field, so a
+   * view without one carries nothing into storage or the exports.
+   */
+  async function saveViewDescription(viewId: string, raw: string): Promise<void> {
+    const view = views.value.find((v) => v.id === viewId)
+    if (!view) return
+    const next = normalizeViewDescription(raw)
+    if (next === (view.description ?? '')) return
+    if (next) view.description = next
+    else delete view.description
+    await saveViews()
+  }
+
   function onViewUpdated(updated: DatabaseView): void {
     const idx = views.value.findIndex(v => v.id === updated.id)
     if (idx !== -1) views.value[idx] = updated
@@ -351,6 +375,8 @@ export function useViewManager(options: {
     confirmDeleteView,
     duplicateView,
     onViewUpdated,
+    // Description
+    saveViewDescription,
     // View settings
     openViewSettings,
     closeViewSettings,

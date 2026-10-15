@@ -338,7 +338,7 @@
       "nameLabel": "Name",
       "descriptionLabel": "Description",
       "descriptionPlaceholder": "Optional description shown as a column tooltip…",
-      "descriptionHint": "Shown as a tooltip when hovering the column header, and included in CSV and PDF exports.",
+      "descriptionHint": "Shown as a tooltip when hovering the column header, and included in CSV, Excel and PDF exports.",
       "errorNameRequired": "Name is required",
       "errorNameDuplicate": "Name already taken",
       "numberFormat": "Number format",
@@ -511,7 +511,8 @@
       "deleteView": "Delete view",
       "viewMenu": "View actions",
       "deleteViewTitle": "Delete view?",
-      "deleteViewWarning": "This action cannot be undone."
+      "deleteViewWarning": "This action cannot be undone.",
+      "description": "View description"
     },
     "filter": {
       "title": "Filter",
@@ -570,7 +571,8 @@
       "excel": "Export as Excel",
       "pdf": "Export as PDF",
       "ics": "Export as ICS",
-      "descriptionPrefix": "Description"
+      "descriptionPrefix": "Description",
+      "viewDescriptionPrefix": "Global description"
     },
     "calendar": {
       "prevMonth": "Previous month",
@@ -816,7 +818,8 @@
     "databasesOverview": "A database stores entries as rows and properties as typed columns (text, number, date, select, relation, rollup, and more). The same data can appear through different views — table, calendar, and others — each with its own filters and sorting. Columns, the name column included, can be hidden per view in the view settings; rename the name column by double-clicking its header.",
     "databasesDates": "Your date format is set under Settings → Date and applies everywhere; a single date property can override it in its own settings. Date fields cover the years 1 to 9999.",
     "databasesGroups": "In the properties side panel you can organise properties into groups. Custom groups fold and unfold, rename on double-click, and reorder by drag-and-drop via the handle on the right of the group header. The default group always stays on top.",
-    "databasesKeying": "A relation property can be keyed: choose a property of the target database to sort the relation's entries by. The chosen value is shown beside each entry."
+    "databasesKeying": "A relation property can be keyed: choose a property of the target database to sort the relation's entries by. The chosen value is shown beside each entry.",
+    "databasesViewDescription": "Each view can have its own description: click the area below the toolbar to write it, click elsewhere to save. It is included in exports — beneath the title in PDF, on the header of the first column in CSV and Excel."
   },
   "synchedBlock": {
     "originLabel": "Synced",

@@ -384,6 +384,13 @@ export interface DatabaseView {
    * column is pinned alongside the data columns whenever this is >= 1.
    */
   frozenColumns?: number
+  /**
+   * Free-text description of this view, shown between the toolbar and the
+   * view content and carried into the CSV / XLSX / PDF exports. Line breaks
+   * are kept. Absent (never an empty string) when the view has none; see
+   * ``normalizeViewDescription``.
+   */
+  description?: string
 }
 
 // ── Sticky-header / frozen-column helpers ─────────────────────────────────────
@@ -408,6 +415,16 @@ export function isStickyHeaderEnabled(
   view: Pick<DatabaseView, 'stickyHeader'> | null | undefined,
 ): boolean {
   return (view?.stickyHeader ?? true) !== false
+}
+
+/**
+ * Normalise a view description for storage: surrounding whitespace is
+ * removed, inner line breaks are kept, and Windows line endings become plain
+ * newlines. Returns ``''`` for a description that is empty or whitespace only,
+ * which callers store as an absent field.
+ */
+export function normalizeViewDescription(raw: string | null | undefined): string {
+  return (raw ?? '').replace(/\r\n?/g, '\n').trim()
 }
 
 // ── Query types (server-side filter / sort / pagination) ─────────────────────

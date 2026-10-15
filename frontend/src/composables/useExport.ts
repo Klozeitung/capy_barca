@@ -8,6 +8,14 @@
  * export is what the view shows: its columns are the view's visible columns,
  * the name column included only while it is shown.
  *
+ * View description
+ * ----------------
+ * A view's description travels with every table export. CSV and XLSX carry it
+ * as a bracketed marker on the header of the lead column (the first exported
+ * column), alongside the property-description markers; the PDF prints it
+ * beneath the title, as the view shows it beneath the toolbar. A view without
+ * a description exports exactly as before.
+ *
  * Keyed relations
  * ---------------
  * A keyed relation column exports in key order, each linked entry prefixed by
@@ -48,6 +56,45 @@ export function buildCsvHeader(
 ): string {
   const trimmed = (description ?? '').trim()
   return trimmed ? `${name} [${descriptionPrefix}: ${trimmed}]` : name
+}
+
+/**
+ * Append the view description to a column header as a bracketed marker, e.g.
+ * ``Name [Global description: ...]``. Line breaks collapse to single spaces,
+ * because a header cell holds one line. Returns *header* unchanged for an
+ * empty description. The marker label is passed in so it can be sourced from
+ * i18n at the call site.
+ */
+export function appendViewDescriptionMarker(
+  header: string,
+  viewDescription: string,
+  viewDescriptionPrefix: string,
+): string {
+  const flat = (viewDescription ?? '').trim().replace(/\s*\n\s*/g, ' ')
+  return flat ? `${header} [${viewDescriptionPrefix}: ${flat}]` : header
+}
+
+/**
+ * Build the header row of a CSV / XLSX export.
+ *
+ * Every header carries its property description (see ``buildCsvHeader``); the
+ * first one, the lead column, additionally carries the view description. The
+ * lead column is whichever column the view exports first: the name column
+ * while it is shown, otherwise the first visible property.
+ */
+export function buildExportHeaderRow(
+  headers: string[],
+  descriptions: string[],
+  viewDescription: string,
+  descriptionPrefix: string,
+  viewDescriptionPrefix: string,
+): string[] {
+  return headers.map((h, i) => {
+    const withDescription = buildCsvHeader(h, descriptions[i] ?? '', descriptionPrefix)
+    return i === 0
+      ? appendViewDescriptionMarker(withDescription, viewDescription, viewDescriptionPrefix)
+      : withDescription
+  })
 }
 
 /**
@@ -227,12 +274,18 @@ export function useExport(options: {
     return buildRelationKeyResolver(targetSchemas, targetEntries)
   }
 
-  async function getExportData(): Promise<{ headers: string[]; descriptions: string[]; rows: string[][] }> {
+  async function getExportData(): Promise<{
+    headers: string[]
+    descriptions: string[]
+    viewDescription: string
+    rows: string[][]
+  }> {
     const cols    = orderedColumns.value
     const headers = cols.map(c => c.schema ? c.schema.name : nameColLabel.value)
     const descriptions = cols.map(c =>
       (c.schema?.config?.description as string | undefined)?.trim() ?? ''
     )
+    const viewDescription = (activeView.value?.description ?? '').trim()
 
     // Pre-warm the resolvers used by displayValue for relation and user columns.
     await usersStore.loadUsers()
@@ -247,7 +300,22 @@ export function useExport(options: {
           : (entry.content?.title as string | undefined) ?? ''
       )
     )
-    return { headers, descriptions, rows }
+    return { headers, descriptions, viewDescription, rows }
+  }
+
+  /** Header row shared by the CSV and XLSX exports. */
+  function exportHeaderRow(
+    headers: string[],
+    descriptions: string[],
+    viewDescription: string,
+  ): string[] {
+    return buildExportHeaderRow(
+      headers,
+      descriptions,
+      viewDescription,
+      t('db.export.descriptionPrefix'),
+      t('db.export.viewDescriptionPrefix'),
+    )
   }
 
   function dbFilename(): string {
@@ -271,9 +339,8 @@ export function useExport(options: {
   // ── Exports ─────────────────────────────────────────────────────────────────
 
   async function exportCSV(): Promise<void> {
-    const { headers, descriptions, rows } = await getExportData()
-    const descriptionPrefix = t('db.export.descriptionPrefix')
-    const headerRow = headers.map((h, i) => buildCsvHeader(h, descriptions[i] ?? '', descriptionPrefix))
+    const { headers, descriptions, viewDescription, rows } = await getExportData()
+    const headerRow = exportHeaderRow(headers, descriptions, viewDescription)
     const escape = (s: string) => `"${s.replace(/"/g, '""')}"`
     const lines  = [headerRow, ...rows].map((row) => row.map(escape).join(','))
     _downloadBlob(lines.join('\r\n'), `${dbFilename()}.csv`, 'text/csv;charset=utf-8;')
@@ -281,8 +348,9 @@ export function useExport(options: {
   }
 
   async function exportExcel(): Promise<void> {
-    const { headers, rows } = await getExportData()
-    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
+    const { headers, descriptions, viewDescription, rows } = await getExportData()
+    const headerRow = exportHeaderRow(headers, descriptions, viewDescription)
+    const ws = XLSX.utils.aoa_to_sheet([headerRow, ...rows])
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'Data')
     XLSX.writeFile(wb, `${dbFilename()}.xlsx`)
@@ -304,6 +372,9 @@ export function useExport(options: {
     '∞': 'inf',
   }
 
+  /** Millimetres per typographic point; jsPDF measures the page in mm here. */
+  const PT_TO_MM = 25.4 / 72
+
   function _pdfSafe(s: string): string {
     let out = s
     for (const [glyph, ascii] of Object.entries(PDF_GLYPH_MAP)) {
@@ -313,7 +384,7 @@ export function useExport(options: {
   }
 
   async function exportPDF(): Promise<void> {
-    const { headers, descriptions, rows } = await getExportData()
+    const { headers, descriptions, viewDescription, rows } = await getExportData()
     const safeHeaders = headers.map(_pdfSafe)
     const safeRows    = rows.map(row => row.map(_pdfSafe))
 
@@ -330,10 +401,28 @@ export function useExport(options: {
     const viewName = activeView.value?.name ?? ''
     doc.setFontSize(14)
     doc.text(_pdfSafe(viewName ? `${title} \u2013 ${viewName}` : title), 14, 15)
+
+    // View description beneath the title, as the view shows it beneath the
+    // toolbar: smaller, dimmed, line breaks kept and long lines wrapped to the
+    // page width. The table moves down by the height the text takes.
+    let tableStartY = 22
+    if (viewDescription) {
+      const fontSize    = 9
+      const lineHeight  = fontSize * PT_TO_MM * doc.getLineHeightFactor()
+      const marginX     = 14
+      const maxWidth    = doc.internal.pageSize.getWidth() - 2 * marginX
+      doc.setFontSize(fontSize)
+      doc.setTextColor(110, 110, 110)
+      const lines: string[] = doc.splitTextToSize(_pdfSafe(viewDescription), maxWidth)
+      doc.text(lines, marginX, 21)
+      doc.setTextColor(0, 0, 0)
+      tableStartY = 21 + (lines.length - 1) * lineHeight + 5
+    }
+
     autoTable(doc, {
       head:               [safeHeaders],
       body,
-      startY:             22,
+      startY:             tableStartY,
       styles:             { fontSize: 8, cellPadding: 3 },
       headStyles:         { fillColor: [55, 55, 55], textColor: 255, fontStyle: 'bold' },
       alternateRowStyles: { fillColor: [248, 248, 248] },

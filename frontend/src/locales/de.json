@@ -338,7 +338,7 @@
       "nameLabel": "Name",
       "descriptionLabel": "Beschreibung",
       "descriptionPlaceholder": "Optionale Beschreibung, als Spalten-Tooltip angezeigt…",
-      "descriptionHint": "Wird als Tooltip beim Überfahren des Spaltenkopfs angezeigt und in CSV- und PDF-Exporte übernommen.",
+      "descriptionHint": "Wird als Tooltip beim Überfahren des Spaltenkopfs angezeigt und in CSV-, Excel- und PDF-Exporte übernommen.",
       "errorNameRequired": "Name erforderlich",
       "errorNameDuplicate": "Name bereits vergeben",
       "numberFormat": "Zahlenformat",
@@ -511,7 +511,8 @@
       "deleteView": "Ansicht löschen",
       "viewMenu": "Ansichts-Aktionen",
       "deleteViewTitle": "Ansicht löschen?",
-      "deleteViewWarning": "Diese Aktion kann nicht rückgängig gemacht werden."
+      "deleteViewWarning": "Diese Aktion kann nicht rückgängig gemacht werden.",
+      "description": "Ansichtsbeschreibung"
     },
     "filter": {
       "title": "Filter",
@@ -570,7 +571,8 @@
       "excel": "Als Excel exportieren",
       "pdf": "Als PDF exportieren",
       "ics": "Als ICS exportieren",
-      "descriptionPrefix": "Description"
+      "descriptionPrefix": "Description",
+      "viewDescriptionPrefix": "Global description"
     },
     "calendar": {
       "prevMonth": "Vorheriger Monat",
@@ -816,7 +818,8 @@
     "databasesOverview": "Eine Datenbank speichert Einträge als Zeilen und Properties als typisierte Spalten (Text, Zahl, Datum, Auswahl, Relation, Rollup und mehr). Dieselben Daten lassen sich über verschiedene Ansichten zeigen — Tabelle, Kalender und weitere — jeweils mit eigenen Filtern und Sortierung. Spalten, auch die Name-Spalte, lassen sich pro Ansicht in den Ansicht-Einstellungen ausblenden; die Name-Spalte benennst du per Doppelklick auf ihren Spaltenkopf um.",
     "databasesDates": "Das Datumsformat legst du unter Einstellungen → Datum fest; es gilt überall, eine einzelne Datums-Property kann es in ihren Einstellungen überschreiben. Datumsfelder decken die Jahre 1 bis 9999 ab.",
     "databasesGroups": "In der Eigenschaften-Seitenleiste lassen sich Properties zu Gruppen zusammenfassen. Eigene Gruppen kannst du ein- und ausklappen, per Doppelklick umbenennen und über den Ziehpunkt rechts im Gruppenkopf per Drag-and-drop neu anordnen. Die Standardgruppe bleibt immer oben.",
-    "databasesKeying": "Eine Relations-Eigenschaft kann gekeyt werden: Wähle eine Eigenschaft der Zieldatenbank, nach der die Einträge der Relation sortiert werden. Der gewählte Wert wird neben jedem Eintrag angezeigt."
+    "databasesKeying": "Eine Relations-Eigenschaft kann gekeyt werden: Wähle eine Eigenschaft der Zieldatenbank, nach der die Einträge der Relation sortiert werden. Der gewählte Wert wird neben jedem Eintrag angezeigt.",
+    "databasesViewDescription": "Jede Ansicht kann eine eigene Beschreibung haben: Klicke in den Bereich unter der Toolbar, um sie zu schreiben, und klicke daneben, um sie zu speichern. Sie wird mit exportiert — im PDF unter dem Titel, in CSV und Excel im Kopf der ersten Spalte."
   },
   "synchedBlock": {
     "originLabel": "Synced",
