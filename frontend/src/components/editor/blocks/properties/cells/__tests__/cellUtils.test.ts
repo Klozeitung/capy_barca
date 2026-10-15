@@ -25,7 +25,7 @@ function entryWithPartner(value: Record<string, unknown> | null): DatabaseEntry 
   return {
     id: 'entry-1',
     position: 0,
-    content: { title: 'Lete' },
+    content: { title: 'Source' },
     icon: null,
     state: 'active',
     values: { 'schema-partner': value },
@@ -33,8 +33,8 @@ function entryWithPartner(value: Record<string, unknown> | null): DatabaseEntry 
 }
 
 const TITLES: Record<string, string> = {
-  'torik-id': 'Torik',
-  'irena-id': 'Irena',
+  'alpha-id': 'Alpha',
+  'beta-id': 'Beta',
 }
 const resolveTitle = (id: string): string => TITLES[id] ?? ''
 
@@ -44,31 +44,31 @@ describe('displayValue – timeline relation export ("all" mode)', () => {
   it('resolves relation chips to titles for each bounded slot', () => {
     const value = {
       relationPool: {
-        'torik-id': ['2136-08-14T17:13:00→2137-05-04T00:00:00'],
-        'irena-id': ['2143-01-29T00:00:00→2174-09-01T00:00:00'],
+        'alpha-id': ['2100-03-10T08:45:00→2101-06-20T00:00:00'],
+        'beta-id': ['2105-02-11T00:00:00→2140-11-05T00:00:00'],
       },
       _timeline: {
-        '2136-08-14T17:13:00→2137-05-04T00:00:00': { related_ids: ['torik-id'] },
-        '2143-01-29T00:00:00→2174-09-01T00:00:00': { related_ids: ['irena-id'] },
+        '2100-03-10T08:45:00→2101-06-20T00:00:00': { related_ids: ['alpha-id'] },
+        '2105-02-11T00:00:00→2140-11-05T00:00:00': { related_ids: ['beta-id'] },
       },
     }
     expect(
       displayValue(entryWithPartner(value), relationSchema(), undefined, resolveTitle),
-    ).toBe('14.08.2136 17:13 → 04.05.2137: Torik · 29.01.2143 → 01.09.2174: Irena')
+    ).toBe('10.03.2100 08:45 → 20.06.2101: Alpha · 11.02.2105 → 05.11.2140: Beta')
   })
 
   it('renders an always-valid ("") slot as names only, without a period', () => {
-    const value = { _timeline: { '': { related_ids: ['torik-id'] } } }
+    const value = { _timeline: { '': { related_ids: ['alpha-id'] } } }
     expect(
       displayValue(entryWithPartner(value), relationSchema(), undefined, resolveTitle),
-    ).toBe('Torik')
+    ).toBe('Alpha')
   })
 
   it('comma-joins multiple linked entries within a single slot', () => {
-    const value = { _timeline: { '': { related_ids: ['torik-id', 'irena-id'] } } }
+    const value = { _timeline: { '': { related_ids: ['alpha-id', 'beta-id'] } } }
     expect(
       displayValue(entryWithPartner(value), relationSchema(), undefined, resolveTitle),
-    ).toBe('Torik, Irena')
+    ).toBe('Alpha, Beta')
   })
 
   it('falls back to the raw id when a title cannot be resolved', () => {
@@ -79,20 +79,20 @@ describe('displayValue – timeline relation export ("all" mode)', () => {
   })
 
   it('falls back to raw ids when no resolver is supplied', () => {
-    const value = { _timeline: { '': { related_ids: ['torik-id'] } } }
-    expect(displayValue(entryWithPartner(value), relationSchema())).toBe('torik-id')
+    const value = { _timeline: { '': { related_ids: ['alpha-id'] } } }
+    expect(displayValue(entryWithPartner(value), relationSchema())).toBe('alpha-id')
   })
 
   it('emits the period only for a slot with no linked entries', () => {
     const value = {
       _timeline: {
-        '2136-08-14T17:13:00→2137-05-04T00:00:00': { related_ids: ['torik-id'] },
+        '2100-03-10T08:45:00→2101-06-20T00:00:00': { related_ids: ['alpha-id'] },
         '2138-01-01T00:00:00→2139-01-01T00:00:00': { related_ids: [] },
       },
     }
     expect(
       displayValue(entryWithPartner(value), relationSchema(), undefined, resolveTitle),
-    ).toBe('14.08.2136 17:13 → 04.05.2137: Torik · 01.01.2138 → 01.01.2139')
+    ).toBe('10.03.2100 08:45 → 20.06.2101: Alpha · 01.01.2138 → 01.01.2139')
   })
 })
 
@@ -118,14 +118,14 @@ describe('displayValue – timeline scalar export ("all" mode) is unaffected', (
       values: {
         'schema-status': {
           _timeline: {
-            '1996-06-27T00:00:00→2019-08-22T00:00:00': { option: 'Aktiv' },
-            '2019-08-22T00:00:00→2020-01-30T00:00:00': { option: 'Nonexistent' },
+            '1990-04-12T00:00:00→2000-09-18T00:00:00': { option: 'Active' },
+            '2000-09-18T00:00:00→2001-03-02T00:00:00': { option: 'Nonexistent' },
           },
         },
       },
     }
     expect(displayValue(entry, schema)).toBe(
-      '27.06.1996 → 22.08.2019: Aktiv · 22.08.2019 → 30.01.2020: Nonexistent',
+      '12.04.1990 → 18.09.2000: Active · 18.09.2000 → 02.03.2001: Nonexistent',
     )
   })
 })
@@ -164,21 +164,21 @@ describe('formatNuancedRelation', () => {
   const cfg = nuanceConfig
 
   it('returns the bare title when there is no label or no config', () => {
-    expect(formatNuancedRelation('Torik', '', cfg())).toBe('Torik')
-    expect(formatNuancedRelation('Torik', 'lead', null)).toBe('Torik')
+    expect(formatNuancedRelation('Alpha', '', cfg())).toBe('Alpha')
+    expect(formatNuancedRelation('Alpha', 'lead', null)).toBe('Alpha')
   })
 
   it('prepends the nuance group before the title (prepended)', () => {
-    expect(formatNuancedRelation('Großmeister', 'erfolgreich', cfg())).toBe('erfolgreich Großmeister')
+    expect(formatNuancedRelation('Grandmaster', 'successfully', cfg())).toBe('successfully Grandmaster')
     expect(
-      formatNuancedRelation('Großmeister', 'erfolgreich', cfg({ affix1: 'als', affix2: 'gewählt' })),
-    ).toBe('als erfolgreich gewählt Großmeister')
+      formatNuancedRelation('Grandmaster', 'successfully', cfg({ affix1: 'as', affix2: 'elected' })),
+    ).toBe('as successfully elected Grandmaster')
   })
 
   it('appends the nuance group after the title (appended)', () => {
     expect(
-      formatNuancedRelation('Großmeister', 'erfolgreich', cfg({ orientation: 'appended', affix1: 'als', affix2: 'bestätigt' })),
-    ).toBe('Großmeister als erfolgreich bestätigt')
+      formatNuancedRelation('Grandmaster', 'successfully', cfg({ orientation: 'appended', affix1: 'as', affix2: 'confirmed' })),
+    ).toBe('Grandmaster as successfully confirmed')
   })
 })
 
@@ -194,22 +194,22 @@ describe('nuanceLabelFor', () => {
 describe('displayValue – nuanced timeline relation', () => {
   it('renders the nuance group in an always-valid slot ("all" mode)', () => {
     const schema = relationSchema({ nuance: nuanceConfig() })
-    const value = { _timeline: { '': { related_ids: ['torik-id'], nuances: { 'torik-id': 'erfolgreich' } } } }
-    expect(displayValue(entryWithPartner(value), schema, undefined, resolveTitle)).toBe('erfolgreich Torik')
+    const value = { _timeline: { '': { related_ids: ['alpha-id'], nuances: { 'alpha-id': 'successfully' } } } }
+    expect(displayValue(entryWithPartner(value), schema, undefined, resolveTitle)).toBe('successfully Alpha')
   })
 
   it('renders nuance per related entry within a bounded slot', () => {
-    const schema = relationSchema({ nuance: nuanceConfig({ orientation: 'appended', affix2: 'gewählt' }) })
+    const schema = relationSchema({ nuance: nuanceConfig({ orientation: 'appended', affix2: 'elected' }) })
     const value = {
       _timeline: {
-        '2136-08-14T17:13:00→2137-05-04T00:00:00': {
-          related_ids: ['torik-id', 'irena-id'],
-          nuances: { 'torik-id': 'erfolgreich' },
+        '2100-03-10T08:45:00→2101-06-20T00:00:00': {
+          related_ids: ['alpha-id', 'beta-id'],
+          nuances: { 'alpha-id': 'successfully' },
         },
       },
     }
     expect(displayValue(entryWithPartner(value), schema, undefined, resolveTitle)).toBe(
-      '14.08.2136 17:13 → 04.05.2137: Torik erfolgreich gewählt, Irena',
+      '10.03.2100 08:45 → 20.06.2101: Alpha successfully elected, Beta',
     )
   })
 })
@@ -225,8 +225,8 @@ describe('displayValue – nuanced flat relation ("last" mode)', () => {
       position: 0,
       group: 'Standard',
     }
-    const value = { related_ids: ['torik-id'], nuances: { 'torik-id': 'erfolgreich' } }
-    expect(displayValue(entryWithPartner(value), schema, undefined, resolveTitle)).toBe('erfolgreich Torik')
+    const value = { related_ids: ['alpha-id'], nuances: { 'alpha-id': 'successfully' } }
+    expect(displayValue(entryWithPartner(value), schema, undefined, resolveTitle)).toBe('successfully Alpha')
   })
 })
 
@@ -246,36 +246,36 @@ describe('formatPeriodKey', () => {
 
   it('formats both boundaries with an explicit user format', () => {
     expect(
-      formatPeriodKey('2136-08-14T00:00:00→2137-05-04T00:00:00', 'DD.MM.YYYY'),
-    ).toBe('14.08.2136 → 04.05.2137')
+      formatPeriodKey('2100-03-10T00:00:00→2101-06-20T00:00:00', 'DD.MM.YYYY'),
+    ).toBe('10.03.2100 → 20.06.2101')
     expect(
-      formatPeriodKey('2136-08-14T00:00:00→2137-05-04T00:00:00', 'YYYY-MM-DD'),
-    ).toBe('2136-08-14 → 2137-05-04')
+      formatPeriodKey('2100-03-10T00:00:00→2101-06-20T00:00:00', 'YYYY-MM-DD'),
+    ).toBe('2100-03-10 → 2101-06-20')
     expect(
-      formatPeriodKey('2136-08-14T00:00:00→2137-05-04T00:00:00', 'MM.DD.YYYY'),
-    ).toBe('08.14.2136 → 05.04.2137')
+      formatPeriodKey('2100-03-10T00:00:00→2101-06-20T00:00:00', 'MM.DD.YYYY'),
+    ).toBe('03.10.2100 → 06.20.2101')
   })
 
   it('shows the time component only when it is not midnight', () => {
     expect(
-      formatPeriodKey('2136-08-14T17:13:00→2137-05-04T00:00:00', 'DD.MM.YYYY'),
-    ).toBe('14.08.2136 17:13 → 04.05.2137')
+      formatPeriodKey('2100-03-10T08:45:00→2101-06-20T00:00:00', 'DD.MM.YYYY'),
+    ).toBe('10.03.2100 08:45 → 20.06.2101')
   })
 
   it('renders an open-ended (since) range', () => {
-    expect(formatPeriodKey('2136-08-14T00:00:00→', 'DD.MM.YYYY')).toBe('14.08.2136 →')
-    expect(formatPeriodKey('2136-08-14T17:13:00→', 'DD.MM.YYYY')).toBe('14.08.2136 17:13 →')
+    expect(formatPeriodKey('2100-03-10T00:00:00→', 'DD.MM.YYYY')).toBe('10.03.2100 →')
+    expect(formatPeriodKey('2100-03-10T08:45:00→', 'DD.MM.YYYY')).toBe('10.03.2100 08:45 →')
   })
 
   it('renders an until range', () => {
-    expect(formatPeriodKey('→2137-05-04T00:00:00', 'DD.MM.YYYY')).toBe('→ 04.05.2137')
-    expect(formatPeriodKey('→2137-05-04T09:30:00', 'YYYY-MM-DD')).toBe('→ 2137-05-04 09:30')
+    expect(formatPeriodKey('→2101-06-20T00:00:00', 'DD.MM.YYYY')).toBe('→ 20.06.2101')
+    expect(formatPeriodKey('→2101-06-20T09:30:00', 'YYYY-MM-DD')).toBe('→ 2101-06-20 09:30')
   })
 
   it('falls back to DD.MM.YYYY when no user format is available', () => {
     expect(
-      formatPeriodKey('2136-08-14T00:00:00→2137-05-04T00:00:00'),
-    ).toBe('14.08.2136 → 04.05.2137')
+      formatPeriodKey('2100-03-10T00:00:00→2101-06-20T00:00:00'),
+    ).toBe('10.03.2100 → 20.06.2101')
   })
 })
 
@@ -485,9 +485,9 @@ describe('getKeyingConfig', () => {
 describe('keyComparable', () => {
   it('reads a date property\'s start boundary', () => {
     const schema = targetSchema('date')
-    expect(keyComparable({ start: '2136-08-14' }, schema)).toBe('2136-08-14')
+    expect(keyComparable({ start: '2100-03-10' }, schema)).toBe('2100-03-10')
     expect(keyComparable({ start: '' }, schema)).toBeNull()
-    expect(keyComparable({ end: '2136-08-14' }, schema)).toBeNull()
+    expect(keyComparable({ end: '2100-03-10' }, schema)).toBeNull()
   })
 
   it('reads a number property numerically, including zero', () => {
@@ -523,16 +523,16 @@ describe('keyComparable', () => {
 
   it('returns null without a value or a schema', () => {
     expect(keyComparable(null, targetSchema('date'))).toBeNull()
-    expect(keyComparable({ start: '2136-08-14' }, null)).toBeNull()
+    expect(keyComparable({ start: '2100-03-10' }, null)).toBeNull()
   })
 })
 
 describe('sortIdsByKey', () => {
   const dateSchema = targetSchema('date')
   const dates: Record<string, Record<string, unknown> | null> = {
-    late: { start: '2174-09-01' },
-    early: { start: '2136-08-14' },
-    middle: { start: '2143-01-29' },
+    late: { start: '2140-11-05' },
+    early: { start: '2100-03-10' },
+    middle: { start: '2105-02-11' },
     undated: null,
   }
   const lookup = (id: string) => dates[id] ?? null
@@ -623,7 +623,7 @@ describe('sortIdsByKey', () => {
 describe('formatKeyValue', () => {
   it('renders a date with the key property\'s own format', () => {
     const schema = targetSchema('date', { dateFormat: 'YYYY-MM-DD' })
-    expect(formatKeyValue({ start: '2136-08-14T00:00:00' }, schema)).toBe('2136-08-14')
+    expect(formatKeyValue({ start: '2100-03-10T00:00:00' }, schema)).toBe('2100-03-10')
   })
 
   it('renders a select label and a plain number', () => {
@@ -633,7 +633,7 @@ describe('formatKeyValue', () => {
 
   it('returns empty without a value or a schema', () => {
     expect(formatKeyValue(null, targetSchema('date'))).toBe('')
-    expect(formatKeyValue({ start: '2136-08-14' }, null)).toBe('')
+    expect(formatKeyValue({ start: '2100-03-10' }, null)).toBe('')
   })
 })
 
@@ -671,7 +671,7 @@ function entryWithPlot(relatedIds: string[]): DatabaseEntry {
   return {
     id: 'character-1',
     position: 0,
-    content: { title: 'Lete' },
+    content: { title: 'Source' },
     icon: null,
     state: 'active',
     values: { 'schema-plot': { related_ids: relatedIds } },
@@ -679,15 +679,15 @@ function entryWithPlot(relatedIds: string[]): DatabaseEntry {
 }
 
 const BEAT_TITLES: Record<string, string> = {
-  'beat-late': 'Die Konfrontation',
-  'beat-early': 'Der Aufbruch',
-  'beat-undated': 'Irgendwann in Akt 3',
+  'beat-late': 'The Confrontation',
+  'beat-early': 'The Departure',
+  'beat-undated': 'Sometime in Act 3',
 }
 const resolveBeatTitle = (id: string): string => BEAT_TITLES[id] ?? ''
 
 const BEAT_DATES: Record<string, Record<string, unknown> | null> = {
-  'beat-late': { start: '2143-01-29' },
-  'beat-early': { start: '2136-08-14' },
+  'beat-late': { start: '2105-02-11' },
+  'beat-early': { start: '2100-03-10' },
   'beat-undated': null,
 }
 
@@ -717,7 +717,7 @@ describe('displayValue – keyed relation export', () => {
         resolveBeatTitle,
         keyResolver,
       ),
-    ).toBe('14.08.2136: Der Aufbruch · 29.01.2143: Die Konfrontation')
+    ).toBe('10.03.2100: The Departure · 11.02.2105: The Confrontation')
   })
 
   it('honours a descending order', () => {
@@ -729,7 +729,7 @@ describe('displayValue – keyed relation export', () => {
         resolveBeatTitle,
         keyResolver,
       ),
-    ).toBe('29.01.2143: Die Konfrontation · 14.08.2136: Der Aufbruch')
+    ).toBe('11.02.2105: The Confrontation · 10.03.2100: The Departure')
   })
 
   it('renders an entry without a key value as the bare title, placed last', () => {
@@ -741,7 +741,7 @@ describe('displayValue – keyed relation export', () => {
         resolveBeatTitle,
         keyResolver,
       ),
-    ).toBe('14.08.2136: Der Aufbruch · Irgendwann in Akt 3')
+    ).toBe('10.03.2100: The Departure · Sometime in Act 3')
   })
 
   it('honours the empty-first placement', () => {
@@ -753,7 +753,7 @@ describe('displayValue – keyed relation export', () => {
         resolveBeatTitle,
         keyResolver,
       ),
-    ).toBe('Irgendwann in Akt 3 · 14.08.2136: Der Aufbruch')
+    ).toBe('Sometime in Act 3 · 10.03.2100: The Departure')
   })
 
   it('falls back to the vanilla export when no resolver is supplied', () => {
@@ -765,7 +765,7 @@ describe('displayValue – keyed relation export', () => {
         undefined,
         resolveBeatTitle,
       ),
-    ).toBe('Die Konfrontation, Der Aufbruch')
+    ).toBe('The Confrontation, The Departure')
   })
 
   it('falls back to the vanilla export when the key property no longer resolves', () => {
@@ -778,7 +778,7 @@ describe('displayValue – keyed relation export', () => {
         resolveBeatTitle,
         dangling,
       ),
-    ).toBe('Die Konfrontation, Der Aufbruch')
+    ).toBe('The Confrontation, The Departure')
   })
 
   it('leaves a vanilla relation untouched even when a resolver is present', () => {
@@ -794,7 +794,7 @@ describe('displayValue – keyed relation export', () => {
         resolveBeatTitle,
         keyResolver,
       ),
-    ).toBe('Die Konfrontation, Der Aufbruch')
+    ).toBe('The Confrontation, The Departure')
   })
 
   it('prefers the established rendering when legacy data is keyed and nuanced', () => {
@@ -803,11 +803,11 @@ describe('displayValue – keyed relation export', () => {
     const entry = entryWithPlot(['beat-late'])
     entry.values['schema-plot'] = {
       related_ids: ['beat-late'],
-      nuances: { 'beat-late': 'erfolgreich' },
+      nuances: { 'beat-late': 'successfully' },
     }
     expect(
       displayValue(entry, both, undefined, resolveBeatTitle, keyResolver),
-    ).toBe('erfolgreich Die Konfrontation')
+    ).toBe('successfully The Confrontation')
   })
 
   it('prefers the timeline rendering when legacy data is keyed and timelined', () => {
@@ -817,7 +817,7 @@ describe('displayValue – keyed relation export', () => {
     entry.values['schema-plot'] = { _timeline: { '': { related_ids: ['beat-early'] } } }
     expect(
       displayValue(entry, both, undefined, resolveBeatTitle, keyResolver),
-    ).toBe('Der Aufbruch')
+    ).toBe('The Departure')
   })
 
   it('falls back to the raw id when a title cannot be resolved', () => {
@@ -829,7 +829,7 @@ describe('displayValue – keyed relation export', () => {
         () => '',
         keyResolver,
       ),
-    ).toBe('14.08.2136: beat-early')
+    ).toBe('10.03.2100: beat-early')
   })
 
   it('returns empty for a relation with no links', () => {
@@ -849,6 +849,93 @@ describe('displayValue – keyed relation export', () => {
         resolveBeatTitle,
         isoResolver,
       ),
-    ).toBe('2136-08-14: Der Aufbruch')
+    ).toBe('2100-03-10: The Departure')
+  })
+})
+
+// ── Links to trashed entries ──────────────────────────────────────────────────
+//
+// The export title lookup returns null for a linked entry that is known to be
+// gone (trashed or deleted). Such links are omitted, mirroring the relation
+// cell, which drops the chip, instead of leaking the raw entry id. An empty
+// string still means "title unknown" and keeps the raw id.
+
+const resolveWithTrashed = (id: string): string | null =>
+  id === 'trashed-id' ? null : (TITLES[id] ?? '')
+
+describe('displayValue – links to trashed entries are omitted', () => {
+  it('drops a trashed link from an always-valid timeline slot', () => {
+    const value = { _timeline: { '': { related_ids: ['alpha-id', 'trashed-id', 'beta-id'] } } }
+    expect(
+      displayValue(entryWithPartner(value), relationSchema(), undefined, resolveWithTrashed),
+    ).toBe('Alpha, Beta')
+  })
+
+  it('keeps the period of a bounded slot whose only link is trashed', () => {
+    const value = {
+      _timeline: {
+        '2100-03-10T00:00:00→2101-06-20T00:00:00': { related_ids: ['trashed-id'] },
+        '2101-06-21T00:00:00→': { related_ids: ['alpha-id'] },
+      },
+    }
+    expect(
+      displayValue(entryWithPartner(value), relationSchema(), undefined, resolveWithTrashed),
+    ).toBe('10.03.2100 → 20.06.2101 · 21.06.2101 →: Alpha')
+  })
+
+  it('drops a trashed link from a flat relation, nuance included', () => {
+    const schema = relationSchema({
+      hasTimeline: false,
+      timelineDisplayMode: undefined,
+      nuance: nuanceConfig(),
+    })
+    const value = {
+      related_ids: ['trashed-id', 'alpha-id'],
+      nuances: { 'trashed-id': 'formerly', 'alpha-id': 'successfully' },
+    }
+    expect(
+      displayValue(entryWithPartner(value), schema, undefined, resolveWithTrashed),
+    ).toBe('successfully Alpha')
+  })
+
+  it('returns empty when every link of a flat relation is trashed', () => {
+    const schema = relationSchema({ hasTimeline: false, timelineDisplayMode: undefined })
+    const value = { related_ids: ['trashed-id'] }
+    expect(displayValue(entryWithPartner(value), schema, undefined, resolveWithTrashed)).toBe('')
+  })
+
+  it('drops a trashed link from a keyed relation before ordering', () => {
+    const resolve = (id: string): string | null =>
+      id === 'beat-late' ? null : (BEAT_TITLES[id] ?? '')
+    expect(
+      displayValue(
+        entryWithPlot(['beat-late', 'beat-undated', 'beat-early']),
+        keyedRelationSchema(),
+        undefined,
+        resolve,
+        keyResolver,
+      ),
+    ).toBe('10.03.2100: The Departure · Sometime in Act 3')
+  })
+
+  it('drops trashed parent_item and sub_item links', () => {
+    const schema: PropertySchema = {
+      id: 'schema-partner',
+      database_id: 'db-1',
+      name: 'Sub-items',
+      type: 'sub_item',
+      config: {},
+      position: 0,
+      group: 'Standard',
+    }
+    const value = { related_ids: ['alpha-id', 'trashed-id'] }
+    expect(displayValue(entryWithPartner(value), schema, undefined, resolveWithTrashed)).toBe('Alpha')
+  })
+
+  it('still keeps the raw id when a title is merely unknown', () => {
+    const value = { _timeline: { '': { related_ids: ['unknown-id', 'trashed-id'] } } }
+    expect(
+      displayValue(entryWithPartner(value), relationSchema(), undefined, resolveWithTrashed),
+    ).toBe('unknown-id')
   })
 })

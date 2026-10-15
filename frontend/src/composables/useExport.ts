@@ -51,6 +51,34 @@ export function buildCsvHeader(
 }
 
 /**
+ * Build the entry-id → title lookup used by relation-type export columns.
+ *
+ * ``entries`` are the active entries of every target database, as returned by
+ * the unpaginated listing, which never contains trashed entries. When
+ * ``complete`` is true every target database was loaded in full, so an id that
+ * is not among them belongs to a trashed or deleted entry: the lookup returns
+ * ``null`` and the export omits the link, just as the relation cell drops the
+ * chip. When a target database could not be loaded the lookup cannot tell a
+ * missing entry from an unloaded one and returns ``''``, which keeps the raw
+ * id rather than silently losing the link.
+ *
+ * Untitled entries resolve to *untitledLabel*. Pure on purpose, so the mapping
+ * is unit-testable without Pinia.
+ */
+export function buildEntryTitleLookup(
+  entries: DatabaseEntry[],
+  untitledLabel: string,
+  complete: boolean,
+): (id: string) => string | null {
+  const titleMap = new Map<string, string>()
+  for (const e of entries) {
+    const title = ((e.content?.title as string | undefined) ?? '').trim() || untitledLabel
+    titleMap.set(e.id, title)
+  }
+  return (id: string) => titleMap.get(id) ?? (complete ? null : '')
+}
+
+/**
  * Build the key-value lookups a keyed relation needs for plain-text rendering.
  *
  * Pure on purpose: the composable collects the target databases' schemas and
@@ -115,7 +143,11 @@ export function useExport(options: {
   // ── Helpers ─────────────────────────────────────────────────────────────────
 
   /**
-   * Collect the target databases referenced by the exported relation columns.
+   * Collect the target databases referenced by the exported relation-type
+   * columns.
+   *
+   * A ``relation`` points at its configured target database; ``parent_item``
+   * and ``sub_item`` link entries of the exported database itself.
    *
    * ``fetchEntries`` hits the unpaginated listing, so after this the store holds
    * every linked entry of every target database with its full values — which is
@@ -125,36 +157,40 @@ export function useExport(options: {
     const targetDbIds = new Set<string>()
     for (const c of orderedColumns.value) {
       const columnSchema = c.schema
-      if (columnSchema !== null && columnSchema.type === 'relation') {
+      if (columnSchema === null) continue
+      if (columnSchema.type === 'relation') {
         const tdb = columnSchema.config?.target_database_id as string | undefined
         if (tdb) targetDbIds.add(tdb)
+      } else if (columnSchema.type === 'parent_item' || columnSchema.type === 'sub_item') {
+        const ownDbId = block.value?.id
+        if (ownDbId) targetDbIds.add(ownDbId)
       }
     }
     return targetDbIds
   }
 
   /**
-   * Build an entry-id → title resolver for relation columns.
+   * Build an entry-id → title resolver for relation-type columns.
    *
    * Relation values store only target entry IDs, so titles must be looked up
    * from the target databases. Those databases are fetched up front (cached by
-   * the store) and flattened into a single id→title map. Untitled entries fall
-   * back to the localized "untitled" label.
+   * the store) and flattened into a single lookup; see
+   * ``buildEntryTitleLookup`` for how links to trashed entries are handled.
    */
-  async function buildEntryTitleResolver(): Promise<(id: string) => string> {
-    const titleMap = new Map<string, string>()
+  async function buildEntryTitleResolver(): Promise<(id: string) => string | null> {
+    const targetEntries: DatabaseEntry[] = []
+    let complete = true
     for (const dbId of relationTargetDatabaseIds()) {
       try {
         await dbStore.fetchEntries(dbId)
       } catch {
-        // best-effort: unresolved IDs fall back to the raw UUID below
+        // best-effort: without the full listing a missing id cannot be told
+        // apart from a trashed one, so unresolved ids keep their raw UUID.
+        complete = false
       }
-      for (const e of dbStore.getEntries(dbId)) {
-        const title = ((e.content?.title as string | undefined) ?? '').trim() || t('main.untitled')
-        titleMap.set(e.id, title)
-      }
+      targetEntries.push(...dbStore.getEntries(dbId))
     }
-    return (id: string) => titleMap.get(id) ?? ''
+    return buildEntryTitleLookup(targetEntries, t('main.untitled'), complete)
   }
 
   /**
@@ -217,7 +253,7 @@ export function useExport(options: {
   function dbFilename(): string {
     const title    = ((block.value?.content?.title as string | undefined) ?? '').trim() || 'database'
     const viewName = (activeView.value?.name ?? '').trim()
-    return [title, viewName].filter(Boolean).join('_').replace(/[^a-z0-9_\-]/gi, '_')
+    return [title, viewName].filter(Boolean).join('_').replace(/[^a-z0-9_-]/gi, '_')
   }
 
   function _downloadBlob(content: string, filename: string, mimeType: string): void {

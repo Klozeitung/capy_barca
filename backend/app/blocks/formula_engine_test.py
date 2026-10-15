@@ -430,7 +430,7 @@ def test_format_bool_false():
 
 def test_format_prop_select_value():
     # Single-select values arrive as plain strings in the context
-    assert ev("format(prop('Typ'))", {"Typ": "Option A"}) == "Option A"
+    assert ev("format(prop('Type'))", {"Type": "Option A"}) == "Option A"
 
 
 def test_format_prop_missing_returns_empty_string():
@@ -438,8 +438,8 @@ def test_format_prop_missing_returns_empty_string():
 
 
 def test_format_used_in_comparison():
-    ctx = {"Typ": "Option A"}
-    assert ev("format(prop('Typ')) == \"Option A\"", ctx) is True
+    ctx = {"Type": "Option A"}
+    assert ev("format(prop('Type')) == \"Option A\"", ctx) is True
 
 
 def test_format_wrong_arg_count():
@@ -521,21 +521,21 @@ def test_tonumber_non_numeric_string_returns_none():
 
 
 def test_tonumber_used_as_guard_for_empty_branch():
-    # Mirrors the exact Status formula pattern: "" branch yields None, not ""
-    ctx = {"Status": "Archiviert", "Summe erledigte Aufgaben": 3, "Summe Aufgaben": 5}
+    # A status formula whose "" branch must yield None, not ""
+    ctx = {"Status": "Archived"}
     result = ev(
-        "toNumber(if(prop('Status') == 'Archiviert', '',"
-        "  if(prop('Status') == 'Fertig', 1, 0.5)))",
+        "toNumber(if(prop('Status') == 'Archived', '',"
+        "  if(prop('Status') == 'Done', 1, 0.5)))",
         ctx,
     )
     assert result is None
 
 
-def test_tonumber_fertig_branch():
-    ctx = {"Status": "Fertig", "Summe erledigte Aufgaben": 5, "Summe Aufgaben": 5}
+def test_tonumber_done_branch():
+    ctx = {"Status": "Done"}
     result = ev(
-        "toNumber(if(prop('Status') == 'Archiviert', '',"
-        "  if(prop('Status') == 'Fertig', 1, 0.5)))",
+        "toNumber(if(prop('Status') == 'Archived', '',"
+        "  if(prop('Status') == 'Done', 1, 0.5)))",
         ctx,
     )
     assert result == 1
@@ -940,6 +940,93 @@ def test_datebetween_same_date_is_zero():
     assert ev("dateBetween(prop('D'), prop('D'), 'days')", ctx) == 0
 
 
+def _between(start: str, end: str, unit: str) -> object:
+    """dateBetween(end, start, unit) for two ISO strings."""
+    return ev(f"dateBetween(prop('B'), prop('A'), '{unit}')", {"A": start, "B": end})
+
+
+def test_datebetween_years_just_before_anniversary():
+    # Nine days short of the 45th anniversary: 44 completed years
+    assert _between("2000-03-10T08:00:00+00:00", "2045-03-01T09:00:00+00:00", "years") == 44
+
+
+def test_datebetween_years_just_after_anniversary():
+    assert _between("2000-09-05T06:00:00+00:00", "2080-09-07T18:00:00+00:00", "years") == 80
+
+
+def test_datebetween_years_same_day_earlier_time():
+    # Anniversary date reached, time of day not yet
+    assert _between("2020-06-15T10:00:00+00:00", "2024-06-15T09:00:00+00:00", "years") == 3
+
+
+def test_datebetween_years_same_day_same_time():
+    assert _between("2020-06-15T10:00:00+00:00", "2024-06-15T10:00:00+00:00", "years") == 4
+
+
+def test_datebetween_years_negative_truncates_toward_zero():
+    assert _between("2024-06-14T00:00:00+00:00", "2020-06-15T00:00:00+00:00", "years") == -3
+
+
+def test_datebetween_months_before_day_of_month():
+    assert _between("2024-01-31T00:00:00+00:00", "2024-03-30T00:00:00+00:00", "months") == 1
+
+
+def test_datebetween_months_end_of_month_counts_as_reached():
+    # Mirrors dateAdd: 31 Jan + 1 month = 29 Feb (leap year)
+    assert _between("2024-01-31T00:00:00+00:00", "2024-02-29T00:00:00+00:00", "months") == 1
+    assert _between("2024-01-31T00:00:00+00:00", "2024-02-28T00:00:00+00:00", "months") == 0
+
+
+def test_datebetween_months_end_of_month_negative():
+    assert _between("2024-03-31T00:00:00+00:00", "2024-02-29T00:00:00+00:00", "months") == -1
+
+
+def test_datebetween_quarters():
+    assert _between("2024-01-15T00:00:00+00:00", "2024-07-14T00:00:00+00:00", "quarters") == 1
+    assert _between("2024-01-15T00:00:00+00:00", "2024-07-15T00:00:00+00:00", "quarters") == 2
+
+
+def test_datebetween_quarters_negative_truncates_toward_zero():
+    assert _between("2024-05-01T00:00:00+00:00", "2024-01-01T00:00:00+00:00", "quarters") == -1
+
+
+def test_datebetween_leap_day_anniversary_follows_dateadd():
+    # 29 Feb + 1 year = 28 Feb in a common year, so the year completes there
+    assert _between("2000-02-29T12:00:00+00:00", "2001-02-28T12:00:00+00:00", "years") == 1
+    assert _between("2000-02-29T12:00:00+00:00", "2001-02-28T11:59:00+00:00", "years") == 0
+
+
+def test_datebetween_respects_offsets_across_month_boundary():
+    # Both instants fall on 1 March local time but on different days in UTC
+    assert _between("2000-03-01T00:30:00+01:00", "2001-03-01T00:40:00+01:00", "years") == 1
+
+
+def test_datebetween_with_date_only_values():
+    assert _between("2000-03-10", "2045-03-09", "years") == 44
+    assert _between("2000-03-10", "2045-03-10", "years") == 45
+
+
+def test_datebetween_is_inverse_of_dateadd():
+    # For every pair, adding the computed count never overshoots the end date
+    # and adding one more unit always does.
+    import random
+    from datetime import timedelta
+
+    from app.blocks.formula_engine import _date_add, _date_diff
+
+    rng = random.Random(20240229)
+    base = _DT(1990, 1, 1, tzinfo=timezone.utc)
+    span = 40 * 366 * 24 * 60
+    for _ in range(5000):
+        start = base + timedelta(minutes=rng.randint(0, span))
+        end = base + timedelta(minutes=rng.randint(0, span))
+        if end < start:
+            start, end = end, start
+        for unit in ("months", "quarters", "years"):
+            n = _date_diff(end, start, unit)
+            assert _date_add(start, n, unit) <= end < _date_add(start, n + 1, unit)
+
+
 # ─── formatDate ───────────────────────────────────────────────────────────────
 
 _FMT_CTX = {"D": "2024-03-15T14:05:09+00:00"}  # Friday, week 11
@@ -1323,7 +1410,7 @@ def test_contains_empty_substring():
 
 
 def test_contains_prop():
-    assert ev("contains(prop('Name'), 'Giro')", {"Name": "1200 Giro Volksbank"}) is True
+    assert ev("contains(prop('Name'), 'Beta')", {"Name": "100 Alpha Beta"}) is True
 
 
 def test_contains_none_text_returns_false():
@@ -1484,11 +1571,11 @@ def test_date_comparison_with_dict_date_property():
     # Date properties arrive as {"start": ..., "end": ...} dicts
     ctx = {
         "Start": "2024-01-01T00:00:00+00:00",
-        "Buchungsdatum": {"start": "2024-06-15", "end": None},
+        "Booking Date": {"start": "2024-06-15", "end": None},
         "End": "2024-12-31T23:59:59+00:00",
     }
     assert ev(
-        "prop('Start') <= prop('Buchungsdatum') and prop('Buchungsdatum') <= prop('End')",
+        "prop('Start') <= prop('Booking Date') and prop('Booking Date') <= prop('End')",
         ctx,
     ) is True
 
@@ -1722,10 +1809,10 @@ def test_at_date_string_element():
 def test_at_date_string_usable_in_datebetween():
     from datetime import datetime as _DT, timezone
     ctx = {
-        "Datum": _DT(2026, 1, 1, tzinfo=timezone.utc),
+        "Date": _DT(2026, 1, 1, tzinfo=timezone.utc),
         "Rollup": ["2000-01-01"],
     }
-    result = ev("dateBetween(prop('Datum'), at(prop('Rollup'), 0), 'years')", ctx)
+    result = ev("dateBetween(prop('Date'), at(prop('Rollup'), 0), 'years')", ctx)
     assert result == 26
 
 
@@ -1796,10 +1883,10 @@ def test_rename_prop_preserves_surrounding_formatting():
 
 
 def test_rename_prop_name_with_spaces_and_parens():
-    expr = 'prop("Geschlecht") == "Weiblich"'
+    expr = 'prop("Category") == "Value A"'
     assert (
-        rename_prop_in_expression(expr, "Geschlecht", "Geschlecht (Biologisch)")
-        == 'prop("Geschlecht (Biologisch)") == "Weiblich"'
+        rename_prop_in_expression(expr, "Category", "Category (Primary)")
+        == 'prop("Category (Primary)") == "Value A"'
     )
 
 

@@ -647,7 +647,29 @@ export function formatFormulaExport(
 }
 
 /**
+ * Resolve a linked entry id to the title an export prints for it.
+ *
+ * ``null`` from the resolver means the linked entry is known to be gone
+ * (trashed or deleted); the link is then omitted, mirroring the relation cell,
+ * which drops such chips. An empty string or a missing resolver means the title
+ * could not be determined, in which case the raw id is kept so the link is not
+ * lost silently.
+ */
+function exportRelationTitle(
+  id: string,
+  resolveEntryTitle?: (entryId: string) => string | null,
+): string | null {
+  const title = resolveEntryTitle?.(id)
+  if (title === null) return null
+  return title && title.trim() ? title : id
+}
+
+/**
  * Render a property value as plain text, as used by the CSV / XLSX / PDF export.
+ *
+ * ``resolveEntryTitle`` maps linked entry ids to titles for relation-type
+ * columns; see ``exportRelationTitle`` for how ``null`` and empty results are
+ * treated.
  *
  * ``keyResolver`` is optional and only consulted for keyed relations. Without
  * it — and for every existing caller, which passes four arguments — a keyed
@@ -657,7 +679,7 @@ export function displayValue(
   entry: DatabaseEntry,
   schema: PropertySchema,
   resolveUser?: (userId: string) => string,
-  resolveEntryTitle?: (entryId: string) => string,
+  resolveEntryTitle?: (entryId: string) => string | null,
   keyResolver?: RelationKeyResolver,
 ): string {
   const raw = getRawCellValue(entry, schema.id)
@@ -687,8 +709,8 @@ export function displayValue(
         const ids = (slot?.related_ids as string[] | undefined) ?? []
         return ids
           .map(id => {
-            const title = resolveEntryTitle?.(id)
-            const base = title && title.trim() ? title : id
+            const base = exportRelationTitle(id, resolveEntryTitle)
+            if (base === null) return ''
             return formatNuancedRelation(base, nuanceLabelFor(slot, id), nuanceCfg)
           })
           .filter(Boolean)
@@ -784,13 +806,19 @@ export function displayValue(
       return val.checked ? 'true' : 'false'
 
     case 'relation': case 'parent_item': case 'sub_item': {
-      const ids = (val.related_ids as string[] | undefined) ?? []
+      // Links whose target is gone are dropped before ordering, so neither the
+      // keyed nor the vanilla rendering ever sees them.
+      const titles = new Map<string, string>()
+      const ids: string[] = []
+      for (const id of (val.related_ids as string[] | undefined) ?? []) {
+        const title = exportRelationTitle(id, resolveEntryTitle)
+        if (title === null) continue
+        titles.set(id, title)
+        ids.push(id)
+      }
       if (ids.length === 0) return ''
 
-      const titleOf = (id: string): string => {
-        const title = resolveEntryTitle?.(id)
-        return title && title.trim() ? title : id
-      }
+      const titleOf = (id: string): string => titles.get(id) ?? id
 
       // Keyed relations export in key order, each entry prefixed by its key
       // value, mirroring the two-zone cell. The separator matches the timeline

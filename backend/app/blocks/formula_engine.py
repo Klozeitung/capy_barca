@@ -60,6 +60,8 @@ Date units (dateAdd / dateSubtract / dateBetween)
 -------------------------------------------------
   "years"  "quarters"  "months"  "weeks"  "days"  "hours"  "minutes"
   Singular forms ("year", "day", …) are also accepted.
+  dateBetween counts completed units only and is the inverse of dateAdd:
+  dateAdd(d, dateBetween(e, d, u), u) never lies after e (for e >= d).
 
 formatDate tokens (Moment.js-style)
 ------------------------------------
@@ -638,11 +640,39 @@ def _date_add(dt: _Datetime, amount: int, unit: str) -> _Datetime:
     )
 
 
+def _whole_months(dt1: _Datetime, dt2: _Datetime) -> int:
+    """
+    Return the number of whole calendar months from *dt2* to *dt1*.
+
+    The result is truncated toward zero and is negative when *dt1* lies
+    before *dt2*. A month counts only once it is complete: the candidate
+    count is the difference of the calendar months, and it is reduced by one
+    when stepping *dt2* forward (or backward) by that many months with
+    :func:`_month_add` overshoots *dt1*.
+
+    Anchoring on :func:`_month_add` keeps ``dateBetween`` the inverse of
+    ``dateAdd``, including its end-of-month clamping: from 31 January, one
+    month is complete on 29 February in a leap year, and from 29 February,
+    one year is complete on 28 February of the following year. Time of day
+    and UTC offsets are respected because complete datetimes are compared,
+    not individual fields.
+    """
+    months = (dt1.year * 12 + dt1.month) - (dt2.year * 12 + dt2.month)
+    if months > 0 and _month_add(dt2, months) > dt1:
+        months -= 1
+    elif months < 0 and _month_add(dt2, months) < dt1:
+        months += 1
+    return months
+
+
 def _date_diff(dt1: _Datetime, dt2: _Datetime, unit: str) -> int:
     """
     Return the truncated integer difference ``dt1 - dt2`` in *unit*.
 
-    Positive when dt1 is later than dt2.
+    Positive when dt1 is later than dt2. Only completed units are counted,
+    so a span of eleven months and thirty days is 0 years. Months, quarters
+    and years are calendar-based (see :func:`_whole_months`); the smaller
+    units are derived from the exact elapsed time.
     """
     u = unit.lower().rstrip("s")
     delta = dt1 - dt2
@@ -657,12 +687,13 @@ def _date_diff(dt1: _Datetime, dt2: _Datetime, unit: str) -> int:
     if u == "week":
         return int(total_seconds / (86400 * 7))
     if u == "month":
-        return (dt1.year * 12 + dt1.month) - (dt2.year * 12 + dt2.month)
+        return _whole_months(dt1, dt2)
     if u == "quarter":
-        months = (dt1.year * 12 + dt1.month) - (dt2.year * 12 + dt2.month)
-        return months // 3
+        # int() truncates toward zero; floor division would round negative
+        # spans away from zero.
+        return int(_whole_months(dt1, dt2) / 3)
     if u == "year":
-        return dt1.year - dt2.year
+        return int(_whole_months(dt1, dt2) / 12)
     raise FormulaError(
         f"Unknown date unit '{unit}'. "
         "Valid units: years, quarters, months, weeks, days, hours, minutes"

@@ -823,7 +823,7 @@ def test_bilateral_self_relation_multiple_entries(http_client):
         assert entry_1["id"] in related
 
 
-
+def test_bilateral_relation_creates_mirror_schema_eagerly(http_client):
     """Mirror schema must exist right after create_schema — no upsert needed."""
     db_a = _create_database(http_client)
     db_b = _create_database(http_client)
@@ -1955,8 +1955,8 @@ def test_create_schema_default_group_is_standard(http_client):
 
 def test_create_schema_with_custom_group(http_client):
     db_id = _create_database(http_client)
-    schema = _create_schema(http_client, db_id, name="Phone", group="Kontakt")
-    assert schema["group"] == "Kontakt"
+    schema = _create_schema(http_client, db_id, name="Phone", group="Contact")
+    assert schema["group"] == "Contact"
 
 
 def test_create_schema_group_returned_in_list(http_client):
@@ -1971,9 +1971,9 @@ def test_update_schema_group(http_client):
     schema = _create_schema(http_client, db_id)
     updated = http_client.patch(
         f"/api/databases/{db_id}/schemas/{schema['id']}",
-        json={"group": "Finanzen"},
+        json={"group": "Finances"},
     ).json()
-    assert updated["group"] == "Finanzen"
+    assert updated["group"] == "Finances"
 
 
 def test_update_schema_group_does_not_reset_name(http_client):
@@ -1981,20 +1981,20 @@ def test_update_schema_group_does_not_reset_name(http_client):
     schema = _create_schema(http_client, db_id, name="Budget")
     updated = http_client.patch(
         f"/api/databases/{db_id}/schemas/{schema['id']}",
-        json={"group": "Finanzen"},
+        json={"group": "Finances"},
     ).json()
     assert updated["name"] == "Budget"
-    assert updated["group"] == "Finanzen"
+    assert updated["group"] == "Finances"
 
 
 def test_update_schema_without_group_keeps_existing_group(http_client):
     db_id = _create_database(http_client)
-    schema = _create_schema(http_client, db_id, group="Kontakt")
+    schema = _create_schema(http_client, db_id, group="Contact")
     updated = http_client.patch(
         f"/api/databases/{db_id}/schemas/{schema['id']}",
         json={"name": "NewName"},
     ).json()
-    assert updated["group"] == "Kontakt"
+    assert updated["group"] == "Contact"
 
 
 # ── Timeline: _validate_timeline_value ───────────────────────────────────────
@@ -2118,15 +2118,15 @@ def test_pool_to_timeline_ancient_dates_keep_correct_boundaries():
     the "until" slot entirely. Each slot must keep its own original bounds.
     """
     pool = {
-        "rom-id":   ["→0059-05-03T13:50:00"],
-        "isca-id":  ["0059-08-08T12:00:00→0061-06-01T19:30:00"],
-        "ileda-id": ["2020-01-30T21:05:00→"],
+        "a-id": ["→0050-03-01T08:00:00"],
+        "b-id": ["0050-07-01T12:00:00→0062-02-01T18:00:00"],
+        "c-id": ["2020-05-01T09:00:00→"],
     }
     timeline = _pool_to_timeline(pool)
     assert timeline == {
-        "→0059-05-03T13:50:00": {"related_ids": ["rom-id"]},
-        "0059-08-08T12:00:00→0061-06-01T19:30:00": {"related_ids": ["isca-id"]},
-        "2020-01-30T21:05:00→": {"related_ids": ["ileda-id"]},
+        "→0050-03-01T08:00:00": {"related_ids": ["a-id"]},
+        "0050-07-01T12:00:00→0062-02-01T18:00:00": {"related_ids": ["b-id"]},
+        "2020-05-01T09:00:00→": {"related_ids": ["c-id"]},
     }
 
 
@@ -2134,7 +2134,7 @@ def test_pool_to_timeline_ancient_dates_change_points_zero_padded():
     """Every derived slot key must use a 4-digit, zero-padded year so the keys
     sort chronologically by plain string comparison."""
     pool = {
-        "a": ["0061-06-01T19:30:00→0063-01-01T00:00:00"],
+        "a": ["0062-02-01T18:00:00→0063-01-01T00:00:00"],
         "b": ["0063-06-01T00:00:00→"],
     }
     timeline = _pool_to_timeline(pool)
@@ -2155,8 +2155,8 @@ def test_upsert_timeline_value_valid(http_client):
     resp = http_client.put(
         f"/api/databases/{db_id}/entries/{entry['id']}/values/{schema['id']}",
         json={"value": {"_timeline": {
-            "2023-01-01T00:00:00→2023-12-31T23:59:59": {"text": "Schüler"},
-            "2024-01-01T00:00:00→": {"text": "Meister"},
+            "2023-01-01T00:00:00→2023-12-31T23:59:59": {"text": "Apprentice"},
+            "2024-01-01T00:00:00→": {"text": "Master"},
         }}},
     )
     assert resp.status_code == 204
@@ -2681,6 +2681,98 @@ def test_pool_to_timeline_always_valid_mixed_with_bounded():
     # Every slot contains the always-valid uid
     for slot_val in timeline.values():
         assert "always" in slot_val["related_ids"]
+
+
+def test_pool_to_timeline_always_valid_before_first_since():
+    """
+    Regression: always-valid UIDs must get a leading slot before the earliest
+    bounded start. Without it, a pool of always-valid links plus one "since"
+    link collapsed into a single slot starting at that "since" date, and the
+    period in which only the always-valid links existed disappeared.
+    """
+    pool = {
+        "a": [""],
+        "b": [""],
+        "c": ["2100-04-01T10:00:00→"],
+    }
+    timeline = _pool_to_timeline(pool)
+    assert timeline == {
+        "→2100-04-01T09:59:59": {"related_ids": ["a", "b"]},
+        "2100-04-01T10:00:00→": {"related_ids": ["a", "b", "c"]},
+    }
+    assert _validate_timeline_value({"_timeline": timeline}) is None
+
+
+def test_pool_to_timeline_always_valid_around_bounded_range():
+    """Always-valid UIDs fill the periods before, during and after a bounded range."""
+    pool = {
+        "a": [""],
+        "c": ["2100-04-01T00:00:00→2100-12-31T23:59:59"],
+    }
+    timeline = _pool_to_timeline(pool)
+    assert timeline == {
+        "→2100-03-31T23:59:59": {"related_ids": ["a"]},
+        "2100-04-01T00:00:00→2100-12-31T23:59:59": {"related_ids": ["a", "c"]},
+        "2101-01-01T00:00:00→": {"related_ids": ["a"]},
+    }
+    assert _validate_timeline_value({"_timeline": timeline}) is None
+
+
+def test_pool_to_timeline_always_valid_with_until_range_shares_leading_slot():
+    """An "until" range and an always-valid UID share the leading slot."""
+    pool = {
+        "a": [""],
+        "c": ["→2100-03-31T23:59:59"],
+    }
+    timeline = _pool_to_timeline(pool)
+    assert timeline == {
+        "→2100-03-31T23:59:59": {"related_ids": ["a", "c"]},
+        "2100-04-01T00:00:00→": {"related_ids": ["a"]},
+    }
+    assert _validate_timeline_value({"_timeline": timeline}) is None
+
+
+def test_pool_to_timeline_always_valid_nuance_in_leading_slot():
+    """The always-valid nuance label is carried into the leading slot as well."""
+    pool = {"a": [""], "c": ["2100-04-01T10:00:00→"]}
+    nuance_pool = {
+        "a": {"": "first"},
+        "c": {"2100-04-01T10:00:00→": "second"},
+    }
+    timeline = _pool_to_timeline(pool, nuance_pool)
+    assert timeline["→2100-04-01T09:59:59"]["nuances"] == {"a": "first"}
+    assert timeline["2100-04-01T10:00:00→"]["nuances"] == {"a": "first", "c": "second"}
+
+
+def test_upsert_relation_timeline_always_valid_plus_since_yields_two_slots(http_client):
+    """End-to-end: the stored _timeline keeps the period before the "since" link."""
+    db_id = _create_database(http_client)
+    schema = _create_relation_schema(
+        http_client, db_id, db_id, name="Links", direction="unilateral",
+    )
+    http_client.patch(
+        f"/api/databases/{db_id}/schemas/{schema['id']}",
+        json={"config": {**schema["config"], "hasTimeline": True}},
+    )
+    entry_a = _create_entry(http_client, db_id)
+    entry_b = _create_entry(http_client, db_id)
+    entry_c = _create_entry(http_client, db_id)
+
+    _upsert_value(
+        http_client, db_id, entry_a["id"], schema["id"],
+        {"relationPool": {
+            entry_b["id"]: [""],
+            entry_c["id"]: ["2100-04-01T10:00:00→"],
+        }},
+    )
+
+    entries = http_client.get(f"/api/databases/{db_id}/entries").json()
+    row = next(e for e in entries if e["id"] == entry_a["id"])
+    timeline = row["values"][schema["id"]]["_timeline"]
+    assert timeline == {
+        "→2100-04-01T09:59:59": {"related_ids": [entry_b["id"]]},
+        "2100-04-01T10:00:00→": {"related_ids": [entry_b["id"], entry_c["id"]]},
+    }
 
 
 def test_pool_to_timeline_invalid_timestamp_skipped():

@@ -967,8 +967,10 @@ def _pool_to_timeline(pool: dict, nuance_pool: Optional[dict] = None) -> dict:
     * When **only** always-valid ranges exist the result is a single ``""``
       slot (the only sentinel allowed as a sole entry in ``_timeline``).
     * When bounded ranges exist, always-valid UIDs are merged into every
-      computed slot.  The ``""`` sentinel is never emitted alongside bounded
-      slots (the spec prohibits mixing).
+      computed slot, including a leading ``"→t"`` slot that covers the time
+      before the earliest change-point and a trailing open slot after the
+      last bounded end.  The ``""`` sentinel is never emitted alongside
+      bounded slots (the spec prohibits mixing).
     * Invalid or unparseable timestamps are skipped silently.
 
     Nuance
@@ -1100,9 +1102,14 @@ def _pool_to_timeline(pool: dict, nuance_pool: Optional[dict] = None) -> dict:
 
     timeline: dict = {}
 
-    # Handle "until" ranges (start=None) — active before the first change-point
+    # Leading slot before the first change-point. It is populated by "until"
+    # ranges (start=None) and by always-valid UIDs, which are active at every
+    # point in time and therefore also before the earliest bounded start.
+    # Without the always-valid case a pool such as {A: [""], B: ["t→"]} would
+    # collapse into a single "t→" slot and lose the period in which only A
+    # is linked.
     has_until = any(s is None for _uid, s, e, _r in parsed)
-    if has_until and sorted_cps:
+    if (has_until or always_uids) and sorted_cps:
         first_cp = sorted_cps[0]
         dt_first = _parse_ts(first_cp)
         if dt_first is not None:

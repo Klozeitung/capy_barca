@@ -135,3 +135,52 @@ describe('buildRelationKeyResolver', () => {
     expect(resolver.valueFor('schema-date', 'beat-1')).toBeNull()
   })
 })
+
+// ── buildEntryTitleLookup ─────────────────────────────────────────────────────
+//
+// The listing behind the export only contains active entries. Once every
+// target database has been loaded in full, an id that is not among them
+// belongs to a trashed or deleted entry and resolves to null, so the export
+// omits the link. If a target database could not be loaded, a missing id is
+// indistinguishable from an unloaded one and resolves to '' (raw id kept).
+
+import { buildEntryTitleLookup } from '@/composables/useExport'
+
+function titled(id: string, title: string | null): DatabaseEntry {
+  return {
+    id,
+    position: 0,
+    content: title === null ? null : { title },
+    icon: null,
+    state: 'active',
+    values: {},
+  }
+}
+
+describe('buildEntryTitleLookup', () => {
+  it('resolves loaded entries to their titles', () => {
+    const lookup = buildEntryTitleLookup([titled('e1', 'First')], 'Untitled', true)
+    expect(lookup('e1')).toBe('First')
+  })
+
+  it('uses the untitled label for an empty or missing title', () => {
+    const lookup = buildEntryTitleLookup(
+      [titled('e1', '   '), titled('e2', null)],
+      'Untitled',
+      true,
+    )
+    expect(lookup('e1')).toBe('Untitled')
+    expect(lookup('e2')).toBe('Untitled')
+  })
+
+  it('returns null for an id absent from complete listings (trashed entry)', () => {
+    const lookup = buildEntryTitleLookup([titled('e1', 'First')], 'Untitled', true)
+    expect(lookup('trashed')).toBeNull()
+  })
+
+  it('returns an empty string for an absent id when a listing failed to load', () => {
+    const lookup = buildEntryTitleLookup([titled('e1', 'First')], 'Untitled', false)
+    expect(lookup('unknown')).toBe('')
+    expect(lookup('e1')).toBe('First')
+  })
+})
