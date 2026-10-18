@@ -9,7 +9,7 @@ from app.database.database import SessionLocal
 from app.security.limiter import limiter
 from app.session.login_router import set_session_cookie
 from app.session.session import create_token, validate_token
-from app.session.user_registration import create_admin
+from app.session.user_registration import AlreadyConfigured, create_admin
 from app.users import repository as user_repo
 from app.users.model import User
 from app.users.password_rules import NewPassword
@@ -18,7 +18,8 @@ setup_router = APIRouter()
 
 # Self-registration hands out an account, so it is throttled like the login
 # route. Initial admin registration is one-shot by construction: it refuses
-# once any user exists.
+# once any user exists, and concurrent attempts are serialised in
+# ``create_admin`` so that only one of them can succeed.
 _SIGNUP_RATE_LIMIT = os.getenv("SIGNUP_RATE_LIMIT", "5/minute")
 
 # Path to the backup script template served via GET /api/backup/script.
@@ -78,14 +79,19 @@ def register(payload: RegisterRequest, response: Response):
     """
     Register the initial admin user.
 
-    Blocked once any user exists in the database (returns 403). On success,
-    a session token is issued immediately so the client is logged in without
-    a separate login request.
+    Blocked once any user exists in the database (returns 403). The early
+    check answers the common case cheaply; ``create_admin`` repeats it under a
+    lock, which is what refuses the loser of two simultaneous requests. On
+    success, a session token is issued immediately so the client is logged in
+    without a separate login request.
     """
     if _is_configured():
         raise HTTPException(status_code=403, detail="Already configured")
 
-    user = create_admin(payload.username, payload.password)
+    try:
+        user = create_admin(payload.username, payload.password)
+    except AlreadyConfigured:
+        raise HTTPException(status_code=403, detail="Already configured")
 
     set_session_cookie(response, create_token(user.id))
     return {"success": True, "username": user.username, "role": user.role}

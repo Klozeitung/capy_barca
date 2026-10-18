@@ -10,6 +10,21 @@ only for entry creation (``service.create_block``); schema and value
 operations go directly to the repository because they involve no cross-
 cutting business logic.
 
+Access
+------
+Every endpoint resolves its database through ``_get_database_or_raise``,
+which takes the calling user and runs the block permission check. Reads
+answer 404 when the caller may not access the database, so the response does
+not confirm that it exists; changes answer 403, matching the block router and
+the view router. The entry listings that relation pickers call (``GET
+/entries``, ``POST /entries/query``, ``POST /entries/resolve-titles``) answer
+with an empty result instead. ``GET /api/databases`` lists only the databases
+the caller may access.
+
+Writing a relation property also requires access to its target database (see
+``_require_relation_targets_access``), because a bilateral relation writes its
+mirror property and back-references there.
+
 Convention
 ----------
 * Every handler is a synchronous ``def``. FastAPI runs those in a worker
@@ -108,7 +123,8 @@ using Kahn's topological-sort algorithm.  A detected cycle returns 422.
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional
+from enum import Enum
+from typing import Any, Iterable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -136,7 +152,7 @@ from app.blocks.models import PropertySchema
 from app.blocks.router import get_db
 from app.blocks.service import BlockConflict, BlockNotFound
 from app.permissions import repository as perm_repo
-from app.session.deps import get_current_user, require_session
+from app.session.deps import get_current_user
 from app.users.model import User
 from app.ws.broadcaster import emit_block_event
 
@@ -579,19 +595,66 @@ def _validate_computed_config(
 # ─── Internal helpers ─────────────────────────────────────────────────────────
 
 
-def _get_database_or_raise(db: Session, database_id: uuid.UUID):
+class _Access(Enum):
     """
-    Return the database block or raise an appropriate HTTP exception.
+    How a handler answers a caller who may not access the database.
+
+    READ  – 404, the same answer as for a database that does not exist, so a
+            read does not confirm that a database the caller cannot see exists.
+    WRITE – 403, matching the block router and the view router.
+    SOFT  – no exception; the lookup returns ``None`` and the handler answers
+            with an empty result. Used by the entry listings that relation
+            pickers call for arbitrary target databases.
+    """
+
+    READ = "read"
+    WRITE = "write"
+    SOFT = "soft"
+
+
+def _get_database_or_raise(
+    db: Session,
+    database_id: uuid.UUID,
+    user: User,
+    access: _Access,
+):
+    """
+    Return the database block if *user* may access it, or raise.
+
+    Every endpoint of this router resolves its database through this function,
+    so the permission check cannot be left out of a handler: the user is a
+    required argument. The access check runs before the type check, so a
+    caller without access never learns whether the block is a database.
+
+    The permission model does not distinguish reading from writing; *access*
+    only selects how a refusal is answered (see :class:`_Access`).
+
+    Returns
+    -------
+    Block or None
+        ``None`` only with ``_Access.SOFT`` when the caller may not access
+        the database.
 
     Raises
     ------
     HTTPException(404)
-        If no block with *database_id* exists.
+        If no block with *database_id* exists, or with ``_Access.READ`` when
+        the caller may not access it.
+    HTTPException(403)
+        With ``_Access.WRITE`` when the caller may not access the database.
     HTTPException(409)
         If the block exists but is not of type ``'database'``.
     """
     block = repo.get_block(db, database_id)
     if block is None:
+        raise HTTPException(
+            status_code=404, detail=f"Database {database_id} not found"
+        )
+    if not perm_repo.can_user_access(db, database_id, user):
+        if access is _Access.SOFT:
+            return None
+        if access is _Access.WRITE:
+            raise HTTPException(status_code=403, detail="Not authorized for this block")
         raise HTTPException(
             status_code=404, detail=f"Database {database_id} not found"
         )
@@ -601,6 +664,61 @@ def _get_database_or_raise(db: Session, database_id: uuid.UUID):
             detail=f"Block {database_id} is not a database (type: '{block.type}')",
         )
     return block
+
+
+def _relation_target_id(config: Optional[dict]) -> Optional[uuid.UUID]:
+    """Return the ``target_database_id`` of a relation config, or None if absent or malformed."""
+    raw = (config or {}).get("target_database_id")
+    if not raw:
+        return None
+    try:
+        return uuid.UUID(str(raw))
+    except ValueError:
+        return None
+
+
+def _require_relation_targets_access(
+    db: Session,
+    database_id: uuid.UUID,
+    configs: Iterable[Optional[dict]],
+    user: User,
+) -> None:
+    """
+    Refuse with 403 unless *user* may access every relation target in *configs*.
+
+    Writing a relation property reaches into its target database: a bilateral
+    relation creates, renames and reconfigures its mirror property there and
+    writes back-references into the target's entries, and a relation value
+    names entries of the target. Access to the database holding the property
+    is therefore not enough; the caller must also be allowed into the target.
+
+    Targets equal to *database_id* (self-relations) are covered by the access
+    check on the database itself and are skipped. A target that does not
+    exist resolves to unrestricted in the permission layer and passes, which
+    keeps a dangling pointer from blocking edits to its own property.
+    """
+    targets = {
+        target
+        for target in (_relation_target_id(config) for config in configs)
+        if target is not None and target != database_id
+    }
+    if not targets:
+        return
+    if perm_repo.filter_accessible(db, targets, user) != targets:
+        raise HTTPException(status_code=403, detail="Not authorized for the relation target")
+
+
+def _copied_relation_configs(pvs: Iterable, schema_map: dict) -> list[Optional[dict]]:
+    """
+    Return the configs of the relation properties among *pvs* that carry a
+    value, i.e. the relations a duplicate or a template application writes.
+    """
+    configs: list[Optional[dict]] = []
+    for pv in pvs:
+        schema = schema_map.get(pv.property_schema_id)
+        if schema is not None and schema.type == "relation" and pv.value is not None:
+            configs.append(schema.config)
+    return configs
 
 
 def _schema_position_after_last(db: Session, database_id: uuid.UUID) -> float:
@@ -1057,10 +1175,10 @@ def _pool_to_timeline(pool: dict, nuance_pool: Optional[dict] = None) -> dict:
 
     def _fmt_ts(dt: _DT) -> str:
         # NOTE: strftime("%Y") does not zero-pad years < 1000 on glibc, so a
-        # date like year 61 would render as "61-..." instead of "0061-...".
+        # date like year 44 would render as "44-..." instead of "0044-...".
         # The sweepline mixes these derived change-points with the raw,
         # 4-digit-padded client timestamps and orders them by plain string
-        # comparison; an unpadded year breaks that ordering ("61-..." sorts
+        # comparison; an unpadded year breaks that ordering ("44-..." sorts
         # after "2020-...") and corrupts every slot boundary. Format the
         # components explicitly to guarantee a fixed-width, zero-padded year.
         return (
@@ -1739,15 +1857,20 @@ def _clear_keying_for_property(db: Session, key_property_id: uuid.UUID) -> list:
 )
 def list_databases(
     db: Session = Depends(get_db),
-    _session: uuid.UUID = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
-    Return all active database blocks as lightweight descriptors (id + title).
+    Return the active database blocks the caller may access as lightweight
+    descriptors (id + title).
 
     Used by the frontend to populate the target-database picker in the
-    relation property settings modal.
+    relation property settings modal. Databases the caller may not access are
+    left out, so the picker neither reveals their titles nor offers a target
+    that relation writes would refuse.
     """
     blocks = repo.list_databases(db)
+    accessible = perm_repo.filter_accessible(db, (b.id for b in blocks), current_user)
+    blocks = [b for b in blocks if b.id in accessible]
     return [
         DatabaseListResponse(
             id=b.id,
@@ -1767,10 +1890,10 @@ def list_databases(
 def list_schemas(
     database_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: uuid.UUID = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """Return all property schemas for a database, ordered by position."""
-    _get_database_or_raise(db, database_id)
+    _get_database_or_raise(db, database_id, current_user, _Access.READ)
     return repo.list_schemas(db, database_id)
 
 
@@ -1783,7 +1906,7 @@ def create_schema(
     database_id: uuid.UUID,
     payload: SchemaCreate,
     db: Session = Depends(get_db),
-    _session: uuid.UUID = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Add a new property schema to a database.
@@ -1798,10 +1921,15 @@ def create_schema(
     to the target database so open table views can refresh their schema lists
     immediately (and hide the new property automatically).
 
+    A relation property requires access to its target database as well and
+    answers 403 otherwise.
+
     The options of a select property and the nuance options of a relation are
     stored in canonical form, each with an id (see ``app.blocks.options``).
     """
-    _get_database_or_raise(db, database_id)
+    _get_database_or_raise(db, database_id, current_user, _Access.WRITE)
+    if payload.type == "relation":
+        _require_relation_targets_access(db, database_id, [payload.config], current_user)
     config = opts.normalize_config(payload.type, payload.config)
     position = (
         payload.position
@@ -1896,7 +2024,7 @@ def update_schema(
     schema_id: uuid.UUID,
     payload: SchemaUpdate,
     db: Session = Depends(get_db),
-    _session: uuid.UUID = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Update name, type, config, or position of a property schema.
@@ -1905,6 +2033,12 @@ def update_schema(
     would collide with an existing schema name in the same database.
     Returns 422 if a formula / rollup config update would create a cycle or
     contains a syntax error.
+
+    Changing the name, type or config of a relation property, or turning a
+    property into one, requires access to its current and its new target
+    database and answers 403 otherwise, because those changes propagate to
+    the mirror property there. Moving it or changing its group stays within
+    this database and needs no access to the target.
 
     When a formula or rollup schema's config changes, all entries in the
     database are recomputed within the same transaction.
@@ -1921,12 +2055,21 @@ def update_schema(
     A nuance option removed on one side of a bilateral relation is removed
     from the mirror's values as well, since both sides share the option set.
     """
-    _get_database_or_raise(db, database_id)
+    _get_database_or_raise(db, database_id, current_user, _Access.WRITE)
     schema = repo.get_schema(db, schema_id)
     if schema is None or schema.database_id != database_id:
         raise HTTPException(
             status_code=404,
             detail=f"Schema {schema_id} not found in database {database_id}",
+        )
+
+    touches_relation = "relation" in (schema.type, payload.type)
+    propagates = (
+        payload.name is not None or payload.type is not None or payload.config is not None
+    )
+    if touches_relation and propagates:
+        _require_relation_targets_access(
+            db, database_id, [schema.config, payload.config], current_user,
         )
 
     # Capture pre-update values needed for bilateral relation side-effects.
@@ -2274,7 +2417,7 @@ def get_option_usage(
     schema_id: uuid.UUID,
     option_id: str,
     db: Session = Depends(get_db),
-    _session: uuid.UUID = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Count the active entries that use one option of a property.
@@ -2282,7 +2425,7 @@ def get_option_usage(
     Pre-flight for deleting an option, so the confirmation can say how many
     entries lose it. Works for select options and relation nuance options.
     """
-    _get_database_or_raise(db, database_id)
+    _get_database_or_raise(db, database_id, current_user, _Access.READ)
     schema = repo.get_schema(db, schema_id)
     if schema is None or schema.database_id != database_id:
         raise HTTPException(
@@ -2300,7 +2443,7 @@ def delete_schema(
     database_id: uuid.UUID,
     schema_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: uuid.UUID = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Delete a property schema and cascade-delete all associated values.
@@ -2311,9 +2454,12 @@ def delete_schema(
     confirmation dialog can name the affected relations, while this is the
     guarantee that no dangling key pointer survives the delete.
 
+    Deleting a relation property leaves the mirror in the target database in
+    place, so it needs no access to the target.
+
     Returns 204 No Content on success.
     """
-    _get_database_or_raise(db, database_id)
+    _get_database_or_raise(db, database_id, current_user, _Access.WRITE)
     schema = repo.get_schema(db, schema_id)
     if schema is None or schema.database_id != database_id:
         raise HTTPException(
@@ -2337,7 +2483,7 @@ def list_key_references(
     database_id: uuid.UUID,
     schema_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: uuid.UUID = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     List the relation properties that are keyed on this property.
@@ -2349,8 +2495,12 @@ def list_key_references(
 
     Returns an empty list for a property nothing keys on, which is the common
     case and leaves the existing two-step delete affordance untouched.
+
+    The title of a referring database the caller may not access is returned
+    as ``None``; the reference itself is still listed, since the delete resets
+    it regardless.
     """
-    _get_database_or_raise(db, database_id)
+    _get_database_or_raise(db, database_id, current_user, _Access.READ)
     schema = repo.get_schema(db, schema_id)
     if schema is None or schema.database_id != database_id:
         raise HTTPException(
@@ -2363,9 +2513,15 @@ def list_key_references(
         return []
 
     # Resolve each referring relation's own database title for the dialog.
+    readable = perm_repo.filter_accessible(
+        db, (referrer.database_id for referrer in references), current_user,
+    )
     titles: dict[uuid.UUID, Optional[str]] = {}
     for referrer in references:
         if referrer.database_id in titles:
+            continue
+        if referrer.database_id not in readable:
+            titles[referrer.database_id] = None
             continue
         block = repo.get_block(db, referrer.database_id)
         titles[referrer.database_id] = (
@@ -2394,7 +2550,7 @@ def validate_formula(
     database_id: uuid.UUID,
     payload: FormulaValidateRequest,
     db: Session = Depends(get_db),
-    _session: uuid.UUID = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Validate a formula expression for syntax errors and return the list of
@@ -2410,7 +2566,7 @@ def validate_formula(
         ``error``      – Human-readable message when ``valid`` is False.
         ``prop_names`` – Property names referenced via ``prop('Name')``.
     """
-    _get_database_or_raise(db, database_id)
+    _get_database_or_raise(db, database_id, current_user, _Access.READ)
     from app.blocks.formula_engine import extract_prop_names
 
     try:
@@ -2442,8 +2598,7 @@ def list_entries(
     Non-admin users that do not have access to the database block receive an
     empty list (this prevents leaking entry content via relation pickers).
     """
-    _get_database_or_raise(db, database_id)
-    if not perm_repo.can_user_access(db, database_id, current_user):
+    if _get_database_or_raise(db, database_id, current_user, _Access.SOFT) is None:
         return []
     entries = repo.list_children(
         db, database_id, state="active",
@@ -2509,8 +2664,7 @@ def query_entries(
     empty result set. This cleanly prevents relation-cell pickers from
     surfacing entries from databases the user may not see.
     """
-    _get_database_or_raise(db, database_id)
-    if not perm_repo.can_user_access(db, database_id, current_user):
+    if _get_database_or_raise(db, database_id, current_user, _Access.SOFT) is None:
         return EntryQueryResponse(entries=[], total=0)
     schemas = repo.list_schemas(db, database_id)
     schema_map: dict[str, object] = {str(s.id): s for s in schemas}
@@ -2642,8 +2796,7 @@ def resolve_entry_titles(
     empty list, mirroring the listing endpoints so relation chips never leak
     titles from databases the user may not see.
     """
-    _get_database_or_raise(db, database_id)
-    if not perm_repo.can_user_access(db, database_id, current_user):
+    if _get_database_or_raise(db, database_id, current_user, _Access.SOFT) is None:
         return []
     if not payload.ids:
         return []
@@ -2681,8 +2834,7 @@ def get_entry(
     caller may not read the database, so the response does not confirm that
     either exists.
     """
-    _get_database_or_raise(db, database_id)
-    if not perm_repo.can_user_access(db, database_id, current_user):
+    if _get_database_or_raise(db, database_id, current_user, _Access.SOFT) is None:
         raise HTTPException(status_code=404, detail=f"Entry {entry_id} not found")
     entry = repo.get_block(db, entry_id)
     if entry is None or entry.parent_id != database_id:
@@ -2714,9 +2866,7 @@ def get_entries_batch(
 
     Answers 404 when the caller may not read the database.
     """
-    _get_database_or_raise(db, database_id)
-    if not perm_repo.can_user_access(db, database_id, current_user):
-        raise HTTPException(status_code=404, detail=f"Database {database_id} not found")
+    _get_database_or_raise(db, database_id, current_user, _Access.READ)
 
     wanted = list(dict.fromkeys(payload.ids))
     found = repo.list_blocks_by_ids(
@@ -2756,7 +2906,7 @@ def create_entry(
     formula / rollup schemas are evaluated (initial values are null /
     empty-context results).
     """
-    _get_database_or_raise(db, database_id)
+    _get_database_or_raise(db, database_id, current_user, _Access.WRITE)
     try:
         block = service.create_block(db, type="page", parent_id=database_id)
         _populate_readonly_properties(db, database_id, block.id, block.created_at, current_user.id)
@@ -2827,9 +2977,12 @@ def duplicate_entry(
     additional broadcasts are sent for any bilateral relation target databases
     whose mirror values were written.
 
+    Copying a relation value requires access to the relation's target
+    database and answers 403 otherwise, as writing that value would.
+
     Raises 404 if either the database or the original entry is not found.
     """
-    _get_database_or_raise(db, database_id)
+    _get_database_or_raise(db, database_id, current_user, _Access.WRITE)
     original = repo.get_block(db, entry_id)
     if original is None or original.parent_id != database_id:
         raise HTTPException(
@@ -2846,6 +2999,9 @@ def duplicate_entry(
     # pass to _sync_bilateral_relation (reuses the existing SSOT helper).
     all_schemas = repo.list_schemas(db, database_id)
     schema_map = {s.id: s for s in all_schemas}
+    _require_relation_targets_access(
+        db, database_id, _copied_relation_configs(original_pvs, schema_map), current_user,
+    )
 
     # Collect target-database IDs for cross-DB bilateral broadcasts.
     bilateral_target_dbs: set[str] = set()
@@ -2973,7 +3129,7 @@ def duplicate_entry(
 def seed_readonly_schemas(
     database_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: uuid.UUID = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Idempotently create the system-managed property schemas for a database
@@ -2998,7 +3154,7 @@ def seed_readonly_schemas(
     counterpart so the sync helper can resolve the mirror without a
     full schema scan.
     """
-    _get_database_or_raise(db, database_id)
+    _get_database_or_raise(db, database_id, current_user, _Access.WRITE)
     created = repo.ensure_readonly_schemas(db, database_id)
 
     if created:
@@ -3045,8 +3201,10 @@ def upsert_value(
     schema does not belong to this database.
     Raises 422 for schema types that are backend-managed (id, created_*, formula,
     rollup).
+    Raises 403 for a relation property whose target database the caller may
+    not access.
     """
-    _get_database_or_raise(db, database_id)
+    _get_database_or_raise(db, database_id, current_user, _Access.WRITE)
     entry = repo.get_block(db, entry_id)
     if entry is None or entry.parent_id != database_id:
         raise HTTPException(
@@ -3064,6 +3222,8 @@ def upsert_value(
             status_code=422,
             detail=f"Property '{schema.name}' is system-managed and cannot be set directly.",
         )
+    if schema.type == "relation":
+        _require_relation_targets_access(db, database_id, [schema.config], current_user)
 
     # ── parent_item: single-parent policy + cycle detection ──────────────────
     is_parent_item = schema.type == "parent_item"
@@ -3348,7 +3508,7 @@ def create_entry_template(
     Templates do not appear in any regular entry query or relation / rollup
     aggregation.
     """
-    _get_database_or_raise(db, database_id)
+    _get_database_or_raise(db, database_id, current_user, _Access.WRITE)
     try:
         block = service.create_block(db, type="entry_template", parent_id=database_id)
         _populate_readonly_properties(db, database_id, block.id, block.created_at, current_user.id)
@@ -3386,7 +3546,7 @@ def create_entry_template(
 def list_entry_templates(
     database_id: uuid.UUID,
     db: Session = Depends(get_db),
-    _session: uuid.UUID = Depends(require_session),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Return all active entry templates belonging to *database_id*.
@@ -3394,7 +3554,7 @@ def list_entry_templates(
     Values are loaded in a single additional query (no N+1), identical to
     the regular ``GET /entries`` endpoint.
     """
-    _get_database_or_raise(db, database_id)
+    _get_database_or_raise(db, database_id, current_user, _Access.READ)
     templates = [
         b for b in repo.list_children(db, database_id, state="active")
         if b.type == "entry_template"
@@ -3443,8 +3603,10 @@ def apply_entry_template(
     Returns 204 No Content on success.
     Returns 404 if the database, template, or target entry is not found,
     or if the template / entry do not belong to the given database.
+    Returns 403 if the template carries a relation value whose target
+    database the caller may not access.
     """
-    _get_database_or_raise(db, database_id)
+    _get_database_or_raise(db, database_id, current_user, _Access.WRITE)
 
     template = repo.get_block(db, template_id)
     if template is None or template.parent_id != database_id or template.type != "entry_template":
@@ -3464,6 +3626,9 @@ def apply_entry_template(
     template_pvs = values_map.get(template_id, [])
     all_schemas = repo.list_schemas(db, database_id)
     schema_map = {s.id: s for s in all_schemas}
+    _require_relation_targets_access(
+        db, database_id, _copied_relation_configs(template_pvs, schema_map), current_user,
+    )
     bilateral_target_dbs: set[str] = set()
 
     try:

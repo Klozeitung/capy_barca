@@ -4,6 +4,10 @@ Tests for the database router.
 All tests run against the isolated PostgreSQL test database provided by
 the autouse ``isolated_db`` fixture in conftest.py, and exercise the HTTP
 layer via the ``http_client`` fixture defined there.
+
+``http_client`` acts as an admin, and admins pass every permission check. The
+refusal paths for accounts without access are covered per endpoint in
+``database_router_permissions_test.py``.
 """
 import uuid
 
@@ -57,6 +61,13 @@ def _upsert_value(http_client, database_id, entry_id, schema_id, value):
     )
     assert resp.status_code == 204
     return resp
+
+
+def _make_private(http_client, block_id: str) -> None:
+    resp = http_client.put(
+        f"/api/blocks/{block_id}/permissions", json={"mode": "private", "grants": []},
+    )
+    assert resp.status_code == 200
 
 
 # ─── GET /api/databases ───────────────────────────────────────────────────────
@@ -1756,14 +1767,14 @@ def test_query_entries_name_eq_filter_case_insensitive(http_client):
 
 def test_query_entries_text_schema_filter(http_client):
     db_id = _create_database(http_client)
-    schema = _create_schema(http_client, db_id, name="Unit", type_="text")
+    schema = _create_schema(http_client, db_id, name="Field A", type_="text")
     e1 = _create_entry(http_client, db_id)
     e2 = _create_entry(http_client, db_id)
-    _upsert_value(http_client, db_id, e1["id"], schema["id"], {"text": "cavalry"})
-    _upsert_value(http_client, db_id, e2["id"], schema["id"], {"text": "infantry"})
+    _upsert_value(http_client, db_id, e1["id"], schema["id"], {"text": "value x"})
+    _upsert_value(http_client, db_id, e2["id"], schema["id"], {"text": "value y"})
 
     result = _query(http_client, db_id, filters=[
-        {"schema_id": schema["id"], "operator": "contains", "value": "cavalry"}
+        {"schema_id": schema["id"], "operator": "contains", "value": "value x"}
     ])
     assert result["total"] == 1
     assert result["entries"][0]["id"] == e1["id"]
@@ -1771,7 +1782,7 @@ def test_query_entries_text_schema_filter(http_client):
 
 def test_query_entries_number_gt_filter(http_client):
     db_id = _create_database(http_client)
-    schema = _create_schema(http_client, db_id, name="Strength", type_="number")
+    schema = _create_schema(http_client, db_id, name="Amount", type_="number")
     e1 = _create_entry(http_client, db_id)
     e2 = _create_entry(http_client, db_id)
     _upsert_value(http_client, db_id, e1["id"], schema["id"], {"number": 100})
@@ -1871,10 +1882,10 @@ def test_query_entries_sort_by_rollup_earliest_date(http_client):
     db_a = _create_database(http_client)
     db_b = _create_database(http_client)
 
-    rel = _create_relation_schema(http_client, db_a, db_b, name="Events", direction="unilateral")
+    rel = _create_relation_schema(http_client, db_a, db_b, name="Links", direction="unilateral")
     date_col = _create_schema(http_client, db_b, name="When", type_="date")
-    birthday = _create_rollup_schema(
-        http_client, db_a, "Birthday", rel["id"], date_col["id"], "earliest_date"
+    earliest = _create_rollup_schema(
+        http_client, db_a, "Earliest Date", rel["id"], date_col["id"], "earliest_date"
     )
 
     a1 = _create_entry(http_client, db_a)
@@ -1884,23 +1895,23 @@ def test_query_entries_sort_by_rollup_earliest_date(http_client):
     b2 = _create_entry(http_client, db_b)
     b3 = _create_entry(http_client, db_b)
 
-    _upsert_value(http_client, db_b, b1["id"], date_col["id"], {"start": "1990-06-15", "end": ""})
-    _upsert_value(http_client, db_b, b2["id"], date_col["id"], {"start": "1980-01-02", "end": ""})
-    _upsert_value(http_client, db_b, b3["id"], date_col["id"], {"start": "1985-12-31", "end": ""})
+    _upsert_value(http_client, db_b, b1["id"], date_col["id"], {"start": "2003-05-10", "end": ""})
+    _upsert_value(http_client, db_b, b2["id"], date_col["id"], {"start": "1993-01-02", "end": ""})
+    _upsert_value(http_client, db_b, b3["id"], date_col["id"], {"start": "1998-12-31", "end": ""})
 
     _upsert_value(http_client, db_a, a1["id"], rel["id"], {"related_ids": [b1["id"]]})
     _upsert_value(http_client, db_a, a2["id"], rel["id"], {"related_ids": [b2["id"]]})
     _upsert_value(http_client, db_a, a3["id"], rel["id"], {"related_ids": [b3["id"]]})
 
     result = _query(http_client, db_a, sorts=[
-        {"schema_id": birthday["id"], "direction": "asc"}
+        {"schema_id": earliest["id"], "direction": "asc"}
     ])
     ids = [e["id"] for e in result["entries"]]
-    # a2 (1980) < a3 (1985) < a1 (1990)
+    # a2 (1993) < a3 (1998) < a1 (2003)
     assert ids == [a2["id"], a3["id"], a1["id"]]
 
     result_desc = _query(http_client, db_a, sorts=[
-        {"schema_id": birthday["id"], "direction": "desc"}
+        {"schema_id": earliest["id"], "direction": "desc"}
     ])
     ids_desc = [e["id"] for e in result_desc["entries"]]
     assert ids_desc == [a1["id"], a3["id"], a2["id"]]
@@ -2119,21 +2130,21 @@ def test_pool_to_timeline_ancient_dates_keep_correct_boundaries():
     """Regression: years < 1000 must produce zero-padded change-points.
 
     strftime("%Y") drops the leading zeros of ancient years on glibc, so a
-    derived change-point for year 61 rendered as "61-..." and string-sorted
+    derived change-point for year 44 rendered as "44-..." and string-sorted
     after a modern "2020-..." boundary. That mis-ordering swapped slot bounds
     (the bounded slot inherited the next entry's start as its end) and dropped
     the "until" slot entirely. Each slot must keep its own original bounds.
     """
     pool = {
-        "a-id": ["→0050-03-01T08:00:00"],
-        "b-id": ["0050-07-01T12:00:00→0062-02-01T18:00:00"],
-        "c-id": ["2020-05-01T09:00:00→"],
+        "a-id": ["→0030-04-12T06:00:00"],
+        "b-id": ["0030-08-03T11:00:00→0044-11-20T18:00:00"],
+        "c-id": ["2045-07-17T09:00:00→"],
     }
     timeline = _pool_to_timeline(pool)
     assert timeline == {
-        "→0050-03-01T08:00:00": {"related_ids": ["a-id"]},
-        "0050-07-01T12:00:00→0062-02-01T18:00:00": {"related_ids": ["b-id"]},
-        "2020-05-01T09:00:00→": {"related_ids": ["c-id"]},
+        "→0030-04-12T06:00:00": {"related_ids": ["a-id"]},
+        "0030-08-03T11:00:00→0044-11-20T18:00:00": {"related_ids": ["b-id"]},
+        "2045-07-17T09:00:00→": {"related_ids": ["c-id"]},
     }
 
 
@@ -2141,8 +2152,8 @@ def test_pool_to_timeline_ancient_dates_change_points_zero_padded():
     """Every derived slot key must use a 4-digit, zero-padded year so the keys
     sort chronologically by plain string comparison."""
     pool = {
-        "a": ["0062-02-01T18:00:00→0063-01-01T00:00:00"],
-        "b": ["0063-06-01T00:00:00→"],
+        "a": ["0044-11-20T18:00:00→0045-01-01T00:00:00"],
+        "b": ["0045-06-01T00:00:00→"],
     }
     timeline = _pool_to_timeline(pool)
     for key in timeline:
@@ -2162,8 +2173,8 @@ def test_upsert_timeline_value_valid(http_client):
     resp = http_client.put(
         f"/api/databases/{db_id}/entries/{entry['id']}/values/{schema['id']}",
         json={"value": {"_timeline": {
-            "2023-01-01T00:00:00→2023-12-31T23:59:59": {"text": "Apprentice"},
-            "2024-01-01T00:00:00→": {"text": "Master"},
+            "2023-01-01T00:00:00→2023-12-31T23:59:59": {"text": "Value A"},
+            "2024-01-01T00:00:00→": {"text": "Value B"},
         }}},
     )
     assert resp.status_code == 204
@@ -2281,11 +2292,11 @@ def test_update_schema_nuance_propagates_to_bilateral_mirror(http_client):
             **schema["config"],
             "nuance": {
                 "enabled": True,
-                "options": [{"label": "successfully"}],
-                "affix1": "as",
+                "options": [{"label": "label-a"}],
+                "affix1": "affix-a",
                 "affix2": "",
                 "orientation": "prepended",
-                "synced": {"affix1": "held by", "affix2": "", "orientation": "appended"},
+                "synced": {"affix1": "affix-b", "affix2": "", "orientation": "appended"},
             },
         }},
     )
@@ -2300,12 +2311,12 @@ def test_update_schema_nuance_propagates_to_bilateral_mirror(http_client):
     )
     # Both sides share the option set, ids included.
     assert mn["options"] == source["config"]["nuance"]["options"]
-    assert [o["label"] for o in mn["options"]] == ["successfully"]
+    assert [o["label"] for o in mn["options"]] == ["label-a"]
     # The mirror's own framing is the source's synced side.
-    assert mn["affix1"] == "held by"
+    assert mn["affix1"] == "affix-b"
     assert mn["orientation"] == "appended"
     # The mirror's synced side mirrors the source's own framing.
-    assert mn["synced"]["affix1"] == "as"
+    assert mn["synced"]["affix1"] == "affix-a"
     assert mn["synced"]["orientation"] == "prepended"
 
 
@@ -2825,8 +2836,8 @@ def test_pool_to_timeline_nuance_varies_per_range():
 
 def test_pool_to_timeline_always_valid_nuance():
     """An always-valid uid carries its '' nuance into the sole slot."""
-    timeline = _pool_to_timeline({"a": [""]}, {"a": {"": "successfully"}})
-    assert timeline[""]["nuances"] == {"a": "successfully"}
+    timeline = _pool_to_timeline({"a": [""]}, {"a": {"": "label-a"}})
+    assert timeline[""]["nuances"] == {"a": "label-a"}
 
 
 def test_pool_to_timeline_partial_nuance_in_shared_slot():
@@ -2880,7 +2891,7 @@ def test_nuance_pool_round_trip(http_client):
         f"/api/databases/{db_id}/entries/{entry_a['id']}/values/{schema['id']}",
         json={"value": {
             "relationPool": {entry_b["id"]: [""]},
-            "nuancePool": {entry_b["id"]: {"": "successfully"}},
+            "nuancePool": {entry_b["id"]: {"": "label-a"}},
         }},
     )
     assert resp.status_code == 204
@@ -2888,8 +2899,8 @@ def test_nuance_pool_round_trip(http_client):
     entries = http_client.get(f"/api/databases/{db_id}/entries").json()
     row = next(e for e in entries if e["id"] == entry_a["id"])
     val = row["values"].get(schema["id"])
-    assert val["nuancePool"] == {entry_b["id"]: {"": "successfully"}}
-    assert val["_timeline"][""]["nuances"] == {entry_b["id"]: "successfully"}
+    assert val["nuancePool"] == {entry_b["id"]: {"": "label-a"}}
+    assert val["_timeline"][""]["nuances"] == {entry_b["id"]: "label-a"}
 
 
 def test_nuance_pool_sanitised_on_write(http_client):
@@ -2940,7 +2951,7 @@ def test_nuance_pool_mirrored_on_bilateral(http_client):
         f"/api/databases/{db_a}/entries/{entry_a['id']}/values/{schema['id']}",
         json={"value": {
             "relationPool": {entry_b["id"]: [""]},
-            "nuancePool": {entry_b["id"]: {"": "successfully"}},
+            "nuancePool": {entry_b["id"]: {"": "label-a"}},
         }},
     )
 
@@ -2949,8 +2960,8 @@ def test_nuance_pool_mirrored_on_bilateral(http_client):
     entries_b = http_client.get(f"/api/databases/{db_b}/entries").json()
     row_b = next(e for e in entries_b if e["id"] == entry_b["id"])
     val_b = row_b["values"].get(mirror["id"])
-    assert val_b["nuancePool"] == {entry_a["id"]: {"": "successfully"}}
-    assert val_b["_timeline"][""]["nuances"] == {entry_a["id"]: "successfully"}
+    assert val_b["nuancePool"] == {entry_a["id"]: {"": "label-a"}}
+    assert val_b["_timeline"][""]["nuances"] == {entry_a["id"]: "label-a"}
 
 
 def test_flat_nuance_mirrored_on_bilateral(http_client):
@@ -2968,7 +2979,7 @@ def test_flat_nuance_mirrored_on_bilateral(http_client):
         f"/api/databases/{db_a}/entries/{entry_a['id']}/values/{schema['id']}",
         json={"value": {
             "related_ids": [entry_b["id"]],
-            "nuances": {entry_b["id"]: "reluctantly"},
+            "nuances": {entry_b["id"]: "label-b"},
         }},
     )
 
@@ -2978,7 +2989,7 @@ def test_flat_nuance_mirrored_on_bilateral(http_client):
     row_b = next(e for e in entries_b if e["id"] == entry_b["id"])
     val_b = row_b["values"].get(mirror["id"])
     assert val_b["related_ids"] == [entry_a["id"]]
-    assert val_b["nuances"] == {entry_a["id"]: "reluctantly"}
+    assert val_b["nuances"] == {entry_a["id"]: "label-b"}
 
 
 def test_flat_nuance_migrated_to_pool_on_timeline_enable(http_client):
@@ -2994,7 +3005,7 @@ def test_flat_nuance_migrated_to_pool_on_timeline_enable(http_client):
         f"/api/databases/{db_id}/entries/{entry_a['id']}/values/{schema['id']}",
         json={"value": {
             "related_ids": [entry_b["id"]],
-            "nuances": {entry_b["id"]: "successfully"},
+            "nuances": {entry_b["id"]: "label-a"},
         }},
     )
     http_client.patch(
@@ -3006,7 +3017,7 @@ def test_flat_nuance_migrated_to_pool_on_timeline_enable(http_client):
     row = next(e for e in entries if e["id"] == entry_a["id"])
     val = row["values"].get(schema["id"])
     assert val["relationPool"] == {entry_b["id"]: [""]}
-    assert val["nuancePool"] == {entry_b["id"]: {"": "successfully"}}
+    assert val["nuancePool"] == {entry_b["id"]: {"": "label-a"}}
 
 
 def test_pool_to_timeline_empty_range_round_trip(http_client):
@@ -3403,6 +3414,54 @@ def test_query_entries_admin_bypasses_permission(http_client):
     assert resp.json()["total"] >= 1
 
 
+def test_admin_reaches_a_private_database_of_another_owner(http_client):
+    """The admin bypass also covers the schema and write endpoints."""
+    db_id = _create_database(http_client)
+    _make_private(http_client, db_id)
+    assert http_client.get(f"/api/databases/{db_id}/schemas").status_code == 200
+    assert http_client.post(f"/api/databases/{db_id}/entries").status_code == 201
+
+
+def test_database_list_shows_private_databases_to_the_admin(http_client):
+    db_id = _create_database(http_client)
+    _make_private(http_client, db_id)
+    assert [d["id"] for d in http_client.get("/api/databases").json()] == [db_id]
+
+
+# ── Relation target helpers ───────────────────────────────────────────────────
+
+
+def test_relation_target_id_parses_the_target():
+    from app.blocks.database_router import _relation_target_id
+
+    target = uuid.uuid4()
+    assert _relation_target_id({"target_database_id": str(target)}) == target
+
+
+@pytest.mark.parametrize("config", [None, {}, {"target_database_id": ""}, {"target_database_id": "not-a-uuid"}])
+def test_relation_target_id_is_none_without_a_valid_target(config):
+    from app.blocks.database_router import _relation_target_id
+
+    assert _relation_target_id(config) is None
+
+
+def test_copied_relation_configs_selects_relations_with_values():
+    from types import SimpleNamespace
+
+    from app.blocks.database_router import _copied_relation_configs
+
+    relation = SimpleNamespace(type="relation", config={"target_database_id": "x"})
+    text = SimpleNamespace(type="text", config=None)
+    schema_map = {"rel": relation, "txt": text}
+    pvs = [
+        SimpleNamespace(property_schema_id="rel", value={"related_ids": []}),
+        SimpleNamespace(property_schema_id="rel", value=None),
+        SimpleNamespace(property_schema_id="txt", value={"text": "Value A"}),
+        SimpleNamespace(property_schema_id="gone", value={"text": "Value B"}),
+    ]
+    assert _copied_relation_configs(pvs, schema_map) == [relation.config]
+
+
 # ─── POST /api/databases/{id}/entries/resolve-titles ──────────────────────────
 
 
@@ -3707,7 +3766,7 @@ def test_create_keyed_and_nuanced_relation_returns_422(http_client):
     date_schema = _create_schema(http_client, bdb, name="Date", type_="date")
 
     config = _keyed_relation_config(bdb, date_schema["id"])
-    config["nuance"] = {"enabled": True, "options": [{"label": "reluctantly"}]}
+    config["nuance"] = {"enabled": True, "options": [{"label": "label-b"}]}
     resp = http_client.post(
         f"/api/databases/{adb}/schemas",
         json={"name": "Link", "type": "relation", "config": config},
@@ -4085,7 +4144,7 @@ def test_deleting_key_property_clears_all_referrers(http_client):
     adb, bdb, date_schema, link = _keyed_setup(http_client, direction="unilateral",
                                               mirror_name=None)
     second = _create_relation_schema(
-        http_client, adb, bdb, name="Backstory", direction="unilateral",
+        http_client, adb, bdb, name="Link B", direction="unilateral",
     )
     for schema in (link, second):
         http_client.patch(
@@ -4320,28 +4379,12 @@ def test_get_entry_unknown_database_returns_404(http_client):
     assert resp.status_code == 404
 
 
-def test_get_entry_without_read_access_returns_404(http_client):
-    import app.database.database as db_module
-    from app.main import app
-    from app.permissions import repository as perm_repo
-    from app.session.deps import get_current_user, require_session
-    from app.users.model import User
-
+def test_get_entry_without_read_access_returns_404(http_client, login_as, member_user):
     db_id = _create_database(http_client)
     entry = _create_entry(http_client, db_id)
-    with db_module.SessionLocal() as db:
-        perm_repo.set_permission(db, uuid.UUID(db_id), "private", [])
-        member = User(
-            id=uuid.uuid4(), username=f"member_{uuid.uuid4().hex[:8]}",
-            password_hash="x", role="member", is_active=True,
-        )
-        db.add(member)
-        db.commit()
-        db.refresh(member)
-        db.expunge(member)
-    app.dependency_overrides[require_session] = lambda: member.id
-    app.dependency_overrides[get_current_user] = lambda: member
+    _make_private(http_client, db_id)
 
+    login_as(member_user)
     assert http_client.get(f"/api/databases/{db_id}/entries/{entry['id']}").status_code == 404
 
 
@@ -4416,28 +4459,12 @@ def test_batch_unknown_database_returns_404(http_client):
     assert resp.status_code == 404
 
 
-def test_batch_without_read_access_returns_404(http_client):
-    import app.database.database as db_module
-    from app.main import app
-    from app.permissions import repository as perm_repo
-    from app.session.deps import get_current_user, require_session
-    from app.users.model import User
-
+def test_batch_without_read_access_returns_404(http_client, login_as, member_user):
     db_id = _create_database(http_client)
     entry = _create_entry(http_client, db_id)
-    with db_module.SessionLocal() as db:
-        perm_repo.set_permission(db, uuid.UUID(db_id), "private", [])
-        member = User(
-            id=uuid.uuid4(), username=f"member_{uuid.uuid4().hex[:8]}",
-            password_hash="x", role="member", is_active=True,
-        )
-        db.add(member)
-        db.commit()
-        db.refresh(member)
-        db.expunge(member)
-    app.dependency_overrides[require_session] = lambda: member.id
-    app.dependency_overrides[get_current_user] = lambda: member
+    _make_private(http_client, db_id)
 
+    login_as(member_user)
     resp = http_client.post(f"/api/databases/{db_id}/entries/batch", json={"ids": [entry["id"]]})
     assert resp.status_code == 404
 

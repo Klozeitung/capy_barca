@@ -15,7 +15,7 @@ _BASE_URL = "https://testserver"
 client = TestClient(app, base_url=_BASE_URL)
 
 # Long enough for the minimum the initial administrator now has to meet.
-VALID_PASSWORD = "geheim-1234"
+VALID_PASSWORD = "secret-1234"
 
 
 # isolated_db (autouse) from conftest.py handles per-test DB isolation.
@@ -64,7 +64,7 @@ def test_setup_status_returns_not_configured():
 
 def test_setup_status_returns_configured():
     with s.SessionLocal() as db:
-        create_user(db, "capybarca", "geheim", role="admin")
+        create_user(db, "capybarca", "secret", role="admin")
         db.commit()
     response = client.get("/api/setup-status")
     assert response.json()["configured"] is True
@@ -116,10 +116,27 @@ def test_register_session_cookie_is_valid():
 
 def test_register_blocked_when_already_configured():
     with s.SessionLocal() as db:
-        create_user(db, "capybarca", "geheim", role="admin")
+        create_user(db, "capybarca", "secret", role="admin")
         db.commit()
     response = client.post("/api/register", json={"username": "other", "password": VALID_PASSWORD})
     assert response.status_code == 403
+
+
+def test_register_refuses_the_loser_of_a_simultaneous_registration(monkeypatch):
+    """
+    Both requests pass the early check; the second one reaches create_admin
+    after the first has committed and must get the same 403, not a 500.
+    """
+    import app.setup_router as sr
+    from app.session.user_registration import AlreadyConfigured
+
+    def _lost_the_race(username, password):
+        raise AlreadyConfigured("An account already exists")
+
+    monkeypatch.setattr(sr, "create_admin", _lost_the_race)
+    response = client.post("/api/register", json={"username": "other", "password": VALID_PASSWORD})
+    assert response.status_code == 403
+    assert "session" not in response.cookies
 
 
 def test_register_returns_422_on_empty_username():
@@ -135,7 +152,7 @@ def test_register_returns_422_on_empty_password():
 # ─── Password rules ───────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("password", ["", "a", "kurz", "1234567"])
+@pytest.mark.parametrize("password", ["", "a", "short", "1234567"])
 def test_register_rejects_a_password_below_the_minimum(password):
     """
     The initial administrator used to be the one account creatable with a
@@ -184,7 +201,7 @@ def signup_enabled(monkeypatch):
     """Enable self-registration and seed the admin that signup requires."""
     monkeypatch.setenv("ALLOW_NEW_USERS", "true")
     with s.SessionLocal() as db:
-        create_user(db, "capybarca", "geheim", role="admin")
+        create_user(db, "capybarca", "secret", role="admin")
         db.commit()
     yield
 

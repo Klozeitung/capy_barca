@@ -77,6 +77,12 @@ def _resolve_test_database_url() -> str:
 _TEST_DATABASE_URL = _resolve_test_database_url()
 os.environ["DATABASE_URL"] = _TEST_DATABASE_URL
 
+# The application refuses to start without a signing secret. CI provides none,
+# so the suite supplies its own unless the environment (the container started
+# by setup.sh) already carries one. Set before any application import, since
+# the WOPI router reads it at import time.
+os.environ.setdefault("SECRET_KEY", "test-suite-signing-secret-not-for-production")
+
 # Application modules read DATABASE_URL at import time, so they are imported
 # only after it has been redirected above.
 from sqlalchemy import MetaData, create_engine, event, text  # noqa: E402
@@ -224,7 +230,85 @@ def count_queries(test_engine):
 
 
 @pytest.fixture
-def http_client():
+def admin_user():
+    """
+    The in-memory admin ``http_client`` acts as by default.
+
+    It exists only in memory; tests that need the account as a database row
+    create it. Pass it to ``login_as`` to switch back after acting as another
+    account.
+    """
+    import uuid
+
+    from app.users.model import User
+
+    return User(
+        id=uuid.uuid4(),
+        username="testuser",
+        password_hash="x",
+        role="admin",
+        is_active=True,
+    )
+
+
+@pytest.fixture
+def _acting_user(admin_user) -> dict:
+    """
+    Holder for the account ``http_client`` authenticates as.
+
+    Starts with ``admin_user``. ``login_as`` replaces it, which switches the
+    identity of every following request without a new client.
+    """
+    return {"user": admin_user}
+
+
+@pytest.fixture
+def login_as(_acting_user):
+    """
+    Return a function that makes ``http_client`` act as the given user.
+
+    Admins pass every permission check, so a test that only ever runs as the
+    default admin cannot detect a missing check. Tests set up their data as
+    the admin, then call ``login_as(member_user)`` and repeat the request to
+    prove the endpoint refuses an account without access, and
+    ``login_as(admin_user)`` to inspect the state afterwards.
+    """
+    def _login_as(user) -> None:
+        _acting_user["user"] = user
+
+    return _login_as
+
+
+@pytest.fixture
+def member_user():
+    """
+    Persist and return an active account with the ``member`` role.
+
+    Stored as a database row, unlike the default admin, so code that loads
+    accounts from the database (the WebSocket recipient check, user lookups)
+    sees it as well.
+    """
+    import uuid
+
+    from app.users.model import User
+
+    user = User(
+        id=uuid.uuid4(),
+        username="member-a",
+        password_hash="x",
+        role="member",
+        is_active=True,
+    )
+    with db_module.SessionLocal() as db:
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        db.expunge(user)
+    return user
+
+
+@pytest.fixture
+def http_client(_acting_user):
     """
     Return an authenticated TestClient for endpoint tests.
 
@@ -233,29 +317,20 @@ def http_client():
     dependency overrides authenticates all of them.
 
     The ``isolated_db`` fixture (autouse) ensures an empty database for each
-    test. The fake user carries the admin role so permission checks that
-    distinguish members from admins pass without extra setup. It exists only
-    in memory; tests that need the account as a database row create it.
+    test. By default the client acts as ``admin_user``, so permission checks
+    that distinguish members from admins pass without extra setup.
+    ``login_as`` switches the client to another account, which is how tests
+    reach the refusal paths of those checks.
     """
-    import uuid
-
     from fastapi.testclient import TestClient
 
     from app.main import app
     from app.session.deps import get_current_user, require_session
-    from app.users.model import User
 
-    fake_user = User(
-        id=uuid.uuid4(),
-        username="testuser",
-        password_hash="x",
-        role="admin",
-        is_active=True,
-    )
-
-    # One override pair covers every router.
-    app.dependency_overrides[require_session] = lambda: fake_user.id
-    app.dependency_overrides[get_current_user] = lambda: fake_user
+    # One override pair covers every router. Both read the holder on every
+    # request, so login_as takes effect immediately.
+    app.dependency_overrides[require_session] = lambda: _acting_user["user"].id
+    app.dependency_overrides[get_current_user] = lambda: _acting_user["user"]
 
     # Seed the workspace root block that Alembic migration 0002 inserts. The
     # isolation fixture removes it together with every other row, so the
@@ -289,3 +364,16 @@ def http_client():
         # Cleared even when the test body raises, so a failing test cannot
         # leave every later test authenticated.
         app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def member_client(http_client, login_as, member_user):
+    """
+    Return ``http_client`` acting as ``member_user`` from the start.
+
+    It is the same client object, so a test that also requests
+    ``http_client`` gets the member identity there too; use ``login_as`` to
+    switch between accounts within one test.
+    """
+    login_as(member_user)
+    return http_client

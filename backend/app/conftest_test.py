@@ -154,6 +154,61 @@ def test_http_client_authenticates_the_block_router(http_client):
     assert response.status_code == 200
 
 
+# ─── Acting user ──────────────────────────────────────────────────────────────
+
+
+def test_http_client_acts_as_admin_by_default(http_client):
+    """The user list is admin-only, so a 200 proves the admin identity."""
+    response = http_client.get("/api/users")
+    assert response.status_code == 200
+
+
+def test_member_user_is_a_persisted_member(member_user):
+    from app.users.model import User
+
+    with s.SessionLocal() as db:
+        stored = db.get(User, member_user.id)
+    assert stored is not None
+    assert stored.role == "member"
+    assert stored.is_active is True
+
+
+def test_login_as_switches_the_identity_of_the_running_client(
+    http_client, login_as, member_user,
+):
+    login_as(member_user)
+    response = http_client.get("/api/users/me")
+    assert response.status_code == 200
+    assert response.json()["id"] == str(member_user.id)
+    assert response.json()["role"] == "member"
+
+
+def test_member_client_is_refused_where_only_admins_are_admitted(member_client):
+    """
+    The point of the member identity: an admin-only endpoint answers 403,
+    which no test running as the default admin could ever observe.
+    """
+    response = member_client.get("/api/users")
+    assert response.status_code == 403
+
+
+def test_login_as_admin_user_switches_back(http_client, login_as, admin_user, member_user):
+    login_as(member_user)
+    assert http_client.get("/api/users").status_code == 403
+    login_as(admin_user)
+    assert http_client.get("/api/users").status_code == 200
+
+
+def test_member_client_does_not_leak_into_the_next_test(http_client):
+    """Runs after the member tests above and still sees the default admin."""
+    assert http_client.get("/api/users").status_code == 200
+
+
+def test_suite_supplies_a_signing_secret():
+    """The application refuses to start without one (see app.main.lifespan)."""
+    assert os.environ.get("SECRET_KEY", "").strip()
+
+
 # ─── Query counter ────────────────────────────────────────────────────────────
 
 

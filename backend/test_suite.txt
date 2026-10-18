@@ -36,6 +36,7 @@ app/blocks/repository_test.py
 app/blocks/service_test.py
 app/blocks/router_test.py
 app/blocks/database_router_test.py
+app/blocks/database_router_permissions_test.py
 app/blocks/events_test.py
 app/blocks/preferences_test.py
 app/blocks/filter_test.py

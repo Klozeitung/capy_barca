@@ -353,6 +353,38 @@ def test_decode_rejects_a_missing_user_claim(test_secret):
         wopi_module._decode_token(token)
 
 
+# ─── Signing secret ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("secret", ["", "  \t", "changeme", " changeme "])
+def test_require_signing_secret_refuses_unusable_values(monkeypatch, secret):
+    monkeypatch.setattr(wopi_module, "SECRET_KEY", secret)
+    with pytest.raises(RuntimeError, match="SECRET_KEY"):
+        wopi_module.require_signing_secret()
+
+
+def test_require_signing_secret_accepts_a_configured_value(test_secret):
+    wopi_module.require_signing_secret()
+
+
+@pytest.mark.parametrize("secret", ["", "changeme"])
+def test_no_token_is_signed_without_a_usable_secret(monkeypatch, secret):
+    """
+    An empty key still yields a valid-looking HMAC. Refusing in the signing
+    path as well covers a key substituted after startup.
+    """
+    monkeypatch.setattr(wopi_module, "SECRET_KEY", secret)
+    with pytest.raises(RuntimeError):
+        wopi_module._encode_token({"file_uuid": FILE_UUID})
+
+
+def test_no_token_is_verified_without_a_usable_secret(monkeypatch, test_secret):
+    token = _token(test_secret, uuid.uuid4(), uuid.uuid4())
+    monkeypatch.setattr(wopi_module, "SECRET_KEY", "")
+    with pytest.raises(RuntimeError):
+        wopi_module._decode_token(token)
+
+
 # ─── CheckFileInfo ────────────────────────────────────────────────────────────
 
 

@@ -9,7 +9,29 @@ client = TestClient(app)
 
 def test_app_is_initialized():
     assert app.title == "CapyBarca API"
-    assert app.version == "0.16.0.5"
+    assert app.version == "0.16.0.6"
+
+
+@pytest.mark.parametrize("secret", ["", "   ", "changeme"])
+def test_startup_refuses_an_unusable_signing_secret(monkeypatch, secret):
+    """
+    An empty or placeholder SECRET_KEY would sign WOPI tokens with a known
+    key. The application must not come up at all in that state.
+    """
+    import app.wopi.router as wopi_module
+
+    monkeypatch.setattr(wopi_module, "SECRET_KEY", secret)
+    with pytest.raises(RuntimeError, match="SECRET_KEY"):
+        with TestClient(app):
+            pass
+
+
+def test_startup_accepts_a_configured_signing_secret(monkeypatch):
+    import app.wopi.router as wopi_module
+
+    monkeypatch.setattr(wopi_module, "SECRET_KEY", "a-configured-secret-value")
+    with TestClient(app) as started:
+        assert started.get("/health").status_code == 200
 
 
 def test_startup_sizes_the_worker_threads_above_the_request_gate():

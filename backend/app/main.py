@@ -67,7 +67,10 @@ async def lifespan(app: FastAPI):
     # responsible only for runtime housekeeping.
     from app.session.deps import configure_worker_threads
     from app.session.session import purge_expired
+    from app.wopi.router import require_signing_secret
 
+    # Fail before serving anything rather than sign tokens with a known key.
+    require_signing_secret()
     configure_worker_threads()
     purge_expired()
     _migrate_env_user_to_db()
@@ -128,7 +131,7 @@ _cors_credentials = True
 
 app = FastAPI(
     title="CapyBarca API",
-    version="0.16.0.5",
+    version="0.16.0.6",
     lifespan=lifespan,
 )
 

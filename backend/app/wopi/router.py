@@ -35,6 +35,9 @@ token alone is not what grants access, however:
   moment the account is deactivated or loses access, rather than staying valid
   for its full lifetime.
 
+An empty or placeholder ``SECRET_KEY`` is refused at startup (see
+``require_signing_secret``), so tokens are never signed with a known key.
+
 What this does not solve is a leaked ``SECRET_KEY``: whoever holds it can sign
 claims naming any account. Closing that needs the server to remember which
 tokens it issued, which is a schema change and is recorded as a follow-up
@@ -63,6 +66,11 @@ from app.session.deps import get_current_user, get_db, require_block_access
 from app.users.model import User
 
 SECRET_KEY: str = os.environ.get("SECRET_KEY", "")
+
+# Values that look like a secret but are not one: the placeholder .env.example
+# ships with. A deployment that kept it signs with a publicly known key.
+_PLACEHOLDER_SECRETS: frozenset[str] = frozenset({"changeme"})
+
 _PORT_FRONTEND: str = os.environ.get("PORT_FRONTEND", "1701")
 _TOKEN_TTL: int = 24 * 3600  # seconds
 
@@ -79,6 +87,29 @@ wopi_router = APIRouter(prefix="/api/wopi", tags=["wopi"])
 # ─── Token helpers ────────────────────────────────────────────────────────────
 
 
+def require_signing_secret() -> None:
+    """
+    Refuse to operate without a usable SECRET_KEY.
+
+    An empty key still produces valid-looking HMAC signatures, so anyone who
+    knows the token format could sign claims naming any account. Called from
+    the application's startup so a misconfigured installation fails loudly
+    instead of serving tokens signed with nothing, and from every signing
+    operation as a second line, since SECRET_KEY can be substituted at runtime.
+
+    Raises
+    ------
+    RuntimeError
+        If SECRET_KEY is empty, whitespace only, or the documented placeholder.
+    """
+    key = SECRET_KEY.strip()
+    if not key or key in _PLACEHOLDER_SECRETS:
+        raise RuntimeError(
+            "SECRET_KEY is not set or still holds a placeholder. setup.sh "
+            "generates one in .env; set it there and restart the backend."
+        )
+
+
 def _signing_key() -> bytes:
     """
     Return the key used to sign WOPI tokens.
@@ -89,6 +120,7 @@ def _signing_key() -> bytes:
     Recomputed per call because SECRET_KEY is a module attribute the test
     suite substitutes.
     """
+    require_signing_secret()
     return hmac.new(SECRET_KEY.encode(), b"capybarca-wopi-token-v1", hashlib.sha256).digest()
 
 
