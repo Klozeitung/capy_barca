@@ -1080,19 +1080,26 @@ def _entries_linking_to(
     """
     Return the active entries of *database_id* whose value for any relation in
     *rel_schema_ids* includes ``changed_entry_id``, in position order.
+
+    Runs after every write to a relation, so its cost must not grow with the
+    size of the database: a single query fetches the candidate values, already
+    narrowed in SQL to those whose JSON text contains the quoted entry id
+    (see ``repo.list_relation_values_mentioning``). Each candidate is then
+    checked exactly against the plain and the timeline shape of the value.
     """
     if not rel_schema_ids:
         return []
     changed_entry_id_str = str(changed_entry_id)
     linking: list[uuid.UUID] = []
-    for entry in repo.list_children(db, database_id, state="active"):
-        for rel_schema_id in rel_schema_ids:
-            rel_pv = repo.get_value(db, entry.id, rel_schema_id)
-            if not rel_pv or not rel_pv.value:
-                continue
-            if _entry_id_in_relation_value(changed_entry_id_str, rel_pv.value):
-                linking.append(entry.id)
-                break
+    seen: set[uuid.UUID] = set()
+    for page_id, value in repo.list_relation_values_mentioning(
+        db, database_id, rel_schema_ids, changed_entry_id_str,
+    ):
+        if page_id in seen:
+            continue
+        if _entry_id_in_relation_value(changed_entry_id_str, value):
+            seen.add(page_id)
+            linking.append(page_id)
     return linking
 
 

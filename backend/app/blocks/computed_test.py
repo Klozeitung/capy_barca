@@ -1751,6 +1751,110 @@ def test_same_db_cascade_without_dependents_reports_nothing(db, database_block, 
     assert compute_same_db_rollup_dependents(db, database_block.id, entry.id) is False
 
 
+# ─── Finding dependents without scanning every entry ─────────────────────────
+#
+# The cascade runs after every relation write. Looking up the entries that link
+# to the changed one used to cost one query per entry of every reading
+# database, which made a single write take seconds on a large database.
+
+
+def _reader_with_entries(db, workspace, unlinked: int):
+    """
+    ``readers`` has a formula over a relation into ``places``; one entry links
+    to ``place``, *unlinked* others link elsewhere.
+    """
+    places = repo.create_block(db, type="database", position=1.0, parent_id=workspace.id)
+    place = repo.create_block(db, type="page", position=1.0, parent_id=places.id)
+    elsewhere = repo.create_block(db, type="page", position=2.0, parent_id=places.id)
+    readers = repo.create_block(db, type="database", position=2.0, parent_id=workspace.id)
+    rel = repo.create_schema(
+        db, database_id=readers.id, name="Place", type="relation",
+        position=1.0, config={"target_database_id": str(places.id)},
+    )
+    repo.create_schema(
+        db, database_id=readers.id, name="Where", type="formula",
+        position=2.0, config={"expression": "prop('Place')"},
+    )
+    linked = repo.create_block(db, type="page", position=1.0, parent_id=readers.id)
+    repo.upsert_value(
+        db, page_id=linked.id, schema_id=rel.id, value={"related_ids": [str(place.id)]},
+    )
+    for i in range(unlinked):
+        other = repo.create_block(db, type="page", position=2.0 + i, parent_id=readers.id)
+        repo.upsert_value(
+            db, page_id=other.id, schema_id=rel.id,
+            value={"related_ids": [str(elsewhere.id)]},
+        )
+    db.commit()
+    return places, place, readers, linked, rel
+
+
+def test_cascade_query_count_does_not_grow_with_the_reading_database(
+    db, workspace, count_queries,
+):
+    places, place, readers, _, rel = _reader_with_entries(db, workspace, unlinked=3)
+    places_id, place_id, readers_id, rel_id = places.id, place.id, readers.id, rel.id
+    # A first run stores the computed values, so both measured runs only
+    # rewrite them.
+    compute_cross_db_dependents(db, places_id, place_id)
+    db.commit()
+    db.expunge_all()
+    with count_queries() as small:
+        compute_cross_db_dependents(db, places_id, place_id)
+    db.commit()
+
+    elsewhere = repo.create_block(db, type="page", position=3.0, parent_id=places_id)
+    for i in range(40):
+        other = repo.create_block(db, type="page", position=100.0 + i, parent_id=readers_id)
+        repo.upsert_value(
+            db, page_id=other.id, schema_id=rel_id,
+            value={"related_ids": [str(elsewhere.id)]},
+        )
+    db.commit()
+    db.expunge_all()
+    with count_queries() as large:
+        compute_cross_db_dependents(db, places_id, place_id)
+    db.commit()
+
+    assert large.count == small.count
+
+
+def test_entries_linking_to_finds_timeline_and_ignores_mere_mentions(db, workspace):
+    from app.blocks.computed import _entries_linking_to
+
+    places, place, readers, linked, rel = _reader_with_entries(db, workspace, unlinked=0)
+    in_timeline = repo.create_block(db, type="page", position=5.0, parent_id=readers.id)
+    repo.upsert_value(
+        db, page_id=in_timeline.id, schema_id=rel.id,
+        value={"_timeline": {"2000-07-28T00:00:00→": {"related_ids": [str(place.id)]}}},
+    )
+    # The id occurs in the text of the value, but not as a linked entry.
+    mention_only = repo.create_block(db, type="page", position=6.0, parent_id=readers.id)
+    repo.upsert_value(
+        db, page_id=mention_only.id, schema_id=rel.id,
+        value={"related_ids": [], "nuances": {str(place.id): "Value A"}},
+    )
+    trashed = repo.create_block(db, type="page", position=7.0, parent_id=readers.id)
+    repo.upsert_value(
+        db, page_id=trashed.id, schema_id=rel.id, value={"related_ids": [str(place.id)]},
+    )
+    trashed.state = "trash"
+    db.commit()
+
+    found = _entries_linking_to(db, readers.id, {rel.id}, place.id)
+
+    assert found == [linked.id, in_timeline.id]
+
+
+def test_entries_linking_to_without_relations_asks_nothing(db, database_block, count_queries):
+    from app.blocks.computed import _entries_linking_to
+
+    database_id = database_block.id
+    with count_queries() as counter:
+        assert _entries_linking_to(db, database_id, set(), uuid.uuid4()) == []
+    assert counter.count == 0
+
+
 # ─── Option ids ───────────────────────────────────────────────────────────────
 
 

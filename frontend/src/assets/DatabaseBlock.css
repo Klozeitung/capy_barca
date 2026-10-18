@@ -550,9 +550,14 @@
   background: var(--color-bg);
 }
 
-/* Preserve the row-hover feedback on pinned cells. */
+/*
+ * Preserve the row-hover feedback on pinned cells. --color-hover is
+ * translucent, so on its own it would let the scrolled cells show through
+ * the pinned ones. It is painted as a layer over the opaque canvas colour
+ * instead: same tint as the rest of the row, still opaque.
+ */
 .db__row:hover .db__td--frozen {
-  background: var(--color-hover);
+  background: linear-gradient(var(--color-hover), var(--color-hover)), var(--color-bg);
 }
 
 /* ── Header ──────────────────────────────────────────────────────────────── */
@@ -722,6 +727,30 @@
 
 .db__td--name { min-width: 160px; }
 .db__td--add  { border-right: none; }
+
+/* ── Pending cell ────────────────────────────────────────────────────────── */
+/*
+ * A cell whose write the server has not answered yet keeps showing the new
+ * value but takes no input: its content ignores the pointer, and a
+ * transparent shield over it carries the busy cursor, the tooltip and the
+ * spinner. Pinned cells are sticky and already position the shield; the
+ * others need a positioned box for it.
+ */
+.db__td--pending:not(.db__td--frozen) { position: relative; }
+
+.db__td--pending > .db__cell-wrap { pointer-events: none; }
+
+.db__cell-pending {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 6px;
+  cursor: progress;
+  color: var(--color-text-muted);
+}
 
 /* ── Cell text ───────────────────────────────────────────────────────────── */
 /*

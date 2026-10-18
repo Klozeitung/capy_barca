@@ -1321,6 +1321,102 @@ def test_purge_clears_bilateral_self_mirror(
     assert str(database_a.id) not in affected
 
 
+# ─── move / purge: relation locks ─────────────────────────────────────────────
+
+
+@pytest.fixture
+def lock_calls(monkeypatch):
+    """Record every call to the relation lock and still take the lock."""
+    from app.blocks import relation_lock
+
+    calls: list[set] = []
+    original = relation_lock.lock_relation_databases
+
+    def recording(db, database_ids):
+        ids = set(database_ids)
+        calls.append(ids)
+        return original(db, ids)
+
+    monkeypatch.setattr(relation_lock, "lock_relation_databases", recording)
+    return calls
+
+
+def _bilateral_pair(db, source, target):
+    schema = repo.create_schema(
+        db, database_id=source.id, name="Links", type="relation", position=1.0,
+        config={
+            "target_database_id": str(target.id),
+            "direction": "bilateral",
+            "mirror_property_name": "BackLinks",
+        },
+    )
+    mirror = repo.create_schema(
+        db, database_id=target.id, name="BackLinks", type="relation", position=1.0,
+        config={
+            "target_database_id": str(source.id),
+            "direction": "bilateral",
+            "mirror_property_name": "Links",
+        },
+    )
+    db.commit()
+    return schema, mirror
+
+
+def test_move_out_of_a_database_locks_its_relation_scope(
+    db, workspace, database_a, database_b, entry, lock_calls
+):
+    _bilateral_pair(db, database_a, database_b)
+
+    service.move(db, entry.id, new_parent_id=workspace.id, new_position=10.0)
+    db.commit()
+
+    assert lock_calls == [{database_a.id, database_b.id}]
+
+
+def test_move_within_pages_takes_no_relation_lock(db, workspace, page, lock_calls):
+    other = repo.create_block(db, type="page", position=2.0, parent_id=workspace.id)
+    db.commit()
+
+    service.move(db, page.id, new_parent_id=other.id, new_position=1.0)
+    db.commit()
+
+    assert lock_calls == []
+
+
+def test_purge_locks_once_for_all_entries_in_the_subtree(
+    db, workspace, database_a, database_b, lock_calls
+):
+    """
+    A trashed page holding a database with entries is purged in one
+    transaction; the scope of every entry is locked in a single call.
+    """
+    _bilateral_pair(db, database_a, database_b)
+    holder = repo.create_block(db, type="page", position=5.0, parent_id=workspace.id)
+    db.commit()
+    service.move(db, database_a.id, new_parent_id=holder.id, new_position=1.0)
+    repo.create_block(db, type="page", position=1.0, parent_id=database_a.id)
+    repo.create_block(db, type="page", position=2.0, parent_id=database_a.id)
+    db.commit()
+    service.soft_delete(db, holder.id)
+    db.commit()
+    lock_calls.clear()
+
+    service.purge(db, holder.id)
+    db.commit()
+
+    assert lock_calls == [{database_a.id, database_b.id}]
+
+
+def test_purge_of_a_plain_page_locks_nothing(db, page, lock_calls):
+    service.soft_delete(db, page.id)
+    db.commit()
+
+    service.purge(db, page.id)
+    db.commit()
+
+    assert lock_calls == [set()]
+
+
 # ─── deep_duplicate ───────────────────────────────────────────────────────────
 
 

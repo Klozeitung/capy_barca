@@ -65,6 +65,12 @@ When a ``relation``-type schema has ``config.direction == "bilateral"``:
   target database so it is visible before any entry is linked.
 * **At value upsert** the mirror side is kept in sync within the same
   transaction (see ``_sync_bilateral_relation``).
+
+Every handler that writes relation values, and with them a mirror, first takes
+the relation locks of the databases involved (``app.blocks.relation_lock``),
+before it reads the old value its diff is computed against. Concurrent writes
+that reach the same mirror therefore run one after another instead of
+overwriting each other's change.
 * **At schema update**: if ``mirror_property_name`` changes the existing
   mirror schema is renamed (data preserved); if the source schema's own
   name changes the mirror's back-pointer config is updated accordingly.
@@ -135,7 +141,7 @@ from app.automations.automations_engine import TriggerEvent
 from app.automations.automations_engine import receive as automation_receive
 from app.blocks import options as opts
 from app.blocks import repository as repo
-from app.blocks import resolution, service, views
+from app.blocks import relation_lock, resolution, service, views
 from app.blocks.computed import (
     _ROLLUP_FUNCTIONS,
     CycleError,
@@ -2140,6 +2146,19 @@ def update_schema(
         and payload.type not in _KEYABLE_PROPERTY_TYPES
     )
 
+    # A config change of a relation may rewrite its values and its mirror's
+    # (timeline migration, removed nuance options), so it waits for value
+    # writes to either side, as they wait for it.
+    if touches_relation and payload.config is not None:
+        proposed = SchemaLike(
+            id=schema.id, name=effective_name, type=effective_type, config=effective_config,
+        )
+        relation_lock.lock_relation_databases(
+            db,
+            relation_lock.databases_for_schema(database_id, schema)
+            | relation_lock.databases_for_schema(database_id, proposed),
+        )
+
     try:
         updated = repo.update_schema(
             db,
@@ -3000,6 +3019,12 @@ def duplicate_entry(
             detail=f"Entry {entry_id} not found in database {database_id}",
         )
 
+    # The copy links the targets of the original's relations, which rewrites
+    # their mirrors; wait for other writes to them first.
+    relation_lock.lock_relation_databases(
+        db, relation_lock.databases_for_database(db, database_id),
+    )
+
     # Snapshot all property values before opening the write transaction so
     # SQLAlchemy's identity map cannot mix up old and new rows.
     values_map = repo.list_values_for_pages(db, [entry_id])
@@ -3234,6 +3259,14 @@ def upsert_value(
         )
     if schema.type == "relation":
         _require_relation_targets_access(db, database_id, [schema.config], current_user)
+
+    # Relation values are diffed against their stored state and rewrite their
+    # mirrors, so the write waits for any other one reaching the same mirrors
+    # before it reads anything (see app.blocks.relation_lock).
+    if schema.type in relation_lock.RELATION_FAMILY_TYPES:
+        relation_lock.lock_relation_databases(
+            db, relation_lock.databases_for_schema(database_id, schema),
+        )
 
     # ── parent_item: single-parent policy + cycle detection ──────────────────
     is_parent_item = schema.type == "parent_item"
@@ -3608,7 +3641,9 @@ def apply_entry_template(
     auto-generated values for these.
 
     Bilateral relation side-effects, parent_item sync, and sub_item sync
-    are applied using the same helpers as the regular upsert endpoint.
+    are applied using the same helpers as the regular upsert endpoint, diffed
+    against the value the entry held before: entries it no longer links lose
+    their back-reference, exactly as when the value is edited by hand.
 
     Returns 204 No Content on success.
     Returns 404 if the database, template, or target entry is not found,
@@ -3631,6 +3666,13 @@ def apply_entry_template(
             status_code=404,
             detail=f"Entry {entry_id} not found in database {database_id}",
         )
+
+    # Applying replaces relation values of the entry and rewrites the mirrors
+    # of the entries linked before and after; wait for other writes to them
+    # before the old values are read below.
+    relation_lock.lock_relation_databases(
+        db, relation_lock.databases_for_database(db, database_id),
+    )
 
     values_map = repo.list_values_for_pages(db, [template_id])
     template_pvs = values_map.get(template_id, [])
@@ -3657,6 +3699,15 @@ def apply_entry_template(
             if pv.value is None:
                 continue
 
+            # The value the entry holds before the template overwrites it; the
+            # mirrors are diffed against it. Copied, because the upsert below
+            # changes the same row object.
+            old_value: Optional[dict] = None
+            if schema.type in relation_lock.RELATION_FAMILY_TYPES:
+                old_pv = repo.get_value(db, entry_id, pv.property_schema_id)
+                if old_pv is not None and old_pv.value:
+                    old_value = dict(old_pv.value)
+
             repo.upsert_value(
                 db,
                 page_id=entry_id,
@@ -3674,16 +3725,18 @@ def apply_entry_template(
                 if is_relation_timeline:
                     new_pool = dict((pv.value or {}).get("relationPool") or {})
                     new_nuance_pool = dict((pv.value or {}).get("nuancePool") or {})
+                    old_pool = dict((old_value or {}).get("relationPool") or {})
                     mirror_schema = _get_mirror_schema(db, schema)
                     _sync_bilateral_relation_timeline(
-                        db, schema, mirror_schema, entry_id, new_pool, old_pool={},
+                        db, schema, mirror_schema, entry_id, new_pool, old_pool=old_pool,
                         new_nuance_pool=new_nuance_pool,
                     )
                 else:
                     new_related_ids = list(_extract_related_ids_now(pv.value))
                     new_flat_nuances = dict((pv.value or {}).get("nuances") or {})
                     _sync_bilateral_relation(
-                        db, schema, entry_id, new_related_ids, old_related_ids=[],
+                        db, schema, entry_id, new_related_ids,
+                        old_related_ids=_extract_related_ids_now(old_value),
                         new_nuances=new_flat_nuances,
                     )
                 _raw_target = (schema.config or {}).get("target_database_id")
@@ -3699,10 +3752,16 @@ def apply_entry_template(
                 )
             if schema.type == "parent_item":
                 new_parent_ids = list(_extract_related_ids_now(pv.value))
-                _sync_parent_item(db, entry_id, new_parent_ids, [], partner_schema)
+                _sync_parent_item(
+                    db, entry_id, new_parent_ids,
+                    list((old_value or {}).get("related_ids") or []), partner_schema,
+                )
             elif schema.type == "sub_item":
                 new_child_ids = list(_extract_related_ids_now(pv.value))
-                _sync_sub_item(db, entry_id, new_child_ids, [], partner_schema)
+                _sync_sub_item(
+                    db, entry_id, new_child_ids,
+                    list((old_value or {}).get("related_ids") or []), partner_schema,
+                )
 
         _refresh_last_edited(db, database_id, entry_id, current_user.id)
         compute_all_for_entry(db, database_id, entry_id)

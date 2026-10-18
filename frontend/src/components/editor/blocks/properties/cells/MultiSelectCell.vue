@@ -10,6 +10,10 @@
  *
  * The value stores option ids, { options: [id, ...] }, so renaming an option
  * never touches it. Chips show the labels the property's config gives them.
+ *
+ * While the store reports the cell as pending, the picker shows a spinner and
+ * takes no toggles, and chips cannot be removed: every change builds on the
+ * value the server has just confirmed.
  */
 import { ref, computed, nextTick, watch, onUnmounted } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -105,6 +109,11 @@ async function openPicker(e: MouseEvent) {
   searchInputEl.value?.focus()
 }
 
+// ── Pending write ─────────────────────────────────────────────────────────────
+
+/** A write of this cell is waiting for the server; no further edits meanwhile. */
+const isPending = computed(() => dbStore.isCellPending(props.entry.id, props.schema.id))
+
 // ── Value helpers ─────────────────────────────────────────────────────────────
 
 /** Ids of the selected options, in the order they were chosen. */
@@ -165,6 +174,7 @@ function scrollActiveIntoView() {
 }
 
 async function toggleOption(id: string) {
+  if (isPending.value) return
   const current = selectedValues()
   const idx = current.indexOf(id)
   const updated = idx === -1
@@ -180,6 +190,7 @@ async function toggleOption(id: string) {
 
 async function removeOption(id: string, event: MouseEvent) {
   event.stopPropagation()
+  if (isPending.value) return
   const updated = selectedValues().filter(v => v !== id)
   await dbStore.upsertValue(
     props.databaseId,
@@ -191,14 +202,14 @@ async function removeOption(id: string, event: MouseEvent) {
 
 async function createAndToggle() {
   const label = searchQuery.value.trim()
-  if (!label || isCreating.value) return
+  if (!label || isCreating.value || isPending.value) return
   isCreating.value = true
   try {
     // The id is chosen here so the new option can be selected right away;
     // the backend keeps ids it is given.
     const created = { id: newOptionId(), label }
     await dbStore.updateSchema(props.databaseId, props.schema.id, {
-      config: { ...(props.schema.config ?? {}), options: [...availableOptions(), created] },
+      config: { ...props.schema.config, options: [...availableOptions(), created] },
     })
     const current = selectedValues()
     await dbStore.upsertValue(
@@ -261,7 +272,9 @@ async function createAndToggle() {
       v-if="isActive"
       ref="pickerEl"
       class="db__ms-picker"
+      :class="{ 'db__ms-picker--pending': isPending }"
       :style="{ top: pickerPos.top + 'px', left: pickerPos.left + 'px' }"
+      :aria-busy="isPending || undefined"
       @click.stop
     >
       <!-- Search input -->
@@ -285,6 +298,15 @@ async function createAndToggle() {
           "
           @click.stop
         />
+        <span
+          v-if="isPending"
+          class="db__ms-pending"
+          role="status"
+          :title="t('db.cellSaving')"
+          :aria-label="t('db.cellSaving')"
+        >
+          <Icon icon="mdi:loading" class="db__ms-spinner" width="13" height="13" />
+        </span>
       </div>
 
       <label
@@ -298,6 +320,7 @@ async function createAndToggle() {
         <input
           type="checkbox"
           :checked="selectedValues().includes(opt.id)"
+          :disabled="isPending"
           @change="toggleOption(opt.id)"
         />
         <span class="db__ms-option-chip" :style="optionColorStyle(opt.color)">{{ opt.label }}</span>
@@ -436,6 +459,36 @@ async function createAndToggle() {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+/*
+ * An option is being saved: the list stays readable but takes no clicks
+ * until the server has answered. Clicks land on the picker itself, which
+ * keeps them from reaching anything underneath.
+ */
+.db__ms-picker--pending {
+  cursor: progress;
+}
+
+.db__ms-picker--pending .db__ms-option,
+.db__ms-picker--pending .db__ms-create {
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+.db__ms-pending {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+@keyframes db-ms-spin {
+  to { transform: rotate(360deg); }
+}
+
+.db__ms-spinner {
+  animation: db-ms-spin 1s linear infinite;
 }
 
 .db__ms-search-wrap {

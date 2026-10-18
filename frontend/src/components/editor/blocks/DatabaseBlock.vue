@@ -2283,7 +2283,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                       </button>
                     </div>
                   </td>
-                  <td v-else class="db__td" :class="{ 'db__td--wrap': isWrapped(col.key), 'db__td--frozen': isFrozenCol(col.key) }" :style="frozenColStyle(col.key)" @click="onCellClick(entry, col.schema!)">
+                  <td v-else class="db__td" :class="{ 'db__td--wrap': isWrapped(col.key), 'db__td--frozen': isFrozenCol(col.key), 'db__td--pending': dbStore.isCellPending(entry.id, col.schema!.id) }" :style="frozenColStyle(col.key)" :aria-busy="dbStore.isCellPending(entry.id, col.schema!.id) || undefined" @click="onCellClick(entry, col.schema!)">
                     <!--
                       While the name column is hidden, the first visible column carries the
                       row controls the name cell would otherwise hold.
@@ -2342,6 +2342,16 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                         <FormulaCell    v-else-if="col.schema!.type === 'formula'"                                                           :entry="entry" :schema="col.schema!" />
                         <TextCell       v-else                                                                                                :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
                       </div>
+                    </div>
+                    <div
+                      v-if="dbStore.isCellPending(entry.id, col.schema!.id)"
+                      class="db__cell-pending"
+                      role="status"
+                      :title="t('db.cellSaving')"
+                      :aria-label="t('db.cellSaving')"
+                      @click.stop
+                    >
+                      <Icon icon="mdi:loading" class="db__spinner" width="13" height="13" />
                     </div>
                   </td>
                 </template>
@@ -2483,7 +2493,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                         </button>
                       </div>
                     </td>
-                    <td v-else class="db__td" :class="{ 'db__td--wrap': isWrapped(col.key), 'db__td--frozen': isFrozenCol(col.key) }" :style="frozenColStyle(col.key)" @click="onCellClick(entry, col.schema!)">
+                    <td v-else class="db__td" :class="{ 'db__td--wrap': isWrapped(col.key), 'db__td--frozen': isFrozenCol(col.key), 'db__td--pending': dbStore.isCellPending(entry.id, col.schema!.id) }" :style="frozenColStyle(col.key)" :aria-busy="dbStore.isCellPending(entry.id, col.schema!.id) || undefined" @click="onCellClick(entry, col.schema!)">
                       <!--
                         While the name column is hidden, the first visible column carries the
                         row controls the name cell would otherwise hold.
@@ -2525,6 +2535,16 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                           <FormulaCell    v-else-if="col.schema!.type === 'formula'"                                                           :entry="entry" :schema="col.schema!" />
                           <TextCell       v-else                                                                                                :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
                         </div>
+                      </div>
+                      <div
+                        v-if="dbStore.isCellPending(entry.id, col.schema!.id)"
+                        class="db__cell-pending"
+                        role="status"
+                        :title="t('db.cellSaving')"
+                        :aria-label="t('db.cellSaving')"
+                        @click.stop
+                      >
+                        <Icon icon="mdi:loading" class="db__spinner" width="13" height="13" />
                       </div>
                     </td>
                   </template>
@@ -2829,6 +2849,54 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
 
 .db__row--sub-item:hover > td {
   background: var(--color-hover);
+}
+
+/*
+ * Pinned cells must stay opaque, or the scrolled cells show through them.
+ * The row tints above are translucent (--color-hover, the accent mix), so on
+ * pinned cells they are painted as layers over the opaque canvas colour. For
+ * a sub-item row under the pointer, the hover tint lies over the sub-item
+ * tint, which is how the two read on the row's other cells as well.
+ */
+.db__row--drop-onto > td.db__td--frozen {
+  background:
+    linear-gradient(
+      color-mix(in srgb, var(--color-accent) 6%, transparent),
+      color-mix(in srgb, var(--color-accent) 6%, transparent)
+    ),
+    var(--color-bg);
+}
+
+.db__row--sub-item > td.db__td--frozen {
+  background:
+    linear-gradient(
+      color-mix(in srgb, var(--color-surface) 40%, var(--color-hover) 60%),
+      color-mix(in srgb, var(--color-surface) 40%, var(--color-hover) 60%)
+    ),
+    var(--color-bg);
+}
+
+.db__row--sub-item.db__row--drop-onto > td.db__td--frozen {
+  background:
+    linear-gradient(
+      color-mix(in srgb, var(--color-accent) 6%, transparent),
+      color-mix(in srgb, var(--color-accent) 6%, transparent)
+    ),
+    linear-gradient(
+      color-mix(in srgb, var(--color-surface) 40%, var(--color-hover) 60%),
+      color-mix(in srgb, var(--color-surface) 40%, var(--color-hover) 60%)
+    ),
+    var(--color-bg);
+}
+
+.db__row--sub-item:hover > td.db__td--frozen {
+  background:
+    linear-gradient(var(--color-hover), var(--color-hover)),
+    linear-gradient(
+      color-mix(in srgb, var(--color-surface) 40%, var(--color-hover) 60%),
+      color-mix(in srgb, var(--color-surface) 40%, var(--color-hover) 60%)
+    ),
+    var(--color-bg);
 }
 
 /* ── Lead prefix (row controls while the name column is hidden) ──────────── */

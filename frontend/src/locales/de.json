@@ -368,7 +368,7 @@
       "relationBilateral": "Beidseitig",
       "relationBilateralSelf": "Beidseitig (auf sich selbst)",
       "relationMirrorName": "Name der Gegen-Eigenschaft",
-      "relationMirrorPlaceholder": "z. B. Charaktere",
+      "relationMirrorPlaceholder": "z. B. Verknüpfte Projekte",
       "relationMirrorHint": "Diese Eigenschaft wird automatisch in der Zieldatenbank angelegt und synchron gehalten.",
       "idPrefix": "ID-Präfix",
       "idPrefixPlaceholder": "z. B. PROJ-",
@@ -410,7 +410,7 @@
       "wrapContent": "Chips umbrechen",
       "wrapContentHint": "Wenn aktiv, steht jeder Chip in einer eigenen Zeile. Wenn aus, fließen die Chips nebeneinander und brechen bei Bedarf innerhalb der Spalte um.",
       "nuanceEnable": "Nuancierte Eigenschaft (unwiderruflich)",
-      "nuanceHint": "Versieht jede Verknüpfung mit einem gewählten Zusatz, z. B. \"erfolgreich Großmeister\".",
+      "nuanceHint": "Versieht jede Verknüpfung mit einem gewählten Zusatz, z. B. \"vorläufig Mitglied\".",
       "nuanceLocked": "Nicht deaktivierbar: Nuance bleibt nach dem Speichern aktiv.",
       "nuanceThisProperty": "Diese Eigenschaft",
       "nuanceSynchedProperty": "Synchronisierte Eigenschaft",
@@ -677,7 +677,8 @@
     "deleteColumnKeyedBody": "Das Löschen dieser Eigenschaft setzt die folgenden Relationen in den unsortierten Zustand zurück:",
     "deleteColumnKeyedItem": "{property} in {database}",
     "changeIcon": "Symbol ändern",
-    "formulaCellError": "Fehler"
+    "formulaCellError": "Fehler",
+    "cellSaving": "Wird gespeichert…"
   },
   "propertySection": {
     "title": "Eigenschaften",
@@ -837,7 +838,7 @@
     "databasesGroups": "In der Eigenschaften-Seitenleiste lassen sich Properties zu Gruppen zusammenfassen. Eigene Gruppen kannst du ein- und ausklappen, per Doppelklick umbenennen und über den Ziehpunkt rechts im Gruppenkopf per Drag-and-drop neu anordnen. Die Standardgruppe bleibt immer oben.",
     "databasesKeying": "Eine Relations-Eigenschaft kann gekeyt werden: Wähle eine Eigenschaft der Zieldatenbank, nach der die Einträge der Relation sortiert werden. Der gewählte Wert wird neben jedem Eintrag angezeigt.",
     "databasesViewDescription": "Jede Ansicht kann eine eigene Beschreibung haben: Klicke in den Bereich unter der Toolbar, um sie zu schreiben, und klicke daneben, um sie zu speichern. Sie wird mit exportiert — im PDF unter dem Titel, in CSV und Excel im Kopf der Name-Spalte (bzw. der ersten Spalte, solange die Name-Spalte ausgeblendet ist).",
-    "databasesCollaboration": "Änderungen anderer Benutzer erscheinen sofort. Ändert jemand einen Wert, den du gerade bearbeitest oder in der letzten Minute geändert hast, gilt die spätere Änderung, und du erhältst einen Hinweis. War die Verbindung unterbrochen, werden offene Seiten und Ansichten danach neu geladen."
+    "databasesCollaboration": "Änderungen anderer Benutzer erscheinen sofort. Ändert jemand einen Wert, den du gerade bearbeitest oder in der letzten Minute geändert hast, gilt die spätere Änderung, und du erhältst einen Hinweis. War die Verbindung unterbrochen, werden offene Seiten und Ansichten danach neu geladen. Solange ein Feld einen Ladekreis zeigt, wird dein Wert gespeichert; bis die Antwort des Servers da ist, nimmt das Feld keine weitere Eingabe an. Verlässt du die Seite in diesem Moment, fragt der Browser nach."
   },
   "synchedBlock": {
     "originLabel": "Synced",

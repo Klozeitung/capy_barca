@@ -410,7 +410,7 @@
       "wrapContent": "Wrap chips",
       "wrapContentHint": "When on, each chip is placed on its own line. When off, chips flow inline and wrap as needed within the column.",
       "nuanceEnable": "Nuanced property (irreversible)",
-      "nuanceHint": "Qualify each link with a chosen descriptor, e.g. \"successfully Grandmaster\".",
+      "nuanceHint": "Qualify each link with a chosen descriptor, e.g. \"provisionally Member\".",
       "nuanceLocked": "Cannot disable: nuance stays enabled once saved.",
       "nuanceThisProperty": "This property",
       "nuanceSynchedProperty": "Synced property",
@@ -677,7 +677,8 @@
     "deleteColumnKeyedBody": "Deleting this property resets the following relations to their unsorted state:",
     "deleteColumnKeyedItem": "{property} in {database}",
     "changeIcon": "Change icon",
-    "formulaCellError": "Error"
+    "formulaCellError": "Error",
+    "cellSaving": "Saving…"
   },
   "propertySection": {
     "title": "Properties",
@@ -837,7 +838,7 @@
     "databasesGroups": "In the properties side panel you can organise properties into groups. Custom groups fold and unfold, rename on double-click, and reorder by drag-and-drop via the handle on the right of the group header. The default group always stays on top.",
     "databasesKeying": "A relation property can be keyed: choose a property of the target database to sort the relation's entries by. The chosen value is shown beside each entry.",
     "databasesViewDescription": "Each view can have its own description: click the area below the toolbar to write it, click elsewhere to save. It is included in exports — beneath the title in PDF, on the header of the name column in CSV and Excel (or of the first column while the name column is hidden).",
-    "databasesCollaboration": "Changes by other users appear right away. If someone changes a value you are editing or changed within the last minute, the later change applies and you get a notice. After an interrupted connection, open pages and views load again."
+    "databasesCollaboration": "Changes by other users appear right away. If someone changes a value you are editing or changed within the last minute, the later change applies and you get a notice. After an interrupted connection, open pages and views load again. While a field shows a spinner, your value is being saved; until the server has answered, the field takes no further input. Leaving the page at that moment makes the browser ask first."
   },
   "synchedBlock": {
     "originLabel": "Synced",

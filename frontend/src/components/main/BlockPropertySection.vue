@@ -32,6 +32,11 @@
  * ------
  * - "+New" button per group → opens AddSchemaPanel with pre-filled group.
  * - "+New group" button at bottom → creates a new empty group.
+ *
+ * Pending writes
+ * --------------
+ * While a value's write is waiting for the server, its cell keeps showing the
+ * new value under a spinner and takes no input (see the database store).
  */
 import { ref, computed, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -824,7 +829,12 @@ async function onGroupHeaderDrop(e: DragEvent, groupName: string): Promise<void>
           </div>
 
           <!-- Right: value cell -->
-          <div class="bps__cell" @click="onCellClick(schema)">
+          <div
+            class="bps__cell"
+            :class="{ 'bps__cell--pending': dbStore.isCellPending(entry.id, schema.id) }"
+            :aria-busy="dbStore.isCellPending(entry.id, schema.id) || undefined"
+            @click="onCellClick(schema)"
+          >
             <CheckboxCell
               v-if="schema.type === 'checkbox'"
               :entry="entry"
@@ -933,6 +943,17 @@ async function onGroupHeaderDrop(e: DragEvent, groupName: string): Promise<void>
               @activate="setActiveCell(schema.id)"
               @deactivate="clearActiveCell"
             />
+
+            <div
+              v-if="dbStore.isCellPending(entry.id, schema.id)"
+              class="bps__cell-pending"
+              role="status"
+              :title="t('db.cellSaving')"
+              :aria-label="t('db.cellSaving')"
+              @click.stop
+            >
+              <Icon icon="mdi:loading" class="bps__spinner" width="13" height="13" />
+            </div>
           </div>
         </div>
 
@@ -1279,6 +1300,34 @@ async function onGroupHeaderDrop(e: DragEvent, groupName: string): Promise<void>
   align-items: center;
   cursor: pointer;
   font-size: 0.85rem;
+}
+
+/*
+ * A value being saved keeps showing under a transparent shield that takes the
+ * pointer, so the cell gets no input until the server has answered.
+ */
+.bps__cell--pending {
+  position: relative;
+}
+
+.bps__cell-pending {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 6px;
+  cursor: progress;
+  color: var(--color-text-muted);
+}
+
+@keyframes bps-spin {
+  to { transform: rotate(360deg); }
+}
+
+.bps__spinner {
+  animation: bps-spin 1s linear infinite;
 }
 
 /*

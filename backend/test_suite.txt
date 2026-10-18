@@ -50,6 +50,7 @@ app/blocks/views_router_test.py
 app/blocks/options_test.py
 app/blocks/tree_test.py
 app/blocks/entry_changes_test.py
+app/blocks/relation_lock_test.py
 
 app/media/model_test.py
 app/media/upload_test.py

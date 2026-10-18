@@ -10,7 +10,7 @@ from dataclasses import dataclass, field as dc_field
 from datetime import date, timedelta
 from typing import Optional
 
-from sqlalchemy import and_, case, false, func, or_, select
+from sqlalchemy import String, and_, case, cast, false, func, or_, select
 from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.orm import Session, aliased
 
@@ -1405,6 +1405,39 @@ def list_values_for_pages(
     for pv in db.scalars(stmt).all():
         result[pv.page_id].append(pv)
     return result
+
+
+def list_relation_values_mentioning(
+    db: Session,
+    database_id: uuid.UUID,
+    schema_ids: set[uuid.UUID],
+    entry_id: str,
+) -> list[tuple[uuid.UUID, Optional[dict]]]:
+    """
+    Return ``(page_id, value)`` for the values of *schema_ids* held by active
+    entries of *database_id* whose JSON text contains *entry_id* in quotes,
+    ordered by entry position.
+
+    One query regardless of the size of the database. The match is on the
+    serialised value, so it finds an id in a plain ``related_ids`` list as
+    well as in any slot of a ``_timeline``; it is a superset of the exact
+    answer, and callers check each returned value against the shape they
+    expect. An empty *schema_ids* returns nothing without a query.
+    """
+    if not schema_ids:
+        return []
+    stmt = (
+        select(PropertyValue.page_id, PropertyValue.value)
+        .join(Block, Block.id == PropertyValue.page_id)
+        .where(
+            Block.parent_id == database_id,
+            Block.state == "active",
+            PropertyValue.property_schema_id.in_(schema_ids),
+            _like_contains(cast(PropertyValue.value, String), f'"{entry_id}"'),
+        )
+        .order_by(Block.position, PropertyValue.page_id)
+    )
+    return [(page_id, value) for page_id, value in db.execute(stmt)]
 
 
 def upsert_value(

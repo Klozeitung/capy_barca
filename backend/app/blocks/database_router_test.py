@@ -1895,9 +1895,9 @@ def test_query_entries_sort_by_rollup_earliest_date(http_client):
     b2 = _create_entry(http_client, db_b)
     b3 = _create_entry(http_client, db_b)
 
-    _upsert_value(http_client, db_b, b1["id"], date_col["id"], {"start": "2003-05-10", "end": ""})
-    _upsert_value(http_client, db_b, b2["id"], date_col["id"], {"start": "1993-01-02", "end": ""})
-    _upsert_value(http_client, db_b, b3["id"], date_col["id"], {"start": "1998-12-31", "end": ""})
+    _upsert_value(http_client, db_b, b1["id"], date_col["id"], {"start": "2045-07-17", "end": ""})
+    _upsert_value(http_client, db_b, b2["id"], date_col["id"], {"start": "2000-07-28", "end": ""})
+    _upsert_value(http_client, db_b, b3["id"], date_col["id"], {"start": "2020-01-01", "end": ""})
 
     _upsert_value(http_client, db_a, a1["id"], rel["id"], {"related_ids": [b1["id"]]})
     _upsert_value(http_client, db_a, a2["id"], rel["id"], {"related_ids": [b2["id"]]})
@@ -1907,7 +1907,7 @@ def test_query_entries_sort_by_rollup_earliest_date(http_client):
         {"schema_id": earliest["id"], "direction": "asc"}
     ])
     ids = [e["id"] for e in result["entries"]]
-    # a2 (1993) < a3 (1998) < a1 (2003)
+    # a2 (2000) < a3 (2020) < a1 (2045)
     assert ids == [a2["id"], a3["id"], a1["id"]]
 
     result_desc = _query(http_client, db_a, sorts=[
@@ -2130,20 +2130,20 @@ def test_pool_to_timeline_ancient_dates_keep_correct_boundaries():
     """Regression: years < 1000 must produce zero-padded change-points.
 
     strftime("%Y") drops the leading zeros of ancient years on glibc, so a
-    derived change-point for year 44 rendered as "44-..." and string-sorted
+    derived change-point for year 30 rendered as "30-..." and string-sorted
     after a modern "2020-..." boundary. That mis-ordering swapped slot bounds
     (the bounded slot inherited the next entry's start as its end) and dropped
     the "until" slot entirely. Each slot must keep its own original bounds.
     """
     pool = {
-        "a-id": ["→0030-04-12T06:00:00"],
-        "b-id": ["0030-08-03T11:00:00→0044-11-20T18:00:00"],
+        "a-id": ["→0010-01-01T00:00:00"],
+        "b-id": ["0010-02-01T00:00:00→0030-01-01T00:00:00"],
         "c-id": ["2045-07-17T09:00:00→"],
     }
     timeline = _pool_to_timeline(pool)
     assert timeline == {
-        "→0030-04-12T06:00:00": {"related_ids": ["a-id"]},
-        "0030-08-03T11:00:00→0044-11-20T18:00:00": {"related_ids": ["b-id"]},
+        "→0010-01-01T00:00:00": {"related_ids": ["a-id"]},
+        "0010-02-01T00:00:00→0030-01-01T00:00:00": {"related_ids": ["b-id"]},
         "2045-07-17T09:00:00→": {"related_ids": ["c-id"]},
     }
 
@@ -2152,8 +2152,8 @@ def test_pool_to_timeline_ancient_dates_change_points_zero_padded():
     """Every derived slot key must use a 4-digit, zero-padded year so the keys
     sort chronologically by plain string comparison."""
     pool = {
-        "a": ["0044-11-20T18:00:00→0045-01-01T00:00:00"],
-        "b": ["0045-06-01T00:00:00→"],
+        "a": ["0020-01-01T00:00:00→0021-01-01T00:00:00"],
+        "b": ["0021-06-01T00:00:00→"],
     }
     timeline = _pool_to_timeline(pool)
     for key in timeline:
@@ -3979,9 +3979,9 @@ def test_keying_does_not_alter_stored_related_ids(http_client):
     item_late = _create_entry(http_client, bdb)
     item_early = _create_entry(http_client, bdb)
     _upsert_value(http_client, bdb, item_late["id"], date_schema["id"],
-                  {"start": "2140-01-01"})
+                  {"start": "2045-07-17"})
     _upsert_value(http_client, bdb, item_early["id"], date_schema["id"],
-                  {"start": "2130-01-01"})
+                  {"start": "2000-07-28"})
 
     # Linked in reverse chronological order.
     _upsert_value(http_client, adb, source_entry["id"], link["id"],
@@ -4231,11 +4231,11 @@ def test_resolve_titles_returns_requested_key_values(http_client):
     date_schema = _create_schema(http_client, bdb, name="Date", type_="date")
     item = _create_entry(http_client, bdb)
     _upsert_value(http_client, bdb, item["id"], date_schema["id"],
-                  {"start": "2136-08-14"})
+                  {"start": "2020-01-01"})
 
     result = _resolve_with_values(http_client, bdb, [item["id"]], date_schema["id"])
     assert len(result) == 1
-    assert result[0]["value"] == {"start": "2136-08-14"}
+    assert result[0]["value"] == {"start": "2020-01-01"}
 
 
 def test_resolve_titles_key_value_is_null_when_entry_has_none(http_client):
@@ -4252,7 +4252,7 @@ def test_resolve_titles_omits_value_when_not_requested(http_client):
     date_schema = _create_schema(http_client, bdb, name="Date", type_="date")
     item = _create_entry(http_client, bdb)
     _upsert_value(http_client, bdb, item["id"], date_schema["id"],
-                  {"start": "2136-08-14"})
+                  {"start": "2020-01-01"})
 
     result = _resolve_titles(http_client, bdb, [item["id"]])
     assert result[0]["value"] is None
@@ -4294,13 +4294,13 @@ def test_resolve_titles_key_values_ignore_display_limit(http_client):
     created = [_create_entry(http_client, bdb) for _ in range(5)]
     last = created[-1]
     _upsert_value(http_client, bdb, last["id"], date_schema["id"],
-                  {"start": "2199-12-31"})
+                  {"start": "2046-01-01"})
 
     page = _query(http_client, bdb, limit=2)
     assert all(e["id"] != last["id"] for e in page["entries"])
 
     result = _resolve_with_values(http_client, bdb, [last["id"]], date_schema["id"])
-    assert result[0]["value"] == {"start": "2199-12-31"}
+    assert result[0]["value"] == {"start": "2046-01-01"}
 
 
 def test_resolve_titles_key_values_for_multiple_entries(http_client):
@@ -4309,16 +4309,16 @@ def test_resolve_titles_key_values_for_multiple_entries(http_client):
     early = _create_entry(http_client, bdb)
     late = _create_entry(http_client, bdb)
     _upsert_value(http_client, bdb, early["id"], date_schema["id"],
-                  {"start": "2130-01-01"})
+                  {"start": "2000-07-28"})
     _upsert_value(http_client, bdb, late["id"], date_schema["id"],
-                  {"start": "2140-01-01"})
+                  {"start": "2045-07-17"})
 
     result = _resolve_with_values(
         http_client, bdb, [early["id"], late["id"]], date_schema["id"]
     )
     by_id = {r["id"]: r["value"] for r in result}
-    assert by_id[early["id"]] == {"start": "2130-01-01"}
-    assert by_id[late["id"]] == {"start": "2140-01-01"}
+    assert by_id[early["id"]] == {"start": "2000-07-28"}
+    assert by_id[late["id"]] == {"start": "2045-07-17"}
 
 
 # ─── GET /api/databases/{id}/entries/{entry_id} ───────────────────────────────
@@ -4669,3 +4669,187 @@ def test_select_sorts_by_label_by_default_and_by_order_when_asked(http_client):
 
     assert _sorted_titles(http_client, db_id, schema["id"]) == ["Entry 2", "Entry 3", "Entry 1"]
     assert _sorted_titles(http_client, db_id, schema["id"], "desc") == ["Entry 1", "Entry 3", "Entry 2"]
+
+
+# ─── Relation writes run one after another ────────────────────────────────────
+#
+# A bilateral write reads the mirror on every linked entry, changes it and
+# writes it back. Two writes reaching the same mirror at once used to read the
+# same old value, and the later commit discarded the other's back-reference.
+
+
+def _mirror_ids(http_client, db_id, entry_id, mirror_name):
+    mirror = next(
+        s for s in http_client.get(f"/api/databases/{db_id}/schemas").json()
+        if s["name"] == mirror_name
+    )
+    return (_stored(http_client, db_id, entry_id, mirror["id"]) or {}).get("related_ids", [])
+
+
+def test_concurrent_links_to_one_target_keep_both_back_references(http_client):
+    import threading
+    import time
+
+    import app.database.database as db_module
+    from app.blocks import relation_lock
+    from app.blocks import repository as repo
+    from app.blocks.database_router import _sync_bilateral_relation
+
+    db_a = _create_database(http_client)
+    db_b = _create_database(http_client)
+    link = _create_relation_schema(
+        http_client, db_a, db_b, name="Link", direction="bilateral", mirror_name="Link Back",
+    )
+    first = _create_entry(http_client, db_a)
+    second = _create_entry(http_client, db_a)
+    third = _create_entry(http_client, db_a)
+    target = _create_entry(http_client, db_b)
+    _upsert_value(http_client, db_a, first["id"], link["id"], {"related_ids": [target["id"]]})
+
+    # Another writer is half-way through linking the same target: it holds the
+    # relation locks and has written the mirror, but not committed yet.
+    with db_module.SessionLocal() as other:
+        relation_lock.lock_relation_databases(other, [uuid.UUID(db_a), uuid.UUID(db_b)])
+        schema = repo.get_schema(other, uuid.UUID(link["id"]))
+        repo.upsert_value(
+            other, page_id=uuid.UUID(second["id"]), schema_id=schema.id,
+            value={"related_ids": [target["id"]]},
+        )
+        _sync_bilateral_relation(other, schema, uuid.UUID(second["id"]), [target["id"]], [])
+
+        responses = []
+
+        def write_third() -> None:
+            responses.append(http_client.put(
+                f"/api/databases/{db_a}/entries/{third['id']}/values/{link['id']}",
+                json={"value": {"related_ids": [target["id"]]}},
+            ))
+
+        writer = threading.Thread(target=write_third)
+        writer.start()
+        time.sleep(0.3)
+        assert writer.is_alive(), "the request must wait for the open relation write"
+
+        other.commit()
+    writer.join(timeout=10)
+
+    assert responses[0].status_code == 204
+    assert set(_mirror_ids(http_client, db_b, target["id"], "Link Back")) == {
+        first["id"], second["id"], third["id"],
+    }
+
+
+@pytest.fixture
+def lock_calls(monkeypatch):
+    """Record the databases every relation lock call covers."""
+    from app.blocks import relation_lock
+
+    calls: list[set[str]] = []
+    original = relation_lock.lock_relation_databases
+
+    def recording(db, database_ids):
+        ids = set(database_ids)
+        calls.append({str(i) for i in ids})
+        return original(db, ids)
+
+    monkeypatch.setattr(relation_lock, "lock_relation_databases", recording)
+    return calls
+
+
+def test_relation_upsert_locks_its_database_and_the_mirror_database(http_client, lock_calls):
+    db_a = _create_database(http_client)
+    db_b = _create_database(http_client)
+    link = _create_relation_schema(
+        http_client, db_a, db_b, name="Link", direction="bilateral", mirror_name="Link Back",
+    )
+    entry = _create_entry(http_client, db_a)
+    target = _create_entry(http_client, db_b)
+    lock_calls.clear()
+
+    _upsert_value(http_client, db_a, entry["id"], link["id"], {"related_ids": [target["id"]]})
+
+    assert lock_calls == [{db_a, db_b}]
+
+
+def test_plain_value_upsert_takes_no_relation_lock(http_client, lock_calls):
+    db_id = _create_database(http_client)
+    done = _create_schema(http_client, db_id, name="Done", type_="checkbox")
+    entry = _create_entry(http_client, db_id)
+    lock_calls.clear()
+
+    _upsert_value(http_client, db_id, entry["id"], done["id"], {"checked": True})
+
+    assert lock_calls == []
+
+
+def test_duplicate_and_apply_lock_the_whole_relation_scope(http_client, lock_calls):
+    db_a = _create_database(http_client)
+    db_b = _create_database(http_client)
+    _create_relation_schema(
+        http_client, db_a, db_b, name="Link", direction="bilateral", mirror_name="Link Back",
+    )
+    entry = _create_entry(http_client, db_a)
+    template = _create_entry_template(http_client, db_a)
+    lock_calls.clear()
+
+    http_client.post(f"/api/databases/{db_a}/entries/{entry['id']}/duplicate")
+    http_client.post(f"/api/databases/{db_a}/entry-templates/{template['id']}/apply/{entry['id']}")
+
+    assert lock_calls == [{db_a, db_b}, {db_a, db_b}]
+
+
+def test_relation_config_change_locks_both_sides(http_client, lock_calls):
+    db_a = _create_database(http_client)
+    db_b = _create_database(http_client)
+    link = _create_relation_schema(
+        http_client, db_a, db_b, name="Link", direction="bilateral", mirror_name="Link Back",
+    )
+    lock_calls.clear()
+
+    http_client.patch(
+        f"/api/databases/{db_a}/schemas/{link['id']}",
+        json={"config": {**link["config"], "hasTimeline": True}},
+    )
+    http_client.patch(f"/api/databases/{db_a}/schemas/{link['id']}", json={"name": "Link 2"})
+
+    assert lock_calls == [{db_a, db_b}]
+
+
+def test_applying_a_template_removes_back_references_it_replaces(http_client):
+    db_a = _create_database(http_client)
+    db_b = _create_database(http_client)
+    link = _create_relation_schema(
+        http_client, db_a, db_b, name="Link", direction="bilateral", mirror_name="Link Back",
+    )
+    entry = _create_entry(http_client, db_a)
+    old_target = _create_entry(http_client, db_b)
+    new_target = _create_entry(http_client, db_b)
+    _upsert_value(http_client, db_a, entry["id"], link["id"], {"related_ids": [old_target["id"]]})
+    template = _create_entry_template(http_client, db_a)
+    _upsert_value(http_client, db_a, template["id"], link["id"], {"related_ids": [new_target["id"]]})
+
+    http_client.post(f"/api/databases/{db_a}/entry-templates/{template['id']}/apply/{entry['id']}")
+
+    assert _stored(http_client, db_a, entry["id"], link["id"]) == {
+        "related_ids": [new_target["id"]],
+    }
+    assert entry["id"] not in _mirror_ids(http_client, db_b, old_target["id"], "Link Back")
+    assert _mirror_ids(http_client, db_b, new_target["id"], "Link Back") == [entry["id"]]
+
+
+def test_applying_a_template_moves_the_entry_to_the_new_parent(http_client):
+    db_id = _create_database(http_client)
+    pi, si = _get_subitem_schemas(http_client, db_id)
+    entry = _create_entry(http_client, db_id)
+    old_parent = _create_entry(http_client, db_id)
+    new_parent = _create_entry(http_client, db_id)
+    _upsert_value(http_client, db_id, entry["id"], pi["id"], {"related_ids": [old_parent["id"]]})
+    template = _create_entry_template(http_client, db_id)
+    _upsert_value(http_client, db_id, template["id"], pi["id"], {"related_ids": [new_parent["id"]]})
+
+    http_client.post(f"/api/databases/{db_id}/entry-templates/{template['id']}/apply/{entry['id']}")
+
+    old_children = (_stored(http_client, db_id, old_parent["id"], si["id"]) or {}).get("related_ids", [])
+    new_children = (_stored(http_client, db_id, new_parent["id"], si["id"]) or {}).get("related_ids", [])
+    assert entry["id"] not in old_children
+    assert new_children == [entry["id"]]

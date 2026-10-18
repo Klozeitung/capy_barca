@@ -628,6 +628,58 @@ def test_list_values_for_pages_returns_empty_dict_for_no_ids(db):
     assert result == {}
 
 
+def test_list_relation_values_mentioning_narrows_in_one_query(
+    db, workspace, database_block, count_queries,
+):
+    target_id = str(uuid.uuid4())
+    other_id = str(uuid.uuid4())
+    rel = repo.create_schema(
+        db, database_id=database_block.id, name="Link", type="relation", position=1.0,
+        config={"target_database_id": str(uuid.uuid4())},
+    )
+    unrelated = repo.create_schema(
+        db, database_id=database_block.id, name="Notes", type="text", position=2.0,
+    )
+    second = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
+    first = repo.create_block(db, type="page", position=1.0, parent_id=database_block.id)
+    elsewhere = repo.create_block(db, type="page", position=3.0, parent_id=database_block.id)
+    trashed = repo.create_block(
+        db, type="page", position=4.0, parent_id=database_block.id, state="trash",
+    )
+    other_db = repo.create_block(db, type="database", position=9.0, parent_id=workspace.id)
+    foreign = repo.create_block(db, type="page", position=1.0, parent_id=other_db.id)
+    repo.upsert_value(db, page_id=first.id, schema_id=rel.id,
+                      value={"related_ids": [target_id]})
+    repo.upsert_value(db, page_id=second.id, schema_id=rel.id,
+                      value={"_timeline": {"": {"related_ids": [target_id]}}})
+    repo.upsert_value(db, page_id=elsewhere.id, schema_id=rel.id,
+                      value={"related_ids": [other_id]})
+    repo.upsert_value(db, page_id=elsewhere.id, schema_id=unrelated.id,
+                      value={"text": f'"{target_id}"'})
+    repo.upsert_value(db, page_id=trashed.id, schema_id=rel.id,
+                      value={"related_ids": [target_id]})
+    repo.upsert_value(db, page_id=foreign.id, schema_id=rel.id,
+                      value={"related_ids": [target_id]})
+    db.commit()
+    database_id, rel_id = database_block.id, rel.id
+
+    with count_queries() as counter:
+        rows = repo.list_relation_values_mentioning(db, database_id, {rel_id}, target_id)
+
+    assert counter.count == 1
+    assert [page_id for page_id, _ in rows] == [first.id, second.id]
+    assert rows[0][1] == {"related_ids": [target_id]}
+
+
+def test_list_relation_values_mentioning_without_schemas_asks_nothing(
+    db, database_block, count_queries,
+):
+    database_id = database_block.id
+    with count_queries() as counter:
+        assert repo.list_relation_values_mentioning(db, database_id, set(), "x") == []
+    assert counter.count == 0
+
+
 def test_list_values_for_pages_all_ids_present_as_keys(db, workspace, database_block, schema):
     entry_a = repo.create_block(db, type="page", position=1.0, parent_id=database_block.id)
     entry_b = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
@@ -809,13 +861,13 @@ def test_query_entries_text_schema_contains(db, workspace, database_block):
     db.commit()
     e1 = _make_entry(db, database_block, position=1.0)
     e2 = _make_entry(db, database_block, position=2.0)
-    repo.upsert_value(db, page_id=e1.id, schema_id=schema.id, value={"text": "cavalry charge"})
-    repo.upsert_value(db, page_id=e2.id, schema_id=schema.id, value={"text": "infantry"})
+    repo.upsert_value(db, page_id=e1.id, schema_id=schema.id, value={"text": "value alpha"})
+    repo.upsert_value(db, page_id=e2.id, schema_id=schema.id, value={"text": "value beta"})
     db.commit()
 
     f = repo.FilterDescriptor(
         schema_id=str(schema.id), schema_type="text", schema_config=None,
-        operator="contains", value="cavalry",
+        operator="contains", value="alpha",
     )
     entries, total = repo.query_entries(db, database_block.id, [_g(f)], [])
     assert total == 1
@@ -946,7 +998,7 @@ def test_query_entries_sort_by_rollup_earliest_date(db, workspace, database_bloc
     column was effectively unsorted.
     """
     schema = repo.create_schema(
-        db, database_id=database_block.id, name="Birthday",
+        db, database_id=database_block.id, name="Date A",
         type="rollup", position=1.0,
         config={"function": "earliest_date"},
     )
@@ -956,11 +1008,11 @@ def test_query_entries_sort_by_rollup_earliest_date(db, workspace, database_bloc
     e3 = _make_entry(db, database_block, position=3.0)
     # Rollup values are readonly via the API but writable at the repository layer.
     repo.upsert_value(db, page_id=e1.id, schema_id=schema.id,
-                      value={"result": "1990-06-15", "function": "earliest_date"})
+                      value={"result": "2045-07-17", "function": "earliest_date"})
     repo.upsert_value(db, page_id=e2.id, schema_id=schema.id,
-                      value={"result": "1980-01-02", "function": "earliest_date"})
+                      value={"result": "2000-07-28", "function": "earliest_date"})
     repo.upsert_value(db, page_id=e3.id, schema_id=schema.id,
-                      value={"result": "1985-12-31", "function": "earliest_date"})
+                      value={"result": "2020-01-01", "function": "earliest_date"})
     db.commit()
 
     s = repo.SortDescriptor(
@@ -1138,12 +1190,12 @@ def test_query_entries_text_neq_includes_entries_with_no_value(db, workspace, da
     db.commit()
     e_has_value = _make_entry(db, database_block, position=1.0)
     e_no_value  = _make_entry(db, database_block, position=2.0)
-    repo.upsert_value(db, page_id=e_has_value.id, schema_id=schema.id, value={"text": "cavalry"})
+    repo.upsert_value(db, page_id=e_has_value.id, schema_id=schema.id, value={"text": "alpha"})
     db.commit()
 
     f = repo.FilterDescriptor(
         schema_id=str(schema.id), schema_type="text", schema_config=None,
-        operator="neq", value="cavalry",
+        operator="neq", value="alpha",
     )
     entries, total = repo.query_entries(db, database_block.id, [_g(f)], [])
     assert total == 1
@@ -1157,15 +1209,15 @@ def test_query_entries_text_not_contains_includes_entries_with_no_value(db, work
     db.commit()
     e_match   = _make_entry(db, database_block, position=1.0)
     e_no_val  = _make_entry(db, database_block, position=2.0)
-    repo.upsert_value(db, page_id=e_match.id, schema_id=schema.id, value={"text": "cavalry"})
+    repo.upsert_value(db, page_id=e_match.id, schema_id=schema.id, value={"text": "alpha"})
     db.commit()
 
     f = repo.FilterDescriptor(
         schema_id=str(schema.id), schema_type="text", schema_config=None,
-        operator="not_contains", value="cavalry",
+        operator="not_contains", value="alpha",
     )
     entries, total = repo.query_entries(db, database_block.id, [_g(f)], [])
-    # e_no_val has no value → doesn't contain "cavalry" → should match
+    # e_no_val has no value → doesn't contain "alpha" → should match
     assert total == 1
     assert entries[0].id == e_no_val.id
 

@@ -17,6 +17,7 @@ from typing import Final, Optional
 from sqlalchemy.orm import Session
 
 from app.blocks import events as ev
+from app.blocks import relation_lock
 from app.blocks import repository as repo
 from app.blocks.models import Block, PropertySchema, WORKSPACE_ROOT_ID
 from app.blocks.types import validate_block_type
@@ -751,14 +752,24 @@ def purge(db: Session, block_id: uuid.UUID) -> set[str]:
     # subtree.  ON DELETE CASCADE removes the entries' own PropertyValues,
     # but references to their IDs in *other* databases are out of reach of
     # CASCADE and must be removed explicitly before the delete.
-    affected_db_ids: set[str] = set()
+    database_entries: list[Block] = []
     for bid in _collect_subtree_ids(db, block_id):
         b = repo.get_block(db, bid)
         if b is None or not b.parent_id:
             continue
         parent = repo.get_block(db, b.parent_id)
         if parent is not None and parent.type == "database":
-            affected_db_ids |= _clear_bilateral_relations(db, b)
+            database_entries.append(b)
+
+    # All locks at once, before any mirror is read (see relation_lock).
+    lock_scope: set[uuid.UUID] = set()
+    for database_id in {b.parent_id for b in database_entries}:
+        lock_scope |= relation_lock.databases_for_database(db, database_id)
+    relation_lock.lock_relation_databases(db, lock_scope)
+
+    affected_db_ids: set[str] = set()
+    for b in database_entries:
+        affected_db_ids |= _clear_bilateral_relations(db, b)
 
     db.delete(block)
     db.flush()
@@ -932,6 +943,11 @@ def move(
     new_is_db = new_parent.type == "database"
 
     if old_is_db and not new_is_db:
+        # Leaving the database clears the block from the mirrors of its
+        # bilateral relations; wait for other writes to them first.
+        relation_lock.lock_relation_databases(
+            db, relation_lock.databases_for_database(db, old_parent.id),
+        )
         # DB → non-DB: persist schema+value snapshot in the block itself.
         _write_schema_memory(db, block)
     elif new_is_db and old_parent_id != new_parent_id:

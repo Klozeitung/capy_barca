@@ -34,6 +34,10 @@
  *
  * Bilateral sync is performed server-side; the component only needs to emit
  * the updated ``related_ids`` for the current entry.
+ *
+ * While the store reports the cell as pending, the open picker shows a
+ * spinner and takes no picks, and the chips cannot be removed or re-nuanced:
+ * every change builds on the value the server has just confirmed.
  */
 import { ref, computed, onUnmounted, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -465,6 +469,11 @@ onUnmounted(() => {
   if (_searchTimer) clearTimeout(_searchTimer)
 })
 
+// ── Pending write ─────────────────────────────────────────────────────────────
+
+/** A write of this cell is waiting for the server; no further edits meanwhile. */
+const isPending = computed(() => dbStore.isCellPending(props.entry.id, props.schema.id))
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function isSelected(entryId: string): boolean {
@@ -508,6 +517,7 @@ const nuanceEditable = computed(() => !!nuanceCfg.value && !hasTimeline.value)
 
 /** Set or clear the nuance option of a linked entry on a flat relation. */
 function setFlatNuance(uid: string, optionId: string) {
+  if (isPending.value) return
   const ids = [...relatedIds.value]
   const nuances = { ...currentNuances.value }
   if (optionId) nuances[uid] = optionId
@@ -516,6 +526,12 @@ function setFlatNuance(uid: string, optionId: string) {
 }
 
 function toggleEntry(entryId: string) {
+  if (isPending.value) return
+  applyToggle(entryId)
+}
+
+/** Link or unlink *entryId* and emit the new value. */
+function applyToggle(entryId: string) {
   const current = [...relatedIds.value]
   const idx = current.indexOf(entryId)
   if (idx === -1) {
@@ -532,6 +548,7 @@ function toggleEntry(entryId: string) {
 
 function removeRelated(entryId: string, event: MouseEvent) {
   event.stopPropagation()
+  if (isPending.value) return
   const updated = relatedIds.value.filter(id => id !== entryId)
   if (!hasTimeline.value) {
     emitFlat(updated, currentNuances.value)
@@ -547,7 +564,7 @@ function removeRelated(entryId: string, event: MouseEvent) {
  */
 async function createAndLink() {
   const title = searchQuery.value.trim()
-  if (!title || isCreating.value || !showCreate.value) return
+  if (!title || isCreating.value || !showCreate.value || isPending.value) return
   isCreating.value = true
   try {
     const newEntry = await dbStore.createEntry(targetDatabaseId.value)
@@ -555,7 +572,9 @@ async function createAndLink() {
     // Resolve the new chip's title right away rather than waiting for the
     // relatedIds watcher, which would skip an id it has not seen resolve.
     await dbStore.resolveEntryTitles(targetDatabaseId.value, [newEntry.id], true)
-    toggleEntry(newEntry.id)
+    // Not through toggleEntry: the entry exists now and must be linked even if
+    // another write of this cell went out meanwhile; the store sends it after.
+    applyToggle(newEntry.id)
     searchQuery.value = ''
     await nextTick()
     searchInputEl.value?.focus()
@@ -791,7 +810,9 @@ async function onSideViewRefresh(): Promise<void> {
         v-if="isOpen"
         ref="pickerEl"
         class="rel-cell__picker"
+        :class="{ 'rel-cell__picker--pending': isPending }"
         :style="pickerStyle"
+        :aria-busy="isPending || undefined"
         @click.stop
       >
         <!-- Search input -->
@@ -815,6 +836,15 @@ async function onSideViewRefresh(): Promise<void> {
             "
             @click.stop
           />
+          <span
+            v-if="isPending"
+            class="rel-cell__pending"
+            role="status"
+            :title="t('db.cellSaving')"
+            :aria-label="t('db.cellSaving')"
+          >
+            <Icon icon="mdi:loading" class="rel-cell__spinner" width="13" height="13" />
+          </span>
         </div>
 
         <div v-if="isLoading" class="rel-cell__picker-loading">
@@ -1175,6 +1205,28 @@ async function onSideViewRefresh(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+/*
+ * A pick is being saved: the list stays readable but takes no clicks until
+ * the server has answered. Clicks land on the picker itself, which keeps
+ * them from reaching anything underneath.
+ */
+.rel-cell__picker--pending {
+  cursor: progress;
+}
+
+.rel-cell__picker--pending .rel-cell__picker-item,
+.rel-cell__picker--pending .rel-cell__picker-create {
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+.rel-cell__pending {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--color-text-muted);
 }
 
 .rel-cell__search-wrap {

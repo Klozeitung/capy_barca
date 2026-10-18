@@ -39,8 +39,22 @@
  * The exceptions are cell values (``upsertValue``) and entry titles, which
  * arrive over the WebSocket: both are patched in place in every cached copy
  * of the entry, so views, side panels and relation chips agree immediately.
+ *
+ * Pending writes
+ * --------------
+ * A cell whose write has not been answered yet is pending (``isCellPending``).
+ * Views show it with a spinner and take no further input for it until the
+ * answer is in. Writes to one cell that still arrive meanwhile, from places
+ * without that lock, are sent one after another in the order they were made.
+ *
+ * Loads that started before the server confirmed a write may carry the value
+ * from before it. Every load that replaces cached values (view pages, single
+ * entries, entry batches, full lists) therefore keeps the local value of
+ * every cell that is still pending or was confirmed only after the load
+ * started. A write that fails reloads its entry, so the cell shows what the
+ * server holds.
  */
-import { ref, onScopeDispose } from 'vue'
+import { ref, computed, onScopeDispose } from 'vue'
 import { defineStore } from 'pinia'
 import { apiClient } from '@/api/client'
 import { useDatabaseTemplatesStore } from '@/stores/databaseTemplates'
@@ -657,6 +671,33 @@ interface EntryDetailSlot {
   entry: DatabaseEntry
 }
 
+/** The latest value this client wrote to one cell; see ``upsertValue``. */
+interface LocalWrite {
+  entryId: string
+  schemaId: string
+  value: Record<string, unknown> | null
+  /** Writes to the cell sent and not answered yet. */
+  inFlight: number
+  /** Clock reading when the last of them was confirmed; null while pending. */
+  confirmedAt: number | null
+}
+
+/** A load that replaces cached values, with the clock reading at its start. */
+interface Snapshot {
+  start: number
+}
+
+/** A batch request in flight, shared by everyone asking for the same ids. */
+interface BatchRequest {
+  promise: Promise<EntryBatchResponse>
+  snapshot: Snapshot
+}
+
+/** Cache key of one cell. */
+function cellKey(entryId: string, schemaId: string): string {
+  return `${entryId}:${schemaId}`
+}
+
 // ── Store ─────────────────────────────────────────────────────────────────────
 
 export const useDatabaseStore = defineStore('database', () => {
@@ -704,7 +745,94 @@ export const useDatabaseStore = defineStore('database', () => {
   const _editingCells = new Map<string, string>()
 
   /** Batch requests in flight, keyed by database and the ids asked for. */
-  const _batchRequests = new Map<string, Promise<EntryBatchResponse>>()
+  const _batchRequests = new Map<string, BatchRequest>()
+
+  // ── Pending writes ──────────────────────────────────────────────────────
+
+  /** Cells with a write not answered yet, keyed ``entryId:schemaId``. */
+  const pendingCells = ref<Set<string>>(new Set())
+
+  /** Whether any write of this client is still waiting for its answer. */
+  const hasPendingWrites = computed(() => pendingCells.value.size > 0)
+
+  /**
+   * The local value of every cell that a load in flight might still carry
+   * from before. Kept while the cell is pending, and after its confirmation
+   * for as long as a load that started before it is still running.
+   */
+  const _localWrites = new Map<string, LocalWrite>()
+
+  /** The last write sent per cell; the next one is sent after it. */
+  const _cellChains = new Map<string, Promise<unknown>>()
+
+  /** Loads in flight that replace cached values. */
+  const _openSnapshots = new Set<Snapshot>()
+
+  /** Logical clock ordering confirmations against the start of loads. */
+  let _clock = 0
+
+  /** Whether a write to the cell is waiting for its answer. */
+  function isCellPending(entryId: string, schemaId: string): boolean {
+    return pendingCells.value.has(cellKey(entryId, schemaId))
+  }
+
+  function _beginSnapshot(): Snapshot {
+    const snapshot: Snapshot = { start: _clock }
+    _openSnapshots.add(snapshot)
+    return snapshot
+  }
+
+  function _endSnapshot(snapshot: Snapshot): void {
+    _openSnapshots.delete(snapshot)
+    _pruneLocalWrites()
+  }
+
+  /** Forget confirmed writes that no load in flight can predate any more. */
+  function _pruneLocalWrites(): void {
+    let oldest = Infinity
+    for (const snapshot of _openSnapshots) oldest = Math.min(oldest, snapshot.start)
+    for (const [cell, write] of _localWrites) {
+      if (write.inFlight === 0 && write.confirmedAt !== null && write.confirmedAt <= oldest) {
+        _localWrites.delete(cell)
+      }
+    }
+  }
+
+  /**
+   * Put the local value back into every cell of *loaded* that the load begun
+   * by *snapshot* may carry from before: cells still pending, and cells
+   * confirmed after the load started.
+   */
+  function _keepLocalWrites(loaded: DatabaseEntry[], snapshot: Snapshot): void {
+    if (_localWrites.size === 0) return
+    const byId = new Map(loaded.map((e) => [e.id, e]))
+    for (const write of _localWrites.values()) {
+      if (write.confirmedAt !== null && write.confirmedAt <= snapshot.start) continue
+      const entry = byId.get(write.entryId)
+      if (entry) entry.values[write.schemaId] = write.value
+    }
+  }
+
+  /** Book the answer to one write of *cell*. */
+  function _settleWrite(cell: string, request: Promise<unknown>, ok: boolean): void {
+    if (_cellChains.get(cell) === request) _cellChains.delete(cell)
+    const write = _localWrites.get(cell)
+    if (!write) return
+    write.inFlight -= 1
+    if (write.inFlight > 0) return
+    pendingCells.value.delete(cell)
+    if (ok) write.confirmedAt = ++_clock
+    else _localWrites.delete(cell)
+    _pruneLocalWrites()
+  }
+
+  /** Leaving the page now would drop writes the server has not confirmed. */
+  function _onBeforeUnload(e: BeforeUnloadEvent): void {
+    if (!hasPendingWrites.value) return
+    e.preventDefault()
+    // Older browsers only ask when returnValue is set.
+    e.returnValue = ''
+  }
 
   /**
    * Resolved relation-target descriptors keyed by entry id.
@@ -901,11 +1029,17 @@ export const useDatabaseStore = defineStore('database', () => {
   // ── Entries ───────────────────────────────────────────────────────────────
 
   async function fetchEntries(databaseId: string): Promise<DatabaseEntry[]> {
-    const result = await apiClient.get<DatabaseEntry[]>(
-      `/api/databases/${databaseId}/entries`,
-    )
-    entries.value[databaseId] = result
-    return result
+    const snapshot = _beginSnapshot()
+    try {
+      const result = await apiClient.get<DatabaseEntry[]>(
+        `/api/databases/${databaseId}/entries`,
+      )
+      _keepLocalWrites(result, snapshot)
+      entries.value[databaseId] = result
+      return result
+    } finally {
+      _endSnapshot(snapshot)
+    }
   }
 
   /** POST /entries/query with the request serialised to the API's snake_case. */
@@ -956,6 +1090,8 @@ export const useDatabaseStore = defineStore('database', () => {
    *
    * The resolved relations of the page go into the chip caches before the
    * entries are stored, so relation cells render without asking for them.
+   * Cells this client wrote meanwhile keep their local value (see the
+   * module documentation on pending writes).
    */
   async function loadViewPage(
     databaseId: string,
@@ -969,15 +1105,26 @@ export const useDatabaseStore = defineStore('database', () => {
     // would put stale rows back.
     const generation = (_pageGenerations.get(resultKey) ?? 0) + 1
     _pageGenerations.set(resultKey, generation)
-    const page = await apiClient.post<ViewPageResponse>(
-      `/api/databases/${databaseId}/views/${viewId}/entries`,
-      { offset: request.offset, limit: request.limit, search: request.search },
-    )
+    const snapshot = _beginSnapshot()
+    let page: ViewPageResponse
+    try {
+      page = await apiClient.post<ViewPageResponse>(
+        `/api/databases/${databaseId}/views/${viewId}/entries`,
+        { offset: request.offset, limit: request.limit, search: request.search },
+      )
+      // Resolve with the values as the server sent them, then put back what
+      // this client wrote meanwhile; its chips resolve on their own.
+      if (_pageGenerations.get(resultKey) === generation) {
+        ingestResolution(databaseId, page.entries, page)
+        _keepLocalWrites(page.entries, snapshot)
+      }
+    } finally {
+      _endSnapshot(snapshot)
+    }
     const current = queryResults.value[resultKey]
     if (_pageGenerations.get(resultKey) !== generation) {
       return { entries: current?.entries ?? [], total: page.total }
     }
-    ingestResolution(databaseId, page.entries, page)
     if (append && current && current.databaseId === databaseId) {
       // Entries may have moved between two batches; never show one twice.
       const known = new Set(current.entries.map((e) => e.id))
@@ -1000,10 +1147,17 @@ export const useDatabaseStore = defineStore('database', () => {
    * entry.
    */
   async function fetchEntry(databaseId: string, entryId: string): Promise<DatabaseEntry> {
-    const detail = await apiClient.get<EntryDetailResponse>(
-      `/api/databases/${databaseId}/entries/${entryId}`,
-    )
-    ingestResolution(databaseId, [detail.entry], detail)
+    const snapshot = _beginSnapshot()
+    let detail: EntryDetailResponse
+    try {
+      detail = await apiClient.get<EntryDetailResponse>(
+        `/api/databases/${databaseId}/entries/${entryId}`,
+      )
+      ingestResolution(databaseId, [detail.entry], detail)
+      _keepLocalWrites([detail.entry], snapshot)
+    } finally {
+      _endSnapshot(snapshot)
+    }
     entryDetails.value[entryId] = { databaseId, entry: detail.entry }
     return entryDetails.value[entryId].entry
   }
@@ -1223,6 +1377,11 @@ export const useDatabaseStore = defineStore('database', () => {
    * immediately without waiting for a round-trip re-fetch. For relation
    * properties with bilateral sync the mirror update is handled server-side;
    * no client-side coordination is required.
+   *
+   * The cell is pending until the server answers. A further write to the
+   * same cell is sent only after the previous one was answered, so the
+   * server applies them in the order they were made. When the write fails,
+   * the entry is loaded again and the error is passed on.
    */
   async function upsertValue(
     databaseId: string,
@@ -1230,6 +1389,8 @@ export const useDatabaseStore = defineStore('database', () => {
     schemaId: string,
     value: Record<string, unknown> | null,
   ): Promise<void> {
+    const cell = cellKey(entryId, schemaId)
+
     // Optimistic local update so the cell does not flicker back on blur.
     // Reaches the full entry list as well as every view result of this
     // database, and entry_template blocks below.
@@ -1237,7 +1398,16 @@ export const useDatabaseStore = defineStore('database', () => {
       row.values[schemaId] = value
     })
 
-    _recentWrites.set(`${entryId}:${schemaId}`, Date.now())
+    _recentWrites.set(cell, Date.now())
+
+    const write = _localWrites.get(cell) ?? {
+      entryId, schemaId, value, inFlight: 0, confirmedAt: null,
+    }
+    write.value = value
+    write.inFlight += 1
+    write.confirmedAt = null
+    _localWrites.set(cell, write)
+    pendingCells.value.add(cell)
 
     // Also update the template store optimistically so the property picker
     // in DatabaseTemplateEditor reflects changes immediately.
@@ -1250,10 +1420,24 @@ export const useDatabaseStore = defineStore('database', () => {
       }
     }
 
-    await apiClient.put(
-      `/api/databases/${databaseId}/entries/${entryId}/values/${schemaId}`,
-      { value },
-    )
+    const previous = _cellChains.get(cell) ?? Promise.resolve()
+    const request = previous
+      .catch(() => undefined)
+      .then(() => apiClient.put(
+        `/api/databases/${databaseId}/entries/${entryId}/values/${schemaId}`,
+        { value },
+      ))
+    _cellChains.set(cell, request)
+
+    try {
+      await request
+    } catch (err) {
+      _settleWrite(cell, request, false)
+      // Show what the server holds instead of a value it never stored.
+      refreshEntries(databaseId, [entryId]).catch(() => undefined)
+      throw err
+    }
+    _settleWrite(cell, request, true)
   }
 
   // ── In-place entry updates ────────────────────────────────────────────────
@@ -1358,8 +1542,9 @@ export const useDatabaseStore = defineStore('database', () => {
    * One request per call, split only above ``ENTRY_BATCH_LIMIT`` ids. Views
    * of the same database that ask for the same entries at the same time
    * share the request. Values, title, icon and state are replaced; the
-   * relations the entries hold are resolved along with them. Returns the
-   * ids that are no active entries any more.
+   * relations the entries hold are resolved along with them. Cells this
+   * client wrote meanwhile keep their local value. Returns the ids that are
+   * no active entries any more.
    */
   async function refreshEntries(databaseId: string, ids: string[]): Promise<string[]> {
     const unique = [...new Set(ids)]
@@ -1369,13 +1554,22 @@ export const useDatabaseStore = defineStore('database', () => {
       const key = `${databaseId}|${[...chunk].sort().join(',')}`
       let request = _batchRequests.get(key)
       if (!request) {
-        request = apiClient
+        const snapshot = _beginSnapshot()
+        const promise = apiClient
           .post<EntryBatchResponse>(`/api/databases/${databaseId}/entries/batch`, { ids: chunk })
-          .finally(() => _batchRequests.delete(key))
+          .then((result) => {
+            ingestResolution(databaseId, result.entries, result)
+            _keepLocalWrites(result.entries, snapshot)
+            return result
+          })
+          .finally(() => {
+            _batchRequests.delete(key)
+            _endSnapshot(snapshot)
+          })
+        request = { promise, snapshot }
         _batchRequests.set(key, request)
       }
-      const result = await request
-      ingestResolution(databaseId, result.entries, result)
+      const result = await request.promise
       for (const fresh of result.entries) {
         _forEachCachedEntry(fresh.id, databaseId, (row) => {
           row.values = { ...fresh.values }
@@ -1439,8 +1633,10 @@ export const useDatabaseStore = defineStore('database', () => {
   }
 
   window.addEventListener(WS_BLOCK_EVENT, _onWsBlockEvent)
+  window.addEventListener('beforeunload', _onBeforeUnload)
   onScopeDispose(() => {
     window.removeEventListener(WS_BLOCK_EVENT, _onWsBlockEvent)
+    window.removeEventListener('beforeunload', _onBeforeUnload)
   })
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -1567,6 +1763,11 @@ export const useDatabaseStore = defineStore('database', () => {
     upsertValue,
     refreshEntries,
     setEditingCell,
+
+    // Pending writes
+    pendingCells,
+    hasPendingWrites,
+    isCellPending,
     getEntry,
     getEntries,
     getNameLabel,
