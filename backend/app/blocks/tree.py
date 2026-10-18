@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.blocks.models import Block
 from app.permissions import repository as perm_repo
+from app.permissions.model import READ
 from app.users.model import User
 
 # Blocks whose children are rendered inline on the page they belong to,
@@ -88,7 +89,7 @@ def mention_ids(blocks: list[Block]) -> list[uuid.UUID]:
 
 def _readable(db: Session, blocks: list[Block], user: User) -> list[Block]:
     """Keep the blocks of *blocks* that *user* may read, in their order."""
-    allowed = perm_repo.filter_accessible(db, (b.id for b in blocks), user)
+    allowed = perm_repo.filter_accessible(db, (b.id for b in blocks), user, level=READ)
     return [b for b in blocks if b.id in allowed]
 
 
@@ -131,7 +132,7 @@ def load_tree(db: Session, root_id: uuid.UUID, user: User) -> PageTree:
 
         if origins:
             existing = list(db.scalars(select(Block.id).where(Block.id.in_(origins))))
-            allowed = perm_repo.filter_accessible(db, existing, user)
+            allowed = perm_repo.filter_accessible(db, existing, user, level=READ)
             next_frontier.extend(o for o in origins if o in allowed)
         frontier = next_frontier
 

@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { apiClient, ApiError, API_UNAUTHORIZED_EVENT } from '@/api/client'
+import {
+  apiClient,
+  ApiError,
+  API_READ_ONLY_EVENT,
+  API_UNAUTHORIZED_EVENT,
+  READ_ONLY_DETAIL,
+} from '@/api/client'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -94,7 +100,7 @@ describe('apiClient', () => {
   })
 
   it('dispatches unauthorized event on 401', async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(401, { detail: 'Nicht angemeldet' }))
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(401, { detail: 'Not authenticated' }))
 
     const listener = vi.fn()
     window.addEventListener(API_UNAUTHORIZED_EVENT, listener)
@@ -122,5 +128,29 @@ describe('apiClient', () => {
     await apiClient.get('/api/blocks/x')
     const [, init] = vi.mocked(fetch).mock.calls[0]
     expect((init as RequestInit).credentials).toBe('include')
+  })
+
+  it('dispatches the read-only event on a 403 with the read-only detail', async () => {
+    const listener = vi.fn()
+    window.addEventListener(API_READ_ONLY_EVENT, listener)
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(403, { detail: READ_ONLY_DETAIL }))
+
+    await expect(apiClient.patch('/api/blocks/abc', {})).rejects.toMatchObject({ status: 403 })
+
+    expect(listener).toHaveBeenCalledOnce()
+    window.removeEventListener(API_READ_ONLY_EVENT, listener)
+  })
+
+  it('does not dispatch the read-only event on any other 403', async () => {
+    const listener = vi.fn()
+    window.addEventListener(API_READ_ONLY_EVENT, listener)
+    vi.mocked(fetch).mockResolvedValueOnce(
+      mockResponse(403, { detail: 'Not authorized for this block' }),
+    )
+
+    await expect(apiClient.patch('/api/blocks/abc', {})).rejects.toBeInstanceOf(ApiError)
+
+    expect(listener).not.toHaveBeenCalled()
+    window.removeEventListener(API_READ_ONLY_EVENT, listener)
   })
 })

@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 from app.blocks import repository as repo
 from app.blocks.models import Block, PropertySchema, PropertyValue
 from app.permissions import repository as perm_repo
+from app.permissions.model import READ
 from app.users.model import User
 
 # Property types whose values hold links to entries.
@@ -225,7 +226,7 @@ def resolve_relations(
     if not wanted:
         return Resolution()
 
-    readable = perm_repo.filter_accessible(db, wanted.keys(), user)
+    readable = perm_repo.filter_accessible(db, wanted.keys(), user, level=READ)
     target_of: dict[uuid.UUID, set[uuid.UUID]] = {}
     for target, ids in wanted.items():
         if target not in readable:

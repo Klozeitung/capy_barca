@@ -9,6 +9,13 @@ BlockPermissionGrant
     Each row whitelists one user for a specific block when the block's
     permission mode is 'whitelist'.  ``user_id`` carries no FK to users so
     that grants are not silently removed when a user account is deactivated.
+
+Access levels
+-------------
+Access is either ``read`` or ``write``. The owner of a block and every admin
+always have write access. Everybody else gets the level stored with the
+permission that admits them: ``everyone_level`` for mode 'everyone', the
+grant's ``level`` for a whitelist entry.
 """
 import uuid
 
@@ -17,6 +24,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.database import Base
 
+READ = "read"
+WRITE = "write"
+
+#: Access levels, from least to most access.
+LEVELS: tuple[str, ...] = (READ, WRITE)
+
 
 class BlockPermission(Base):
     """
@@ -24,10 +37,11 @@ class BlockPermission(Base):
 
     ``mode`` valid values
     ---------------------
-    'everyone'   All authenticated users may read this block.
-    'private'    Only the block owner may read this block.
+    'everyone'   All authenticated users have access, at ``everyone_level``.
+    'private'    Only the block owner has access.
     'whitelist'  The block owner and all entries in
-                 ``block_permission_grants`` may read this block.
+                 ``block_permission_grants`` have access, each at the level
+                 of its grant.
 
     A missing row is semantically equivalent to mode='inherit': the
     effective permission is resolved by walking up the parent chain until
@@ -36,6 +50,12 @@ class BlockPermission(Base):
     """
 
     __tablename__ = "block_permissions"
+    __table_args__ = (
+        sa.CheckConstraint(
+            "everyone_level IN ('read', 'write')",
+            name="ck_block_permissions_everyone_level",
+        ),
+    )
 
     block_id: Mapped[uuid.UUID] = mapped_column(
         sa.Uuid,
@@ -48,6 +68,12 @@ class BlockPermission(Base):
         default="everyone",
         server_default="everyone",
     )
+    everyone_level: Mapped[str] = mapped_column(
+        sa.Text,
+        nullable=False,
+        default=WRITE,
+        server_default=WRITE,
+    )
 
     grants: Mapped[list["BlockPermissionGrant"]] = relationship(
         "BlockPermissionGrant",
@@ -59,7 +85,7 @@ class BlockPermission(Base):
 
 class BlockPermissionGrant(Base):
     """
-    Whitelist entry: grants one user read access to a specific block.
+    Whitelist entry: grants one user access to a specific block, at ``level``.
 
     ``user_id`` intentionally has no FK constraint to the users table so
     that grants survive user deactivation without requiring a trigger or
@@ -71,6 +97,10 @@ class BlockPermissionGrant(Base):
     __table_args__ = (
         sa.UniqueConstraint(
             "block_id", "user_id", name="uq_block_permission_grants"
+        ),
+        sa.CheckConstraint(
+            "level IN ('read', 'write')",
+            name="ck_block_permission_grants_level",
         ),
     )
 
@@ -84,6 +114,12 @@ class BlockPermissionGrant(Base):
         index=True,
     )
     user_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid, nullable=False)
+    level: Mapped[str] = mapped_column(
+        sa.Text,
+        nullable=False,
+        default=WRITE,
+        server_default=WRITE,
+    )
 
     permission: Mapped["BlockPermission"] = relationship(
         "BlockPermission",

@@ -131,7 +131,8 @@ def _seed_block(owner_id=None, mode=None, grants=()) -> uuid.UUID:
     Insert a block into the isolated database and give it a permission row.
 
     ``mode=None`` leaves the block without an explicit row, which the
-    permission layer resolves to 'everyone'.
+    permission layer resolves to 'everyone'. *grants* is a collection of user
+    ids (write access) or a mapping of user id to level.
     """
     import app.database.database as db_module
     from app.blocks.models import Block
@@ -156,7 +157,9 @@ def _seed_block(owner_id=None, mode=None, grants=()) -> uuid.UUID:
         )
         db.flush()
         if mode is not None:
-            perm_repo.set_permission(db, block_id, mode, list(grants))
+            perm_repo.set_permission(
+                db, block_id, mode, grants if isinstance(grants, dict) else list(grants),
+            )
         db.commit()
     return block_id
 
@@ -578,6 +581,54 @@ def test_put_file_refuses_a_token_whose_user_lost_access(
     resp = wopi_client.post(f"/api/wopi/files/{token}/contents", content=b"overwritten")
     assert resp.status_code == 403
     assert path.read_bytes() == FILE_CONTENT
+
+
+# ─── Read access ──────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def read_only(tmp_drive_dir, test_secret, member_user):
+    """A file in a block the member may only read, and a token for the member."""
+    block_id = _seed_block(
+        owner_id=uuid.uuid4(), mode="whitelist", grants={member_user.id: "read"}
+    )
+    path = _seed_file(tmp_drive_dir, block_id)
+    return {
+        "block_id": block_id,
+        "path": path,
+        "token": _token(test_secret, block_id, member_user.id),
+    }
+
+
+def test_token_for_a_readable_block_is_issued(
+    client_factory, member_user, test_secret
+):
+    """A reader may open a document; saving is refused per request."""
+    block_id = _seed_block(
+        owner_id=uuid.uuid4(), mode="whitelist", grants={member_user.id: "read"}
+    )
+    assert _issue(client_factory(member_user), block_id).status_code == 200
+
+
+def test_check_file_info_reports_no_write_access_to_a_reader(wopi_client, read_only):
+    resp = wopi_client.get(f"/api/wopi/files/{read_only['token']}")
+    assert resp.status_code == 200
+    assert resp.json()["UserCanWrite"] is False
+
+
+def test_get_file_serves_a_reader(wopi_client, read_only):
+    resp = wopi_client.get(f"/api/wopi/files/{read_only['token']}/contents")
+    assert resp.status_code == 200
+    assert resp.content == FILE_CONTENT
+
+
+def test_put_file_refuses_a_reader(wopi_client, read_only):
+    """Collabora is told the document is read-only, and the server enforces it."""
+    resp = wopi_client.post(
+        f"/api/wopi/files/{read_only['token']}/contents", content=b"overwritten"
+    )
+    assert resp.status_code == 403
+    assert read_only["path"].read_bytes() == FILE_CONTENT
 
 
 def test_put_file_refuses_a_body_over_the_size_ceiling(

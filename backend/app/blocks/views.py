@@ -45,6 +45,8 @@ from app.blocks import repository as repo
 from app.blocks import resolution
 from app.blocks.models import Block, DatabaseView, DatabaseViewSelection, PropertySchema
 from app.permissions import repository as perm_repo
+from app.permissions.model import READ, WRITE
+from app.session.deps import NO_ACCESS_DETAIL, READ_ONLY_DETAIL
 from app.users.model import User
 
 NAME_COL_KEY = "__name__"
@@ -164,16 +166,22 @@ def get_database_or_404(db: Session, database_id: uuid.UUID) -> Block:
 def require_readable(db: Session, database_id: uuid.UUID, user: User) -> Block:
     """The database, or 404 when it does not exist or *user* may not read it."""
     block = get_database_or_404(db, database_id)
-    if not perm_repo.can_user_access(db, database_id, user):
+    if not perm_repo.can_user_access(db, database_id, user, level=READ):
         raise HTTPException(status_code=404, detail=f"Database {database_id} not found")
     return block
 
 
 def require_writable(db: Session, database_id: uuid.UUID, user: User) -> Block:
-    """The database, or 404 when it does not exist and 403 when *user* may not edit it."""
+    """
+    The database, or 404 when it does not exist and 403 when *user* may not
+    edit it. Views are part of a database's design, so creating or changing
+    one needs write access; a reader gets the read-only detail.
+    """
     block = get_database_or_404(db, database_id)
-    if not perm_repo.can_user_access(db, database_id, user):
-        raise HTTPException(status_code=403, detail="Not authorized for this block")
+    granted = perm_repo.access_level(db, database_id, user)
+    if not perm_repo.satisfies(granted, WRITE):
+        detail = NO_ACCESS_DETAIL if granted is None else READ_ONLY_DETAIL
+        raise HTTPException(status_code=403, detail=detail)
     return block
 
 

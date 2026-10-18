@@ -12,7 +12,10 @@ Expected answers
 * Reads answer 404, the same as for a database that does not exist.
 * Changes answer 403.
 * The entry listings relation pickers call answer with an empty result.
-* Writing a relation property also needs access to the relation's target.
+* Writing a relation property also needs write access to the relation's
+  target.
+* A member with read access passes every read and is refused every change
+  with 403 and the read-only detail.
 
 ``test_every_route_has_a_refusal_case`` enumerates the router's routes, so a
 new endpoint fails the suite until a refusal case for it is added below.
@@ -24,6 +27,7 @@ import pytest
 
 from app.blocks.database_router import database_router
 from app.blocks.models import WORKSPACE_ROOT_ID
+from app.session.deps import NO_ACCESS_DETAIL, READ_ONLY_DETAIL
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -46,12 +50,24 @@ def _create_database(client, title: str | None = None) -> str:
     return database_id
 
 
-def _set_mode(client, block_id: str, mode: str, grants: list[str] | None = None) -> None:
+def _set_mode(
+    client,
+    block_id: str,
+    mode: str,
+    grants: list[str] | None = None,
+    *,
+    level: str = "write",
+) -> None:
+    """Set *mode*; every account in *grants* and the level for everyone get *level*."""
     resp = client.put(
         f"/api/blocks/{block_id}/permissions",
-        json={"mode": mode, "grants": grants or []},
+        json={
+            "mode": mode,
+            "everyone_level": level,
+            "grants": [{"user_id": user_id, "level": level} for user_id in grants or []],
+        },
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
 
 
 def _create_schema(client, database_id: str, name: str, type_: str, config: dict | None = None) -> dict:
@@ -222,11 +238,58 @@ def test_admin_passes_where_the_member_is_refused(http_client, private_scene, ca
 
 @pytest.mark.parametrize("case", _REFUSALS, ids=lambda c: f"{c.method} {c.route}")
 def test_whitelisted_member_passes(http_client, login_as, member_user, private_scene, case):
-    """A grant opens every endpoint, since access does not separate read and write."""
+    """A write grant opens every endpoint."""
     _set_mode(http_client, private_scene.db, "whitelist", [str(member_user.id)])
     login_as(member_user)
     response = _send(http_client, case, private_scene)
     assert response.status_code < 400, response.text
+
+
+@pytest.mark.parametrize("case", _REFUSALS, ids=lambda c: f"{c.method} {c.route}")
+def test_reader_passes_reads_and_is_refused_changes(
+    http_client, login_as, member_user, private_scene, case,
+):
+    """
+    A read grant opens every endpoint that answers a stranger with 404, and
+    refuses every one that answers 403, now with the read-only detail.
+    """
+    _set_mode(http_client, private_scene.db, "whitelist", [str(member_user.id)], level="read")
+    login_as(member_user)
+    response = _send(http_client, case, private_scene)
+    if case.expected == 404:
+        assert response.status_code < 400, response.text
+    else:
+        assert response.status_code == 403
+        assert response.json()["detail"] == READ_ONLY_DETAIL
+
+
+def test_reader_of_an_everyone_database_is_refused_changes(
+    http_client, login_as, member_user, private_scene,
+):
+    """The level for everyone limits every account that is neither owner nor admin."""
+    _set_mode(http_client, private_scene.db, "everyone", level="read")
+    login_as(member_user)
+    assert http_client.get(f"{_PREFIX}/{private_scene.db}/schemas").status_code == 200
+    resp = http_client.post(f"{_PREFIX}/{private_scene.db}/entries")
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == READ_ONLY_DETAIL
+
+
+def test_stranger_gets_the_no_access_detail_on_a_change(
+    http_client, login_as, member_user, private_scene,
+):
+    login_as(member_user)
+    resp = http_client.post(f"{_PREFIX}/{private_scene.db}/entries")
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == NO_ACCESS_DETAIL
+
+
+def test_reader_gets_the_entry_listings(http_client, login_as, member_user, private_scene):
+    """The listings relation pickers call show a readable database in full."""
+    _set_mode(http_client, private_scene.db, "whitelist", [str(member_user.id)], level="read")
+    login_as(member_user)
+    rows = http_client.get(f"{_PREFIX}/{private_scene.db}/entries").json()
+    assert [row["id"] for row in rows] == [private_scene.entry]
 
 
 # ─── Refused writes leave no trace ───────────────────────────────────────────
@@ -555,6 +618,23 @@ def test_member_may_link_once_granted_the_target(
         {"related_ids": [relation_scene.private_entry]},
     )
     assert resp.status_code == 204
+
+
+def test_reading_the_target_is_not_enough_to_link_into_it(
+    http_client, login_as, member_user, relation_scene,
+):
+    """A bilateral link writes a back-reference into the target's entry."""
+    entry = _create_entry(http_client, relation_scene.open_db)
+    _set_mode(
+        http_client, relation_scene.private_db, "whitelist", [str(member_user.id)], level="read",
+    )
+
+    login_as(member_user)
+    resp = _put_value(
+        http_client, relation_scene.open_db, entry, relation_scene.relation,
+        {"related_ids": [relation_scene.private_entry]},
+    )
+    assert resp.status_code == 403
 
 
 # ─── Key references ──────────────────────────────────────────────────────────

@@ -18,7 +18,8 @@ Authorization
 -------------
 Every endpoint that names a block enforces ``require_block_access`` on top of
 the session check, so an authenticated account cannot reach a block it has no
-permission for by guessing its id.
+permission for by guessing its id. Uploading, deleting and moving files all
+change the block's files, so each needs write access to the block.
 
 Outbound requests
 -----------------
@@ -59,6 +60,7 @@ from sqlalchemy.orm import Session
 from app.media import upload as upload_helper
 from app.media.model import MediaFile
 from app.security.limiter import limiter
+from app.permissions.model import WRITE
 from app.session.deps import get_current_user, get_db, require_block_access
 from app.users.model import User
 
@@ -462,7 +464,7 @@ def upload_file(
     if category not in VALID_CATEGORIES:
         raise HTTPException(status_code=400, detail=f"Unknown category: {category!r}")
 
-    require_block_access(db, block_id, user)
+    require_block_access(db, block_id, user, level=WRITE)
 
     block_id_str = str(block_id)
     file_uuid = str(uuid.uuid4())
@@ -514,7 +516,7 @@ def delete_file(
     if category not in VALID_CATEGORIES:
         raise HTTPException(status_code=400, detail=f"Unknown category: {category!r}")
 
-    require_block_access(db, block_id, user)
+    require_block_access(db, block_id, user, level=WRITE)
 
     if category in _MAPPED_CATEGORIES:
         _assert_file_belongs_to_block(db, file_uuid, block_id, user)
@@ -624,14 +626,14 @@ def move_drive_file(
     the file from the source block and adding it—with the new URL—to the
     target block) via the blocks API after this endpoint confirms success.
 
-    Both blocks are authorized: reading the file out of the source and writing
-    it into the target are separate accesses, and permitting one does not
-    imply the other.
+    Both blocks are authorized with write access: the move takes the file out
+    of the source and puts it into the target, so it changes both, and
+    permitting one does not imply the other.
 
     Raises 404 if the file is not found in the source directory.
     """
-    require_block_access(db, payload.source_block_id, user)
-    require_block_access(db, payload.target_block_id, user)
+    require_block_access(db, payload.source_block_id, user, level=WRITE)
+    require_block_access(db, payload.target_block_id, user, level=WRITE)
 
     source_block_id = str(payload.source_block_id)
     target_block_id = str(payload.target_block_id)

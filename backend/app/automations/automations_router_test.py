@@ -283,7 +283,10 @@ def _make_user(role: str = "member") -> User:
 
 
 def _seed_database_block(owner_id=None, mode: str = "private", grants=()) -> uuid.UUID:
-    """Create a database block with an explicit permission row."""
+    """
+    Create a database block with an explicit permission row. *grants* is a
+    collection of user ids (write access) or a mapping of user id to level.
+    """
     block_id = uuid.uuid4()
     with s.SessionLocal() as db:
         db.merge(Block(id=WORKSPACE_ROOT_ID, type="workspace", position=0.0, state="active"))
@@ -297,7 +300,9 @@ def _seed_database_block(owner_id=None, mode: str = "private", grants=()) -> uui
         block.owner_id = owner_id
         db.add(block)
         db.flush()
-        perm_repo.set_permission(db, block_id, mode, list(grants))
+        perm_repo.set_permission(
+            db, block_id, mode, grants if isinstance(grants, dict) else list(grants),
+        )
         db.commit()
     return block_id
 
@@ -463,3 +468,43 @@ def test_member_may_manage_automations_on_a_granted_database(client_factory):
         f"/api/automations/{automation_id}/toggle"
     ).status_code == 200
     assert client.delete(f"/api/automations/{automation_id}").status_code == 204
+
+
+
+# ─── Read access ──────────────────────────────────────────────────────────────
+
+
+def test_reader_may_list_and_read_automations(client_factory):
+    reader = _make_user()
+    shared = _seed_database_block(owner_id=uuid.uuid4(), mode="whitelist", grants={reader.id: "read"})
+    automation_id = _seed_automation(shared, name="Shared")
+    client = client_factory(reader)
+    assert client.get(f"/api/automations/{automation_id}").status_code == 200
+    assert [a["id"] for a in client.get("/api/automations").json()] == [automation_id]
+    listed = client.get(f"/api/automations?database_id={shared}")
+    assert listed.status_code == 200
+
+
+def test_reader_may_not_change_automations(client_factory):
+    from app.session.deps import READ_ONLY_DETAIL
+
+    reader = _make_user()
+    shared = _seed_database_block(owner_id=uuid.uuid4(), mode="whitelist", grants={reader.id: "read"})
+    automation_id = _seed_automation(shared, name="Shared")
+    client = client_factory(reader)
+
+    refused = [
+        client.post("/api/automations", json={
+            "database_id": str(shared),
+            "name": "Added",
+            "trigger": _sample_trigger(db_uuid=str(shared)),
+            "actions": [],
+        }),
+        client.patch(f"/api/automations/{automation_id}", json={"name": "Renamed"}),
+        client.patch(f"/api/automations/{automation_id}/toggle"),
+        client.delete(f"/api/automations/{automation_id}"),
+    ]
+
+    assert [r.status_code for r in refused] == [403, 403, 403, 403]
+    assert all(r.json()["detail"] == READ_ONLY_DETAIL for r in refused)
+    assert _automation_exists(automation_id)

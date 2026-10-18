@@ -152,7 +152,8 @@ from app.blocks.models import PropertySchema
 from app.blocks.router import get_db
 from app.blocks.service import BlockConflict, BlockNotFound
 from app.permissions import repository as perm_repo
-from app.session.deps import get_current_user
+from app.permissions.model import READ, WRITE
+from app.session.deps import NO_ACCESS_DETAIL, READ_ONLY_DETAIL, get_current_user
 from app.users.model import User
 from app.ws.broadcaster import emit_block_event
 
@@ -597,14 +598,17 @@ def _validate_computed_config(
 
 class _Access(Enum):
     """
-    How a handler answers a caller who may not access the database.
+    Which access level a handler needs, and how it answers a caller without it.
 
-    READ  – 404, the same answer as for a database that does not exist, so a
-            read does not confirm that a database the caller cannot see exists.
-    WRITE – 403, matching the block router and the view router.
-    SOFT  – no exception; the lookup returns ``None`` and the handler answers
-            with an empty result. Used by the entry listings that relation
-            pickers call for arbitrary target databases.
+    READ  – read access; 404 otherwise, the same answer as for a database that
+            does not exist, so a read does not confirm that a database the
+            caller cannot see exists.
+    WRITE – write access; 403 otherwise, matching the block router and the
+            view router. A caller with read access only gets the read-only
+            detail, so the client can tell the two refusals apart.
+    SOFT  – read access; no exception otherwise, the lookup returns ``None``
+            and the handler answers with an empty result. Used by the entry
+            listings that relation pickers call for arbitrary target databases.
     """
 
     READ = "read"
@@ -626,8 +630,8 @@ def _get_database_or_raise(
     required argument. The access check runs before the type check, so a
     caller without access never learns whether the block is a database.
 
-    The permission model does not distinguish reading from writing; *access*
-    only selects how a refusal is answered (see :class:`_Access`).
+    *access* selects both the level the caller needs and how a refusal is
+    answered (see :class:`_Access`).
 
     Returns
     -------
@@ -641,7 +645,7 @@ def _get_database_or_raise(
         If no block with *database_id* exists, or with ``_Access.READ`` when
         the caller may not access it.
     HTTPException(403)
-        With ``_Access.WRITE`` when the caller may not access the database.
+        With ``_Access.WRITE`` when the caller may not change the database.
     HTTPException(409)
         If the block exists but is not of type ``'database'``.
     """
@@ -650,11 +654,14 @@ def _get_database_or_raise(
         raise HTTPException(
             status_code=404, detail=f"Database {database_id} not found"
         )
-    if not perm_repo.can_user_access(db, database_id, user):
+    granted = perm_repo.access_level(db, database_id, user)
+    required = WRITE if access is _Access.WRITE else READ
+    if not perm_repo.satisfies(granted, required):
         if access is _Access.SOFT:
             return None
         if access is _Access.WRITE:
-            raise HTTPException(status_code=403, detail="Not authorized for this block")
+            detail = NO_ACCESS_DETAIL if granted is None else READ_ONLY_DETAIL
+            raise HTTPException(status_code=403, detail=detail)
         raise HTTPException(
             status_code=404, detail=f"Database {database_id} not found"
         )
@@ -684,13 +691,14 @@ def _require_relation_targets_access(
     user: User,
 ) -> None:
     """
-    Refuse with 403 unless *user* may access every relation target in *configs*.
+    Refuse with 403 unless *user* may change every relation target in *configs*.
 
     Writing a relation property reaches into its target database: a bilateral
     relation creates, renames and reconfigures its mirror property there and
     writes back-references into the target's entries, and a relation value
     names entries of the target. Access to the database holding the property
-    is therefore not enough; the caller must also be allowed into the target.
+    is therefore not enough; the caller must also have write access to the
+    target.
 
     Targets equal to *database_id* (self-relations) are covered by the access
     check on the database itself and are skipped. A target that does not
@@ -704,7 +712,7 @@ def _require_relation_targets_access(
     }
     if not targets:
         return
-    if perm_repo.filter_accessible(db, targets, user) != targets:
+    if perm_repo.filter_accessible(db, targets, user, level=WRITE) != targets:
         raise HTTPException(status_code=403, detail="Not authorized for the relation target")
 
 
@@ -1869,7 +1877,9 @@ def list_databases(
     that relation writes would refuse.
     """
     blocks = repo.list_databases(db)
-    accessible = perm_repo.filter_accessible(db, (b.id for b in blocks), current_user)
+    accessible = perm_repo.filter_accessible(
+        db, (b.id for b in blocks), current_user, level=READ,
+    )
     blocks = [b for b in blocks if b.id in accessible]
     return [
         DatabaseListResponse(
@@ -2514,7 +2524,7 @@ def list_key_references(
 
     # Resolve each referring relation's own database title for the dialog.
     readable = perm_repo.filter_accessible(
-        db, (referrer.database_id for referrer in references), current_user,
+        db, (referrer.database_id for referrer in references), current_user, level=READ,
     )
     titles: dict[uuid.UUID, Optional[str]] = {}
     for referrer in references:

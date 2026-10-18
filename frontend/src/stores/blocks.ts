@@ -16,6 +16,12 @@ export interface Block {
   icon: string | null
   cover: string | null
   owner_id?: string | null
+  /**
+   * Whether the current user may change this block. Sent with every block an
+   * HTTP endpoint returns; absent on blocks that arrived only through a
+   * WebSocket event, and kept when such an event updates a known block.
+   */
+  can_write?: boolean
 }
 
 export interface BlockPreference {

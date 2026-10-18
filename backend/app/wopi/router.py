@@ -34,6 +34,9 @@ token alone is not what grants access, however:
   permission check against current state. A token therefore stops working the
   moment the account is deactivated or loses access, rather than staying valid
   for its full lifetime.
+* Opening a document needs read access; saving it (PutFile) needs write
+  access. CheckFileInfo reports the current level as ``UserCanWrite``, so
+  Collabora opens a document read-only for a reader.
 
 An empty or placeholder ``SECRET_KEY`` is refused at startup (see
 ``require_signing_secret``), so tokens are never signed with a known key.
@@ -62,6 +65,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app.security.limiter import limiter
+from app.permissions.model import READ, WRITE
 from app.session.deps import get_current_user, get_db, require_block_access
 from app.users.model import User
 
@@ -178,9 +182,10 @@ def _decode_token(token: str) -> dict:
 # ─── Authorization ────────────────────────────────────────────────────────────
 
 
-def _authorize_claims(db: Session, claims: dict) -> User:
+def _authorize_claims(db: Session, claims: dict, level: str = READ) -> User:
     """
-    Resolve the account a token was issued to and confirm it still has access.
+    Resolve the account a token was issued to and confirm it still has *level*
+    access to the block.
 
     This is what keeps the token from being the sole control. Without it a
     token stays usable for its entire lifetime no matter what happens to the
@@ -191,7 +196,7 @@ def _authorize_claims(db: Session, claims: dict) -> User:
     HTTPException(401)
         The account no longer exists or has been deactivated.
     HTTPException(403)
-        The account exists but may no longer reach the block.
+        The account exists but may no longer reach the block, or lacks *level*.
     """
     from app.users import repository as user_repo
 
@@ -199,7 +204,7 @@ def _authorize_claims(db: Session, claims: dict) -> User:
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail=_INVALID_TOKEN)
 
-    require_block_access(db, uuid.UUID(str(claims["block_id"])), user)
+    require_block_access(db, uuid.UUID(str(claims["block_id"])), user, level=level)
     return user
 
 
@@ -272,11 +277,12 @@ def create_wopi_token(
 
     A session used to be the only requirement, which meant any account could
     mint an editing token for any drive file by naming its ids. The block
-    permission check closes that.
+    permission check closes that. Read access is enough to open a document;
+    whether it may be saved is decided per request (see PutFile).
     """
     from urllib.parse import quote
 
-    require_block_access(db, payload.block_id, user)
+    require_block_access(db, payload.block_id, user, level=READ)
 
     now = int(time.time())
     claims = {
@@ -313,21 +319,17 @@ def check_file_info(token: str, db: Session = Depends(get_db)) -> JSONResponse:
     Collabora calls this endpoint first to learn the file name, size,
     modification time, and user capabilities before loading the document.
 
-    ``UserCanWrite`` reports what the account may actually do right now.
-    It used to be a constant ``True``, which told Collabora to offer editing
-    regardless of who the document belonged to.
+    ``UserCanWrite`` reports what the account may actually do right now:
+    true with write access to the block, false for a reader.
     """
     from app.permissions import repository as perm_repo
 
     claims = _decode_token(token)
     user = _authorize_claims(db, claims)
 
-    # Asked rather than asserted. The permission model currently has a single
-    # level of access, so this is True whenever authorization passed - but the
-    # capability now comes from the same source that governs every other write
-    # to the block, and a read-only mode would only have to change that source.
+    # Asked from the same source that governs every other write to the block.
     user_can_write = perm_repo.can_user_access(
-        db, uuid.UUID(str(claims["block_id"])), user
+        db, uuid.UUID(str(claims["block_id"])), user, level=WRITE
     )
 
     file_path = _find_file(claims["file_uuid"], claims["block_id"])
@@ -398,11 +400,14 @@ async def put_file(token: str, request: Request, db: Session = Depends(get_db)) 
     written. The authorization check and the file lookup are blocking, so
     they run in a worker thread and the event loop keeps serving other
     requests meanwhile.
+
+    Saving needs write access; a reader is refused with 403 even if a client
+    ignores ``UserCanWrite``.
     """
     from app.media import upload as upload_helper
 
     claims = _decode_token(token)
-    await run_in_threadpool(_authorize_claims, db, claims)
+    await run_in_threadpool(_authorize_claims, db, claims, WRITE)
 
     file_path = await run_in_threadpool(_find_file, claims["file_uuid"], claims["block_id"])
 

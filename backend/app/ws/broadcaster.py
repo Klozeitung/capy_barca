@@ -33,7 +33,8 @@ Three rules, in order:
   residual disclosure — that some id ceased to exist — is accepted deliberately.
 * An event with no ``block_id`` reaches admins only. These are workspace-level
   and rare, and there is no object to check them against.
-* Everything else reaches the accounts that ``can_user_access`` admits.
+* Everything else reaches the accounts that ``can_user_access`` admits with
+  read access.
 
 An account that has been deleted or deactivated mid-session receives nothing in
 any of the three cases.
@@ -134,6 +135,7 @@ def _allowed_in(
     from sqlalchemy import select
 
     from app.permissions import repository as perm_repo
+    from app.permissions.model import READ
     from app.users.model import User
 
     candidates: Set[uuid.UUID] = set()
@@ -167,7 +169,8 @@ def _allowed_in(
         return {user.id for user in active}
 
     effective = perm_repo.resolve_effective_permissions(db, [target])[target]
-    return {user.id for user in active if effective.admits(user)}
+    # Read access is enough to follow changes to a block.
+    return {user.id for user in active if effective.admits(user, READ)}
 
 
 def _envelope(

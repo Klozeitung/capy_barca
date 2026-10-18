@@ -163,3 +163,75 @@ def test_current_user_is_remembered_on_the_request_session():
         user = deps.get_current_user(user_id=user_id, db=db)
 
         assert db.info[entry_changes._ACTOR_KEY] is user
+
+
+# ─── Block access ────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def access_scene():
+    """A first-level page owned by one member and shared read-only with another."""
+    from app.permissions import repository as perm_repo
+    from app.permissions.model import BlockPermission, READ
+
+    now = datetime.now(timezone.utc)
+    with s.SessionLocal() as db:
+        if db.get(Block, WORKSPACE_ROOT_ID) is None:
+            db.add(Block(
+                id=WORKSPACE_ROOT_ID, parent_id=None, type="workspace", position=0.0,
+                state="active", content={}, created_at=now, updated_at=now,
+            ))
+            db.flush()
+            db.add(BlockPermission(block_id=WORKSPACE_ROOT_ID, mode="everyone"))
+        owner = User(id=uuid.uuid4(), username="person-a", password_hash="x", role="member")
+        reader = User(id=uuid.uuid4(), username="person-b", password_hash="x", role="member")
+        stranger = User(id=uuid.uuid4(), username="person-c", password_hash="x", role="member")
+        db.add_all([owner, reader, stranger])
+        db.flush()
+        page = Block(
+            id=uuid.uuid4(), parent_id=WORKSPACE_ROOT_ID, type="page", position=0.0,
+            state="active", content={}, owner_id=owner.id, created_at=now, updated_at=now,
+        )
+        db.add(page)
+        db.flush()
+        perm_repo.set_permission(db, page.id, "whitelist", {reader.id: READ})
+        db.commit()
+        yield db, page.id, owner, reader, stranger
+
+
+def test_block_access_admits_the_owner_at_every_level(access_scene):
+    db, page_id, owner, _, _ = access_scene
+    deps.require_block_access(db, page_id, owner, level="write")
+    deps.require_block_access(db, page_id, owner, level="read")
+
+
+def test_block_access_admits_a_reader_for_reading(access_scene):
+    db, page_id, _, reader, _ = access_scene
+    deps.require_block_access(db, page_id, reader, level="read")
+
+
+def test_block_access_refuses_a_reader_with_the_read_only_detail(access_scene):
+    from fastapi import HTTPException
+
+    db, page_id, _, reader, _ = access_scene
+    with pytest.raises(HTTPException) as exc_info:
+        deps.require_block_access(db, page_id, reader, level="write")
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == deps.READ_ONLY_DETAIL
+
+
+@pytest.mark.parametrize("level", ["read", "write"])
+def test_block_access_refuses_a_stranger_with_the_no_access_detail(access_scene, level):
+    from fastapi import HTTPException
+
+    db, page_id, _, _, stranger = access_scene
+    with pytest.raises(HTTPException) as exc_info:
+        deps.require_block_access(db, page_id, stranger, level=level)
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == deps.NO_ACCESS_DETAIL
+
+
+def test_block_access_needs_a_level(access_scene):
+    db, page_id, owner, _, _ = access_scene
+    with pytest.raises(TypeError):
+        deps.require_block_access(db, page_id, owner)

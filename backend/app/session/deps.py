@@ -4,8 +4,9 @@ Shared FastAPI dependencies for authentication and database access.
 All routers import ``require_session``, ``get_current_user``,
 ``require_admin``, and ``get_db`` from here so auth logic lives in exactly
 one place. ``require_block_access`` extends that to object-level
-authorization and is called from inside handlers rather than as a
-dependency, because the block identifier is not always a path parameter.
+authorization, at a read or write level, and is called from inside handlers
+rather than as a dependency, because the block identifier is not always a
+path parameter.
 """
 import asyncio
 import uuid
@@ -169,14 +170,23 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
 
 # ─── Object-level authorization ───────────────────────────────────────────────
 
+#: Detail of a 403 for a block the caller has no access to.
+NO_ACCESS_DETAIL = "Not authorized for this block"
+
+#: Detail of a 403 for a change to a block the caller may only read. The
+#: frontend matches this exact text, so it is part of the API.
+READ_ONLY_DETAIL = "Read-only access"
+
 
 def require_block_access(
     db: Session,
     block_id: uuid.UUID,
     user: User,
+    *,
+    level: str,
 ) -> None:
     """
-    Enforce that *user* may act on *block_id*.
+    Enforce that *user* has at least *level* access to *block_id*.
 
     A valid session says who the caller is, not what they may touch. Every
     endpoint that addresses a block by id has to ask this question as well,
@@ -184,19 +194,27 @@ def require_block_access(
     reading an id. The check delegates to the permission layer, which walks
     the parent chain and lets admins through.
 
-    The permission model does not distinguish reading from writing, so this
-    single gate covers both. A block with no explicit permission row anywhere
-    in its parent chain resolves to ``everyone``, which is the behaviour of
-    an unconfigured workspace and is preserved deliberately.
+    *level* is ``"read"`` or ``"write"`` and is required, so every caller
+    states which one it needs. A block with no explicit permission row
+    anywhere in its parent chain resolves to ``everyone`` with write access,
+    which is the behaviour of an unconfigured workspace and is preserved
+    deliberately.
 
     Raises
     ------
     HTTPException(403)
-        If the user may not access the block.
+        If the user has no access to the block (detail ``NO_ACCESS_DETAIL``),
+        or only read access where write access is required (detail
+        ``READ_ONLY_DETAIL``, which the frontend recognises to tell the user
+        why the change was refused).
     """
     # Local import: the permission layer reaches into app.blocks.models, which
     # keeps the import graph acyclic only as long as this stays inside the call.
     from app.permissions import repository as perm_repo
 
-    if not perm_repo.can_user_access(db, block_id, user):
-        raise HTTPException(status_code=403, detail="Not authorized for this block")
+    granted = perm_repo.access_level(db, block_id, user)
+    if perm_repo.satisfies(granted, level):
+        return
+    if granted is None:
+        raise HTTPException(status_code=403, detail=NO_ACCESS_DETAIL)
+    raise HTTPException(status_code=403, detail=READ_ONLY_DETAIL)

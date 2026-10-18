@@ -5,9 +5,9 @@ GET  /api/blocks/{block_id}/permissions
 PUT  /api/blocks/{block_id}/permissions
 
 HTTP auth is handled via the conftest ``http_client`` fixture, which injects
-a fake admin user via dependency override.  Non-admin scenarios are tested
-by inserting a second user directly into the database and overriding
-``get_current_user`` locally.
+a fake admin user via dependency override.  Non-admin scenarios either insert
+a second user directly into the database and override ``get_current_user``
+locally, or switch the client with the ``login_as`` fixture.
 """
 import uuid
 
@@ -29,6 +29,10 @@ def _create_page(http_client) -> str:
     )
     assert resp.status_code == 201
     return resp.json()["id"]
+
+
+def _grant(user_id: str, level: str = "write") -> dict:
+    return {"user_id": user_id, "level": level}
 
 
 def _create_user(db, role: str = "member") -> User:
@@ -172,7 +176,7 @@ def test_set_permission_whitelist_stores_grants(http_client):
     user_id_2 = str(uuid.uuid4())
     http_client.put(
         f"/api/blocks/{page_id}/permissions",
-        json={"mode": "whitelist", "grants": [user_id_1, user_id_2]},
+        json={"mode": "whitelist", "grants": [_grant(user_id_1), _grant(user_id_2)]},
     )
     with s.SessionLocal() as db:
         grants = (
@@ -192,11 +196,11 @@ def test_set_permission_replaces_existing_grants(http_client):
 
     http_client.put(
         f"/api/blocks/{page_id}/permissions",
-        json={"mode": "whitelist", "grants": [old_user]},
+        json={"mode": "whitelist", "grants": [_grant(old_user)]},
     )
     http_client.put(
         f"/api/blocks/{page_id}/permissions",
-        json={"mode": "whitelist", "grants": [new_user]},
+        json={"mode": "whitelist", "grants": [_grant(new_user)]},
     )
     with s.SessionLocal() as db:
         grants = (
@@ -214,9 +218,121 @@ def test_set_permission_response_contains_grants(http_client):
     uid = str(uuid.uuid4())
     resp = http_client.put(
         f"/api/blocks/{page_id}/permissions",
-        json={"mode": "whitelist", "grants": [uid]},
+        json={"mode": "whitelist", "grants": [_grant(uid, "read")]},
     )
-    assert uid in [str(g) for g in resp.json()["grants"]]
+    assert resp.json()["grants"] == [{"user_id": uid, "level": "read"}]
+
+
+# ─── Access levels ────────────────────────────────────────────────────────────
+
+
+def test_grants_default_to_write(http_client):
+    page_id = _create_page(http_client)
+    uid = str(uuid.uuid4())
+    resp = http_client.put(
+        f"/api/blocks/{page_id}/permissions",
+        json={"mode": "whitelist", "grants": [{"user_id": uid}]},
+    )
+    assert resp.json()["grants"] == [{"user_id": uid, "level": "write"}]
+
+
+def test_set_permission_stores_the_level_of_each_grant(http_client):
+    page_id = _create_page(http_client)
+    reader, writer = str(uuid.uuid4()), str(uuid.uuid4())
+    http_client.put(
+        f"/api/blocks/{page_id}/permissions",
+        json={"mode": "whitelist", "grants": [_grant(reader, "read"), _grant(writer)]},
+    )
+    with s.SessionLocal() as db:
+        grants = (
+            db.query(BlockPermissionGrant)
+            .filter(BlockPermissionGrant.block_id == uuid.UUID(page_id))
+            .all()
+        )
+    assert {str(g.user_id): g.level for g in grants} == {reader: "read", writer: "write"}
+
+
+def test_set_permission_changes_the_level_of_a_kept_grant(http_client):
+    page_id = _create_page(http_client)
+    uid = str(uuid.uuid4())
+    url = f"/api/blocks/{page_id}/permissions"
+    http_client.put(url, json={"mode": "whitelist", "grants": [_grant(uid)]})
+    http_client.put(url, json={"mode": "whitelist", "grants": [_grant(uid, "read")]})
+    data = http_client.get(url).json()
+    assert data["grants"] == [{"user_id": uid, "level": "read"}]
+
+
+def test_set_permission_stores_the_level_for_everyone(http_client):
+    page_id = _create_page(http_client)
+    url = f"/api/blocks/{page_id}/permissions"
+    resp = http_client.put(url, json={"mode": "everyone", "everyone_level": "read"})
+    assert resp.json()["everyone_level"] == "read"
+    assert http_client.get(url).json()["everyone_level"] == "read"
+
+
+def test_level_for_everyone_defaults_to_write(http_client):
+    page_id = _create_page(http_client)
+    resp = http_client.put(
+        f"/api/blocks/{page_id}/permissions", json={"mode": "everyone"},
+    )
+    assert resp.json()["everyone_level"] == "write"
+
+
+def test_inherited_block_reports_write_for_everyone(http_client):
+    page_id = _create_page(http_client)
+    resp = http_client.put(
+        f"/api/blocks/{page_id}/permissions", json={"mode": "inherit"},
+    )
+    assert resp.json()["everyone_level"] == "write"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"mode": "everyone", "everyone_level": "admin"},
+        {"mode": "whitelist", "grants": [{"user_id": str(uuid.uuid4()), "level": "owner"}]},
+        {"mode": "whitelist", "grants": [str(uuid.uuid4())]},
+    ],
+)
+def test_set_permission_rejects_an_unknown_level_or_shape(http_client, body):
+    page_id = _create_page(http_client)
+    resp = http_client.put(f"/api/blocks/{page_id}/permissions", json=body)
+    assert resp.status_code == 422
+
+
+def test_get_permission_is_hidden_from_a_member_without_access(
+    http_client, login_as, member_user,
+):
+    """The grant list names accounts; a caller who cannot see the block gets 404."""
+    page_id = _create_page(http_client)
+    login_as(member_user)
+    resp = http_client.get(f"/api/blocks/{page_id}/permissions")
+    assert resp.status_code == 404
+
+
+def test_get_permission_is_visible_to_a_reader(http_client, login_as, member_user):
+    page_id = _create_page(http_client)
+    http_client.put(
+        f"/api/blocks/{page_id}/permissions",
+        json={"mode": "whitelist", "grants": [_grant(str(member_user.id), "read")]},
+    )
+    login_as(member_user)
+    resp = http_client.get(f"/api/blocks/{page_id}/permissions")
+    assert resp.status_code == 200
+    assert resp.json()["can_edit"] is False
+
+
+def test_reader_may_not_change_permissions(http_client, login_as, member_user):
+    page_id = _create_page(http_client)
+    http_client.put(
+        f"/api/blocks/{page_id}/permissions",
+        json={"mode": "whitelist", "grants": [_grant(str(member_user.id))]},
+    )
+    login_as(member_user)
+    resp = http_client.put(
+        f"/api/blocks/{page_id}/permissions", json={"mode": "everyone"},
+    )
+    assert resp.status_code == 403
 
 
 def test_set_permission_non_owner_member_returns_403(http_client):

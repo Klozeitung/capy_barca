@@ -3,7 +3,8 @@ Tests for the permission repository's resolution logic.
 
 The focus is the batched resolver: it must give exactly the answers the
 per-block walk gave, and it must do so with a number of queries that depends
-on the depth of the tree, not on how many blocks are resolved at once.
+on the depth of the tree, not on how many blocks are resolved at once. The
+access decisions are checked per level ('read' and 'write').
 """
 import uuid
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ import pytest
 import app.database.database as db_module
 from app.blocks.models import WORKSPACE_ROOT_ID, Block
 from app.permissions import repository as perm_repo
-from app.permissions.model import BlockPermission, BlockPermissionGrant
+from app.permissions.model import READ, WRITE, BlockPermission, BlockPermissionGrant
 from app.users.model import User
 
 
@@ -51,11 +52,16 @@ def _block(db, parent_id, owner_id=None, block_type: str = "page") -> Block:
     return block
 
 
-def _permission(db, block_id, mode: str, grants=()) -> None:
-    db.add(BlockPermission(block_id=block_id, mode=mode))
+def _permission(db, block_id, mode: str, grants=(), *, everyone_level: str = WRITE) -> None:
+    """
+    Store a permission row. *grants* is a collection of user ids (write) or a
+    mapping of user id to level.
+    """
+    db.add(BlockPermission(block_id=block_id, mode=mode, everyone_level=everyone_level))
     db.flush()
-    for user_id in grants:
-        db.add(BlockPermissionGrant(block_id=block_id, user_id=user_id))
+    levels = dict(grants) if isinstance(grants, dict) else {uid: WRITE for uid in grants}
+    for user_id, level in levels.items():
+        db.add(BlockPermissionGrant(block_id=block_id, user_id=user_id, level=level))
     db.flush()
 
 
@@ -182,8 +188,8 @@ def test_private_admits_only_the_owner(db):
 
     effective = perm_repo.resolve_effective_permissions(db, [page.id])[page.id]
 
-    assert effective.admits(owner)
-    assert not effective.admits(stranger)
+    assert effective.admits(owner, WRITE)
+    assert not effective.admits(stranger, READ)
 
 
 def test_whitelist_admits_owner_and_grantees(db):
@@ -195,9 +201,9 @@ def test_whitelist_admits_owner_and_grantees(db):
 
     effective = perm_repo.resolve_effective_permissions(db, [page.id])[page.id]
 
-    assert effective.admits(owner)
-    assert effective.admits(grantee)
-    assert not effective.admits(stranger)
+    assert effective.admits(owner, WRITE)
+    assert effective.admits(grantee, WRITE)
+    assert not effective.admits(stranger, READ)
 
 
 def test_admin_is_always_admitted(db):
@@ -208,13 +214,13 @@ def test_admin_is_always_admitted(db):
 
     effective = perm_repo.resolve_effective_permissions(db, [page.id])[page.id]
 
-    assert effective.admits(admin)
+    assert effective.admits(admin, WRITE)
 
 
 def test_can_user_access_skips_the_database_for_admins(db, count_queries):
     admin = _user(db, role="admin")
     with count_queries() as counter:
-        assert perm_repo.can_user_access(db, uuid.uuid4(), admin)
+        assert perm_repo.can_user_access(db, uuid.uuid4(), admin, level=WRITE)
     assert counter.count == 0
 
 
@@ -226,7 +232,7 @@ def test_filter_accessible_returns_only_admitted_blocks(db):
     hidden = _block(db, WORKSPACE_ROOT_ID, owner.id)
     _permission(db, hidden.id, "private")
 
-    allowed = perm_repo.filter_accessible(db, [shared.id, hidden.id], stranger)
+    allowed = perm_repo.filter_accessible(db, [shared.id, hidden.id], stranger, level=READ)
 
     assert allowed == {shared.id}
 
@@ -235,8 +241,157 @@ def test_filter_accessible_returns_everything_for_admins(db, count_queries):
     admin = _user(db, role="admin")
     ids = {uuid.uuid4(), uuid.uuid4()}
     with count_queries() as counter:
-        assert perm_repo.filter_accessible(db, ids, admin) == ids
+        assert perm_repo.filter_accessible(db, ids, admin, level=WRITE) == ids
     assert counter.count == 0
+
+
+# ─── Access levels ───────────────────────────────────────────────────────────
+
+
+def test_satisfies_orders_the_levels():
+    assert perm_repo.satisfies(WRITE, WRITE)
+    assert perm_repo.satisfies(WRITE, READ)
+    assert perm_repo.satisfies(READ, READ)
+    assert not perm_repo.satisfies(READ, WRITE)
+    assert not perm_repo.satisfies(None, READ)
+
+
+def test_satisfies_rejects_an_unknown_level():
+    with pytest.raises(ValueError):
+        perm_repo.satisfies(WRITE, "admin")
+
+
+def test_reader_grant_admits_reading_only(db):
+    owner = _user(db)
+    reader = _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, page.id, "whitelist", grants={reader.id: READ})
+
+    effective = perm_repo.resolve_effective_permissions(db, [page.id])[page.id]
+
+    assert effective.level_for(reader) == READ
+    assert effective.admits(reader, READ)
+    assert not effective.admits(reader, WRITE)
+
+
+def test_everyone_level_applies_to_every_member(db):
+    owner = _user(db)
+    member = _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, page.id, "everyone", everyone_level=READ)
+
+    effective = perm_repo.resolve_effective_permissions(db, [page.id])[page.id]
+
+    assert effective.level_for(member) == READ
+    assert effective.level_for(owner) == WRITE
+
+
+def test_owner_and_admin_keep_write_access_under_a_read_level(db):
+    owner = _user(db)
+    admin = _user(db, role="admin")
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, page.id, "everyone", everyone_level=READ)
+
+    assert perm_repo.access_level(db, page.id, owner) == WRITE
+    assert perm_repo.access_level(db, page.id, admin) == WRITE
+
+
+def test_level_is_inherited_with_the_row(db):
+    owner = _user(db)
+    reader = _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, page.id, "whitelist", grants={reader.id: READ})
+    child = _block(db, page.id, owner.id)
+
+    assert perm_repo.access_level(db, child.id, reader) == READ
+
+
+def test_access_levels_answers_each_block(db):
+    owner = _user(db)
+    member = _user(db)
+    readable = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, readable.id, "whitelist", grants={member.id: READ})
+    writable = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, writable.id, "everyone")
+    hidden = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, hidden.id, "private")
+
+    levels = perm_repo.access_levels(db, [readable.id, writable.id, hidden.id], member)
+
+    assert levels == {readable.id: READ, writable.id: WRITE, hidden.id: None}
+
+
+def test_filter_accessible_separates_the_levels(db):
+    owner = _user(db)
+    member = _user(db)
+    readable = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, readable.id, "whitelist", grants={member.id: READ})
+    writable = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, writable.id, "whitelist", grants={member.id: WRITE})
+    ids = [readable.id, writable.id]
+
+    assert perm_repo.filter_accessible(db, ids, member, level=READ) == set(ids)
+    assert perm_repo.filter_accessible(db, ids, member, level=WRITE) == {writable.id}
+
+
+def test_set_permission_stores_levels_from_a_mapping(db):
+    owner = _user(db)
+    reader = _user(db)
+    writer = _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+
+    perm = perm_repo.set_permission(
+        db, page.id, "whitelist", {reader.id: READ, writer.id: WRITE}, everyone_level=READ,
+    )
+
+    assert perm.everyone_level == READ
+    assert {g.user_id: g.level for g in perm.grants} == {reader.id: READ, writer.id: WRITE}
+
+
+def test_set_permission_gives_a_plain_list_write_access(db):
+    owner = _user(db)
+    grantee = _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+
+    perm = perm_repo.set_permission(db, page.id, "whitelist", [grantee.id])
+
+    assert [g.level for g in perm.grants] == [WRITE]
+    assert perm.everyone_level == WRITE
+
+
+def test_set_permission_updates_the_level_of_a_kept_grant(db):
+    owner = _user(db)
+    grantee = _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    perm_repo.set_permission(db, page.id, "whitelist", [grantee.id])
+
+    perm = perm_repo.set_permission(db, page.id, "whitelist", {grantee.id: READ})
+
+    assert [g.level for g in perm.grants] == [READ]
+
+
+@pytest.mark.parametrize(
+    "grants,everyone_level",
+    [({}, "admin"), ({uuid.uuid4(): "owner"}, WRITE)],
+)
+def test_set_permission_rejects_an_unknown_level(db, grants, everyone_level):
+    owner = _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    with pytest.raises(ValueError):
+        perm_repo.set_permission(db, page.id, "whitelist", grants, everyone_level=everyone_level)
+
+
+def test_database_rejects_an_unknown_stored_level(db):
+    """The check constraints keep a value outside the two levels out of the table."""
+    from sqlalchemy.exc import IntegrityError
+
+    owner = _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    db.commit()
+    db.add(BlockPermission(block_id=page.id, mode="everyone", everyone_level="admin"))
+    with pytest.raises(IntegrityError):
+        db.flush()
+    db.rollback()
 
 
 # ─── Query cost ──────────────────────────────────────────────────────────────

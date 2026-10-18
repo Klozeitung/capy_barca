@@ -1589,8 +1589,20 @@ async function onDropEnd(e: DragEvent): Promise<void> {
   margin-bottom: 6px;
 }
 
+/*
+ * Container blocks (columns, synched blocks) hold other blocks. A tinted
+ * background on hover would lie over all of that content, and because nested
+ * containers are hovered together, the tints would add up. They get a thin
+ * frame instead. box-shadow keeps it out of the layout, so nothing shifts when
+ * it appears. Only the innermost hovered container is framed; an outer one
+ * whose nested container is under the cursor stays plain.
+ */
 .content-block--layout:hover {
-  background: var(--color-hover);
+  box-shadow: inset 0 0 0 1px var(--color-border);
+}
+
+.content-block--layout:hover:has(.content-block--layout:hover) {
+  box-shadow: none;
 }
 
 /* ── Divider block ───────────────────────────────────────────────────────── */

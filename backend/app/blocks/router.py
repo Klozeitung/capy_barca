@@ -15,7 +15,14 @@ valid session establishes who the caller is, not what they may touch.
 
 Read handlers answer 404 for a block the caller may not see, so the response
 does not confirm that the id exists. Write handlers answer 403, because
-reaching them at all requires already knowing the id.
+reaching them at all requires already knowing the id; a caller with read
+access only gets the read-only detail (``READ_ONLY_DETAIL``).
+
+Access levels: reading covers showing a block, its tree, its history and its
+preferences, which hold shared view state such as the folding of the
+navigation. Everything that changes a block's content, appearance, place or
+state needs write access. Responses carry ``can_write`` for the caller, so the
+client can tell what it may edit.
 
 Convention
 ----------
@@ -47,6 +54,7 @@ from app.blocks.computed import compute_cross_db_dependents, compute_same_db_rol
 from app.blocks.service import BlockConflict, BlockNotFound
 from app.blocks.types import validate_block_type
 from app.permissions import repository as perm_repo
+from app.permissions.model import READ, WRITE
 from app.session.deps import get_current_user, get_db, require_block_access
 from app.users.model import User
 from app.ws.broadcaster import emit_block_event
@@ -204,6 +212,9 @@ class BlockResponse(BaseModel):
     icon: Optional[str]
     cover: Optional[str]
     owner_id: Optional[uuid.UUID] = None
+    # Whether the caller may change this block. Filled by the endpoints that
+    # return blocks (see _mark_write_access); absent in WebSocket events.
+    can_write: Optional[bool] = None
 
     model_config = {"from_attributes": True}
 
@@ -320,6 +331,27 @@ def _broadcast_entries_updated(db: Session, database_ids: list[str]) -> None:
         )
 
 
+def _mark_write_access(db: Session, blocks, user: User):
+    """
+    Set ``can_write`` on each of *blocks* for *user* and return them.
+
+    One batched permission walk for all of them. The attribute is transient:
+    it is not a mapped column and only feeds the response model.
+    """
+    blocks = list(blocks)
+    levels = perm_repo.access_levels(db, (b.id for b in blocks), user)
+    for block in blocks:
+        block.can_write = levels.get(block.id) == WRITE
+    return blocks
+
+
+def _written(block):
+    """Mark a block the caller has just changed, which proves write access."""
+    if block is not None:
+        block.can_write = True
+    return block
+
+
 # ─── Error translation ────────────────────────────────────────────────────────
 
 
@@ -343,8 +375,8 @@ def create_block(
 ):
     """Create a new block under the given parent."""
     # The new block takes its place in the tree underneath the parent, so the
-    # parent is the object the caller has to be allowed to touch.
-    require_block_access(db, payload.parent_id, current_user)
+    # parent is the object the caller has to be allowed to change.
+    require_block_access(db, payload.parent_id, current_user, level=WRITE)
     try:
         block = service.create_block(
             db,
@@ -365,7 +397,7 @@ def create_block(
             before=None,
             after=_block_to_dict(block),
         )
-        return block
+        return _written(block)
     except Exception as exc:
         db.rollback()
         _handle_service_errors(exc)
@@ -390,7 +422,7 @@ def list_trash(
             b for b in blocks
             if getattr(b, "owner_id", None) == current_user.id
         ]
-    return blocks
+    return _mark_write_access(db, blocks, current_user)
 
 
 @block_router.get("/{block_id}", response_model=BlockResponse)
@@ -405,8 +437,10 @@ def get_block(
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
     # 404 rather than 403 on purpose: a read must not confirm that an id the
     # caller may not see exists at all.
-    if not perm_repo.can_user_access(db, block_id, current_user):
+    level = perm_repo.access_level(db, block_id, current_user)
+    if not perm_repo.satisfies(level, READ):
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
+    block.can_write = level == WRITE
     return block
 
 
@@ -432,16 +466,14 @@ def list_children(
         repo.get_block_or_raise(db, block_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
-    if current_user.role == "admin":
-        return repo.list_children(db, block_id, state=state or None)
-
     children = repo.list_children(db, block_id, state=state or None)
-    resolved = perm_repo.resolve_effective_permissions(
-        db, [block_id, *(c.id for c in children)]
-    )
-    if not resolved[block_id].admits(current_user):
+    levels = perm_repo.access_levels(db, [block_id, *(c.id for c in children)], current_user)
+    if not perm_repo.satisfies(levels[block_id], READ):
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
-    return [c for c in children if resolved[c.id].admits(current_user)]
+    visible = [c for c in children if perm_repo.satisfies(levels[c.id], READ)]
+    for child in visible:
+        child.can_write = levels[child.id] == WRITE
+    return visible
 
 
 @block_router.get("/{block_id}/tree", response_model=BlockTreeResponse)
@@ -464,9 +496,10 @@ def get_tree(
     one the caller may not read.
     """
     block = repo.get_block(db, block_id)
-    if block is None or not perm_repo.can_user_access(db, block_id, current_user):
+    if block is None or not perm_repo.can_user_access(db, block_id, current_user, level=READ):
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
     result = page_tree.load_tree(db, block_id, current_user)
+    _mark_write_access(db, [*result.blocks, *result.mentioned], current_user)
     return BlockTreeResponse(
         blocks=[BlockResponse.model_validate(b) for b in result.blocks],
         loaded=result.loaded,
@@ -491,7 +524,7 @@ def update_block(
     before_block = repo.get_block(db, block_id)
     if before_block is None:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
-    require_block_access(db, block_id, current_user)
+    require_block_access(db, block_id, current_user, level=WRITE)
     try:
         before_snapshot = _block_to_dict(before_block)
         update_kwargs = payload.model_dump(exclude_none=True)
@@ -509,7 +542,7 @@ def update_block(
             after=_block_to_dict(block),
         )
         _broadcast_entries_updated(db, affected_db_ids)
-        return block
+        return _written(block)
     except Exception as exc:
         db.rollback()
         _handle_service_errors(exc)
@@ -527,7 +560,7 @@ def update_appearance(
         before_block = repo.get_block(db, block_id)
         if before_block is None:
             raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
-        require_block_access(db, block_id, current_user)
+        require_block_access(db, block_id, current_user, level=WRITE)
         before_snapshot = _block_to_dict(before_block)
         block = service.update_block_appearance(
             db,
@@ -543,7 +576,7 @@ def update_appearance(
             before=before_snapshot,
             after=_block_to_dict(block),
         )
-        return block
+        return _written(block)
     except HTTPException:
         raise
     except Exception as exc:
@@ -581,7 +614,7 @@ def upload_cover(
     block = repo.get_block(db, block_id)
     if block is None:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
-    require_block_access(db, block_id, current_user)
+    require_block_access(db, block_id, current_user, level=WRITE)
 
     # The type is settled before anything on disk is touched. Checking it later
     # would mean a refused upload had already cost the caller the cover they
@@ -634,7 +667,7 @@ def upload_cover(
             before=before_snapshot,
             after=_block_to_dict(updated_block),
         )
-        return updated_block
+        return _written(updated_block)
     except HTTPException:
         raise
     except Exception as exc:
@@ -662,7 +695,7 @@ def remove_cover(
     block = repo.get_block(db, block_id)
     if block is None:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
-    require_block_access(db, block_id, current_user)
+    require_block_access(db, block_id, current_user, level=WRITE)
 
     # Delete physical file(s) for this block.
     covers_dir = static_root / "covers"
@@ -675,7 +708,7 @@ def remove_cover(
 
     if block.cover is None:
         # Already no cover — return block unchanged (idempotent).
-        return block
+        return _written(block)
 
     try:
         before_snapshot = _block_to_dict(block)
@@ -692,7 +725,7 @@ def remove_cover(
             before=before_snapshot,
             after=_block_to_dict(block),
         )
-        return block
+        return _written(block)
     except Exception as exc:
         db.rollback()
         _handle_service_errors(exc)
@@ -712,9 +745,9 @@ def move_block(
             raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
         # Both ends of the move are checked. Permitting only the source would
         # let a caller file a block they own underneath a parent they cannot
-        # reach; permitting only the target would let them take one away.
-        require_block_access(db, block_id, current_user)
-        require_block_access(db, payload.new_parent_id, current_user)
+        # change; permitting only the target would let them take one away.
+        require_block_access(db, block_id, current_user, level=WRITE)
+        require_block_access(db, payload.new_parent_id, current_user, level=WRITE)
         before_snapshot = _block_to_dict(before_block)
         block = service.move(
             db,
@@ -730,7 +763,7 @@ def move_block(
             before=before_snapshot,
             after=_block_to_dict(block),
         )
-        return block
+        return _written(block)
     except HTTPException:
         raise
     except Exception as exc:
@@ -751,12 +784,17 @@ def duplicate_block(
     parent's child list, recursively copying all active descendants. The
     new root block is returned; children are fetched lazily by the client.
 
+    Copying needs read access to the block; placing the copy needs write
+    access to the parent it lands in (to the block itself for a block
+    without a parent).
+
     Raises 404 if the block does not exist.
     """
     original = repo.get_block(db, block_id)
     if original is None:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
-    require_block_access(db, block_id, current_user)
+    require_block_access(db, block_id, current_user, level=READ)
+    require_block_access(db, original.parent_id or block_id, current_user, level=WRITE)
 
     # Calculate the insertion position: midpoint between the original and its
     # next sibling, or original.position + 1 when there is no next sibling.
@@ -788,7 +826,7 @@ def duplicate_block(
             before=None,
             after=_block_to_dict(new_block),
         )
-        return new_block
+        return _written(new_block)
     except Exception as exc:
         db.rollback()
         _handle_service_errors(exc)
@@ -801,7 +839,7 @@ def soft_delete_block(
     current_user: User = Depends(get_current_user),
 ):
     """Soft-delete a block and all its descendants (sets state to trash)."""
-    require_block_access(db, block_id, current_user)
+    require_block_access(db, block_id, current_user, level=WRITE)
     try:
         affected = service.soft_delete(db, block_id)
 
@@ -853,7 +891,7 @@ def restore_block(
     current_user: User = Depends(get_current_user),
 ):
     """Restore a trashed block and all its trashed descendants."""
-    require_block_access(db, block_id, current_user)
+    require_block_access(db, block_id, current_user, level=WRITE)
     try:
         restored = service.restore(db, block_id)
         db.commit()
@@ -882,7 +920,7 @@ def purge_block(
 
     The block must be in state ``trash`` before purging. Returns 204 No Content.
     """
-    require_block_access(db, block_id, current_user)
+    require_block_access(db, block_id, current_user, level=WRITE)
     try:
         # Snapshot the entire subtree BEFORE deletion so we know which
         # files to clean up from the filesystem.  After db.delete() the
@@ -942,7 +980,7 @@ def rebalance_children(
         repo.get_block_or_raise(db, block_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
-    require_block_access(db, block_id, current_user)
+    require_block_access(db, block_id, current_user, level=WRITE)
     try:
         rebalanced = service.rebalance_positions(db, block_id)
         db.commit()
@@ -966,7 +1004,7 @@ def get_preference(
 ):
     """Return a single preference value for a block."""
     block = repo.get_block(db, block_id)
-    if block is None or not perm_repo.can_user_access(db, block_id, current_user):
+    if block is None or not perm_repo.can_user_access(db, block_id, current_user, level=READ):
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
     pref = repo.get_preference(db, block_id, key)
     if pref is None:
@@ -987,11 +1025,17 @@ def upsert_preference(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Create or update a preference value for a block."""
+    """
+    Create or update a preference value for a block.
+
+    Needs read access only: preferences hold view state such as the folding
+    of a navigation entry or the full-width toggle of a page, which every
+    reader uses while navigating.
+    """
     block = repo.get_block(db, block_id)
     if block is None:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
-    require_block_access(db, block_id, current_user)
+    require_block_access(db, block_id, current_user, level=READ)
     pref = repo.upsert_preference(db, block_id, key, payload.value)
     db.commit()
     return pref
@@ -1007,7 +1051,7 @@ def list_preferences(
 ):
     """Return all preference values for a block."""
     block = repo.get_block(db, block_id)
-    if block is None or not perm_repo.can_user_access(db, block_id, current_user):
+    if block is None or not perm_repo.can_user_access(db, block_id, current_user, level=READ):
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
     return repo.list_preferences(db, block_id)
 
@@ -1030,7 +1074,7 @@ def get_history(
     the same way.
     """
     block = repo.get_block(db, block_id)
-    if block is None or not perm_repo.can_user_access(db, block_id, current_user):
+    if block is None or not perm_repo.can_user_access(db, block_id, current_user, level=READ):
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
     events = repo.list_events(db, block_id, limit=limit)
     return [
@@ -1064,7 +1108,7 @@ def revert_event(
     block = repo.get_block(db, block_id)
     if block is None:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
-    require_block_access(db, block_id, current_user)
+    require_block_access(db, block_id, current_user, level=WRITE)
     event = repo.get_event(db, event_id)
     if event is None or event.block_id != block_id:
         raise HTTPException(status_code=404, detail=f"Event {event_id} not found")
@@ -1099,7 +1143,7 @@ def revert_event(
             after=_block_to_dict(block),
         )
         _broadcast_entries_updated(db, affected_db_ids)
-        return block
+        return _written(block)
     except Exception as exc:
         db.rollback()
         _handle_service_errors(exc)

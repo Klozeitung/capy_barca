@@ -15,6 +15,7 @@
  *                • Editor keyboard shortcuts
  *  files     – What the server accepts for uploads and how it hands files
  *              back out again.
+ *  permissions – Access modes and the read and edit levels.
  */
 import { ref, computed } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -301,6 +302,7 @@ const permissionModes = [
                     </div>
                   </div>
                 </div>
+                <p class="hm__permissions-intro">{{ t('help.permissionsLevels') }}</p>
                 <p class="hm__permissions-note">{{ t('help.permissionsNote') }}</p>
               </div>
             </template>

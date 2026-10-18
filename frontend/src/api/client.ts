@@ -7,6 +7,8 @@
  *   - typed ApiError objects (status + message) instead of raw strings
  *   - centralised 401 handling via a custom DOM event so the auth store
  *     can react without a circular import
+ *   - a second event for changes refused because the caller may only read
+ *     the block, so the user learns why the change did not stick
  *
  * Usage:
  *   import { apiClient } from '@/api/client'
@@ -39,6 +41,24 @@ function broadcastUnauthorized(): void {
   window.dispatchEvent(new CustomEvent(API_UNAUTHORIZED_EVENT))
 }
 
+// ── Read-only broadcast ───────────────────────────────────────────────────────
+
+/**
+ * Event name dispatched on `window` when a change is refused because the
+ * caller has read access only. ``NoticeToasts`` turns it into a notice.
+ */
+export const API_READ_ONLY_EVENT = 'capybarca:read-only'
+
+/**
+ * The detail the backend sends with such a refusal (``READ_ONLY_DETAIL`` in
+ * ``app.session.deps``). A 403 without it means no access at all.
+ */
+export const READ_ONLY_DETAIL = 'Read-only access'
+
+function broadcastReadOnly(): void {
+  window.dispatchEvent(new CustomEvent(API_READ_ONLY_EVENT))
+}
+
 // ── Request helpers ───────────────────────────────────────────────────────────
 
 type JsonBody = Record<string, unknown> | unknown[] | null
@@ -63,7 +83,9 @@ function baseInit(method: string, body?: JsonBody): RequestInit {
  * Execute a fetch, parse the response, and map non-OK statuses to ApiError.
  *
  * A 401 additionally broadcasts the `capybarca:unauthorized` event so that
- * the auth store can react globally.
+ * the auth store can react globally. A 403 with the read-only detail
+ * broadcasts `capybarca:read-only`; the error is thrown either way, so the
+ * caller still rolls back its optimistic change.
  */
 async function request<T>(url: string, init: RequestInit): Promise<T> {
   let response: Response
@@ -76,7 +98,7 @@ async function request<T>(url: string, init: RequestInit): Promise<T> {
 
   if (response.status === 401) {
     broadcastUnauthorized()
-    throw new ApiError(401, 'Nicht angemeldet')
+    throw new ApiError(401, 'Not authenticated')
   }
 
   if (!response.ok) {
@@ -86,6 +108,9 @@ async function request<T>(url: string, init: RequestInit): Promise<T> {
       if (typeof body?.detail === 'string') detail = body.detail
     } catch {
       // ignore – use the fallback detail string
+    }
+    if (response.status === 403 && detail === READ_ONLY_DETAIL) {
+      broadcastReadOnly()
     }
     throw new ApiError(response.status, detail)
   }

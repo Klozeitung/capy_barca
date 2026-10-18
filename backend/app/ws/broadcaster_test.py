@@ -91,6 +91,7 @@ def _seed_root() -> None:
 
 
 def _seed_block(owner_id=None, mode: str = "private", grants=()) -> uuid.UUID:
+    """*grants* is a collection of user ids (write access) or a mapping of user id to level."""
     block_id = uuid.uuid4()
     with s.SessionLocal() as db:
         block = Block(
@@ -103,7 +104,9 @@ def _seed_block(owner_id=None, mode: str = "private", grants=()) -> uuid.UUID:
         block.owner_id = owner_id
         db.add(block)
         db.flush()
-        perm_repo.set_permission(db, block_id, mode, list(grants))
+        perm_repo.set_permission(
+            db, block_id, mode, grants if isinstance(grants, dict) else list(grants),
+        )
         db.commit()
     return block_id
 
@@ -213,6 +216,20 @@ def test_whitelisted_member_receives():
         member = _make_user()
         block_id = _seed_block(
             owner_id=uuid.uuid4(), mode="whitelist", grants=[member.id]
+        )
+        websocket = await _attach(member)
+        assert await _emit(block_id) == 1
+        assert len(websocket.events) == 1
+    asyncio.run(_run())
+
+
+def test_reader_receives():
+    """Read access is enough to follow the changes others make."""
+    async def _run():
+        _seed_root()
+        member = _make_user()
+        block_id = _seed_block(
+            owner_id=uuid.uuid4(), mode="whitelist", grants={member.id: "read"}
         )
         websocket = await _attach(member)
         assert await _emit(block_id) == 1

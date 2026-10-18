@@ -9,9 +9,12 @@ shapes responses.
 Access
 ------
 Reading a view or a page requires read access to the database and answers 404
-otherwise, so the response does not confirm that the database exists. Every
-change requires access as well and answers 403, matching the block router.
-Views are shared, so anyone who may open the database may arrange its views.
+otherwise, so the response does not confirm that the database exists.
+Creating, changing, ordering or deleting a view requires write access and
+answers 403 otherwise, matching the block router; a reader gets the read-only
+detail. Views are shared, so anyone who may change the database may arrange
+its views. Choosing which view a placement shows is view state, like the
+preferences of a block, and needs read access only.
 
 Endpoints
 ---------

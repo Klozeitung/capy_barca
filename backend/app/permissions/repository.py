@@ -5,13 +5,13 @@ All database access for the permission layer lives here.  No HTTP concerns;
 the router layer translates exceptions into HTTP responses.
 """
 import uuid
-from dataclasses import dataclass
-from typing import Iterable, Optional
+from dataclasses import dataclass, field
+from typing import Iterable, Mapping, Optional, Union
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.permissions.model import BlockPermission, BlockPermissionGrant
+from app.permissions.model import LEVELS, WRITE, BlockPermission, BlockPermissionGrant
 from app.users.model import User
 
 # Maximum number of parent hops before giving up on inheritance resolution.
@@ -37,6 +37,19 @@ def get_grants(db: Session, block_id: uuid.UUID) -> list[uuid.UUID]:
     return [g.user_id for g in row.grants]
 
 
+def satisfies(granted: Optional[str], required: str) -> bool:
+    """
+    Return True if access at level *granted* allows an action needing *required*.
+
+    Write access includes read access. ``None`` (no access) satisfies nothing.
+    """
+    if required not in LEVELS:
+        raise ValueError(f"Unknown access level: {required!r}")
+    if granted is None:
+        return False
+    return LEVELS.index(granted) >= LEVELS.index(required)
+
+
 # ─── Effective permission resolution ─────────────────────────────────────────
 
 
@@ -47,31 +60,45 @@ class EffectivePermission:
 
     ``owner_id`` is the owner of the block that carries the explicit row, which
     is not necessarily the block the question was asked about. ``grants`` keeps
-    the order of the stored grant rows.
+    the order of the stored grant rows; ``grant_levels`` maps each of them to
+    its access level. ``everyone_level`` applies while the mode is 'everyone'.
 
     The value does not depend on who asks, so one instance answers the access
-    question for any number of users (see :meth:`admits`).
+    question for any number of users (see :meth:`level_for`).
     """
 
     mode: str
     owner_id: Optional[uuid.UUID]
     grants: tuple[uuid.UUID, ...]
+    everyone_level: str = WRITE
+    grant_levels: Mapping[uuid.UUID, str] = field(default_factory=dict)
 
-    def admits(self, user: User) -> bool:
-        """Return True if *user* may read a block governed by this permission."""
+    def level_for(self, user: User) -> Optional[str]:
+        """
+        Return the access level *user* has to a block governed by this
+        permission: ``"write"``, ``"read"`` or ``None`` for no access.
+
+        Admins and the owner always have write access.
+        """
         if user.role == "admin":
-            return True
+            return WRITE
+        if self.owner_id is not None and user.id == self.owner_id:
+            return WRITE
         if self.mode == "everyone":
-            return True
+            return self.everyone_level
         if self.mode == "private":
-            return self.owner_id is not None and user.id == self.owner_id
+            return None
         if self.mode == "whitelist":
-            return (self.owner_id is not None and user.id == self.owner_id) or (
-                user.id in self.grants
-            )
+            if user.id in self.grants:
+                return self.grant_levels.get(user.id, WRITE)
+            return None
         # Residual fallback (shouldn't be reached in practice — the workspace
         # root row always anchors the walk with mode='everyone').
-        return True
+        return WRITE
+
+    def admits(self, user: User, level: str) -> bool:
+        """Return True if *user* has at least *level* access ("read" or "write")."""
+        return satisfies(self.level_for(user), level)
 
 
 # Returned when no explicit row is found before the chain ends or the depth
@@ -153,6 +180,8 @@ def resolve_effective_permissions(
                     mode=perm.mode,
                     owner_id=owner_of.get(current),
                     grants=tuple(g.user_id for g in perm.grants),
+                    everyone_level=perm.everyone_level,
+                    grant_levels={g.user_id: g.level for g in perm.grants},
                 )
             if current not in parent_of:
                 # The block does not exist; its chain ends here.
@@ -214,35 +243,65 @@ def find_permission_source(
 # ─── Access check ─────────────────────────────────────────────────────────────
 
 
+def access_level(db: Session, block_id: uuid.UUID, user: User) -> Optional[str]:
+    """
+    Return the access level *user* has to *block_id*: ``"write"``, ``"read"``
+    or ``None``.
+
+    Admin users have write access everywhere without touching the database.
+    """
+    if user.role == "admin":
+        return WRITE
+    return resolve_effective_permissions(db, [block_id])[block_id].level_for(user)
+
+
+def access_levels(
+    db: Session, block_ids: Iterable[uuid.UUID], user: User
+) -> dict[uuid.UUID, Optional[str]]:
+    """
+    Return the access level of *user* for each of *block_ids* in one batched
+    walk (see :func:`access_level`).
+    """
+    ids = list(dict.fromkeys(block_ids))
+    if user.role == "admin":
+        return {block_id: WRITE for block_id in ids}
+    resolved = resolve_effective_permissions(db, ids)
+    return {block_id: effective.level_for(user) for block_id, effective in resolved.items()}
+
+
 def can_user_access(
-    db: Session, block_id: uuid.UUID, user: User
+    db: Session, block_id: uuid.UUID, user: User, *, level: str
 ) -> bool:
     """
-    Return True if *user* is allowed to read *block_id*.
+    Return True if *user* has at least *level* access to *block_id*.
 
+    *level* is required so every caller states whether it reads or writes.
     Admin users bypass all permission checks without touching the database.
     For non-admins the effective permission is resolved via
     :func:`resolve_effective_permissions`.
     """
-    if user.role == "admin":
-        return True
-    return resolve_effective_permissions(db, [block_id])[block_id].admits(user)
+    return satisfies(access_level(db, block_id, user), level)
 
 
 def filter_accessible(
-    db: Session, block_ids: Iterable[uuid.UUID], user: User
+    db: Session, block_ids: Iterable[uuid.UUID], user: User, *, level: str
 ) -> set[uuid.UUID]:
     """
-    Return the subset of *block_ids* that *user* may read.
+    Return the subset of *block_ids* that *user* has at least *level* access to.
 
     Resolves all of them in one batched walk instead of one walk per block.
     Admins receive the full set without a query.
     """
+    if level not in LEVELS:
+        raise ValueError(f"Unknown access level: {level!r}")
     ids = set(block_ids)
     if user.role == "admin" or not ids:
         return ids
     resolved = resolve_effective_permissions(db, ids)
-    return {block_id for block_id, effective in resolved.items() if effective.admits(user)}
+    return {
+        block_id for block_id, effective in resolved.items()
+        if effective.admits(user, level)
+    }
 
 
 # ─── Accessibility warning ────────────────────────────────────────────────────
@@ -305,20 +364,38 @@ def set_permission(
     db: Session,
     block_id: uuid.UUID,
     mode: str,
-    grant_user_ids: list[uuid.UUID],
+    grants: Union[Iterable[uuid.UUID], Mapping[uuid.UUID, str]],
+    *,
+    everyone_level: str = WRITE,
 ) -> BlockPermission:
     """
     Upsert the permission row for *block_id* and replace the grant list.
 
-    Existing grants not present in *grant_user_ids* are deleted.
-    New grants are inserted.  The caller must commit after this call.
+    *grants* is either a mapping of user id to access level or a plain
+    collection of user ids, which then all receive write access.
+    *everyone_level* is the level every account gets while *mode* is
+    'everyone'.
+
+    Existing grants not present in *grants* are deleted, kept ones take the
+    new level, new ones are inserted. The caller must commit after this call.
     """
+    if everyone_level not in LEVELS:
+        raise ValueError(f"Unknown access level: {everyone_level!r}")
+    if isinstance(grants, Mapping):
+        wanted: dict[uuid.UUID, str] = dict(grants)
+    else:
+        wanted = {user_id: WRITE for user_id in grants}
+    for level in wanted.values():
+        if level not in LEVELS:
+            raise ValueError(f"Unknown access level: {level!r}")
+
     perm = get_permission_row(db, block_id)
     if perm is None:
-        perm = BlockPermission(block_id=block_id, mode=mode)
+        perm = BlockPermission(block_id=block_id, mode=mode, everyone_level=everyone_level)
         db.add(perm)
     else:
         perm.mode = mode
+        perm.everyone_level = everyone_level
 
     db.flush()
 
@@ -329,13 +406,14 @@ def set_permission(
         .all()
     )
     existing_user_ids = {g.user_id for g in existing}
-    new_user_ids = set(grant_user_ids)
 
     for grant in existing:
-        if grant.user_id not in new_user_ids:
+        if grant.user_id not in wanted:
             db.delete(grant)
-    for uid in new_user_ids - existing_user_ids:
-        db.add(BlockPermissionGrant(block_id=block_id, user_id=uid))
+        else:
+            grant.level = wanted[grant.user_id]
+    for uid in wanted.keys() - existing_user_ids:
+        db.add(BlockPermissionGrant(block_id=block_id, user_id=uid, level=wanted[uid]))
 
     db.flush()
     db.refresh(perm)

@@ -5,13 +5,34 @@
  * Shows the notices of the notices store in the lower right corner. Each one
  * closes on its own after a few seconds or when its close button is clicked.
  * Announced politely to screen readers.
+ *
+ * Also turns the API client's read-only event into a notice, so a change the
+ * server refused because the user may only read the block does not vanish
+ * without a word.
  */
+import { onMounted, onBeforeUnmount } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
+import { API_READ_ONLY_EVENT } from '@/api/client'
 import { useNoticesStore, type Notice } from '@/stores/notices'
 
 const { t } = useI18n()
 const store = useNoticesStore()
+
+/** i18n key of the notice shown when a change is refused as read-only. */
+const READ_ONLY_NOTICE_KEY = 'notices.readOnly'
+
+const ICONS: Record<string, string> = {
+  [READ_ONLY_NOTICE_KEY]: 'mdi:lock-outline',
+}
+const DEFAULT_ICON = 'mdi:account-sync-outline'
+
+function onReadOnly(): void {
+  store.push(READ_ONLY_NOTICE_KEY)
+}
+
+onMounted(() => window.addEventListener(API_READ_ONLY_EVENT, onReadOnly))
+onBeforeUnmount(() => window.removeEventListener(API_READ_ONLY_EVENT, onReadOnly))
 
 /** The parameters of *notice*, with an empty entry title shown as untitled. */
 function paramsOf(notice: Notice): Record<string, string> {
@@ -23,7 +44,7 @@ function paramsOf(notice: Notice): Record<string, string> {
 <template>
   <div class="notices" role="status" aria-live="polite">
     <div v-for="notice in store.notices" :key="notice.id" class="notices__item">
-      <Icon icon="mdi:account-sync-outline" width="16" height="16" class="notices__icon" />
+      <Icon :icon="ICONS[notice.key] ?? DEFAULT_ICON" width="16" height="16" class="notices__icon" />
       <span class="notices__text">{{ t(notice.key, paramsOf(notice)) }}</span>
       <button
         class="notices__close"

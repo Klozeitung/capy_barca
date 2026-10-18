@@ -7,9 +7,10 @@ Authorization
 -------------
 An automation belongs to a ``database_id``, which is a block. Reaching the
 automation therefore means reaching that block, and every endpoint asks
-``require_block_access`` about it. Listing filters to the databases the caller
-can reach rather than refusing outright, so a member sees their own automations
-and nothing else.
+``require_block_access`` about it. Reading an automation needs read access to
+its database; creating, changing, toggling or deleting one needs write access.
+Listing filters to the databases the caller can read rather than refusing
+outright, so a member sees their own automations and nothing else.
 
 The single-item endpoints look the automation up before they can ask the
 question at all — the ``database_id`` is only known once the row is loaded — so
@@ -31,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from app.automations import automations_repository as repo
 from app.permissions import repository as perm_repo
+from app.permissions.model import READ, WRITE
 from app.session.deps import get_current_user, get_db, require_block_access
 from app.users.model import User
 
@@ -84,12 +86,13 @@ def list_automations(
     the same shape ``list_children`` uses in the block router.
     """
     if database_id is not None:
-        require_block_access(db, database_id, current_user)
+        require_block_access(db, database_id, current_user, level=READ)
         return repo.list_automations(db, database_id=database_id)
 
     automations = repo.list_automations(db)
     allowed = perm_repo.filter_accessible(
-        db, [automation.database_id for automation in automations], current_user
+        db, [automation.database_id for automation in automations], current_user,
+        level=READ,
     )
     return [a for a in automations if a.database_id in allowed]
 
@@ -103,7 +106,7 @@ def get_automation(
     automation = repo.get_automation(db, automation_id)
     if automation is None:
         raise HTTPException(status_code=404, detail="Automation not found")
-    require_block_access(db, automation.database_id, current_user)
+    require_block_access(db, automation.database_id, current_user, level=READ)
     return automation
 
 
@@ -113,7 +116,7 @@ def create_automation(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    require_block_access(db, payload.database_id, current_user)
+    require_block_access(db, payload.database_id, current_user, level=WRITE)
     automation = repo.create_automation(
         db,
         database_id=payload.database_id,
@@ -137,7 +140,7 @@ def update_automation(
     automation = repo.get_automation(db, automation_id)
     if automation is None:
         raise HTTPException(status_code=404, detail="Automation not found")
-    require_block_access(db, automation.database_id, current_user)
+    require_block_access(db, automation.database_id, current_user, level=WRITE)
     repo.update_automation(
         db,
         automation,
@@ -160,7 +163,7 @@ def delete_automation(
     automation = repo.get_automation(db, automation_id)
     if automation is None:
         raise HTTPException(status_code=404, detail="Automation not found")
-    require_block_access(db, automation.database_id, current_user)
+    require_block_access(db, automation.database_id, current_user, level=WRITE)
     repo.delete_automation(db, automation)
     db.commit()
 
@@ -177,7 +180,7 @@ def toggle_automation(
     automation = repo.get_automation(db, automation_id)
     if automation is None:
         raise HTTPException(status_code=404, detail="Automation not found")
-    require_block_access(db, automation.database_id, current_user)
+    require_block_access(db, automation.database_id, current_user, level=WRITE)
     repo.update_automation(db, automation, enabled=not automation.enabled)
     db.commit()
     db.refresh(automation)

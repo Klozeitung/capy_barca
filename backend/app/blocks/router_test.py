@@ -14,7 +14,8 @@ A workspace root block is seeded before each test via the ``http_client`` or
 satisfied from the first request.
 
 Authorization tests live at the end of the file. They cover the object-level
-guard that every block-addressed endpoint now applies.
+guard that every block-addressed endpoint now applies, and the separation of
+read and write access.
 """
 import uuid
 from typing import Any
@@ -26,7 +27,7 @@ import app.session.session as s
 from app.blocks.models import WORKSPACE_ROOT_ID, Block
 from app.main import app
 from app.permissions import repository as perm_repo
-from app.session.deps import get_current_user, require_session
+from app.session.deps import READ_ONLY_DETAIL, get_current_user, require_session
 from app.users.model import User
 
 # Module-level client with no dependency overrides, for 401 checks. Created
@@ -63,18 +64,20 @@ def _seed_root():
 
 
 def _seed_block(owner_id=None, mode="private", grants=(), block_type="page",
-                state="active"):
+                state="active", parent_id=WORKSPACE_ROOT_ID, everyone_level="write"):
     """
-    Create a block under the workspace root with an explicit permission row.
+    Create a block with an explicit permission row, under the workspace root
+    unless *parent_id* names another block.
 
-    Returns the new block id as a string, which is the form every endpoint URL
-    below needs.
+    *grants* is a collection of user ids (write access) or a mapping of user
+    id to level. Returns the new block id as a string, which is the form
+    every endpoint URL below needs.
     """
     block_id = uuid.uuid4()
     with s.SessionLocal() as db:
         block = Block(
             id=block_id,
-            parent_id=WORKSPACE_ROOT_ID,
+            parent_id=uuid.UUID(str(parent_id)),
             type=block_type,
             position=1.0,
             state=state,
@@ -82,7 +85,11 @@ def _seed_block(owner_id=None, mode="private", grants=(), block_type="page",
         block.owner_id = owner_id
         db.add(block)
         db.flush()
-        perm_repo.set_permission(db, block_id, mode, list(grants))
+        perm_repo.set_permission(
+            db, block_id, mode,
+            grants if isinstance(grants, dict) else list(grants),
+            everyone_level=everyone_level,
+        )
         db.commit()
     return str(block_id)
 
@@ -1554,3 +1561,157 @@ def test_move_within_own_blocks_is_allowed(workspace_root, client_factory):
         json={"new_parent_id": own_parent, "new_position": 1.0},
     )
     assert resp.status_code == 200
+
+
+# ── Read access ───────────────────────────────────────────────────────────────
+#
+# A reader sees a block and follows its view state, and every change is
+# refused with 403 and the read-only detail. Preferences and duplication are
+# left out of the parametrised refusal: preferences need read access only,
+# and a copy lands under the parent, which is checked on its own below.
+
+READ_ONLY_REFUSALS = [
+    (name, call) for name, call in WRITE_ENDPOINTS
+    if name not in {"upsert_preference", "duplicate_block"}
+]
+
+
+@pytest.mark.parametrize(
+    "name,call", READ_ONLY_REFUSALS, ids=[name for name, _ in READ_ONLY_REFUSALS],
+)
+def test_reader_is_refused_every_change(workspace_root, client_factory, name, call):
+    reader = _make_user()
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="whitelist", grants={reader.id: "read"})
+    client = client_factory(reader)
+    resp = call(client, block_id)
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == READ_ONLY_DETAIL
+
+
+def test_read_level_for_everyone_refuses_changes(workspace_root, client_factory):
+    member = _make_user()
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="everyone", everyone_level="read")
+    client = client_factory(member)
+    assert client.get(f"/api/blocks/{block_id}").status_code == 200
+    resp = _update(client, block_id)
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == READ_ONLY_DETAIL
+
+
+def test_refused_change_leaves_the_block_untouched(workspace_root, client_factory):
+    reader = _make_user()
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="whitelist", grants={reader.id: "read"})
+    client = client_factory(reader)
+    _update(client, block_id)
+    _soft_delete(client, block_id)
+    with s.SessionLocal() as db:
+        block = db.get(Block, uuid.UUID(block_id))
+    assert block.state == "active"
+    assert (block.content or {}).get("title") != "x"
+
+
+@pytest.mark.parametrize(
+    "suffix", ["", "/children", "/tree", "/history", "/preferences", "/comments"],
+)
+def test_reader_may_read(workspace_root, client_factory, suffix):
+    reader = _make_user()
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="whitelist", grants={reader.id: "read"})
+    client = client_factory(reader)
+    assert client.get(f"/api/blocks/{block_id}{suffix}").status_code == 200
+
+
+def test_reader_may_write_a_preference(workspace_root, client_factory):
+    """Preferences hold view state such as folding, which readers use as well."""
+    reader = _make_user()
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="whitelist", grants={reader.id: "read"})
+    client = client_factory(reader)
+    assert _upsert_preference(client, block_id).status_code == 200
+
+
+def test_get_block_reports_write_access(workspace_root, client_factory):
+    reader = _make_user()
+    writer = _make_user()
+    block_id = _seed_block(
+        owner_id=uuid.uuid4(), mode="whitelist",
+        grants={reader.id: "read", writer.id: "write"},
+    )
+    assert client_factory(reader).get(f"/api/blocks/{block_id}").json()["can_write"] is False
+    assert client_factory(writer).get(f"/api/blocks/{block_id}").json()["can_write"] is True
+
+
+def test_children_report_write_access_per_child(workspace_root, client_factory):
+    """A child with its own row can be writable below a read-only parent."""
+    member = _make_user()
+    parent = _seed_block(owner_id=uuid.uuid4(), mode="whitelist", grants={member.id: "read"})
+    inherited = _seed_block(owner_id=uuid.uuid4(), mode="whitelist",
+                            grants={member.id: "read"}, parent_id=parent)
+    own = _seed_block(owner_id=member.id, mode="private", parent_id=parent)
+    client = client_factory(member)
+
+    children = {c["id"]: c["can_write"] for c in client.get(f"/api/blocks/{parent}/children").json()}
+
+    assert children == {inherited: False, own: True}
+
+
+def test_tree_reports_write_access(workspace_root, client_factory):
+    member = _make_user()
+    page = _seed_block(owner_id=uuid.uuid4(), mode="whitelist", grants={member.id: "read"})
+    child = _seed_block(owner_id=uuid.uuid4(), mode="everyone", parent_id=page)
+    client = client_factory(member)
+
+    body = client.get(f"/api/blocks/{page}/tree").json()
+
+    assert {b["id"]: b["can_write"] for b in body["blocks"]} == {child: True}
+
+
+def test_change_response_reports_write_access(workspace_root, client_factory):
+    member = _make_user()
+    block_id = _seed_block(owner_id=member.id, mode="private")
+    client = client_factory(member)
+    assert _update(client, block_id).json()["can_write"] is True
+
+
+def test_reader_may_not_create_below_a_read_only_parent(workspace_root, client_factory):
+    reader = _make_user()
+    parent_id = _seed_block(owner_id=uuid.uuid4(), mode="whitelist", grants={reader.id: "read"})
+    client = client_factory(reader)
+    resp = client.post("/api/blocks", json={"type": "page", "parent_id": parent_id})
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == READ_ONLY_DETAIL
+
+
+def test_move_into_a_read_only_parent_returns_403(workspace_root, client_factory):
+    member = _make_user()
+    own = _seed_block(owner_id=member.id, mode="private")
+    read_only_parent = _seed_block(
+        owner_id=uuid.uuid4(), mode="whitelist", grants={member.id: "read"},
+    )
+    client = client_factory(member)
+    resp = client.post(
+        f"/api/blocks/{own}/move",
+        json={"new_parent_id": read_only_parent, "new_position": 1.0},
+    )
+    assert resp.status_code == 403
+
+
+def test_reader_may_not_duplicate_into_a_read_only_parent(workspace_root, client_factory):
+    """The copy would land beside the original, under a parent the reader may not change."""
+    reader = _make_user()
+    parent = _seed_block(owner_id=uuid.uuid4(), mode="whitelist", grants={reader.id: "read"})
+    child = _seed_block(owner_id=uuid.uuid4(), mode="whitelist",
+                        grants={reader.id: "read"}, parent_id=parent)
+    client = client_factory(reader)
+    assert _duplicate(client, child).status_code == 403
+
+
+def test_reader_may_duplicate_into_a_writable_parent(workspace_root, client_factory):
+    """Reading is enough to copy; the copy belongs to the caller."""
+    reader = _make_user()
+    parent = _seed_block(owner_id=uuid.uuid4(), mode="everyone")
+    child = _seed_block(owner_id=uuid.uuid4(), mode="whitelist",
+                        grants={reader.id: "read"}, parent_id=parent)
+    client = client_factory(reader)
+    resp = _duplicate(client, child)
+    assert resp.status_code == 201
+    assert resp.json()["owner_id"] == str(reader.id)
+    assert resp.json()["can_write"] is True

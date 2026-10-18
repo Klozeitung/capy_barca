@@ -116,7 +116,8 @@ def _seed_block(owner_id=None, mode=None, grants=()) -> uuid.UUID:
     Insert a block into the isolated database and give it a permission row.
 
     ``mode=None`` leaves the block without an explicit permission row, which
-    is what the permission layer resolves to 'everyone'.
+    is what the permission layer resolves to 'everyone'. *grants* is a
+    collection of user ids (write access) or a mapping of user id to level.
     """
     import app.database.database as db_module
     from app.blocks.models import Block
@@ -141,7 +142,9 @@ def _seed_block(owner_id=None, mode=None, grants=()) -> uuid.UUID:
         )
         db.flush()
         if mode is not None:
-            perm_repo.set_permission(db, block_id, mode, list(grants))
+            perm_repo.set_permission(
+                db, block_id, mode, grants if isinstance(grants, dict) else list(grants),
+            )
         db.commit()
     return block_id
 
@@ -1224,6 +1227,48 @@ def test_move_drive_file_to_foreign_target_returns_403(
     """Access to the source does not imply the right to write into the target."""
     src_block = uuid.uuid4()
     tgt_block = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    file_uuid = str(uuid.uuid4())
+    src_path = _create_fake_file(
+        tmp_upload_dir, "drive", str(src_block), file_uuid, ext=".docx"
+    )
+    client = client_factory(member_user)
+    resp = _move(client, file_uuid, src_block, tgt_block)
+    assert resp.status_code == 403
+    assert src_path.exists()
+
+
+def test_upload_by_a_reader_returns_403(client_factory, member_user):
+    from app.session.deps import READ_ONLY_DETAIL
+
+    block_id = _seed_block(
+        owner_id=uuid.uuid4(), mode="whitelist", grants={member_user.id: "read"}
+    )
+    client = client_factory(member_user)
+    resp = _upload(client, "drive", str(block_id))
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == READ_ONLY_DETAIL
+
+
+def test_delete_by_a_reader_returns_403(client_factory, member_user, tmp_upload_dir):
+    block_id = _seed_block(
+        owner_id=uuid.uuid4(), mode="whitelist", grants={member_user.id: "read"}
+    )
+    file_uuid = str(uuid.uuid4())
+    path = _create_fake_file(tmp_upload_dir, "drive", str(block_id), file_uuid, ext=".txt")
+    client = client_factory(member_user)
+    resp = client.delete(f"/api/media/drive/{block_id}/{file_uuid}")
+    assert resp.status_code == 403
+    assert path.exists()
+
+
+def test_move_drive_file_out_of_a_read_only_source_returns_403(
+    client_factory, member_user, tmp_upload_dir
+):
+    """Moving takes the file away from the source, which changes it."""
+    src_block = _seed_block(
+        owner_id=uuid.uuid4(), mode="whitelist", grants={member_user.id: "read"}
+    )
+    tgt_block = _seed_block(owner_id=member_user.id, mode="private")
     file_uuid = str(uuid.uuid4())
     src_path = _create_fake_file(
         tmp_upload_dir, "drive", str(src_block), file_uuid, ext=".docx"

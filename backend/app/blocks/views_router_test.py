@@ -519,3 +519,66 @@ def test_a_member_without_access_cannot_read_pages(private_database, member_clie
     database_id, view_id = private_database
     resp = member_client.post(f"/api/databases/{database_id}/views/{view_id}/entries", json={})
     assert resp.status_code == 404
+
+
+# ─── Read access ─────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def reader_client(private_database):
+    """A client authenticated as a member with read access to the database."""
+    database_id, _ = private_database
+    with db_module.SessionLocal() as db:
+        reader = User(
+            id=uuid.uuid4(), username=f"member_{uuid.uuid4().hex[:8]}",
+            password_hash="x", role="member", is_active=True,
+        )
+        db.add(reader)
+        db.flush()
+        perm_repo.set_permission(db, uuid.UUID(database_id), "whitelist", {reader.id: "read"})
+        db.commit()
+        db.refresh(reader)
+        db.expunge(reader)
+    app.dependency_overrides[require_session] = lambda: reader.id
+    app.dependency_overrides[get_current_user] = lambda: reader
+    with TestClient(app) as client:
+        yield client
+
+
+def test_a_reader_may_read_views_and_pages(private_database, reader_client):
+    database_id, view_id = private_database
+    assert reader_client.get(f"/api/databases/{database_id}/views").status_code == 200
+    resp = reader_client.post(f"/api/databases/{database_id}/views/{view_id}/entries", json={})
+    assert resp.status_code == 200
+
+
+def test_a_reader_may_choose_the_shown_view(private_database, reader_client):
+    database_id, view_id = private_database
+    resp = reader_client.put(
+        f"/api/databases/{database_id}/views/selection",
+        json={"placement_id": database_id, "view_id": view_id},
+    )
+    assert resp.status_code == 204
+
+
+@pytest.mark.parametrize(
+    "method,suffix,body",
+    [
+        ("POST", "/views", {}),
+        ("POST", "/views/{view}/duplicate", {}),
+        ("PATCH", "/views/{view}", {"name": "View B"}),
+        ("DELETE", "/views/{view}", None),
+        ("PUT", "/views/order", {"view_ids": ["{view}"]}),
+    ],
+)
+def test_a_reader_cannot_change_views(private_database, reader_client, method, suffix, body):
+    from app.session.deps import READ_ONLY_DETAIL
+
+    database_id, view_id = private_database
+    url = f"/api/databases/{database_id}" + suffix.replace("{view}", view_id)
+    if body is not None and "view_ids" in body:
+        body = {"view_ids": [view_id]}
+    kwargs = {"json": body} if body is not None else {}
+    resp = reader_client.request(method, url, **kwargs)
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == READ_ONLY_DETAIL

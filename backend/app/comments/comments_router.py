@@ -10,7 +10,8 @@ Authorization
 Two separate questions, asked in that order:
 
 1. May the caller reach the block at all? ``require_block_access`` answers it,
-   and every endpoint here asks. A comment thread is block content.
+   and every endpoint here asks. Read access is enough: a comment is a remark
+   about the block rather than a change to it, so readers may comment.
 2. May the caller change *this* comment? Editing and deleting additionally
    require being the comment's author, or an admin. Anyone with block access
    may read and create.
@@ -40,6 +41,7 @@ from sqlalchemy.orm import Session
 
 from app.comments.comments_models import Comment
 from app.permissions import repository as perm_repo
+from app.permissions.model import READ
 from app.session.deps import get_current_user, get_db, require_block_access
 from app.users.model import User
 
@@ -144,7 +146,7 @@ def list_comments(
     # 404 rather than 403: a read must not confirm that a block the caller may
     # not see exists at all.
     if not _block_exists(db, block_id) or not perm_repo.can_user_access(
-        db, block_id, current_user
+        db, block_id, current_user, level=READ
     ):
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
     rows = (
@@ -173,7 +175,7 @@ def create_comment(
     """Create a new comment on *block_id*, attributed to the current user."""
     if not _block_exists(db, block_id):
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
-    require_block_access(db, block_id, current_user)
+    require_block_access(db, block_id, current_user, level=READ)
     comment = Comment(
         id=uuid.uuid4(),
         block_id=block_id,
@@ -200,7 +202,7 @@ def update_comment(
     """Edit the text of an existing comment. Author or admin only."""
     # Block access first: whether a comment exists on an unreachable block is
     # not something the caller gets to find out.
-    require_block_access(db, block_id, current_user)
+    require_block_access(db, block_id, current_user, level=READ)
     comment = db.get(Comment, comment_id)
     if comment is None or comment.block_id != block_id:
         raise HTTPException(status_code=404, detail=f"Comment {comment_id} not found")
@@ -223,7 +225,7 @@ def delete_comment(
     current_user: User = Depends(get_current_user),
 ):
     """Permanently delete a comment. Author or admin only."""
-    require_block_access(db, block_id, current_user)
+    require_block_access(db, block_id, current_user, level=READ)
     comment = db.get(Comment, comment_id)
     if comment is None or comment.block_id != block_id:
         raise HTTPException(status_code=404, detail=f"Comment {comment_id} not found")
