@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from app.database.database import Base, engine  # noqa: E402
+from app.database.migration_lock import acquire_migration_lock  # noqa: E402
 
 # Register all models with Base so autogenerate can detect schema changes.
 import app.automations.automations_models  # noqa: F401, E402 – Automation
@@ -64,6 +65,11 @@ def run_migrations_online() -> None:
 
     NullPool is used intentionally: Alembic's migration process is short-lived
     and should not hold connections open.
+
+    Concurrent runs are serialised by an advisory lock taken inside the
+    migration transaction, before Alembic reads the current revision (see
+    ``app.database.migration_lock``). A run that has to wait finds the
+    database at head afterwards and applies nothing.
     """
     connectable = create_engine(database_url, poolclass=pool.NullPool)
     with connectable.connect() as connection:
@@ -72,6 +78,7 @@ def run_migrations_online() -> None:
             target_metadata=target_metadata,
         )
         with context.begin_transaction():
+            acquire_migration_lock(connection)
             context.run_migrations()
 
 

@@ -173,3 +173,53 @@ def test_mutation_event_reaches_the_socket(isolated_db):
     assert message["type"] == "block.event"
     assert message["payload"]["event_type"] == "created"
     assert message["payload"]["block_id"] == response.json()["id"]
+
+
+def test_value_change_event_names_the_entry_property_and_actor(isolated_db):
+    """
+    ``database_entries_updated`` carries what changed, so a client can load
+    just those entries, and who changed it, so another user can be told.
+    """
+    from datetime import datetime, timezone
+
+    import app.session.session as s
+    from app.blocks.models import WORKSPACE_ROOT_ID, Block
+    from app.users.model import User
+
+    user_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    with s.SessionLocal() as db:
+        db.add(User(id=user_id, username="person-a", password_hash="x", role="admin"))
+        db.add(Block(
+            id=WORKSPACE_ROOT_ID, type="workspace", position=0.0, state="active",
+            content={"title": "Workspace"}, created_at=now, updated_at=now,
+        ))
+        db.commit()
+    token = s.create_token(user_id)
+
+    with TestClient(app) as client:
+        client.cookies.set("session", token)
+        database_id = client.post(
+            "/api/blocks", json={"type": "database", "parent_id": str(WORKSPACE_ROOT_ID)},
+        ).json()["id"]
+        schema_id = client.post(
+            f"/api/databases/{database_id}/schemas", json={"name": "Text", "type": "text"},
+        ).json()["id"]
+        entry_id = client.post(f"/api/databases/{database_id}/entries").json()["id"]
+
+        with client.websocket_connect("/ws") as ws:
+            response = client.put(
+                f"/api/databases/{database_id}/entries/{entry_id}/values/{schema_id}",
+                json={"value": {"text": "Value A"}},
+            )
+            assert response.status_code == 204
+            while True:
+                message = json.loads(ws.receive_text())
+                if message["payload"]["event_type"] == "database_entries_updated":
+                    break
+
+    after = message["payload"]["after"]
+    assert after["database_id"] == database_id
+    assert schema_id in after["entries"][entry_id]
+    assert after["actor"] == {"id": str(user_id), "name": "person-a"}
+    assert "listing" not in after

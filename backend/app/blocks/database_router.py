@@ -111,7 +111,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -360,6 +360,28 @@ class EntryDetailResponse(BaseModel):
     ``key_values``.
     """
     entry: EntryResponse
+    relations: dict[str, dict]
+    key_values: dict[str, dict[str, Any]]
+
+
+# Entries one batch request may ask for.
+ENTRY_BATCH_LIMIT = 500
+
+
+class EntryBatchRequest(BaseModel):
+    """Entries to load, by id."""
+    ids: list[uuid.UUID] = Field(max_length=ENTRY_BATCH_LIMIT)
+
+
+class EntryBatchResponse(BaseModel):
+    """
+    Several entries with their values and the resolution of their relations.
+
+    ``missing`` lists the requested ids that are not active entries of the
+    database (trashed, deleted, templates or unknown).
+    """
+    entries: list[EntryResponse]
+    missing: list[uuid.UUID]
     relations: dict[str, dict]
     key_values: dict[str, dict[str, Any]]
 
@@ -2671,6 +2693,47 @@ def get_entry(
         db, repo.list_schemas(db, database_id), [payload["values"]], current_user,
     )
     return EntryDetailResponse(entry=payload, **resolved.as_payload())
+
+
+@database_router.post(
+    "/{database_id}/entries/batch",
+    response_model=EntryBatchResponse,
+)
+def get_entries_batch(
+    database_id: uuid.UUID,
+    payload: EntryBatchRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return the given entries with their values and resolved relations.
+
+    For change events: a client that learns which entries changed loads just
+    those, in one request, instead of everything it shows. Only active entries
+    of the database are returned; the other ids come back in ``missing``.
+
+    Answers 404 when the caller may not read the database.
+    """
+    _get_database_or_raise(db, database_id)
+    if not perm_repo.can_user_access(db, database_id, current_user):
+        raise HTTPException(status_code=404, detail=f"Database {database_id} not found")
+
+    wanted = list(dict.fromkeys(payload.ids))
+    found = repo.list_blocks_by_ids(
+        db, wanted, parent_id=database_id, state="active",
+        exclude_types=frozenset({"entry_template"}),
+    )
+    by_id = {b.id: b for b in found}
+    entries = [by_id[i] for i in wanted if i in by_id]
+    payloads = views.entry_payloads(db, entries)
+    resolved = resolution.resolve_relations(
+        db, repo.list_schemas(db, database_id), (p["values"] for p in payloads), current_user,
+    )
+    return EntryBatchResponse(
+        entries=payloads,
+        missing=[i for i in wanted if i not in by_id],
+        **resolved.as_payload(),
+    )
 
 
 @database_router.post(

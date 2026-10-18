@@ -304,6 +304,16 @@ export const useBlockStore = defineStore('blocks', () => {
     return childrenMap.value[parentId] !== undefined
   }
 
+  /**
+   * Forget every cached list of children, after the connection was down and
+   * changes may have been missed. Shown sections load theirs again; while a
+   * tree request runs they wait for it (see ``fetchChildren``), so a caller
+   * that starts ``fetchTree`` first loads the open page in one request.
+   */
+  function invalidateChildren(): void {
+    childrenMap.value = {}
+  }
+
   // ── Block mutations ────────────────────────────────────────────────────────
 
   async function createBlock(payload: {
@@ -447,6 +457,7 @@ export const useBlockStore = defineStore('blocks', () => {
     fetchTree,
     getChildren,
     hasLoadedChildren,
+    invalidateChildren,
     createBlock,
     updateBlock,
     updateAppearance,

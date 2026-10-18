@@ -70,6 +70,9 @@ logger = logging.getLogger(__name__)
 # The one event type whose block no longer exists by the time it is sent.
 PURGE_EVENT_TYPE = "purged"
 
+# Announces changed entries of a database; carries the changes when known.
+ENTRIES_EVENT_TYPE = "database_entries_updated"
+
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -284,6 +287,11 @@ def emit_block_event(
     for a client to read it: the handler holds a worker thread and a database
     connection, and one client that stopped reading must not keep them.
 
+    For ``database_entries_updated`` the event is completed from what *db*
+    recorded during the request (see ``app.blocks.entry_changes``): which
+    entries and properties changed, whether entries were added, removed or
+    reordered, and who made the change.
+
     Parameters are those of :func:`broadcast_block_event`, plus *db*. Returns
     the number of connections the event was queued for.
 
@@ -295,6 +303,11 @@ def emit_block_event(
 
     if manager.active_count == 0:
         return 0
+
+    if event_type == ENTRIES_EVENT_TYPE and db is not None and isinstance(after, dict):
+        from app.blocks import entry_changes
+
+        after = {**after, **entry_changes.describe(db, block_id)}
 
     message = _envelope(
         event_type=event_type,

@@ -147,3 +147,19 @@ def test_burst_larger_than_the_pool_does_not_stall(test_engine, monkeypatch):
         small_engine.dispose()
 
     assert statuses == [200] * 60
+
+
+# ─── Actor ───────────────────────────────────────────────────────────────────
+
+
+def test_current_user_is_remembered_on_the_request_session():
+    """Change events of the request name this user (see app.blocks.entry_changes)."""
+    from app.blocks import entry_changes
+
+    user_id = uuid.uuid4()
+    with s.SessionLocal() as db:
+        db.add(User(id=user_id, username="person-a", password_hash="x", role="member"))
+        db.commit()
+        user = deps.get_current_user(user_id=user_id, db=db)
+
+        assert db.info[entry_changes._ACTOR_KEY] is user

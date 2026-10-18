@@ -17,6 +17,7 @@ app/conftest_test.py
 app/database/database_test.py
 app/database/view_preferences_migration_test.py
 app/database/option_ids_migration_test.py
+app/database/migration_lock_test.py
 
 app/session/user_registration_test.py
 app/session/user_login_test.py
@@ -46,6 +47,7 @@ app/blocks/views_test.py
 app/blocks/views_router_test.py
 app/blocks/options_test.py
 app/blocks/tree_test.py
+app/blocks/entry_changes_test.py
 
 app/media/model_test.py
 app/media/upload_test.py

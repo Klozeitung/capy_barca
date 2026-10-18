@@ -916,30 +916,47 @@ else
 fi
 
 # ─── Backend health check ─────────────────────────────────────────────────────
+#
+# The backend container migrates the database before uvicorn starts (see
+# backend/entrypoint.sh), so a long data migration counts towards this wait.
+# -f makes curl fail on HTTP errors: while uvicorn is not up yet, nginx answers
+# the request itself with 502, and that must not count as ready.
+
+BACKEND_WAIT_SECONDS=180
+BACKEND_PROGRESS_EVERY=15
 
 echo ""
-echo "Waiting for backend..."
-for i in {1..30}; do
-    if curl -sk https://localhost:${PORT_FRONTEND}/api/health > /dev/null; then
+echo "Waiting for backend (migrations run before it starts)..."
+for ((i = 1; i <= BACKEND_WAIT_SECONDS; i++)); do
+    if curl -skf "https://localhost:${PORT_FRONTEND}/api/health" > /dev/null; then
         echo -e "${GREEN}[OK] Backend is ready.${NC}"
         break
     fi
-    if [ $i -eq 30 ]; then
-        echo -e "${RED}[ERROR] Backend is not responding.${NC}"
+    if [ "$i" -eq "${BACKEND_WAIT_SECONDS}" ]; then
+        echo -e "${RED}[ERROR] Backend is not responding after ${BACKEND_WAIT_SECONDS} s.${NC}"
         docker compose logs backend
         exit 1
+    fi
+    if (( i % BACKEND_PROGRESS_EVERY == 0 )); then
+        echo "  still waiting (${i} s), migrations may still be running..."
     fi
     sleep 1
 done
 
-# ─── Database migrations ──────────────────────────────────────────────────────
+# ─── Database schema check ────────────────────────────────────────────────────
+#
+# The entrypoint is the only place that migrates. A second `alembic upgrade
+# head` here could only be a no-op or race the entrypoint's run, so this step
+# merely confirms that the database reached the newest revision.
 
 echo ""
-echo "Running database migrations..."
-if docker compose exec -T backend alembic upgrade head; then
-    echo -e "${GREEN}[OK] Migrations applied.${NC}"
+echo "Checking database schema..."
+SCHEMA_CURRENT=$(docker compose exec -T backend alembic current 2>/dev/null | awk '{print $1}' | sort | tr '\n' ' ')
+SCHEMA_HEADS=$(docker compose exec -T backend alembic heads 2>/dev/null | awk '{print $1}' | sort | tr '\n' ' ')
+if [ -n "${SCHEMA_HEADS// /}" ] && [ "${SCHEMA_CURRENT}" = "${SCHEMA_HEADS}" ]; then
+    echo -e "${GREEN}[OK] Database schema is at head.${NC}"
 else
-    echo -e "${RED}[ERROR] Migrations failed.${NC}"
+    echo -e "${RED}[ERROR] Database schema is not at head (current: ${SCHEMA_CURRENT:-none}, head: ${SCHEMA_HEADS:-unknown}).${NC}"
     docker compose logs backend
     exit 1
 fi

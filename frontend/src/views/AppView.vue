@@ -4,6 +4,7 @@ import NavView from '@/components/nav/NavView.vue'
 import MainView from '@/components/main/MainView.vue'
 import SettingsModal from '@/components/settings/SettingsModal.vue'
 import HelpModal from '@/components/settings/HelpModal.vue'
+import NoticeToasts from '@/components/main/NoticeToasts.vue'
 import { useUiStore } from '@/stores/ui'
 import { useSettingsModal } from '@/composables/useSettingsModal'
 import { useHelpModal } from '@/composables/useHelpModal'
@@ -59,6 +60,7 @@ onUnmounted(() => {
 
     <SettingsModal v-if="settingsOpen" />
     <HelpModal v-if="helpOpen" />
+    <NoticeToasts />
   </div>
 </template>
 

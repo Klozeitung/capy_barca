@@ -17,6 +17,7 @@ import anyio.to_thread
 from fastapi import Cookie, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.blocks import entry_changes
 from app.database.database import POOL_CAPACITY, SessionLocal
 from app.session.session import validate_token
 from app.users import repository as user_repo
@@ -136,6 +137,9 @@ def get_current_user(
     """
     Dependency that resolves the session cookie to a full User object.
 
+    The user is also remembered on the request's database session, so the
+    change events the request sends can say who made the change.
+
     Raises
     ------
     HTTPException(401)
@@ -145,6 +149,7 @@ def get_current_user(
     user = user_repo.get_by_id(db, user_id)
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    entry_changes.set_actor(db, user)
     return user
 
 

@@ -34,7 +34,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch, type VNode } fr
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useBlockStore } from '@/stores/blocks'
-import { WS_BLOCK_EVENT, type BlockEventPayload } from '@/stores/ws'
+import { WS_BLOCK_EVENT, WS_RESYNC_EVENT, type BlockEventPayload } from '@/stores/ws'
 import { useDrag } from '@/composables/useDrag'
 import {
   useDatabaseStore,
@@ -49,7 +49,9 @@ import {
   type ViewFilter,
   type FilterOperator,
   type KeyReference,
+  type EntriesEventDetails,
   NAME_COL_KEY,
+  entriesEventDetails,
 } from '@/stores/database'
 import { isReadonlyPropertyType } from '@/stores/propertyTypes'
 
@@ -727,14 +729,57 @@ function closeAllPanels() {
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
-function _onDbEntriesUpdated(e: Event): void {
-  const payload = (e as CustomEvent<BlockEventPayload>).detail
-  if (
-    payload.event_type === 'database_entries_updated' &&
-    (payload.after as { database_id?: string } | null)?.database_id === props.blockId
-  ) {
+/**
+ * Whether the active view's rows or their order may depend on *schemaIds*:
+ * it filters or sorts by one of them, or a title changed while the name
+ * search is in use.
+ */
+function _viewDependsOn(schemaIds: Set<string>): boolean {
+  const view = activeView.value
+  if (!view) return true
+  if (view.sorts.some((s) => schemaIds.has(s.schemaId))) return true
+  if (view.filterGroups.some((g) => g.filters.some((f) => schemaIds.has(f.schemaId)))) return true
+  return schemaIds.has(NAME_COL_KEY) && nameSearchQuery.value.trim() !== ''
+}
+
+/**
+ * Entries of this database changed, here or elsewhere.
+ *
+ * When the event names the changed entries and none of the changes can move
+ * a row in or out of the view or change the order, only the loaded ones among
+ * them are fetched and updated in place. Otherwise, or when entries were
+ * added or removed, the loaded range is loaded again.
+ */
+function _applyEntriesEvent(details: EntriesEventDetails): void {
+  if (!details.entries || details.listing) {
     queryFromActiveView()
+    return
   }
+  const changed = new Set(Object.values(details.entries).flat())
+  if (_viewDependsOn(changed)) {
+    queryFromActiveView()
+    return
+  }
+  const loaded = new Set(displayedEntries.value.map((e) => e.id))
+  const ids = Object.keys(details.entries).filter((id) => loaded.has(id))
+  if (ids.length === 0) return
+  dbStore.refreshEntries(props.blockId, ids)
+    .then((missing) => { if (missing.length > 0) queryFromActiveView() })
+    .catch(() => queryFromActiveView())
+}
+
+function _onDbEntriesUpdated(e: Event): void {
+  const details = entriesEventDetails((e as CustomEvent<BlockEventPayload>).detail)
+  if (details && details.database_id === props.blockId) _applyEntriesEvent(details)
+}
+
+/** The connection was down: properties, views and rows may be stale. */
+async function _onResync(): Promise<void> {
+  await Promise.all([
+    dbStore.fetchSchemas(props.blockId),
+    viewsStore.refreshViews(props.blockId),
+  ])
+  await queryFromActiveView()
 }
 
 /**
@@ -775,6 +820,7 @@ onMounted(async () => {
   document.addEventListener('click', closeAllPanels)
   window.addEventListener(WS_BLOCK_EVENT, _onDbEntriesUpdated)
   window.addEventListener(WS_BLOCK_EVENT, _onDbSchemaUpdated)
+  window.addEventListener(WS_RESYNC_EVENT, _onResync)
   window.addEventListener('resize', measureFrozenOffsets)
   nextTick(() => { _attachFrozenObserver(); measureFrozenOffsets() })
 
@@ -798,6 +844,7 @@ onUnmounted(() => {
   document.removeEventListener('click', closeAllPanels)
   window.removeEventListener(WS_BLOCK_EVENT, _onDbEntriesUpdated)
   window.removeEventListener(WS_BLOCK_EVENT, _onDbSchemaUpdated)
+  window.removeEventListener(WS_RESYNC_EVENT, _onResync)
   window.removeEventListener('resize', measureFrozenOffsets)
   _frozenRO?.disconnect()
   _frozenRO = null
@@ -805,6 +852,7 @@ onUnmounted(() => {
   if (_tipTimer) clearTimeout(_tipTimer)
   if (_nameSearchTimer) clearTimeout(_nameSearchTimer)
   dbStore.releaseQueryResult(queryResultKey)
+  dbStore.setEditingCell(queryResultKey, null, null)
 })
 
 // ── View switching (orchestrates multiple composables) ────────────────────────
@@ -1199,6 +1247,11 @@ function setActiveCell(entryId: string, schemaId: string): void {
 }
 
 function clearActiveCell(): void { activeCell.value = null }
+
+// Someone else changing the cell being edited here is reported to the user.
+watch(activeCell, (cell) => {
+  dbStore.setEditingCell(queryResultKey, cell?.entryId ?? null, cell?.schemaId ?? null)
+})
 
 function onCellClick(entry: DatabaseEntry, schema: PropertySchema): void {
   if (isReadonlyPropertyType(schema.type)) return

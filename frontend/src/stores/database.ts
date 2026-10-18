@@ -47,6 +47,8 @@ import { useDatabaseTemplatesStore } from '@/stores/databaseTemplates'
 import { useBlockStore } from '@/stores/blocks'
 import { WS_BLOCK_EVENT, type BlockEventPayload } from '@/stores/ws'
 import { useDatabaseViewsStore } from '@/stores/databaseViews'
+import { useAuthStore } from '@/stores/auth'
+import { useNoticesStore } from '@/stores/notices'
 
 /** Pseudo schema id of the lead property, the entry title shown as "Name". */
 export const NAME_COL_KEY = '__name__'
@@ -540,6 +542,55 @@ export interface EntryDetailResponse extends RelationResolution {
   entry: DatabaseEntry
 }
 
+/** Response of POST /entries/batch. */
+export interface EntryBatchResponse extends RelationResolution {
+  entries: DatabaseEntry[]
+  /** Requested ids that are no active entries of the database. */
+  missing: string[]
+}
+
+/** The most entries ``refreshEntries`` asks for in one request. */
+export const ENTRY_BATCH_LIMIT = 500
+
+/** Event that announces changed entries of a database. */
+export const ENTRIES_EVENT = 'database_entries_updated'
+
+/**
+ * Details of a ``database_entries_updated`` event.
+ *
+ * ``entries`` maps each changed entry to the properties that changed on it
+ * (``NAME_COL_KEY`` for its title). Without it the server did not know or
+ * did not list the changes, and whatever shows the database loads again.
+ * ``listing`` is set when entries were added, removed or reordered.
+ * ``actor`` names the user who made the change.
+ */
+export interface EntriesEventDetails {
+  database_id: string
+  entries?: Record<string, string[]>
+  listing?: boolean
+  actor?: { id: string; name: string }
+}
+
+/** The details of *payload* when it announces changed entries, else null. */
+export function entriesEventDetails(payload: BlockEventPayload): EntriesEventDetails | null {
+  if (payload.event_type !== ENTRIES_EVENT) return null
+  const after = payload.after as Partial<EntriesEventDetails> | null
+  if (!after || typeof after.database_id !== 'string') return null
+  return after as EntriesEventDetails
+}
+
+/**
+ * Whether *details* may concern entry *entryId*: it is listed, or the event
+ * does not list entries at all, or entries were added or removed.
+ */
+export function eventTouchesEntry(details: EntriesEventDetails, entryId: string): boolean {
+  if (!details.entries || details.listing) return true
+  return entryId in details.entries
+}
+
+/** How long after editing a value someone else's change to it is reported. */
+export const OVERWRITE_NOTICE_WINDOW_MS = 60_000
+
 /** Which part of a view to load; see ``loadViewPage``. */
 export interface ViewPageRequest {
   offset: number
@@ -637,6 +688,23 @@ export const useDatabaseStore = defineStore('database', () => {
 
   /** All database blocks available in the workspace (id + title). */
   const allDatabases = ref<DatabaseInfo[]>([])
+
+  /**
+   * When this client last wrote each value, keyed ``entryId:schemaId``. A
+   * change by someone else to a value written here shortly before is
+   * reported to the user (see ``_reportOverwrites``).
+   */
+  const _recentWrites = new Map<string, number>()
+
+  /**
+   * The cell each open view is editing, keyed by the view's own key, as
+   * ``entryId:schemaId``. A change by someone else to one of them is reported
+   * as well.
+   */
+  const _editingCells = new Map<string, string>()
+
+  /** Batch requests in flight, keyed by database and the ids asked for. */
+  const _batchRequests = new Map<string, Promise<EntryBatchResponse>>()
 
   /**
    * Resolved relation-target descriptors keyed by entry id.
@@ -1169,6 +1237,8 @@ export const useDatabaseStore = defineStore('database', () => {
       row.values[schemaId] = value
     })
 
+    _recentWrites.set(`${entryId}:${schemaId}`, Date.now())
+
     // Also update the template store optimistically so the property picker
     // in DatabaseTemplateEditor reflects changes immediately.
     const templateStore = useDatabaseTemplatesStore()
@@ -1280,8 +1350,92 @@ export const useDatabaseStore = defineStore('database', () => {
     }
   }
 
+  // ── Changed entries ───────────────────────────────────────────────────────
+
+  /**
+   * Load entries *ids* of *databaseId* again and update every cached copy.
+   *
+   * One request per call, split only above ``ENTRY_BATCH_LIMIT`` ids. Views
+   * of the same database that ask for the same entries at the same time
+   * share the request. Values, title, icon and state are replaced; the
+   * relations the entries hold are resolved along with them. Returns the
+   * ids that are no active entries any more.
+   */
+  async function refreshEntries(databaseId: string, ids: string[]): Promise<string[]> {
+    const unique = [...new Set(ids)]
+    const missing: string[] = []
+    for (let start = 0; start < unique.length; start += ENTRY_BATCH_LIMIT) {
+      const chunk = unique.slice(start, start + ENTRY_BATCH_LIMIT)
+      const key = `${databaseId}|${[...chunk].sort().join(',')}`
+      let request = _batchRequests.get(key)
+      if (!request) {
+        request = apiClient
+          .post<EntryBatchResponse>(`/api/databases/${databaseId}/entries/batch`, { ids: chunk })
+          .finally(() => _batchRequests.delete(key))
+        _batchRequests.set(key, request)
+      }
+      const result = await request
+      ingestResolution(databaseId, result.entries, result)
+      for (const fresh of result.entries) {
+        _forEachCachedEntry(fresh.id, databaseId, (row) => {
+          row.values = { ...fresh.values }
+          row.content = fresh.content
+          row.icon = fresh.icon
+          row.state = fresh.state
+          row.position = fresh.position
+        })
+      }
+      missing.push(...result.missing)
+    }
+    return missing
+  }
+
+  /** Record which cell the view *owner* edits; null for both means none. */
+  function setEditingCell(owner: string, entryId: string | null, schemaId: string | null): void {
+    if (entryId && schemaId) _editingCells.set(owner, `${entryId}:${schemaId}`)
+    else _editingCells.delete(owner)
+  }
+
+  /**
+   * Tell the user when someone else changed a value they are editing or
+   * changed themselves within ``OVERWRITE_NOTICE_WINDOW_MS``. The later
+   * change has won; the notice says so and who made it.
+   */
+  function _reportOverwrites(details: EntriesEventDetails): void {
+    const actor = details.actor
+    if (!actor || !details.entries) return
+    const auth = useAuthStore()
+    if (!auth.username || actor.name === auth.username) return
+
+    const now = Date.now()
+    for (const [cell, time] of _recentWrites) {
+      if (now - time > OVERWRITE_NOTICE_WINDOW_MS) _recentWrites.delete(cell)
+    }
+    const editing = new Set(_editingCells.values())
+    const notices = useNoticesStore()
+    for (const [entryId, schemaIds] of Object.entries(details.entries)) {
+      for (const schemaId of schemaIds) {
+        const cell = `${entryId}:${schemaId}`
+        const written = _recentWrites.get(cell)
+        const recent = written !== undefined && now - written <= OVERWRITE_NOTICE_WINDOW_MS
+        if (!recent && !editing.has(cell)) continue
+        const schema = getSchemas(details.database_id).find((s) => s.id === schemaId)
+        const entry = getEntry(details.database_id, entryId)
+        const title = entry?.content?.title
+        notices.push('notices.valueOverwritten', {
+          user: actor.name,
+          property: schema?.name ?? '',
+          entry: typeof title === 'string' ? title : '',
+        })
+      }
+    }
+  }
+
   function _onWsBlockEvent(e: Event): void {
-    _applyEntryEvent((e as CustomEvent<BlockEventPayload>).detail)
+    const payload = (e as CustomEvent<BlockEventPayload>).detail
+    _applyEntryEvent(payload)
+    const details = entriesEventDetails(payload)
+    if (details) _reportOverwrites(details)
   }
 
   window.addEventListener(WS_BLOCK_EVENT, _onWsBlockEvent)
@@ -1411,6 +1565,8 @@ export const useDatabaseStore = defineStore('database', () => {
     createEntry,
     duplicateEntry,
     upsertValue,
+    refreshEntries,
+    setEditingCell,
     getEntry,
     getEntries,
     getNameLabel,

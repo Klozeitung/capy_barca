@@ -17,6 +17,12 @@
  * - Auth failure (close code 4401): no reconnect, status → 'auth_error'.
  * - Deliberate `disconnect()` call: no reconnect.
  * - All other close codes: reconnect indefinitely.
+ *
+ * Resync
+ * ------
+ * Events sent while the connection was down are lost. When it opens again
+ * after having been open before, `capybarca:ws-resync` is dispatched, and
+ * whatever shows server data loads it again.
  */
 
 import { ref } from 'vue'
@@ -44,6 +50,9 @@ export interface BlockEventPayload {
 
 export const WS_BLOCK_EVENT = 'capybarca:block-event'
 
+/** Dispatched when the connection is back after an interruption. */
+export const WS_RESYNC_EVENT = 'capybarca:ws-resync'
+
 // ── Store ─────────────────────────────────────────────────────────────────────
 
 export const useWsStore = defineStore('ws', () => {
@@ -54,6 +63,8 @@ export const useWsStore = defineStore('ws', () => {
   let _reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let _attempt = 0
   let _intentionalClose = false
+  /** Whether a connection has been open before, so the next one resyncs. */
+  let _wasOpen = false
 
   // ── URL derivation ────────────────────────────────────────────────────────
 
@@ -96,6 +107,8 @@ export const useWsStore = defineStore('ws', () => {
     ws.addEventListener('open', () => {
       _attempt = 0
       status.value = 'connected'
+      if (_wasOpen) window.dispatchEvent(new Event(WS_RESYNC_EVENT))
+      _wasOpen = true
     })
 
     ws.addEventListener('message', (ev: MessageEvent) => {
@@ -151,6 +164,7 @@ export const useWsStore = defineStore('ws', () => {
 
   function disconnect(): void {
     _intentionalClose = true
+    _wasOpen = false
     _clearReconnectTimer()
     if (_socket) {
       _socket.close()

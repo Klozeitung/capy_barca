@@ -29,8 +29,13 @@ import { useRouter } from 'vue-router'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useBlockStore, type Block } from '@/stores/blocks'
-import { useDatabaseStore, type DatabaseEntry } from '@/stores/database'
-import { WS_BLOCK_EVENT, type BlockEventPayload } from '@/stores/ws'
+import {
+  useDatabaseStore,
+  entriesEventDetails,
+  eventTouchesEntry,
+  type DatabaseEntry,
+} from '@/stores/database'
+import { WS_BLOCK_EVENT, WS_RESYNC_EVENT, type BlockEventPayload } from '@/stores/ws'
 import { useEscapeKey } from '@/composables/useEscapeStack'
 import BlockTopSection from './BlockTopSection.vue'
 import BlockPropertySection from './BlockPropertySection.vue'
@@ -101,25 +106,41 @@ watch(() => props.entryId, () => loadEntry())
 // ── WebSocket sync ────────────────────────────────────────────────────────────
 
 /**
- * Re-fetch this entry whenever the backend broadcasts an update for the
- * owning database. Value mutations broadcast database_entries_updated with
- * block_id = databaseId; this covers, in particular, a bilateral relation whose
- * mirror value was written on this entry server-side (from this or another
- * session) while the panel is open.
+ * Re-fetch this entry whenever the backend reports a change in the owning
+ * database that may concern it: one that lists this entry, or one that does
+ * not list entries at all. This covers, in particular, a bilateral relation
+ * whose mirror value was written on this entry server-side (from this or
+ * another session) while the panel is open.
  *
  * Block-level events (title, icon) are already patched in-place in the
  * blockStore, and ``block`` is a computed over blockStore.blocks[entryId], so
  * those stay reactive without an explicit re-fetch here.
  */
 function _onWsEvent(e: Event): void {
-  const { event_type, block_id } = (e as CustomEvent<BlockEventPayload>).detail
-  if (event_type === 'database_entries_updated' && block_id === props.databaseId) {
+  const details = entriesEventDetails((e as CustomEvent<BlockEventPayload>).detail)
+  if (
+    details && details.database_id === props.databaseId &&
+    eventTouchesEntry(details, props.entryId)
+  ) {
     dbStore.fetchEntry(props.databaseId, props.entryId).catch(() => undefined)
   }
 }
 
-onMounted(() => window.addEventListener(WS_BLOCK_EVENT, _onWsEvent))
-onUnmounted(() => window.removeEventListener(WS_BLOCK_EVENT, _onWsEvent))
+/** The connection was down: the entry and its content load again. */
+function _onResync(): void {
+  blockStore.fetchBlock(props.entryId).catch(() => undefined)
+  blockStore.fetchTree(props.entryId, true).catch(() => undefined)
+  dbStore.fetchEntry(props.databaseId, props.entryId).catch(() => undefined)
+}
+
+onMounted(() => {
+  window.addEventListener(WS_BLOCK_EVENT, _onWsEvent)
+  window.addEventListener(WS_RESYNC_EVENT, _onResync)
+})
+onUnmounted(() => {
+  window.removeEventListener(WS_BLOCK_EVENT, _onWsEvent)
+  window.removeEventListener(WS_RESYNC_EVENT, _onResync)
+})
 
 // ── Slide-in animation ────────────────────────────────────────────────────────
 

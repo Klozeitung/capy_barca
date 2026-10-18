@@ -29,7 +29,12 @@ import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useBlockStore, type Block } from '@/stores/blocks'
-import { useDatabaseStore, type DatabaseEntry } from '@/stores/database'
+import {
+  useDatabaseStore,
+  entriesEventDetails,
+  eventTouchesEntry,
+  type DatabaseEntry,
+} from '@/stores/database'
 import { useDatabaseTemplatesStore } from '@/stores/databaseTemplates'
 import { WS_BLOCK_EVENT, type BlockEventPayload } from '@/stores/ws'
 import BlockTopSection from '@/components/main/BlockTopSection.vue'
@@ -136,17 +141,21 @@ function onKeydown(e: KeyboardEvent): void {
  * template block. This covers:
  * - content_updated  (title changed via BlockTopSection)
  * - appearance_updated (icon changed)
- * - database_entries_updated on the owning database (value upsert from another session)
+ * - database_entries_updated on the owning database that may concern this
+ *   template (value upsert from another session)
  *
  * The blockStore already patches blocks[templateId] in-place for block-level
  * events, so BlockTopSection stays reactive automatically. We only need to
  * re-fetch the templateStore for value changes.
  */
 function _onWsEvent(e: Event): void {
-  const { event_type, block_id } = (e as CustomEvent<BlockEventPayload>).detail
-  // Value mutations broadcast database_entries_updated with block_id = databaseId.
-  if (event_type === 'database_entries_updated' && block_id === props.databaseId) {
-    templateStore.fetchTemplates(props.databaseId)
+  const payload = (e as CustomEvent<BlockEventPayload>).detail
+  const { event_type, block_id } = payload
+  const details = entriesEventDetails(payload)
+  if (details) {
+    if (details.database_id === props.databaseId && eventTouchesEntry(details, props.templateId)) {
+      templateStore.fetchTemplates(props.databaseId)
+    }
     return
   }
   // Direct block updates on the template itself (title, icon).

@@ -27,8 +27,13 @@ import BlockCommentSection from './BlockCommentSection.vue'
 import DatabaseBlock from '@/components/editor/blocks/DatabaseBlock.vue'
 import PageSettingsModal from './PageSettingsModal.vue'
 import { useBlockStore } from '@/stores/blocks'
-import { useDatabaseStore, type DatabaseEntry } from '@/stores/database'
-import { WS_BLOCK_EVENT, type BlockEventPayload } from '@/stores/ws'
+import {
+  useDatabaseStore,
+  entriesEventDetails,
+  eventTouchesEntry,
+  type DatabaseEntry,
+} from '@/stores/database'
+import { WS_BLOCK_EVENT, WS_RESYNC_EVENT, type BlockEventPayload } from '@/stores/ws'
 
 const props = defineProps<{
   blockId?: string | null
@@ -116,23 +121,46 @@ watch(showProperties, async (show) => {
 
 /**
  * Re-fetch the entry while its properties are shown and the backend reports
- * a value change in its database, for instance a bilateral relation written
- * on this entry from elsewhere.
+ * a change that may concern it, for instance a bilateral relation written on
+ * this entry from elsewhere.
  */
 function _onWsEvent(e: Event): void {
-  const { event_type, block_id } = (e as CustomEvent<BlockEventPayload>).detail
+  const details = entriesEventDetails((e as CustomEvent<BlockEventPayload>).detail)
   const databaseId = entryDatabaseId.value
   if (
-    event_type === 'database_entries_updated' &&
-    databaseId && block_id === databaseId &&
-    showProperties.value && props.blockId
+    details && databaseId && details.database_id === databaseId &&
+    showProperties.value && props.blockId && eventTouchesEntry(details, props.blockId)
   ) {
     dbStore.fetchEntry(databaseId, props.blockId).catch(() => undefined)
   }
 }
 
-onMounted(() => window.addEventListener(WS_BLOCK_EVENT, _onWsEvent))
-onUnmounted(() => window.removeEventListener(WS_BLOCK_EVENT, _onWsEvent))
+/**
+ * The connection was down and changes may have been missed: every cached
+ * list of children is dropped, and the open page loads again in one request
+ * that the sections wait for.
+ */
+function _onResync(): void {
+  const id = props.blockId
+  if (id) {
+    blockStore.fetchTree(id, true).catch(() => undefined)
+    blockStore.fetchBlock(id).catch(() => undefined)
+  }
+  blockStore.invalidateChildren()
+  const databaseId = entryDatabaseId.value
+  if (id && databaseId && showProperties.value) {
+    dbStore.fetchEntry(databaseId, id).catch(() => undefined)
+  }
+}
+
+onMounted(() => {
+  window.addEventListener(WS_BLOCK_EVENT, _onWsEvent)
+  window.addEventListener(WS_RESYNC_EVENT, _onResync)
+})
+onUnmounted(() => {
+  window.removeEventListener(WS_BLOCK_EVENT, _onWsEvent)
+  window.removeEventListener(WS_RESYNC_EVENT, _onResync)
+})
 
 /** Whether BlockCommentSection is currently expanded. Local state only. */
 const showComments = ref(false)

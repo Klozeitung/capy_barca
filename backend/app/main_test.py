@@ -9,7 +9,7 @@ client = TestClient(app)
 
 def test_app_is_initialized():
     assert app.title == "CapyBarca API"
-    assert app.version == "0.16.0.4"
+    assert app.version == "0.16.0.5"
 
 
 def test_startup_sizes_the_worker_threads_above_the_request_gate():

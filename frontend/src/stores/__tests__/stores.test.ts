@@ -3,8 +3,16 @@ import { setActivePinia, createPinia } from 'pinia'
 import { useBlockStore } from '@/stores/blocks'
 import { useUiStore } from '@/stores/ui'
 import { useDrag } from '@/composables/useDrag'
-import { WS_BLOCK_EVENT, useWsStore } from '@/stores/ws'
-import { useDatabaseStore, type PropertySchema } from '@/stores/database'
+import { WS_BLOCK_EVENT, WS_RESYNC_EVENT, useWsStore } from '@/stores/ws'
+import {
+  useDatabaseStore,
+  entriesEventDetails,
+  eventTouchesEntry,
+  OVERWRITE_NOTICE_WINDOW_MS,
+  type PropertySchema,
+} from '@/stores/database'
+import { useAuthStore } from '@/stores/auth'
+import { useNoticesStore } from '@/stores/notices'
 import type { Block } from '@/stores/blocks'
 import type { BlockEventPayload } from '@/stores/ws'
 
@@ -445,6 +453,36 @@ describe('useWsStore', () => {
     expect(store.status).toBe('disconnected')
     vi.runAllTimers()
     expect(MockWs.creationCount).toBe(countBefore)
+  })
+
+  it('a connection that opens again after a drop dispatches a resync', () => {
+    const resyncs = vi.fn()
+    window.addEventListener(WS_RESYNC_EVENT, resyncs)
+    const store = useWsStore()
+    store.connect()
+    MockWs.instance!._open()
+    expect(resyncs).not.toHaveBeenCalled()
+
+    MockWs.instance!._closeWithCode(1006)
+    vi.runAllTimers()
+    MockWs.instance!._open()
+
+    expect(resyncs).toHaveBeenCalledOnce()
+    window.removeEventListener(WS_RESYNC_EVENT, resyncs)
+  })
+
+  it('a new connection after disconnect() does not resync', () => {
+    const resyncs = vi.fn()
+    window.addEventListener(WS_RESYNC_EVENT, resyncs)
+    const store = useWsStore()
+    store.connect()
+    MockWs.instance!._open()
+    store.disconnect()
+    store.connect()
+    MockWs.instance!._open()
+
+    expect(resyncs).not.toHaveBeenCalled()
+    window.removeEventListener(WS_RESYNC_EVENT, resyncs)
   })
 
   it('block.event message dispatches DOM custom event', () => {
@@ -1853,5 +1891,150 @@ describe('useDatabaseStore.optionUsage', () => {
     expect(apiClient.get).toHaveBeenCalledWith(
       '/api/databases/db-1/schemas/schema-1/options/o1/usage',
     )
+  })
+})
+
+// ── Changed entries ───────────────────────────────────────────────────────────
+
+function entriesEvent(after: Record<string, unknown>): BlockEventPayload {
+  return {
+    event_id: null,
+    event_type: 'database_entries_updated',
+    block_id: after.database_id as string,
+    before: null,
+    after,
+    created_at: '2000-07-28T00:00:00Z',
+  }
+}
+
+function dispatch(payload: BlockEventPayload): void {
+  window.dispatchEvent(new CustomEvent(WS_BLOCK_EVENT, { detail: payload }))
+}
+
+describe('entries event helpers', () => {
+  it('reads the details of an entries event only', () => {
+    const payload = entriesEvent({ database_id: 'db-1', entries: { a: ['s'] } })
+    expect(entriesEventDetails(payload)?.entries).toEqual({ a: ['s'] })
+    expect(entriesEventDetails({ ...payload, event_type: 'content_updated' })).toBeNull()
+    expect(entriesEventDetails({ ...payload, after: null })).toBeNull()
+  })
+
+  it('an event concerns an entry it lists, or any entry when it lists none', () => {
+    expect(eventTouchesEntry({ database_id: 'db-1', entries: { a: [] } }, 'a')).toBe(true)
+    expect(eventTouchesEntry({ database_id: 'db-1', entries: { a: [] } }, 'b')).toBe(false)
+    expect(eventTouchesEntry({ database_id: 'db-1' }, 'b')).toBe(true)
+    expect(eventTouchesEntry({ database_id: 'db-1', entries: {}, listing: true }, 'b')).toBe(true)
+  })
+})
+
+describe('useDatabaseStore.refreshEntries', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('loads the entries in one request and updates every cached copy', async () => {
+    const store = useDatabaseStore()
+    vi.mocked(apiClient.post).mockResolvedValueOnce(page([makeEntry({ id: 'a' }), makeEntry({ id: 'b' })]))
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      entries: [makeEntry({ id: 'a', content: { title: 'Row B' }, values: { s1: { text: 'Value A' } } })],
+      missing: ['b'],
+      relations: {},
+      key_values: {},
+    })
+
+    const missing = await store.refreshEntries('db-1', ['a', 'b', 'a'])
+
+    expect(apiClient.post).toHaveBeenLastCalledWith(
+      '/api/databases/db-1/entries/batch', { ids: ['a', 'b'] },
+    )
+    const row = store.queryResults['view-a'].entries[0]
+    expect(row.values).toEqual({ s1: { text: 'Value A' } })
+    expect(row.content).toEqual({ title: 'Row B' })
+    expect(missing).toEqual(['b'])
+  })
+
+  it('views asking for the same entries at once share the request', async () => {
+    const store = useDatabaseStore()
+    let resolve: (value: unknown) => void = () => {}
+    vi.mocked(apiClient.post).mockReturnValueOnce(new Promise((r) => { resolve = r }))
+
+    const first = store.refreshEntries('db-1', ['b', 'a'])
+    const second = store.refreshEntries('db-1', ['a', 'b'])
+    resolve({ entries: [], missing: [], relations: {}, key_values: {} })
+    await Promise.all([first, second])
+
+    expect(apiClient.post).toHaveBeenCalledOnce()
+  })
+})
+
+describe('notice when someone else overwrites a value', () => {
+  const schema: PropertySchema = {
+    id: 's1', database_id: 'db-1', name: 'Property A', type: 'text', position: 1, config: null,
+  } as PropertySchema
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+    vi.mocked(apiClient.put).mockResolvedValue(undefined)
+    useAuthStore().login('person-a', 'member')
+    const store = useDatabaseStore()
+    store.schemas['db-1'] = [schema]
+    store.entryDetails['e1'] = { databaseId: 'db-1', entry: makeEntry({ id: 'e1', content: { title: 'Entry A' } }) }
+  })
+
+  afterEach(() => {
+    // The store listens on window; a disposed store stops answering events
+    // meant for the next test.
+    useDatabaseStore().$dispose()
+    vi.useRealTimers()
+  })
+
+  function overwrite(actor: string, cell: [string, string] = ['e1', 's1']): void {
+    dispatch(entriesEvent({
+      database_id: 'db-1',
+      entries: { [cell[0]]: [cell[1]] },
+      actor: { id: 'u2', name: actor },
+    }))
+  }
+
+  it('reports a change by someone else to a value written here a moment ago', async () => {
+    await useDatabaseStore().upsertValue('db-1', 'e1', 's1', { text: 'Value A' })
+
+    overwrite('person-b')
+
+    expect(useNoticesStore().notices).toHaveLength(1)
+    expect(useNoticesStore().notices[0]).toMatchObject({
+      key: 'notices.valueOverwritten',
+      params: { user: 'person-b', property: 'Property A', entry: 'Entry A' },
+    })
+  })
+
+  it('reports a change to the cell being edited', () => {
+    useDatabaseStore().setEditingCell('view-a', 'e1', 's1')
+    overwrite('person-b')
+    expect(useNoticesStore().notices).toHaveLength(1)
+  })
+
+  it('stays quiet about own changes, other cells and old writes', async () => {
+    const store = useDatabaseStore()
+    await store.upsertValue('db-1', 'e1', 's1', { text: 'Value A' })
+
+    overwrite('person-a')
+    overwrite('person-b', ['e1', 's2'])
+    vi.advanceTimersByTime(OVERWRITE_NOTICE_WINDOW_MS + 1)
+    overwrite('person-b')
+
+    expect(useNoticesStore().notices).toHaveLength(0)
+  })
+
+  it('stays quiet once the cell is no longer edited', () => {
+    const store = useDatabaseStore()
+    store.setEditingCell('view-a', 'e1', 's1')
+    store.setEditingCell('view-a', null, null)
+    overwrite('person-b')
+    expect(useNoticesStore().notices).toHaveLength(0)
   })
 })

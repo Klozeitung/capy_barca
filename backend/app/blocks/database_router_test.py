@@ -4345,6 +4345,103 @@ def test_get_entry_without_read_access_returns_404(http_client):
     assert http_client.get(f"/api/databases/{db_id}/entries/{entry['id']}").status_code == 404
 
 
+# ─── POST /api/databases/{id}/entries/batch ───────────────────────────────────
+
+
+def test_batch_returns_the_requested_entries_in_order(http_client):
+    db_id = _create_database(http_client)
+    text = _create_schema(http_client, db_id, name="Text", type_="text")
+    first = _create_entry(http_client, db_id)
+    second = _create_entry(http_client, db_id)
+    _upsert_value(http_client, db_id, second["id"], text["id"], {"text": "Value B"})
+
+    resp = http_client.post(
+        f"/api/databases/{db_id}/entries/batch",
+        json={"ids": [second["id"], first["id"], second["id"]]},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [e["id"] for e in body["entries"]] == [second["id"], first["id"]]
+    assert body["entries"][0]["values"][text["id"]] == {"text": "Value B"}
+    assert body["missing"] == []
+
+
+def test_batch_lists_trashed_foreign_template_and_unknown_ids_as_missing(http_client):
+    db_id = _create_database(http_client)
+    other_db = _create_database(http_client)
+    active = _create_entry(http_client, db_id)
+    trashed = _create_entry(http_client, db_id)
+    http_client.delete(f"/api/blocks/{trashed['id']}")
+    foreign = _create_entry(http_client, other_db)
+    template = _create_entry_template(http_client, db_id)
+    unknown = str(uuid.uuid4())
+
+    body = http_client.post(
+        f"/api/databases/{db_id}/entries/batch",
+        json={"ids": [active["id"], trashed["id"], foreign["id"], template["id"], unknown]},
+    ).json()
+
+    assert [e["id"] for e in body["entries"]] == [active["id"]]
+    assert body["missing"] == [trashed["id"], foreign["id"], template["id"], unknown]
+
+
+def test_batch_resolves_the_relations_of_the_entries(http_client):
+    adb = _create_database(http_client)
+    bdb = _create_database(http_client)
+    linked = _create_entry(http_client, bdb)
+    http_client.patch(f"/api/blocks/{linked['id']}", json={"content": {"title": "Entry B"}})
+    link = _create_schema(http_client, adb, name="Link", type_="relation", config={
+        "target_database_id": bdb,
+    })
+    entry = _create_entry(http_client, adb)
+    _upsert_value(http_client, adb, entry["id"], link["id"], {"related_ids": [linked["id"]]})
+
+    body = http_client.post(
+        f"/api/databases/{adb}/entries/batch", json={"ids": [entry["id"]]},
+    ).json()
+
+    assert body["relations"][linked["id"]]["title"] == "Entry B"
+
+
+def test_batch_refuses_too_many_ids(http_client):
+    db_id = _create_database(http_client)
+    ids = [str(uuid.uuid4()) for _ in range(501)]
+    resp = http_client.post(f"/api/databases/{db_id}/entries/batch", json={"ids": ids})
+    assert resp.status_code == 422
+
+
+def test_batch_unknown_database_returns_404(http_client):
+    resp = http_client.post(f"/api/databases/{uuid.uuid4()}/entries/batch", json={"ids": []})
+    assert resp.status_code == 404
+
+
+def test_batch_without_read_access_returns_404(http_client):
+    import app.database.database as db_module
+    from app.main import app
+    from app.permissions import repository as perm_repo
+    from app.session.deps import get_current_user, require_session
+    from app.users.model import User
+
+    db_id = _create_database(http_client)
+    entry = _create_entry(http_client, db_id)
+    with db_module.SessionLocal() as db:
+        perm_repo.set_permission(db, uuid.UUID(db_id), "private", [])
+        member = User(
+            id=uuid.uuid4(), username=f"member_{uuid.uuid4().hex[:8]}",
+            password_hash="x", role="member", is_active=True,
+        )
+        db.add(member)
+        db.commit()
+        db.refresh(member)
+        db.expunge(member)
+    app.dependency_overrides[require_session] = lambda: member.id
+    app.dependency_overrides[get_current_user] = lambda: member
+
+    resp = http_client.post(f"/api/databases/{db_id}/entries/batch", json={"ids": [entry["id"]]})
+    assert resp.status_code == 404
+
+
 # ─── POST /api/databases/{id}/schemas with visible_in_view_id ─────────────────
 
 
