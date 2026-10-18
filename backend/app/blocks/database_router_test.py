@@ -4853,3 +4853,135 @@ def test_applying_a_template_moves_the_entry_to_the_new_parent(http_client):
     new_children = (_stored(http_client, db_id, new_parent["id"], si["id"]) or {}).get("related_ids", [])
     assert entry["id"] not in old_children
     assert new_children == [entry["id"]]
+
+
+# ─── Computed values after a relation write ───────────────────────────────────
+#
+# After a write, only what reads a changed property is evaluated again (see
+# the read map in app.blocks.computed). The entries whose mirror value the
+# write changed are among them: their own rollups over the mirror follow the
+# link they gained or lost.
+
+
+def _mirror_schema(http_client, db_id, name):
+    return next(
+        s for s in http_client.get(f"/api/databases/{db_id}/schemas").json()
+        if s["name"] == name
+    )
+
+
+def _linked_with_counter(http_client, targets: int):
+    """
+    Database A links into database B; B counts its back-references and rolls
+    up a text column of A through them.
+    """
+    db_a = _create_database(http_client)
+    db_b = _create_database(http_client)
+    link = _create_relation_schema(
+        http_client, db_a, db_b, name="Link", direction="bilateral", mirror_name="Link Back",
+    )
+    note = _create_schema(http_client, db_a, name="Note", type_="text")
+    back = _mirror_schema(http_client, db_b, "Link Back")
+    count = _create_rollup_schema(http_client, db_b, "Count", back["id"], note["id"], "count")
+    notes = _create_rollup_schema(
+        http_client, db_b, "Notes", back["id"], note["id"], "show_original",
+    )
+    entry = _create_entry(http_client, db_a)
+    linked = [_create_entry(http_client, db_b)["id"] for _ in range(targets)]
+    _upsert_value(http_client, db_a, entry["id"], link["id"], {"related_ids": linked})
+    return db_a, db_b, link, note, count, notes, entry, linked
+
+
+def test_unlinking_updates_the_rollups_of_the_entry_it_left(http_client):
+    db_a, db_b, link, _, count, _, entry, linked = _linked_with_counter(http_client, 2)
+    assert _stored(http_client, db_b, linked[1], count["id"])["result"] == 1
+
+    _upsert_value(http_client, db_a, entry["id"], link["id"], {"related_ids": linked[:1]})
+
+    assert _stored(http_client, db_b, linked[1], count["id"])["result"] == 0
+    assert _stored(http_client, db_b, linked[0], count["id"])["result"] == 1
+
+
+def test_linking_updates_the_rollups_of_the_entry_it_reached(http_client):
+    db_a, db_b, link, _, count, _, entry, linked = _linked_with_counter(http_client, 1)
+    newcomer = _create_entry(http_client, db_b)
+
+    _upsert_value(
+        http_client, db_a, entry["id"], link["id"], {"related_ids": linked + [newcomer["id"]]},
+    )
+
+    assert _stored(http_client, db_b, newcomer["id"], count["id"])["result"] == 1
+
+
+def test_a_column_read_through_the_mirror_reaches_every_linked_entry(http_client):
+    db_a, db_b, _, note, _, notes, entry, linked = _linked_with_counter(http_client, 3)
+
+    _upsert_value(http_client, db_a, entry["id"], note["id"], {"text": "Value A"})
+
+    for target in linked:
+        assert _stored(http_client, db_b, target, notes["id"])["result"] == ["Value A"]
+
+
+def test_relation_write_cost_does_not_grow_with_the_linked_entries(http_client, count_queries):
+    """
+    Unlinking one entry used to evaluate every still linked entry again,
+    because they all link back. Only the entry it left has to be.
+    """
+    # Both set up first, so both writes see the same number of databases.
+    few = _linked_with_counter(http_client, 3)
+    many = _linked_with_counter(http_client, 20)
+
+    def unlink_one(setup) -> int:
+        db_a, _, link, _, _, _, entry, linked = setup
+        with count_queries() as counter:
+            _upsert_value(http_client, db_a, entry["id"], link["id"], {"related_ids": linked[1:]})
+        return counter.count
+
+    assert unlink_one(many) == unlink_one(few)
+
+
+def test_reparenting_updates_the_rollups_of_both_parents(http_client):
+    db_id = _create_database(http_client)
+    pi, si = _get_subitem_schemas(http_client, db_id)
+    note = _create_schema(http_client, db_id, name="Note", type_="text")
+    children = _create_rollup_schema(http_client, db_id, "Children", si["id"], note["id"], "count")
+    child = _create_entry(http_client, db_id)
+    old_parent = _create_entry(http_client, db_id)
+    new_parent = _create_entry(http_client, db_id)
+    _upsert_value(http_client, db_id, child["id"], pi["id"], {"related_ids": [old_parent["id"]]})
+    assert _stored(http_client, db_id, old_parent["id"], children["id"])["result"] == 1
+
+    _upsert_value(http_client, db_id, child["id"], pi["id"], {"related_ids": [new_parent["id"]]})
+
+    assert _stored(http_client, db_id, old_parent["id"], children["id"])["result"] == 0
+    assert _stored(http_client, db_id, new_parent["id"], children["id"])["result"] == 1
+
+
+def test_applying_a_template_updates_rollups_on_both_sides_of_the_link(http_client):
+    db_a, db_b, link, _, count, _, entry, linked = _linked_with_counter(http_client, 1)
+    new_target = _create_entry(http_client, db_b)
+    template = _create_entry_template(http_client, db_a)
+    _upsert_value(http_client, db_a, template["id"], link["id"], {"related_ids": [new_target["id"]]})
+
+    http_client.post(f"/api/databases/{db_a}/entry-templates/{template['id']}/apply/{entry['id']}")
+
+    assert _stored(http_client, db_b, linked[0], count["id"])["result"] == 0
+    assert _stored(http_client, db_b, new_target["id"], count["id"])["result"] == 1
+
+
+def test_applying_a_template_title_reaches_formula_readers(http_client):
+    places = _create_database(http_client)
+    people = _create_database(http_client)
+    rel = _create_relation_schema(http_client, people, places, name="Place")
+    where = _create_formula_schema(http_client, people, "Where", "prop('Place')")
+    place = _create_entry(http_client, places)
+    person = _create_entry(http_client, people)
+    _upsert_value(http_client, people, person["id"], rel["id"], {"related_ids": [place["id"]]})
+    template = _create_entry_template(http_client, places)
+    http_client.patch(f"/api/blocks/{template['id']}", json={"content": {"title": "Entry A"}})
+
+    http_client.post(f"/api/databases/{places}/entry-templates/{template['id']}/apply/{place['id']}")
+
+    assert [chip["title"] for chip in _stored(http_client, people, person["id"], where["id"])["result"]] == [
+        "Entry A",
+    ]

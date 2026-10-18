@@ -12,6 +12,7 @@ import pytest
 import app.session.session as s
 from app.blocks import repository as repo
 from app.blocks.computed import (
+    READS_TITLE,
     CycleError,
     SchemaLike,
     _aggregate,
@@ -21,11 +22,13 @@ from app.blocks.computed import (
     _resolve_formula_relation,
     _resolve_relation_entries,
     _serialise_formula_result,
+    build_cross_read_map,
     build_dependency_graph,
     compute_all_for_entry,
     compute_cross_db_dependents,
     compute_same_db_rollup_dependents,
     has_any_cycle,
+    recompute_after_value_change,
     topological_order,
 )
 from app.blocks.models import WORKSPACE_ROOT_ID, Block
@@ -1794,8 +1797,8 @@ def test_cascade_query_count_does_not_grow_with_the_reading_database(
 ):
     places, place, readers, _, rel = _reader_with_entries(db, workspace, unlinked=3)
     places_id, place_id, readers_id, rel_id = places.id, place.id, readers.id, rel.id
-    # A first run stores the computed values, so both measured runs only
-    # rewrite them.
+    # A first run stores the computed values, so both measured runs find
+    # them unchanged.
     compute_cross_db_dependents(db, places_id, place_id)
     db.commit()
     db.expunge_all()
@@ -1853,6 +1856,212 @@ def test_entries_linking_to_without_relations_asks_nothing(db, database_block, c
     with count_queries() as counter:
         assert _entries_linking_to(db, database_id, set(), uuid.uuid4()) == []
     assert counter.count == 0
+
+
+# ─── Writing only what changed ───────────────────────────────────────────────
+
+
+def _doubling_formula(db, database_block, entry):
+    base = repo.create_schema(
+        db, database_id=database_block.id, name="Base", type="number",
+        position=1.0, config=None,
+    )
+    doubled = repo.create_schema(
+        db, database_id=database_block.id, name="Doubled", type="formula",
+        position=2.0, config={"expression": "prop('Base') * 2"},
+    )
+    repo.upsert_value(db, page_id=entry.id, schema_id=base.id, value={"number": 5})
+    db.commit()
+    return base, doubled
+
+
+def test_compute_all_reports_the_schemas_it_changed(db, database_block, entry):
+    base, doubled = _doubling_formula(db, database_block, entry)
+
+    assert compute_all_for_entry(db, database_block.id, entry.id) == {doubled.id}
+    db.commit()
+    assert compute_all_for_entry(db, database_block.id, entry.id) == set()
+
+    repo.upsert_value(db, page_id=entry.id, schema_id=base.id, value={"number": 6})
+    db.commit()
+    assert compute_all_for_entry(db, database_block.id, entry.id) == {doubled.id}
+
+
+def test_compute_all_writes_nothing_when_no_result_changed(
+    db, database_block, entry, count_queries,
+):
+    _doubling_formula(db, database_block, entry)
+    database_id, entry_id = database_block.id, entry.id
+    compute_all_for_entry(db, database_id, entry_id)
+    db.commit()
+
+    with count_queries() as counter:
+        compute_all_for_entry(db, database_id, entry_id)
+        db.flush()
+
+    assert not any(sql.lstrip().upper().startswith(("UPDATE", "INSERT")) for sql in counter.statements)
+
+
+# ─── Read map across databases ───────────────────────────────────────────────
+
+
+def test_read_map_names_what_rollups_and_formulas_read_through_a_relation(db):
+    source_id, other_id = uuid.uuid4(), uuid.uuid4()
+    column = uuid.uuid4()
+    rel = _schema("Link", "relation", {"target_database_id": str(source_id)})
+    elsewhere = _schema("Elsewhere", "relation", {"target_database_id": str(other_id)})
+    schemas = [
+        rel,
+        elsewhere,
+        _schema("Sum", "rollup", {
+            "relation_schema_id": str(rel.id), "rollup_schema_id": str(column),
+            "function": "sum",
+        }),
+        _schema("Titles", "formula", {"expression": "prop('Link')"}),
+        _schema("Other", "rollup", {
+            "relation_schema_id": str(elsewhere.id), "rollup_schema_id": str(uuid.uuid4()),
+            "function": "count",
+        }),
+    ]
+
+    assert build_cross_read_map(db, schemas, source_id) == {rel.id: {column, READS_TITLE}}
+
+
+def test_read_map_keeps_a_relation_read_by_an_unfinished_rollup(db):
+    source_id = uuid.uuid4()
+    rel = _schema("Link", "relation", {"target_database_id": str(source_id)})
+    unfinished = _schema("Count", "rollup", {"relation_schema_id": str(rel.id)})
+
+    assert build_cross_read_map(db, [rel, unfinished], source_id) == {rel.id: set()}
+
+
+@pytest.fixture
+def rollup_reader(db, workspace):
+    """
+    ``readers`` rolls up the ``Region`` column of ``places`` through ``Place``;
+    ``Size`` is a column of ``places`` that nothing reads.
+    """
+    places = repo.create_block(db, type="database", position=1.0, parent_id=workspace.id)
+    place = repo.create_block(db, type="page", position=1.0, parent_id=places.id)
+    region = repo.create_schema(
+        db, database_id=places.id, name="Region", type="text", position=1.0, config=None,
+    )
+    size = repo.create_schema(
+        db, database_id=places.id, name="Size", type="number", position=2.0, config=None,
+    )
+    readers = repo.create_block(db, type="database", position=2.0, parent_id=workspace.id)
+    rel = repo.create_schema(
+        db, database_id=readers.id, name="Place", type="relation",
+        position=1.0, config={"target_database_id": str(places.id)},
+    )
+    roll = repo.create_schema(
+        db, database_id=readers.id, name="Regions", type="rollup", position=2.0,
+        config={
+            "relation_schema_id": str(rel.id),
+            "rollup_schema_id": str(region.id),
+            "function": "show_original",
+        },
+    )
+    reader = repo.create_block(db, type="page", position=1.0, parent_id=readers.id)
+    repo.upsert_value(db, page_id=place.id, schema_id=region.id, value={"text": "Value A"})
+    repo.upsert_value(
+        db, page_id=reader.id, schema_id=rel.id, value={"related_ids": [str(place.id)]},
+    )
+    db.commit()
+    compute_all_for_entry(db, readers.id, reader.id)
+    db.commit()
+    return places, place, region, size, readers, reader, roll
+
+
+def test_relations_read_by_computed_narrows_to_changed_columns(db, rollup_reader):
+    from app.blocks.computed import _relations_read_by_computed
+
+    places, _, region, size, readers, _, _ = rollup_reader
+    schemas = repo.list_schemas(db, readers.id)
+    rel_ids = {s.id for s in schemas if s.type == "relation"}
+
+    assert _relations_read_by_computed(db, schemas, places.id) == rel_ids
+    assert _relations_read_by_computed(db, schemas, places.id, {region.id}) == rel_ids
+    assert _relations_read_by_computed(db, schemas, places.id, {size.id}) == set()
+
+
+def test_change_of_an_unread_column_leaves_readers_alone(db, rollup_reader):
+    places, place, _, size, readers, reader, roll = rollup_reader
+    repo.upsert_value(db, page_id=place.id, schema_id=size.id, value={"number": 3})
+    db.commit()
+
+    assert recompute_after_value_change(db, places.id, place.id, {size.id}) == []
+    db.commit()
+    assert repo.get_value(db, reader.id, roll.id).value["result"] == ["Value A"]
+
+
+def test_change_of_a_read_column_reaches_the_reader(db, rollup_reader):
+    places, place, region, _, readers, reader, roll = rollup_reader
+    repo.upsert_value(db, page_id=place.id, schema_id=region.id, value={"text": "Value B"})
+    db.commit()
+
+    assert recompute_after_value_change(db, places.id, place.id, {region.id}) == [readers.id]
+    db.commit()
+    assert repo.get_value(db, reader.id, roll.id).value["result"] == ["Value B"]
+
+
+def test_a_changed_computed_column_reaches_its_readers(db, workspace):
+    """
+    The reader rolls up a formula of the changed entry, not the written
+    property: the formula's change is what has to propagate.
+    """
+    places = repo.create_block(db, type="database", position=1.0, parent_id=workspace.id)
+    place = repo.create_block(db, type="page", position=1.0, parent_id=places.id)
+    base = repo.create_schema(
+        db, database_id=places.id, name="Base", type="number", position=1.0, config=None,
+    )
+    doubled = repo.create_schema(
+        db, database_id=places.id, name="Doubled", type="formula",
+        position=2.0, config={"expression": "prop('Base') * 2"},
+    )
+    readers = repo.create_block(db, type="database", position=2.0, parent_id=workspace.id)
+    rel = repo.create_schema(
+        db, database_id=readers.id, name="Place", type="relation",
+        position=1.0, config={"target_database_id": str(places.id)},
+    )
+    roll = repo.create_schema(
+        db, database_id=readers.id, name="Total", type="rollup", position=2.0,
+        config={
+            "relation_schema_id": str(rel.id),
+            "rollup_schema_id": str(doubled.id),
+            "function": "sum",
+        },
+    )
+    reader = repo.create_block(db, type="page", position=1.0, parent_id=readers.id)
+    repo.upsert_value(
+        db, page_id=reader.id, schema_id=rel.id, value={"related_ids": [str(place.id)]},
+    )
+    repo.upsert_value(db, page_id=place.id, schema_id=base.id, value={"number": 4})
+    db.commit()
+
+    assert recompute_after_value_change(db, places.id, place.id, {base.id}) == [readers.id]
+    db.commit()
+    assert repo.get_value(db, reader.id, roll.id).value["result"] == pytest.approx(8.0)
+
+
+def test_title_change_reaches_formula_readers(db, formula_only_link):
+    places, place, people, linked, _, formula = formula_only_link
+    _rename(db, place, "New")
+
+    assert recompute_after_value_change(db, places.id, place.id, {READS_TITLE}) == [people.id]
+    db.commit()
+    assert _chip_titles(db, linked.id, formula.id) == ["New"]
+
+
+def test_recompute_after_value_change_ignores_what_is_no_active_entry(db, database_block, entry):
+    elsewhere = repo.create_block(db, type="database", position=2.0, parent_id=database_block.parent_id)
+    trashed = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
+    trashed.state = "trash"
+    db.commit()
+
+    assert recompute_after_value_change(db, elsewhere.id, entry.id, {uuid.uuid4()}) == []
+    assert recompute_after_value_change(db, database_block.id, trashed.id, {uuid.uuid4()}) == []
+    assert recompute_after_value_change(db, database_block.id, uuid.uuid4(), {uuid.uuid4()}) == []
 
 
 # ─── Option ids ───────────────────────────────────────────────────────────────

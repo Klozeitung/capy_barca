@@ -7,10 +7,12 @@ computed values for a single database entry.
 
 Public API
 ----------
-  build_dependency_graph(schemas)           -> graph
-  has_any_cycle(graph)                      -> bool
-  topological_order(graph)                  -> list[uuid.UUID]
-  compute_all_for_entry(db, db_id, entry_id) -> None
+  build_dependency_graph(schemas)                  -> graph
+  build_cross_read_map(db, schemas, source_db_id)  -> read map
+  has_any_cycle(graph)                             -> bool
+  topological_order(graph)                         -> list[uuid.UUID]
+  compute_all_for_entry(db, db_id, entry_id)       -> set[uuid.UUID]
+  recompute_after_value_change(db, db_id, entry_id, changed) -> list[uuid.UUID]
 
 Cycle detection
 ---------------
@@ -27,6 +29,17 @@ For formula schemas the dependencies are extracted from the expression via
 
 For rollup schemas the dependency is the relation schema pointed to by
 ``config.relation_schema_id``.
+
+Readers in other databases
+--------------------------
+The graph above stays within one database. What a computed property reads
+*through* a relation, in the database the relation points at, is described by
+the read map (``build_cross_read_map``): for every relation of a database it
+names the properties of the linked entries that its rollups read, and
+``READS_TITLE`` for formulas, which pass the linked entries' titles through.
+After a value change, the map tells which entries elsewhere actually depend
+on the properties that changed, so only those are evaluated again
+(``recompute_after_value_change``).
 
 Schema-like protocol
 --------------------
@@ -679,6 +692,27 @@ def _aggregate(values: list[Any], function: str) -> Any:
 # ─── Evaluation helpers ───────────────────────────────────────────────────────
 
 
+def _write_computed(
+    db: Session,
+    entry_id: uuid.UUID,
+    schema_id: uuid.UUID,
+    value: dict,
+    values_map: dict[uuid.UUID, Optional[dict]],
+    changed: set[uuid.UUID],
+) -> None:
+    """
+    Store a computed *value* unless the entry already holds exactly it, and
+    record the schema in *changed* when it was written. Writing an unchanged
+    result again would cost a row update and make every reader of the
+    property look changed.
+    """
+    if schema_id in values_map and values_map[schema_id] == value:
+        return
+    repo.upsert_value(db, page_id=entry_id, schema_id=schema_id, value=value)
+    values_map[schema_id] = value
+    changed.add(schema_id)
+
+
 def _formula_context(
     schemas: list[Any],
     values_map: dict[uuid.UUID, Optional[dict]],
@@ -747,12 +781,12 @@ def _compute_formula(
     entry_id: uuid.UUID,
     all_schemas: list[Any],
     values_map: dict[uuid.UUID, Optional[dict]],
+    changed: set[uuid.UUID],
 ) -> None:
     expression: str = (schema.config or {}).get("expression", "")
     if not expression:
         val = {"result": None, "error": "No expression configured"}
-        repo.upsert_value(db, page_id=entry_id, schema_id=schema.id, value=val)
-        values_map[schema.id] = val
+        _write_computed(db, entry_id, schema.id, val, values_map, changed)
         return
 
     ctx = _formula_context(all_schemas, values_map)
@@ -790,8 +824,7 @@ def _compute_formula(
         val["style"] = fr.style
     if fr.error:
         val["error"] = fr.error
-    repo.upsert_value(db, page_id=entry_id, schema_id=schema.id, value=val)
-    values_map[schema.id] = val
+    _write_computed(db, entry_id, schema.id, val, values_map, changed)
 
 
 def _compute_rollup(
@@ -800,6 +833,7 @@ def _compute_rollup(
     entry_id: uuid.UUID,
     id_to_schema: dict[uuid.UUID, Any],
     values_map: dict[uuid.UUID, Optional[dict]],
+    changed: set[uuid.UUID],
 ) -> None:
     config = schema.config or {}
     rel_id_raw = config.get("relation_schema_id")
@@ -812,8 +846,7 @@ def _compute_rollup(
             val["error"] = error
         if extra:
             val.update(extra)
-        repo.upsert_value(db, page_id=entry_id, schema_id=schema.id, value=val)
-        values_map[schema.id] = val
+        _write_computed(db, entry_id, schema.id, val, values_map, changed)
 
     if not rel_id_raw or not roll_col_id_raw:
         _store(None, "Rollup not fully configured")
@@ -939,22 +972,26 @@ def compute_all_for_entry(
     db: Session,
     database_id: uuid.UUID,
     entry_id: uuid.UUID,
-) -> None:
+) -> set[uuid.UUID]:
     """
     Evaluate all formula and rollup schemas for *entry_id* and persist the
     results as PropertyValues.
 
-    This function is idempotent – it overwrites any previously computed values.
-    It does **not** call ``db.commit()``; that remains the caller's responsibility.
+    This function is idempotent. Only results that differ from the stored
+    ones are written. It does **not** call ``db.commit()``; that remains the
+    caller's responsibility.
 
     Evaluation order is determined by a topological sort of the dependency
     graph.  If a cycle is detected, all computed schemas are written with an
     error result.
+
+    Returns the IDs of the computed schemas whose stored value changed.
     """
+    changed: set[uuid.UUID] = set()
     schemas = repo.list_schemas(db, database_id)
     computed_schemas = [s for s in schemas if s.type in ("formula", "rollup")]
     if not computed_schemas:
-        return
+        return changed
 
     id_to_schema = {s.id: s for s in schemas}
     graph = build_dependency_graph(schemas)
@@ -970,22 +1007,22 @@ def compute_all_for_entry(
         ordered_ids = topological_order(graph)
     except CycleError:
         for s in computed_schemas:
-            repo.upsert_value(
-                db,
-                page_id=entry_id,
-                schema_id=s.id,
-                value={"result": None, "error": "Circular dependency detected"},
+            _write_computed(
+                db, entry_id, s.id,
+                {"result": None, "error": "Circular dependency detected"},
+                values_map, changed,
             )
-        return
+        return changed
 
     for schema_id in ordered_ids:
         schema = id_to_schema.get(schema_id)
         if schema is None:
             continue
         if schema.type == "formula":
-            _compute_formula(db, schema, entry_id, schemas, values_map)
+            _compute_formula(db, schema, entry_id, schemas, values_map, changed)
         elif schema.type == "rollup":
-            _compute_rollup(db, schema, entry_id, id_to_schema, values_map)
+            _compute_rollup(db, schema, entry_id, id_to_schema, values_map, changed)
+    return changed
 
 
 # ─── Cross-database cascade ───────────────────────────────────────────────────
@@ -1011,25 +1048,29 @@ def _relation_target_database_id(rel_schema: Any) -> Optional[uuid.UUID]:
     return None
 
 
-def _relations_read_by_computed(
+# Stands for "the titles of the linked entries" in a read map. A formula that
+# passes a relation through stores the linked entries' titles in its result.
+READS_TITLE = uuid.UUID(int=0)
+
+
+def build_cross_read_map(
     db: Session,
     schemas: list[Any],
     source_database_id: uuid.UUID,
-) -> set[uuid.UUID]:
+) -> dict[uuid.UUID, set[uuid.UUID]]:
     """
-    Return the IDs of relation-style schemas among *schemas* that point at
-    ``source_database_id`` and are read by a computed schema of the same
-    database.
+    Map each relation-style schema among *schemas* that points at
+    ``source_database_id`` and is read by a computed schema of the same
+    database to what is read through it from the linked entries:
 
-    Two readers exist:
+    * a rollup reads the property named by ``config.rollup_schema_id``
+      through the relation named by ``config.relation_schema_id``;
+    * a formula reads the titles (``READS_TITLE``) of every relation it
+      references through ``prop('…')``.
 
-    * a rollup reads the relation named by ``config.relation_schema_id``;
-    * a formula reads every relation it references through ``prop('…')``.
-
-    The formula case matters because a formula that passes a relation through
-    stores the linked entries' titles in its result. Without it, a database
-    that shows those titles only through a formula would never be found and
-    its stored titles would stay stale after the linked entry is renamed.
+    This is the dependency graph's counterpart across databases: the graph
+    says which computed property depends on which relation, the map says
+    which properties of the other side that dependency reaches.
     """
     by_id: dict[uuid.UUID, Any] = {s.id: s for s in schemas}
     by_name: dict[str, Any] = {s.name: s for s in schemas}
@@ -1037,10 +1078,11 @@ def _relations_read_by_computed(
     def _points_at_source(rel_schema: Any) -> bool:
         return _relation_target_database_id(rel_schema) == source_database_id
 
-    result: set[uuid.UUID] = set()
+    read_map: dict[uuid.UUID, set[uuid.UUID]] = {}
     for schema in schemas:
         if schema.type == "rollup":
-            rel_id_raw = (schema.config or {}).get("relation_schema_id")
+            config = schema.config or {}
+            rel_id_raw = config.get("relation_schema_id")
             if not rel_id_raw:
                 continue
             try:
@@ -1048,8 +1090,15 @@ def _relations_read_by_computed(
             except ValueError:
                 continue
             rel_schema = by_id.get(rel_schema_id) or repo.get_schema(db, rel_schema_id)
-            if rel_schema is not None and _points_at_source(rel_schema):
-                result.add(rel_schema.id)
+            if rel_schema is None or not _points_at_source(rel_schema):
+                continue
+            columns = read_map.setdefault(rel_schema.id, set())
+            try:
+                columns.add(uuid.UUID(str(config.get("rollup_schema_id"))))
+            except ValueError:
+                # Not fully configured: the rollup stores an error that no
+                # value change can affect, but the relation is still read.
+                pass
 
         elif schema.type == "formula":
             expression = (schema.config or {}).get("expression", "")
@@ -1066,9 +1115,31 @@ def _relations_read_by_computed(
                     and dep.type in _RELATION_COL_TYPES
                     and _points_at_source(dep)
                 ):
-                    result.add(dep.id)
+                    read_map.setdefault(dep.id, set()).add(READS_TITLE)
 
-    return result
+    return read_map
+
+
+def _relations_read_by_computed(
+    db: Session,
+    schemas: list[Any],
+    source_database_id: uuid.UUID,
+    changed_schema_ids: Optional[set[uuid.UUID]] = None,
+) -> set[uuid.UUID]:
+    """
+    Return the IDs of relation-style schemas among *schemas* that point at
+    ``source_database_id`` and are read by a computed schema of the same
+    database (see ``build_cross_read_map``).
+
+    With *changed_schema_ids*, only relations through which one of those
+    properties of the source side is read are returned. Without it, every
+    such relation is returned, which is what a change of anything a reader
+    may show calls for, the titles included.
+    """
+    read_map = build_cross_read_map(db, schemas, source_database_id)
+    if changed_schema_ids is None:
+        return set(read_map)
+    return {rel_id for rel_id, columns in read_map.items() if columns & changed_schema_ids}
 
 
 def _entries_linking_to(
@@ -1107,6 +1178,7 @@ def compute_cross_db_dependents(
     db: Session,
     source_database_id: uuid.UUID,
     changed_entry_id: uuid.UUID,
+    changed_schema_ids: Optional[set[uuid.UUID]] = None,
 ) -> list[uuid.UUID]:
     """
     Re-evaluate entries in *other* databases whose computed schemas read data
@@ -1115,10 +1187,15 @@ def compute_cross_db_dependents(
     Walk:
       1. For every database that is not ``source_database_id``:
       2.   Collect the relations into ``source_database_id`` that a rollup or a
-           formula of that database reads (see ``_relations_read_by_computed``).
+           formula of that database reads (see ``_relations_read_by_computed``),
+           narrowed to those reading one of *changed_schema_ids* when given.
       3.   Find entries whose value for one of those relations includes
            ``changed_entry_id`` and call ``compute_all_for_entry`` for each,
            once per entry.
+
+    Without *changed_schema_ids* every reader is evaluated again, as needed
+    after a change of the entry's title or of anything else a reader may
+    show.
 
     Returns the list of database IDs (de-duplicated, excluding
     ``source_database_id``) in which at least one entry was recomputed.
@@ -1131,7 +1208,9 @@ def compute_cross_db_dependents(
             continue
 
         schemas = repo.list_schemas(db, database.id)
-        rel_schema_ids = _relations_read_by_computed(db, schemas, source_database_id)
+        rel_schema_ids = _relations_read_by_computed(
+            db, schemas, source_database_id, changed_schema_ids,
+        )
         entry_ids = _entries_linking_to(db, database.id, rel_schema_ids, changed_entry_id)
         for entry_id in entry_ids:
             compute_all_for_entry(db, database.id, entry_id)
@@ -1145,6 +1224,7 @@ def compute_same_db_rollup_dependents(
     db: Session,
     database_id: uuid.UUID,
     changed_entry_id: uuid.UUID,
+    changed_schema_ids: Optional[set[uuid.UUID]] = None,
 ) -> bool:
     """
     Re-evaluate entries in the *same* database whose computed schemas read
@@ -1153,13 +1233,16 @@ def compute_same_db_rollup_dependents(
     ``compute_cross_db_dependents`` explicitly skips the source database, so
     this function fills that gap.  Whenever entry A changes, any sibling entry
     B in the same database that has a rollup or formula reading A via a
-    self-referential relation must also be recomputed.
+    self-referential relation must also be recomputed. With
+    *changed_schema_ids*, only readers of one of those properties count.
 
     Returns ``True`` if at least one entry was recomputed.
     The caller is responsible for committing.
     """
     schemas = repo.list_schemas(db, database_id)
-    rel_schema_ids = _relations_read_by_computed(db, schemas, database_id)
+    rel_schema_ids = _relations_read_by_computed(
+        db, schemas, database_id, changed_schema_ids,
+    )
     recomputed = False
     for entry_id in _entries_linking_to(db, database_id, rel_schema_ids, changed_entry_id):
         if entry_id == changed_entry_id:
@@ -1168,6 +1251,34 @@ def compute_same_db_rollup_dependents(
         compute_all_for_entry(db, database_id, entry_id)
         recomputed = True
     return recomputed
+
+
+def recompute_after_value_change(
+    db: Session,
+    database_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    changed_schema_ids: set[uuid.UUID],
+) -> list[uuid.UUID]:
+    """
+    Bring everything computed from entry *entry_id* of *database_id* up to
+    date after the values of *changed_schema_ids* were written on it.
+
+    1. The entry's own formulas and rollups are evaluated again. Those whose
+       result changed join the changed properties.
+    2. Entries of the same database and of other databases are evaluated
+       again only where the read map says they read one of the changed
+       properties through a relation linking this entry.
+
+    Does nothing for an ID that is no active entry of *database_id*. Returns
+    the IDs of the other databases in which entries were evaluated again.
+    The caller commits and broadcasts.
+    """
+    entry = repo.get_block(db, entry_id)
+    if entry is None or entry.parent_id != database_id or entry.state != "active":
+        return []
+    changed = set(changed_schema_ids) | compute_all_for_entry(db, database_id, entry_id)
+    compute_same_db_rollup_dependents(db, database_id, entry_id, changed)
+    return compute_cross_db_dependents(db, database_id, entry_id, changed)
 
 
 def recompute_database_and_readers(

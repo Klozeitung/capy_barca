@@ -144,12 +144,14 @@ from app.blocks import repository as repo
 from app.blocks import relation_lock, resolution, service, views
 from app.blocks.computed import (
     _ROLLUP_FUNCTIONS,
+    READS_TITLE,
     CycleError,
     SchemaLike,
     build_dependency_graph,
     compute_all_for_entry,
     compute_cross_db_dependents,
     compute_same_db_rollup_dependents,
+    recompute_after_value_change,
     recompute_database_and_readers,
     has_any_cycle,
 )
@@ -750,9 +752,11 @@ def _sync_bilateral_relation(
     new_related_ids: list[str],
     old_related_ids: list[str],
     new_nuances: Optional[dict] = None,
-) -> None:
+) -> set[uuid.UUID]:
     """
     Maintain the mirror side of a bilateral relation property.
+
+    Returns the IDs of the entries whose mirror value was written.
 
     Parameters
     ----------
@@ -777,6 +781,7 @@ def _sync_bilateral_relation(
     config = schema.config or {}
     direction = config.get("direction")
     src_nuances: dict = new_nuances or {}
+    written: set[uuid.UUID] = set()
 
     # bilateral_self: the mirror IS this schema — entries of the same property
     # in the same database point back at entry_id symmetrically.
@@ -785,12 +790,12 @@ def _sync_bilateral_relation(
     else:
         target_db_id_raw = config.get("target_database_id")
         if not target_db_id_raw:
-            return
+            return written
 
         try:
             target_db_id = uuid.UUID(str(target_db_id_raw))
         except ValueError:
-            return
+            return written
 
         mirror_name: str = (
             config.get("mirror_property_name") or schema.name
@@ -802,7 +807,7 @@ def _sync_bilateral_relation(
             _ensure_bilateral_mirror(db, schema, target_db_id, mirror_name)
             mirror_schema = repo.get_schema_by_name(db, target_db_id, mirror_name)
         if mirror_schema is None:
-            return
+            return written
 
     added = set(new_related_ids) - set(old_related_ids)
     removed = set(old_related_ids) - set(new_related_ids)
@@ -837,6 +842,7 @@ def _sync_bilateral_relation(
             schema_id=mirror_schema.id,
             value=value,
         )
+        written.add(rid)
 
     for rid_str in removed:
         try:
@@ -863,6 +869,9 @@ def _sync_bilateral_relation(
                 repo.upsert_value(
                     db, page_id=rid, schema_id=mirror_schema.id, value=None,
                 )
+            written.add(rid)
+
+    return written
 
 
 def _sync_parent_item(
@@ -871,7 +880,7 @@ def _sync_parent_item(
     new_parent_ids: list[str],
     old_parent_ids: list[str],
     sub_item_schema,
-) -> None:
+) -> set[uuid.UUID]:
     """
     Maintain the ``sub_item`` mirror whenever a ``parent_item`` value is written.
 
@@ -896,9 +905,12 @@ def _sync_parent_item(
         The partner ``PropertySchema`` of type ``sub_item`` in the same
         database, resolved via ``config.partner_schema_id``.  If ``None``
         the sync is a no-op (schema pair not yet set up).
+
+    Returns the IDs of the entries whose ``sub_item`` value was written.
     """
+    written: set[uuid.UUID] = set()
     if sub_item_schema is None:
-        return
+        return written
 
     entry_id_str = str(entry_id)
     added   = set(new_parent_ids) - set(old_parent_ids)
@@ -919,6 +931,7 @@ def _sync_parent_item(
                 schema_id=sub_item_schema.id,
                 value={"related_ids": current} if current else None,
             )
+            written.add(rid)
 
     # Add this entry to the new parent's sub_item list.
     for rid_str in added:
@@ -938,6 +951,9 @@ def _sync_parent_item(
             schema_id=sub_item_schema.id,
             value={"related_ids": current},
         )
+        written.add(rid)
+
+    return written
 
 
 def _would_create_parent_cycle(
@@ -987,7 +1003,7 @@ def _sync_sub_item(
     new_child_ids: list[str],
     old_child_ids: list[str],
     parent_item_schema,
-) -> None:
+) -> set[uuid.UUID]:
     """
     Maintain the ``parent_item`` mirror whenever a ``sub_item`` value is written
     directly.
@@ -1012,9 +1028,12 @@ def _sync_sub_item(
     parent_item_schema:
         The partner ``PropertySchema`` of type ``parent_item``.
         If ``None`` the sync is a no-op.
+
+    Returns the IDs of the entries whose ``parent_item`` value was written.
     """
+    written: set[uuid.UUID] = set()
     if parent_item_schema is None:
-        return
+        return written
 
     entry_id_str = str(entry_id)
     added   = set(new_child_ids) - set(old_child_ids)
@@ -1033,6 +1052,7 @@ def _sync_sub_item(
             schema_id=parent_item_schema.id,
             value={"related_ids": [entry_id_str]},
         )
+        written.add(cid)
 
     # For removed children: clear their parent_item if it still points here.
     for cid_str in removed:
@@ -1050,6 +1070,9 @@ def _sync_sub_item(
                     schema_id=parent_item_schema.id,
                     value=None,
                 )
+                written.add(cid)
+
+    return written
 
 
 def _ensure_bilateral_mirror(
@@ -1638,9 +1661,11 @@ def _sync_bilateral_relation_timeline(
     new_pool: dict,
     old_pool: dict,
     new_nuance_pool: Optional[dict] = None,
-) -> None:
+) -> set[uuid.UUID]:
     """
     Synchronise the mirror side of a bilateral timeline relation.
+
+    Returns the IDs of the entries whose mirror value was written.
 
     Computes the diff between *old_pool* and *new_pool* (per UUID × range
     pairs), and for each added/removed pair updates the mirror entry's pool
@@ -1668,8 +1693,9 @@ def _sync_bilateral_relation_timeline(
         — the nuance value is shared; only per-side framing differs and that is
         applied at render time from each schema's config.
     """
+    written: set[uuid.UUID] = set()
     if mirror_schema is None:
-        return
+        return written
 
     entry_id_str = str(entry_id)
     src_nuance: dict = new_nuance_pool or {}
@@ -1709,6 +1735,7 @@ def _sync_bilateral_relation_timeline(
             value["nuancePool"] = current_nuance
         value["_timeline"] = new_timeline
         repo.upsert_value(db, page_id=uid, schema_id=mirror_schema.id, value=value)
+        written.add(uid)
 
     for uid_str, range_str in removed:
         try:
@@ -1741,6 +1768,9 @@ def _sync_bilateral_relation_timeline(
             repo.upsert_value(db, page_id=uid, schema_id=mirror_schema.id, value=value)
         else:
             repo.upsert_value(db, page_id=uid, schema_id=mirror_schema.id, value=None)
+        written.add(uid)
+
+    return written
 
 
 # ─── Relation keying helpers ──────────────────────────────────────────────────
@@ -3225,10 +3255,13 @@ def upsert_value(
     After every successful write:
     1. All formula / rollup schemas in this database are re-evaluated for the
        changed entry.
-    2. Sibling entries in the same database whose rollup schemas aggregate data
-       from this entry via a self-referential relation are also re-evaluated.
-    3. Entries in other databases whose rollup schemas pull from this database
-       and reference this entry are also re-evaluated (cross-DB cascade).
+    2. Entries of this database and of other databases are re-evaluated where
+       a rollup reads the written property, or a computed property of the
+       entry that changed with it, through a relation linking this entry. The
+       read map in ``app.blocks.computed`` decides which ones.
+    3. Entries whose mirror value the write changed (bilateral relations,
+       parent and sub-items) are treated the same way for the mirror property,
+       so their own rollups follow the link they gained or lost.
     4. A ``database_entries_updated`` WebSocket event is broadcast for every
        affected database so open table views refresh automatically.
 
@@ -3399,6 +3432,11 @@ def upsert_value(
             db, page_id=entry_id, schema_id=schema_id, value=stored_value
         )
 
+        # Mirror values written by the syncs below, as (mirror schema, entries).
+        # Those entries changed too, so what is computed from them is brought
+        # up to date along with the entry itself.
+        mirror_writes: list[tuple[Any, set[uuid.UUID]]] = []
+
         # ── Bilateral sync ───────────────────────────────────────────────────
         # Suppressed for entry_template blocks: templates store relation values
         # for later Apply but must not write mirror sides — the template block
@@ -3408,17 +3446,21 @@ def upsert_value(
                 new_pool = dict((stored_value or {}).get("relationPool") or {})
                 new_nuance_pool = dict((stored_value or {}).get("nuancePool") or {})
                 mirror_schema = _get_mirror_schema(db, schema)
-                _sync_bilateral_relation_timeline(
+                written = _sync_bilateral_relation_timeline(
                     db, schema, mirror_schema, entry_id, new_pool, old_pool,
                     new_nuance_pool=new_nuance_pool,
                 )
             else:
                 new_related_ids = _extract_related_ids_now(stored_value)
                 new_flat_nuances = dict((stored_value or {}).get("nuances") or {})
-                _sync_bilateral_relation(
+                written = _sync_bilateral_relation(
                     db, schema, entry_id, new_related_ids, old_related_ids,
                     new_nuances=new_flat_nuances,
                 )
+                # Resolved after the sync, which may have created the mirror.
+                mirror_schema = _get_mirror_schema(db, schema)
+            if mirror_schema is not None:
+                mirror_writes.append((mirror_schema, written))
 
         # ── parent_item sync ─────────────────────────────────────────────────
         # Suppressed for entry_template blocks for the same reason: setting a
@@ -3426,31 +3468,40 @@ def upsert_value(
         # as a sub-item on the referenced parent entry.
         if is_parent_item and entry.type != "entry_template":
             new_parent_ids = list((stored_value or {}).get("related_ids") or [])
-            _sync_parent_item(
+            written = _sync_parent_item(
                 db, entry_id, new_parent_ids, old_parent_ids, sub_item_schema_ref
             )
+            if sub_item_schema_ref is not None:
+                mirror_writes.append((sub_item_schema_ref, written))
 
         # ── sub_item sync ────────────────────────────────────────────────────
         # When sub_item is written directly, keep the parent_item mirror in
         # sync. Suppressed for entry_template blocks (same rationale as above).
         if is_sub_item and entry.type != "entry_template":
             new_child_ids = list((stored_value or {}).get("related_ids") or [])
-            _sync_sub_item(
+            written = _sync_sub_item(
                 db, entry_id, new_child_ids, old_child_ids, parent_item_schema_ref
             )
+            if parent_item_schema_ref is not None:
+                mirror_writes.append((parent_item_schema_ref, written))
 
         _refresh_last_edited(db, database_id, entry_id, current_user.id)
 
-        # Re-evaluate local formula / rollup schemas for this entry.
-        compute_all_for_entry(db, database_id, entry_id)
-
-        # Re-evaluate sibling entries in this database that have a rollup
-        # aggregating the changed entry via a self-referential relation.
-        compute_same_db_rollup_dependents(db, database_id, entry_id)
-
-        # Re-evaluate entries in other databases that depend on this entry
-        # via rollup schemas (cross-DB cascade).
-        affected_db_ids = compute_cross_db_dependents(db, database_id, entry_id)
+        # Bring what is computed from the changed values up to date: the
+        # entry's own formulas and rollups, then those of other entries that
+        # read a changed property through a relation linking this entry (see
+        # computed.recompute_after_value_change). Entries that received a
+        # mirror value are handled the same way for the mirror property, so
+        # their own rollups follow the link they gained or lost.
+        affected = recompute_after_value_change(db, database_id, entry_id, {schema_id})
+        for mirror_schema, pages in mirror_writes:
+            for page_id in pages:
+                affected += recompute_after_value_change(
+                    db, mirror_schema.database_id, page_id, {mirror_schema.id},
+                )
+        affected_db_ids = list(dict.fromkeys(
+            db_id for db_id in affected if db_id != database_id
+        ))
 
         db.commit()
     except HTTPException:
@@ -3644,6 +3695,9 @@ def apply_entry_template(
     are applied using the same helpers as the regular upsert endpoint, diffed
     against the value the entry held before: entries it no longer links lose
     their back-reference, exactly as when the value is edited by hand.
+    Computed values are then brought up to date the same way as after
+    ``upsert_value``, for everything the template changed, the title included,
+    and for the entries whose mirror value changed.
 
     Returns 204 No Content on success.
     Returns 404 if the database, template, or target entry is not found,
@@ -3682,11 +3736,16 @@ def apply_entry_template(
         db, database_id, _copied_relation_configs(template_pvs, schema_map), current_user,
     )
     bilateral_target_dbs: set[str] = set()
+    # What the application changed on the entry, and the mirror values it
+    # wrote as (mirror schema, entries); see upsert_value.
+    changed_schema_ids: set[uuid.UUID] = set()
+    mirror_writes: list[tuple[Any, set[uuid.UUID]]] = []
 
     try:
         # Copy block-level content (title, icon) from the template.
         if template.content:
             target.content = dict(template.content)
+            changed_schema_ids.add(READS_TITLE)
         if template.icon:
             target.icon = template.icon
         db.flush()
@@ -3714,6 +3773,7 @@ def apply_entry_template(
                 schema_id=pv.property_schema_id,
                 value=pv.value,
             )
+            changed_schema_ids.add(pv.property_schema_id)
 
             # Keep bilateral relation mirrors in sync.
             is_bilateral = (
@@ -3727,18 +3787,21 @@ def apply_entry_template(
                     new_nuance_pool = dict((pv.value or {}).get("nuancePool") or {})
                     old_pool = dict((old_value or {}).get("relationPool") or {})
                     mirror_schema = _get_mirror_schema(db, schema)
-                    _sync_bilateral_relation_timeline(
+                    written = _sync_bilateral_relation_timeline(
                         db, schema, mirror_schema, entry_id, new_pool, old_pool=old_pool,
                         new_nuance_pool=new_nuance_pool,
                     )
                 else:
                     new_related_ids = list(_extract_related_ids_now(pv.value))
                     new_flat_nuances = dict((pv.value or {}).get("nuances") or {})
-                    _sync_bilateral_relation(
+                    written = _sync_bilateral_relation(
                         db, schema, entry_id, new_related_ids,
                         old_related_ids=_extract_related_ids_now(old_value),
                         new_nuances=new_flat_nuances,
                     )
+                    mirror_schema = _get_mirror_schema(db, schema)
+                if mirror_schema is not None:
+                    mirror_writes.append((mirror_schema, written))
                 _raw_target = (schema.config or {}).get("target_database_id")
                 if _raw_target and str(_raw_target) != str(database_id):
                     bilateral_target_dbs.add(str(_raw_target))
@@ -3752,20 +3815,30 @@ def apply_entry_template(
                 )
             if schema.type == "parent_item":
                 new_parent_ids = list(_extract_related_ids_now(pv.value))
-                _sync_parent_item(
+                written = _sync_parent_item(
                     db, entry_id, new_parent_ids,
                     list((old_value or {}).get("related_ids") or []), partner_schema,
                 )
+                if partner_schema is not None:
+                    mirror_writes.append((partner_schema, written))
             elif schema.type == "sub_item":
                 new_child_ids = list(_extract_related_ids_now(pv.value))
-                _sync_sub_item(
+                written = _sync_sub_item(
                     db, entry_id, new_child_ids,
                     list((old_value or {}).get("related_ids") or []), partner_schema,
                 )
+                if partner_schema is not None:
+                    mirror_writes.append((partner_schema, written))
 
         _refresh_last_edited(db, database_id, entry_id, current_user.id)
-        compute_all_for_entry(db, database_id, entry_id)
-        compute_same_db_rollup_dependents(db, database_id, entry_id)
+        # The same narrowed cascade as for a single value: readers of what
+        # the template changed, the title included, and the mirror entries.
+        affected = recompute_after_value_change(db, database_id, entry_id, changed_schema_ids)
+        for mirror_schema, pages in mirror_writes:
+            for page_id in pages:
+                affected += recompute_after_value_change(
+                    db, mirror_schema.database_id, page_id, {mirror_schema.id},
+                )
         db.commit()
 
     except HTTPException:
@@ -3782,7 +3855,7 @@ def apply_entry_template(
         before=None,
         after={"database_id": str(database_id)},
     )
-    for affected_id in bilateral_target_dbs:
+    for affected_id in bilateral_target_dbs | {str(d) for d in affected if d != database_id}:
         emit_block_event(
             db=db,
             event_type="database_entries_updated",
