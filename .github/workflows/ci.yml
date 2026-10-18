@@ -19,6 +19,25 @@ jobs:
   backend:
     name: Backend tests
     runs-on: ubuntu-latest
+    # The suite runs against PostgreSQL, the database production uses. The
+    # image matches the db service in docker-compose.yml. The database name
+    # ends in '_test' because the suite refuses any other (see conftest.py).
+    services:
+      postgres:
+        image: postgres:16.14
+        env:
+          POSTGRES_USER: capybarca
+          POSTGRES_PASSWORD: capybarca
+          POSTGRES_DB: capybarca_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U capybarca -d capybarca_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      TEST_DATABASE_URL: postgresql://capybarca:capybarca@localhost:5432/capybarca_test
     defaults:
       run:
         shell: bash
