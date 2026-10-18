@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildCsvHeader } from '@/composables/useExport'
+import { buildCsvHeader, buildXlsxSheetData } from '@/composables/useExport'
 
 // ── buildCsvHeader ────────────────────────────────────────────────────────────
 
@@ -46,7 +46,7 @@ import type { DatabaseEntry, PropertySchema } from '@/stores/database'
 function schema(id: string, type = 'date'): PropertySchema {
   return {
     id,
-    database_id: 'db-plotbeats',
+    database_id: 'db-a',
     name: id,
     type,
     config: {},
@@ -72,17 +72,17 @@ describe('buildRelationKeyResolver', () => {
   it('resolves a key value by property and entry', () => {
     const resolver = buildRelationKeyResolver(
       [schema('schema-date')],
-      [entry('beat-1', { 'schema-date': { start: '2136-08-14' } })],
+      [entry('entry-1', { 'schema-date': { start: '2045-07-17' } })],
     )
-    expect(resolver.valueFor('schema-date', 'beat-1')).toEqual({ start: '2136-08-14' })
+    expect(resolver.valueFor('schema-date', 'entry-1')).toEqual({ start: '2045-07-17' })
   })
 
   it('returns null for an entry that stores no value for the property', () => {
     const resolver = buildRelationKeyResolver(
       [schema('schema-date')],
-      [entry('beat-1', {})],
+      [entry('entry-1', {})],
     )
-    expect(resolver.valueFor('schema-date', 'beat-1')).toBeNull()
+    expect(resolver.valueFor('schema-date', 'entry-1')).toBeNull()
   })
 
   it('returns null for an unknown entry', () => {
@@ -93,10 +93,10 @@ describe('buildRelationKeyResolver', () => {
   it('keys values by property and entry, so two properties never collide', () => {
     const resolver = buildRelationKeyResolver(
       [schema('schema-date'), schema('schema-rank', 'number')],
-      [entry('beat-1', { 'schema-date': { start: '2136-08-14' }, 'schema-rank': { number: 3 } })],
+      [entry('entry-1', { 'schema-date': { start: '2045-07-17' }, 'schema-rank': { number: 3 } })],
     )
-    expect(resolver.valueFor('schema-date', 'beat-1')).toEqual({ start: '2136-08-14' })
-    expect(resolver.valueFor('schema-rank', 'beat-1')).toEqual({ number: 3 })
+    expect(resolver.valueFor('schema-date', 'entry-1')).toEqual({ start: '2045-07-17' })
+    expect(resolver.valueFor('schema-rank', 'entry-1')).toEqual({ number: 3 })
   })
 
   it('flattens several target databases into one lookup', () => {
@@ -104,7 +104,7 @@ describe('buildRelationKeyResolver', () => {
     const resolver = buildRelationKeyResolver(
       [schema('schema-date'), foreign],
       [
-        entry('beat-1', { 'schema-date': { start: '2136-08-14' } }),
+        entry('entry-1', { 'schema-date': { start: '2045-07-17' } }),
         entry('other-1', { 'schema-order': { number: 7 } }),
       ],
     )
@@ -115,24 +115,24 @@ describe('buildRelationKeyResolver', () => {
   it('skips null values rather than caching them as objects', () => {
     const resolver = buildRelationKeyResolver(
       [schema('schema-date')],
-      [entry('beat-1', { 'schema-date': null })],
+      [entry('entry-1', { 'schema-date': null })],
     )
-    expect(resolver.valueFor('schema-date', 'beat-1')).toBeNull()
+    expect(resolver.valueFor('schema-date', 'entry-1')).toBeNull()
   })
 
   it('tolerates an entry without a values map', () => {
-    const bare = { id: 'beat-1', position: 0, content: null, icon: null, state: 'active' }
+    const bare = { id: 'entry-1', position: 0, content: null, icon: null, state: 'active' }
     const resolver = buildRelationKeyResolver(
       [schema('schema-date')],
       [bare as unknown as DatabaseEntry],
     )
-    expect(resolver.valueFor('schema-date', 'beat-1')).toBeNull()
+    expect(resolver.valueFor('schema-date', 'entry-1')).toBeNull()
   })
 
   it('yields an inert resolver for empty input', () => {
     const resolver = buildRelationKeyResolver([], [])
     expect(resolver.schemaFor('schema-date')).toBeNull()
-    expect(resolver.valueFor('schema-date', 'beat-1')).toBeNull()
+    expect(resolver.valueFor('schema-date', 'entry-1')).toBeNull()
   })
 })
 
@@ -279,5 +279,35 @@ describe('buildExportHeaderRow', () => {
 
   it('adds no marker when no column is exported', () => {
     expect(buildExportHeaderRow([], [], -1, 'Open tasks', P, V)).toEqual([])
+  })
+})
+
+// ── buildXlsxSheetData ────────────────────────────────────────────────────────
+//
+// The XLSX export writes the strings the view displays. Every cell is typed as
+// text, so a value that looks like a number or a date keeps its displayed form.
+
+describe('buildXlsxSheetData', () => {
+  it('puts the header row first, followed by the data rows', () => {
+    const sheet = buildXlsxSheetData(['Name', 'Status'], [['Entry A', 'Value A']])
+    expect(sheet).toEqual([
+      [{ type: String, value: 'Name' }, { type: String, value: 'Status' }],
+      [{ type: String, value: 'Entry A' }, { type: String, value: 'Value A' }],
+    ])
+  })
+
+  it('writes numeric-looking values as text', () => {
+    const sheet = buildXlsxSheetData(['Amount'], [['0042'], ['1.5e3']])
+    expect(sheet[1]).toEqual([{ type: String, value: '0042' }])
+    expect(sheet[2]).toEqual([{ type: String, value: '1.5e3' }])
+  })
+
+  it('keeps empty cells as empty strings', () => {
+    const sheet = buildXlsxSheetData(['Name'], [['']])
+    expect(sheet[1]).toEqual([{ type: String, value: '' }])
+  })
+
+  it('yields only the header row without entries', () => {
+    expect(buildXlsxSheetData(['Name'], [])).toHaveLength(1)
   })
 })

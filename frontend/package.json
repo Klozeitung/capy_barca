@@ -1,6 +1,6 @@
 {
   "name": "capybarca",
-  "version": "0.16.0.6",
+  "version": "0.16.0.7",
   "private": true,
   "type": "module",
   "scripts": {
@@ -22,14 +22,14 @@
     "@iconify/vue": "^4.3.0",
     "@vuepic/vue-datepicker": "^14.0.0",
     "date-fns": "^4.4.0",
-    "jspdf": "^2.5.2",
-    "jspdf-autotable": "^3.8.4",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.9",
     "pinia": "^3.0.4",
     "vue": "^3.5.29",
     "vue-draggable-plus": "^0.6.0",
     "vue-i18n": "^10.0.5",
     "vue-router": "^5.0.3",
-    "xlsx": "^0.18.5"
+    "write-excel-file": "^4.1.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

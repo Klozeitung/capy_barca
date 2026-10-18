@@ -6,7 +6,11 @@ import '@vuepic/vue-datepicker/dist/main.css'
 import App from './App.vue'
 import router from './router'
 import i18n from './plugins/i18n'
+import { registerIconSets } from './plugins/icons'
 import { useAuthStore } from '@/stores/auth'
+
+// Icons render from bundled data; see plugins/icons.ts.
+registerIconSets()
 
 const app = createApp(App)
 const pinia = createPinia()

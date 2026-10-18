@@ -26,9 +26,9 @@
  * property's type and formatting.
  */
 import { ref, type ComputedRef } from 'vue'
-import * as XLSX from 'xlsx'
+import writeXlsxFile, { type SheetData } from 'write-excel-file/browser'
 import jsPDF from 'jspdf'
-import autoTable from 'jspdf-autotable'
+import { autoTable } from 'jspdf-autotable'
 import type { PropertySchema, DatabaseEntry, DatabaseView } from '@/stores/database'
 import type { Block } from '@/stores/blocks'
 import { useDatabaseStore, NAME_COL_KEY } from '@/stores/database'
@@ -172,6 +172,17 @@ export function buildRelationKeyResolver(
     valueFor: (keyPropertyId: string, entryId: string) =>
       valueByPair.get(`${keyPropertyId}:${entryId}`) ?? null,
   }
+}
+
+/**
+ * Build the sheet of an XLSX export from the header row and the data rows.
+ *
+ * Every cell is written as text, as the export has always been: the values are
+ * the strings the view displays, already formatted, so a number column keeps
+ * its display format and a value that merely looks numeric stays unchanged.
+ */
+export function buildXlsxSheetData(headerRow: string[], rows: string[][]): SheetData {
+  return [headerRow, ...rows].map((row) => row.map((value) => ({ type: String, value })))
 }
 
 export function useExport(options: {
@@ -368,10 +379,8 @@ export function useExport(options: {
   async function exportExcel(): Promise<void> {
     const { headers, descriptions, leadIndex, viewDescription, rows } = await getExportData()
     const headerRow = exportHeaderRow(headers, descriptions, leadIndex, viewDescription)
-    const ws = XLSX.utils.aoa_to_sheet([headerRow, ...rows])
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'Data')
-    XLSX.writeFile(wb, `${dbFilename()}.xlsx`)
+    await writeXlsxFile(buildXlsxSheetData(headerRow, rows), { sheet: 'Data' })
+      .toFile(`${dbFilename()}.xlsx`)
     showExportMenu.value = false
   }
 
@@ -485,7 +494,7 @@ export function useExport(options: {
     const dbTitle = ((block.value?.content?.title as string | undefined) ?? '').trim() || 'database'
 
     for (const entry of filteredAndSortedEntries.value) {
-      const title = ((entry.content?.title as string | undefined) ?? '').trim() || 'Untitled'
+      const title = ((entry.content?.title as string | undefined) ?? '').trim() || t('main.untitled')
 
       let dtStart = ''
       let dtEnd   = ''

@@ -4,8 +4,11 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm install
+# npm ci installs exactly what package-lock.json records and fails if the
+# lockfile and package.json disagree, so every build resolves the same
+# dependency tree instead of whatever the registry offers that day.
+COPY package.json package-lock.json ./
+RUN npm ci
 
 COPY . .
 RUN npm run test
@@ -37,6 +40,8 @@ RUN chown -R "${APP_UID}:${APP_GID}" \
 
 COPY --from=builder --chown=${APP_UID}:${APP_GID} /app/dist /usr/share/nginx/html
 COPY --chown=${APP_UID}:${APP_GID} nginx.conf /etc/nginx/templates/default.conf.template
+# Not a template: it carries no variables and is included as is.
+COPY --chown=${APP_UID}:${APP_GID} nginx-security-headers.conf /etc/nginx/snippets/security-headers.conf
 
 USER ${APP_UID}:${APP_GID}
 

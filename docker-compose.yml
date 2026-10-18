@@ -95,8 +95,11 @@ services:
       # extra_params is the supported way to pass coolwsd options to the Docker
       # image - the --o: syntax writes directly into coolwsd.xml.
       - extra_params=--o:ssl.enable=false --o:ssl.termination=true
-      # Accept requests from any origin (self-hosted behind nginx).
-      - aliasgroup1=https?://.*
+      # The only WOPI host Collabora may load documents from: the frontend
+      # service, exactly as the backend writes it into WOPISrc
+      # (app/wopi/router.py). A pattern matching any host would let a caller
+      # point the editor at a WOPI server of their own choosing.
+      - aliasgroup1=https://frontend:${PORT_FRONTEND:-1701}
     expose:
       - "9980"
     cap_add:
