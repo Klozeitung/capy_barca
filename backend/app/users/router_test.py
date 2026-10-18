@@ -1,7 +1,7 @@
 """
 Tests for the user management router (GET/POST /api/users, DELETE, PATCH).
 
-All tests run against the in-memory SQLite DB provided by the autouse
+All tests run against the PostgreSQL test database provided by the autouse
 ``isolated_db`` fixture in conftest.py.
 
 Client design
@@ -55,7 +55,7 @@ def _authed_client(username: str, role: str) -> TestClient:
     invoking the ASGI lifespan.
     """
     with s.SessionLocal() as db:
-        user = create_user(db, username, "geheim", role=role)
+        user = create_user(db, username, "secret", role=role)
         db.commit()
         db.refresh(user)
         token = s.create_token(user.id)
@@ -138,7 +138,7 @@ def test_change_date_format_returns_401_unauthenticated():
 def test_change_password_returns_204(admin_client):
     response = admin_client.patch(
         "/api/users/me/password",
-        json={"current_password": "geheim", "new_password": "neues_pw_123"},
+        json={"current_password": "secret", "new_password": "new_pw_123"},
     )
     assert response.status_code == 204
 
@@ -146,7 +146,7 @@ def test_change_password_returns_204(admin_client):
 def test_change_password_wrong_current_returns_401(admin_client):
     response = admin_client.patch(
         "/api/users/me/password",
-        json={"current_password": "falsch", "new_password": "neues_pw_123"},
+        json={"current_password": "wrong", "new_password": "new_pw_123"},
     )
     assert response.status_code == 401
 
@@ -154,7 +154,7 @@ def test_change_password_wrong_current_returns_401(admin_client):
 def test_change_password_too_short_returns_422(admin_client):
     response = admin_client.patch(
         "/api/users/me/password",
-        json={"current_password": "geheim", "new_password": "kurz"},
+        json={"current_password": "secret", "new_password": "short"},
     )
     assert response.status_code == 422
 
@@ -173,7 +173,7 @@ def test_change_password_rejects_a_new_password_bcrypt_would_refuse(
     """
     response = admin_client.patch(
         "/api/users/me/password",
-        json={"current_password": "geheim", "new_password": password},
+        json={"current_password": "secret", "new_password": password},
     )
     assert response.status_code == 422
 
@@ -182,7 +182,7 @@ def test_change_password_rejects_an_over_long_current_password(admin_client):
     """The field that is only ever verified needs the same bound."""
     response = admin_client.patch(
         "/api/users/me/password",
-        json={"current_password": "a" * 73, "new_password": "neues_pw_123"},
+        json={"current_password": "a" * 73, "new_password": "new_pw_123"},
     )
     assert response.status_code == 422
 
@@ -190,7 +190,7 @@ def test_change_password_rejects_an_over_long_current_password(admin_client):
 def test_change_password_accepts_a_new_password_at_the_byte_ceiling(admin_client):
     response = admin_client.patch(
         "/api/users/me/password",
-        json={"current_password": "geheim", "new_password": "a" * 72},
+        json={"current_password": "secret", "new_password": "a" * 72},
     )
     assert response.status_code == 204
 
@@ -203,7 +203,7 @@ def test_change_password_accepts_a_short_current_password(admin_client):
     """
     response = admin_client.patch(
         "/api/users/me/password",
-        json={"current_password": "geheim", "new_password": "neues_pw_123"},
+        json={"current_password": "secret", "new_password": "new_pw_123"},
     )
     assert response.status_code == 204
 
@@ -218,7 +218,7 @@ def test_create_user_rejects_an_over_long_password(admin_client):
 
 def test_admin_reset_rejects_an_over_long_password(admin_client):
     with s.SessionLocal() as db:
-        user = create_user(db, "reset_target", "geheim", role="member")
+        user = create_user(db, "reset_target", "secret", role="member")
         db.commit()
         user_id = user.id
     response = admin_client.patch(
@@ -238,11 +238,11 @@ def test_change_password_rate_limit_blocks_after_threshold(admin_client):
     for _ in range(threshold):
         admin_client.patch(
             "/api/users/me/password",
-            json={"current_password": "falsch", "new_password": "neues_pw_123"},
+            json={"current_password": "wrong", "new_password": "new_pw_123"},
         )
     response = admin_client.patch(
         "/api/users/me/password",
-        json={"current_password": "falsch", "new_password": "neues_pw_123"},
+        json={"current_password": "wrong", "new_password": "new_pw_123"},
     )
     assert response.status_code == 429
 
@@ -263,7 +263,7 @@ def test_list_users_returns_401_unauthenticated():
 
 def test_list_users_contains_created_users(admin_client):
     with s.SessionLocal() as db:
-        create_user(db, "extra_user", "geheim", role="member")
+        create_user(db, "extra_user", "secret", role="member")
         db.commit()
     usernames = [u["username"] for u in admin_client.get("/api/users").json()]
     assert "admin_user" in usernames
@@ -311,7 +311,7 @@ def test_create_user_invalid_role_returns_422(admin_client):
 def test_create_user_short_password_returns_422(admin_client):
     response = admin_client.post(
         "/api/users",
-        json={"username": "new_member", "password": "kurz", "role": "member"},
+        json={"username": "new_member", "password": "short", "role": "member"},
     )
     assert response.status_code == 422
 
@@ -320,7 +320,7 @@ def test_create_user_short_password_returns_422(admin_client):
 
 def test_deactivate_user_returns_204(admin_client):
     with s.SessionLocal() as db:
-        user = create_user(db, "to_deactivate", "geheim", role="member")
+        user = create_user(db, "to_deactivate", "secret", role="member")
         db.commit()
         user_id = user.id
     assert admin_client.delete(f"/api/users/{user_id}").status_code == 204
@@ -337,7 +337,7 @@ def test_deactivate_unknown_user_returns_404(admin_client):
 
 def test_deactivate_returns_403_for_member(member_client):
     with s.SessionLocal() as db:
-        user = create_user(db, "to_deactivate", "geheim", role="member")
+        user = create_user(db, "to_deactivate", "secret", role="member")
         db.commit()
         user_id = user.id
     assert member_client.delete(f"/api/users/{user_id}").status_code == 403

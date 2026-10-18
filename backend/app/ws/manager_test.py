@@ -3,6 +3,7 @@ Unit tests for the WebSocket connection manager.
 
 Tests are written as synchronous functions that drive async coroutines via
 asyncio.run(), so no pytest-asyncio plugin or special markers are needed.
+``broadcast`` only queues; ``flush`` waits until the sending tasks are done.
 
 The manager holds no authorization logic of its own — it records which socket
 belongs to which account and applies whatever filter the broadcaster hands it.
@@ -10,9 +11,13 @@ Both halves of that contract are pinned here; the rules themselves are tested
 in broadcaster_test.py.
 """
 import asyncio
+import time
 import uuid
 
-from app.ws.manager import ConnectionManager
+import pytest
+
+from app.ws import manager as manager_module
+from app.ws.manager import CLOSE_TOO_SLOW, ConnectionManager
 
 
 # ─── Stub ─────────────────────────────────────────────────────────────────────
@@ -24,6 +29,7 @@ class MockWebSocket:
     def __init__(self) -> None:
         self.accepted: bool = False
         self.sent: list[str] = []
+        self.closed_with: int | None = None
         self._raise_on_send: Exception | None = None
 
     async def accept(self) -> None:
@@ -33,6 +39,9 @@ class MockWebSocket:
         if self._raise_on_send is not None:
             raise self._raise_on_send
         self.sent.append(message)
+
+    async def close(self, code: int = 1000) -> None:
+        self.closed_with = code
 
     def fail_next_send(self, exc: Exception) -> None:
         """Configure this stub to raise *exc* on the next send_text call."""
@@ -149,7 +158,8 @@ def test_broadcast_delivers_to_single_connection():
         mgr = ConnectionManager()
         ws = MockWebSocket()
         await mgr.connect(ws, _user())
-        await mgr.broadcast("hello")
+        mgr.broadcast("hello")
+        await mgr.flush()
         assert ws.sent == ["hello"]
     asyncio.run(_run())
 
@@ -160,7 +170,8 @@ def test_broadcast_delivers_to_all_connections():
         ws1, ws2 = MockWebSocket(), MockWebSocket()
         await mgr.connect(ws1, _user())
         await mgr.connect(ws2, _user())
-        await mgr.broadcast("hello")
+        mgr.broadcast("hello")
+        await mgr.flush()
         assert ws1.sent == ["hello"]
         assert ws2.sent == ["hello"]
     asyncio.run(_run())
@@ -169,16 +180,16 @@ def test_broadcast_delivers_to_all_connections():
 def test_broadcast_with_no_connections_is_noop():
     async def _run():
         mgr = ConnectionManager()
-        await mgr.broadcast("hello")  # must not raise
+        mgr.broadcast("hello")  # must not raise
     asyncio.run(_run())
 
 
-def test_broadcast_returns_the_number_delivered():
+def test_broadcast_returns_the_number_queued():
     async def _run():
         mgr = ConnectionManager()
         await mgr.connect(MockWebSocket(), _user())
         await mgr.connect(MockWebSocket(), _user())
-        assert await mgr.broadcast("hello") == 2
+        assert mgr.broadcast("hello") == 2
     asyncio.run(_run())
 
 
@@ -188,7 +199,8 @@ def test_broadcast_removes_stale_connection():
         ws = MockWebSocket()
         ws.fail_next_send(RuntimeError("connection lost"))
         await mgr.connect(ws, _user())
-        await mgr.broadcast("hello")
+        mgr.broadcast("hello")
+        await mgr.flush()
         assert mgr.active_count == 0
     asyncio.run(_run())
 
@@ -202,7 +214,8 @@ def test_broadcast_continues_past_stale_connection():
         ws_bad.fail_next_send(RuntimeError("connection lost"))
         await mgr.connect(ws_good, _user())
         await mgr.connect(ws_bad, _user())
-        await mgr.broadcast("hello")
+        mgr.broadcast("hello")
+        await mgr.flush()
         assert ws_good.sent == ["hello"]
         assert mgr.active_count == 1
     asyncio.run(_run())
@@ -213,8 +226,9 @@ def test_broadcast_multiple_messages_in_order():
         mgr = ConnectionManager()
         ws = MockWebSocket()
         await mgr.connect(ws, _user())
-        await mgr.broadcast("first")
-        await mgr.broadcast("second")
+        mgr.broadcast("first")
+        mgr.broadcast("second")
+        await mgr.flush()
         assert ws.sent == ["first", "second"]
     asyncio.run(_run())
 
@@ -229,7 +243,8 @@ def test_filter_skips_non_matching_accounts():
         ws_wanted, ws_unwanted = MockWebSocket(), MockWebSocket()
         await mgr.connect(ws_wanted, wanted)
         await mgr.connect(ws_unwanted, unwanted)
-        await mgr.broadcast("hello", recipient_filter=lambda uid: uid == wanted)
+        mgr.broadcast("hello", recipient_filter=lambda uid: uid == wanted)
+        await mgr.flush()
         assert ws_wanted.sent == ["hello"]
         assert ws_unwanted.sent == []
     asyncio.run(_run())
@@ -243,9 +258,10 @@ def test_filter_reaches_every_socket_of_a_matching_account():
         ws1, ws2 = MockWebSocket(), MockWebSocket()
         await mgr.connect(ws1, user_id)
         await mgr.connect(ws2, user_id)
-        delivered = await mgr.broadcast(
+        delivered = mgr.broadcast(
             "hello", recipient_filter=lambda uid: uid == user_id
         )
+        await mgr.flush()
         assert delivered == 2
         assert ws1.sent == ["hello"]
         assert ws2.sent == ["hello"]
@@ -257,7 +273,8 @@ def test_filter_rejecting_everyone_delivers_nothing():
         mgr = ConnectionManager()
         ws = MockWebSocket()
         await mgr.connect(ws, _user())
-        delivered = await mgr.broadcast("hello", recipient_filter=lambda _uid: False)
+        delivered = mgr.broadcast("hello", recipient_filter=lambda _uid: False)
+        await mgr.flush()
         assert delivered == 0
         assert ws.sent == []
     asyncio.run(_run())
@@ -269,7 +286,8 @@ def test_filtered_out_connection_is_not_pruned():
         mgr = ConnectionManager()
         ws = MockWebSocket()
         await mgr.connect(ws, _user())
-        await mgr.broadcast("hello", recipient_filter=lambda _uid: False)
+        mgr.broadcast("hello", recipient_filter=lambda _uid: False)
+        await mgr.flush()
         assert mgr.active_count == 1
     asyncio.run(_run())
 
@@ -280,5 +298,127 @@ def test_explicit_none_filter_reaches_everyone():
         ws1, ws2 = MockWebSocket(), MockWebSocket()
         await mgr.connect(ws1, _user())
         await mgr.connect(ws2, _user())
-        assert await mgr.broadcast("hello", recipient_filter=None) == 2
+        assert mgr.broadcast("hello", recipient_filter=None) == 2
     asyncio.run(_run())
+
+
+# ─── Clients that stop reading ────────────────────────────────────────────────
+
+
+class StalledWebSocket(MockWebSocket):
+    """A client whose sends never complete, like one that stopped reading."""
+
+    async def send_text(self, message: str) -> None:
+        await asyncio.Event().wait()
+
+
+def test_broadcast_does_not_wait_for_a_stalled_client():
+    async def _run():
+        mgr = ConnectionManager()
+        await mgr.connect(StalledWebSocket(), _user())
+        started = time.monotonic()
+        for i in range(50):
+            mgr.broadcast(f"message {i}")
+        assert time.monotonic() - started < 0.5
+    asyncio.run(_run())
+
+
+def test_stalled_client_is_dropped_after_the_send_timeout(monkeypatch):
+    monkeypatch.setattr(manager_module, "SEND_TIMEOUT", 0.05)
+
+    async def _run():
+        mgr = ConnectionManager()
+        stalled, healthy = StalledWebSocket(), MockWebSocket()
+        await mgr.connect(stalled, _user())
+        await mgr.connect(healthy, _user())
+        mgr.broadcast("first")
+        await asyncio.sleep(0.2)
+        mgr.broadcast("second")
+        await mgr.flush()
+        assert mgr.user_id_for(stalled) is None
+        assert stalled.closed_with == CLOSE_TOO_SLOW
+        assert healthy.sent == ["first", "second"]
+    asyncio.run(_run())
+
+
+def test_client_with_a_full_outbox_is_dropped(monkeypatch):
+    monkeypatch.setattr(manager_module, "OUTBOX_LIMIT", 3)
+
+    async def _run():
+        mgr = ConnectionManager()
+        stalled = StalledWebSocket()
+        await mgr.connect(stalled, _user())
+        # The first message is taken by the sending task and stalls there,
+        # three more wait in the outbox, the fifth finds it full.
+        queued = [mgr.broadcast("first")]
+        await asyncio.sleep(0)
+        queued += [mgr.broadcast(f"waiting {i}") for i in range(3)]
+        queued.append(mgr.broadcast("one too many"))
+        await asyncio.sleep(0)
+        assert queued == [1, 1, 1, 1, 0]
+        assert mgr.active_count == 0
+        assert stalled.closed_with == CLOSE_TOO_SLOW
+        assert mgr.broadcast("after the drop") == 0
+    asyncio.run(_run())
+
+
+def test_dropping_a_client_that_cannot_take_the_close_does_not_hang(monkeypatch):
+    monkeypatch.setattr(manager_module, "SEND_TIMEOUT", 0.05)
+    monkeypatch.setattr(manager_module, "CLOSE_TIMEOUT", 0.05)
+
+    class Unclosable(StalledWebSocket):
+        async def close(self, code: int = 1000) -> None:
+            await asyncio.Event().wait()
+
+    async def _run():
+        mgr = ConnectionManager()
+        await mgr.connect(Unclosable(), _user())
+        mgr.broadcast("hello")
+        await asyncio.sleep(0.3)
+        assert mgr.active_count == 0
+        assert not mgr._closing
+    asyncio.run(_run())
+
+
+def test_disconnect_discards_waiting_messages():
+    async def _run():
+        mgr = ConnectionManager()
+        stalled = StalledWebSocket()
+        await mgr.connect(stalled, _user())
+        mgr.broadcast("first")
+        mgr.broadcast("second")
+        await asyncio.sleep(0)
+        mgr.disconnect(stalled)
+        await asyncio.wait_for(mgr.flush(), 1.0)
+        assert mgr.active_count == 0
+        assert stalled.closed_with is None
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("count", [1, 5])
+def test_flush_returns_once_everything_is_sent(count):
+    async def _run():
+        mgr = ConnectionManager()
+        sockets = [MockWebSocket() for _ in range(count)]
+        for websocket in sockets:
+            await mgr.connect(websocket, _user())
+        mgr.broadcast("hello")
+        await mgr.flush()
+        assert all(w.sent == ["hello"] for w in sockets)
+    asyncio.run(_run())
+
+
+def test_send_queues_behind_waiting_messages():
+    async def _run():
+        mgr = ConnectionManager()
+        ws = MockWebSocket()
+        await mgr.connect(ws, _user())
+        mgr.broadcast("event")
+        assert mgr.send(ws, "reply") is True
+        await mgr.flush()
+        assert ws.sent == ["event", "reply"]
+    asyncio.run(_run())
+
+
+def test_send_to_an_unknown_socket_is_refused():
+    assert ConnectionManager().send(MockWebSocket(), "reply") is False

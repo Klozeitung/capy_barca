@@ -3,16 +3,14 @@ Tests for the automation engine.
 
 Pure unit tests cover the stateless helper functions (_matches, _render,
 _render_body, _matches_actor_filter, _matches_trigger).  Integration tests use
-the in-memory SQLite database provided by the autouse ``isolated_db`` fixture
+the PostgreSQL test database provided by the autouse ``isolated_db`` fixture
 in conftest.py, and exercise the bulk action handler (_handle_bulk_upsert_value),
 which delegates filtering to the shared repository query evaluator.
 
-Async engine functions are exercised via ``asyncio.run()`` — no external
-test runner plugin is required.
+The engine is synchronous, so its functions are called directly.
 """
-import asyncio
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -467,6 +465,19 @@ def test_build_context_keys():
 # ─── receive: origin guard ────────────────────────────────────────────────────
 
 
+def _database_id() -> uuid.UUID:
+    """
+    Create a database block and return its id.
+
+    automations.database_id references blocks.id, so an automation can only be
+    stored for a database that exists.
+    """
+    import app.database.database as db_module
+
+    with db_module.SessionLocal() as db:
+        return _seed_database(db).id
+
+
 def test_receive_ignores_non_user_origin():
     """Events with origin != 'user' must be silently dropped."""
     import app.database.database as db_module
@@ -480,7 +491,7 @@ def test_receive_ignores_non_user_origin():
         with patch(
             "app.automations.automations_engine._query"
         ) as mock_query:
-            asyncio.run(receive(ev, db))
+            receive(ev, db)
             mock_query.assert_not_called()
 
 
@@ -497,7 +508,7 @@ def test_receive_no_automations_is_noop():
         property_uuid="p", old_value="", new_value="", entry_id="e",
     )
     with db_module.SessionLocal() as db:
-        asyncio.run(receive(ev, db))  # must not raise
+        receive(ev, db)  # must not raise
 
 
 # ─── receive: matching automation fires execution ────────────────────────────
@@ -508,7 +519,7 @@ def test_receive_fires_execute_for_matching_automation():
     import app.database.database as db_module
     from app.automations.automations_repository import create_automation
 
-    db_id = uuid.uuid4()
+    db_id = _database_id()
 
     trigger = {
         "action_type": "PropertyUpdate",
@@ -538,9 +549,8 @@ def test_receive_fires_execute_for_matching_automation():
 
         with patch(
             "app.automations.automations_engine._execute",
-            new_callable=AsyncMock,
         ) as mock_exec:
-            asyncio.run(receive(ev, db))
+            receive(ev, db)
             mock_exec.assert_called_once()
             called_auto, called_ev, called_db = mock_exec.call_args[0]
             assert called_auto.id == auto.id
@@ -552,7 +562,7 @@ def test_receive_fires_execute_for_multi_trigger_automation():
     import app.database.database as db_module
     from app.automations.automations_repository import create_automation
 
-    db_id   = uuid.uuid4()
+    db_id = _database_id()
     other_db = uuid.uuid4()
 
     # Two triggers: one matching the test event, one for a different DB.
@@ -587,9 +597,8 @@ def test_receive_fires_execute_for_multi_trigger_automation():
 
         with patch(
             "app.automations.automations_engine._execute",
-            new_callable=AsyncMock,
         ) as mock_exec:
-            asyncio.run(receive(ev, db))
+            receive(ev, db)
             mock_exec.assert_called_once()
             called_auto, _, _ = mock_exec.call_args[0]
             assert called_auto.id == auto.id
@@ -600,7 +609,7 @@ def test_receive_actor_filter_blocks_excluded_actor():
     import app.database.database as db_module
     from app.automations.automations_repository import create_automation
 
-    db_id = uuid.uuid4()
+    db_id = _database_id()
     allowed_user = str(uuid.uuid4())
     blocked_user = str(uuid.uuid4())
 
@@ -633,9 +642,8 @@ def test_receive_actor_filter_blocks_excluded_actor():
 
         with patch(
             "app.automations.automations_engine._execute",
-            new_callable=AsyncMock,
         ) as mock_exec:
-            asyncio.run(receive(ev, db))
+            receive(ev, db)
             mock_exec.assert_not_called()
 
 
@@ -644,7 +652,7 @@ def test_receive_actor_filter_allows_matching_actor():
     import app.database.database as db_module
     from app.automations.automations_repository import create_automation
 
-    db_id = uuid.uuid4()
+    db_id = _database_id()
     allowed_user = str(uuid.uuid4())
 
     trigger = {
@@ -676,9 +684,8 @@ def test_receive_actor_filter_allows_matching_actor():
 
         with patch(
             "app.automations.automations_engine._execute",
-            new_callable=AsyncMock,
         ) as mock_exec:
-            asyncio.run(receive(ev, db))
+            receive(ev, db)
             mock_exec.assert_called_once()
             called_auto, _, _ = mock_exec.call_args[0]
             assert called_auto.id == auto.id
@@ -719,16 +726,16 @@ def _run_bulk(db, db_uuid, schema_id, filter_spec, body):
     so the test isolates the entry-selection + upsert behaviour.
     """
     with patch(
-        "app.ws.broadcaster.broadcast_block_event", new_callable=AsyncMock,
+        "app.ws.broadcaster.emit_block_event",
     ), patch(
         "app.blocks.computed.compute_all_for_entry",
     ), patch(
         "app.blocks.computed.compute_same_db_rollup_dependents",
     ):
-        asyncio.run(_handle_bulk_upsert_value(
+        _handle_bulk_upsert_value(
             db=db, db_uuid=db_uuid, schema_id=schema_id,
             filter_spec=filter_spec, body=body,
-        ))
+        )
 
 
 _DONE = {"value": {"text": "DONE"}}
@@ -777,7 +784,7 @@ def test_bulk_where_text_contains_updates_only_matching():
         assert _value_text(db, e_miss.id, target.id) is None
 
 
-# ─── _handle_bulk_upsert_value: 'where' name filter (issue #6) ─────────────────
+# ─── _handle_bulk_upsert_value: 'where' name filter ─────────────────
 
 
 def test_bulk_where_name_filter_updates_only_matching():
@@ -791,8 +798,8 @@ def test_bulk_where_name_filter_updates_only_matching():
             db, database_id=database.id, name="Result", type="text", position=1.0,
         )
         db.commit()
-        e_napoleon  = _make_entry(db, database, "Napoleon",   position=1.0)
-        e_wellington = _make_entry(db, database, "Wellington", position=2.0)
+        e_match = _make_entry(db, database, "Chameleon", position=1.0)
+        e_other = _make_entry(db, database, "Falcon", position=2.0)
         db.commit()
 
         spec = {
@@ -804,17 +811,17 @@ def test_bulk_where_name_filter_updates_only_matching():
         }
         _run_bulk(db, str(database.id), str(target.id), spec, _DONE)
 
-        assert _value_text(db, e_napoleon.id,   target.id) == {"text": "DONE"}
-        assert _value_text(db, e_wellington.id, target.id) is None
+        assert _value_text(db, e_match.id, target.id) == {"text": "DONE"}
+        assert _value_text(db, e_other.id, target.id) is None
 
 
-# ─── _handle_bulk_upsert_value: 'where' relation filter (issue #6) ─────────────
+# ─── _handle_bulk_upsert_value: 'where' relation filter ─────────────
 
 
 def test_bulk_where_relation_contains_matches_by_entry_uuid():
     """
     A relation 'contains' filter matches on the related entry's UUID, not on a
-    name string searched inside the UUID pool (the bug reported in issue #6).
+    name string searched inside the UUID pool.
     """
     import app.database.database as db_module
     from app.blocks import repository as repo
@@ -967,12 +974,12 @@ def test_bulk_where_relation_delegates_resolved_descriptor_to_query_entries():
         with patch(
             "app.blocks.repository.query_entries", return_value=([], 0),
         ) as mock_q, patch(
-            "app.ws.broadcaster.broadcast_block_event", new_callable=AsyncMock,
+            "app.ws.broadcaster.emit_block_event",
         ):
-            asyncio.run(_handle_bulk_upsert_value(
+            _handle_bulk_upsert_value(
                 db=db, db_uuid=str(database.id), schema_id=str(target.id),
                 filter_spec=spec, body=_DONE,
-            ))
+            )
 
         assert mock_q.call_count == 1
         _, called_db_id, called_groups, called_sorts = mock_q.call_args[0]

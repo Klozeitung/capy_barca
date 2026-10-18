@@ -7,21 +7,28 @@
 # Format: one path per line, relative to the backend/ directory (which is /app
 # inside the container). Blank lines and everything after a '#' are ignored.
 # Paths must not contain whitespace.
+#
+# The suite runs against PostgreSQL and needs TEST_DATABASE_URL pointing at a
+# database whose name ends in '_test' (see app/conftest.py).
 
 app/main_test.py
 app/conftest_test.py
 
 app/database/database_test.py
+app/database/view_preferences_migration_test.py
+app/database/option_ids_migration_test.py
 
 app/session/user_registration_test.py
 app/session/user_login_test.py
 app/session/session_test.py
 app/session/login_router_test.py
+app/session/deps_test.py
 
 app/security/limiter_test.py
 app/setup_router_test.py
 app/users/router_test.py
 app/permissions/router_test.py
+app/permissions/repository_test.py
 
 app/blocks/models_test.py
 app/blocks/repository_test.py
@@ -34,6 +41,11 @@ app/blocks/filter_test.py
 app/blocks/types_test.py
 app/blocks/computed_test.py
 app/blocks/formula_engine_test.py
+app/blocks/resolution_test.py
+app/blocks/views_test.py
+app/blocks/views_router_test.py
+app/blocks/options_test.py
+app/blocks/tree_test.py
 
 app/media/model_test.py
 app/media/upload_test.py
@@ -47,3 +59,5 @@ app/ws/router_test.py
 app/automations/automations_engine_test.py
 app/automations/automations_router_test.py
 app/comments/comments_router_test.py
+
+app/performance_test.py

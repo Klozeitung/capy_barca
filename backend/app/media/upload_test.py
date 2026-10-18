@@ -106,8 +106,8 @@ def test_cover_category_is_the_image_list():
 
 # ─── write_stream ─────────────────────────────────────────────────────────────
 #
-# The ceiling lives here. stream_to_disk is the multipart adapter on top, and
-# the WOPI save path feeds it a raw request body, so both share these limits.
+# The WOPI save path feeds this a raw request body. save_upload, below, shares
+# the same ceiling through _CappedWriter.
 
 
 async def _chunks(*pieces):
@@ -175,67 +175,49 @@ def test_write_stream_refusal_message_matches_the_shared_constant(tmp_path):
     asyncio.run(_run())
 
 
-# ─── stream_to_disk ───────────────────────────────────────────────────────────
+# ─── save_upload ──────────────────────────────────────────────────────────────
 
 
 def test_writes_the_body_and_returns_its_size(tmp_path):
-    async def _run():
-        dest = tmp_path / "out.bin"
-        size = await upload.stream_to_disk(_upload_file("a.bin", content=b"hello"), dest)
-        assert size == 5
-        assert dest.read_bytes() == b"hello"
-    asyncio.run(_run())
+    dest = tmp_path / "out.bin"
+    size = upload.save_upload(_upload_file("a.bin", content=b"hello"), dest)
+    assert size == 5
+    assert dest.read_bytes() == b"hello"
 
 
 def test_writes_a_body_larger_than_one_chunk(tmp_path):
-    async def _run():
-        payload = b"x" * (upload.UPLOAD_CHUNK_BYTES * 2 + 17)
-        dest = tmp_path / "big.bin"
-        size = await upload.stream_to_disk(_upload_file("b.bin", content=payload), dest)
-        assert size == len(payload)
-        assert dest.stat().st_size == len(payload)
-    asyncio.run(_run())
+    payload = b"x" * (upload.UPLOAD_CHUNK_BYTES * 2 + 17)
+    dest = tmp_path / "big.bin"
+    size = upload.save_upload(_upload_file("b.bin", content=payload), dest)
+    assert size == len(payload)
+    assert dest.stat().st_size == len(payload)
 
 
 def test_an_empty_body_is_written_as_an_empty_file(tmp_path):
-    async def _run():
-        dest = tmp_path / "empty.bin"
-        assert await upload.stream_to_disk(_upload_file("c.bin", content=b""), dest) == 0
-        assert dest.exists()
-    asyncio.run(_run())
+    dest = tmp_path / "empty.bin"
+    assert upload.save_upload(_upload_file("c.bin", content=b""), dest) == 0
+    assert dest.exists()
 
 
 def test_body_over_the_ceiling_raises_413(tmp_path):
-    async def _run():
-        dest = tmp_path / "too-big.bin"
-        with pytest.raises(HTTPException) as exc:
-            await upload.stream_to_disk(
-                _upload_file("d.bin", content=b"x" * 100), dest, max_bytes=10
-            )
-        assert exc.value.status_code == 413
-    asyncio.run(_run())
+    dest = tmp_path / "too-big.bin"
+    with pytest.raises(HTTPException) as exc:
+        upload.save_upload(_upload_file("d.bin", content=b"x" * 100), dest, max_bytes=10)
+    assert exc.value.status_code == 413
 
 
 def test_refused_body_leaves_no_partial_file(tmp_path):
     """The write has already put bytes on disk by the time the limit is crossed."""
-    async def _run():
-        dest = tmp_path / "partial.bin"
-        with pytest.raises(HTTPException):
-            await upload.stream_to_disk(
-                _upload_file("e.bin", content=b"x" * 100), dest, max_bytes=10
-            )
-        assert not dest.exists()
-    asyncio.run(_run())
+    dest = tmp_path / "partial.bin"
+    with pytest.raises(HTTPException):
+        upload.save_upload(_upload_file("e.bin", content=b"x" * 100), dest, max_bytes=10)
+    assert not dest.exists()
 
 
 def test_a_body_exactly_at_the_ceiling_is_accepted(tmp_path):
-    async def _run():
-        dest = tmp_path / "exact.bin"
-        size = await upload.stream_to_disk(
-            _upload_file("f.bin", content=b"x" * 10), dest, max_bytes=10
-        )
-        assert size == 10
-    asyncio.run(_run())
+    dest = tmp_path / "exact.bin"
+    size = upload.save_upload(_upload_file("f.bin", content=b"x" * 10), dest, max_bytes=10)
+    assert size == 10
 
 
 def test_the_ceiling_is_read_at_call_time(tmp_path, monkeypatch):
@@ -247,24 +229,25 @@ def test_the_ceiling_is_read_at_call_time(tmp_path, monkeypatch):
     the real one.
     """
     monkeypatch.setattr(upload, "MAX_UPLOAD_BYTES", 8)
-
-    async def _run():
-        dest = tmp_path / "ceiling.bin"
-        with pytest.raises(HTTPException) as exc:
-            await upload.stream_to_disk(_upload_file("g.bin", content=b"x" * 64), dest)
-        assert exc.value.status_code == 413
-    asyncio.run(_run())
+    dest = tmp_path / "ceiling.bin"
+    with pytest.raises(HTTPException) as exc:
+        upload.save_upload(_upload_file("g.bin", content=b"x" * 64), dest)
+    assert exc.value.status_code == 413
 
 
 def test_an_explicit_max_bytes_overrides_the_module_default(tmp_path, monkeypatch):
     monkeypatch.setattr(upload, "MAX_UPLOAD_BYTES", 1)
+    dest = tmp_path / "override.bin"
+    assert upload.save_upload(
+        _upload_file("h.bin", content=b"x" * 32), dest, max_bytes=64
+    ) == 32
 
-    async def _run():
-        dest = tmp_path / "override.bin"
-        assert await upload.stream_to_disk(
-            _upload_file("h.bin", content=b"x" * 32), dest, max_bytes=64
-        ) == 32
-    asyncio.run(_run())
+
+def test_save_upload_refusal_message_matches_the_shared_constant(tmp_path):
+    dest = tmp_path / "msg-sync.bin"
+    with pytest.raises(HTTPException) as exc:
+        upload.save_upload(_upload_file("i.bin", content=b"x" * 32), dest, max_bytes=1)
+    assert exc.value.detail == upload.TOO_LARGE
 
 
 # ─── staging_path ─────────────────────────────────────────────────────────────

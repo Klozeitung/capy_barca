@@ -7,6 +7,16 @@
  * into subcomponents. This file is intentionally the thin integration
  * layer that wires everything together.
  *
+ * Views and entries
+ * -----------------
+ * The views come from the databaseViews store, shared by every block showing
+ * this database; which one is active is the choice of this placement (the
+ * database block itself, or the linked block passed as ``placementId``).
+ * Entries arrive a page at a time from the backend, which applies the view's
+ * filters and sorts and resolves every relation on the page. Loading more
+ * appends the next batch; after a change, the range already loaded is
+ * fetched again.
+ *
  * Composables
  * -----------
  * useViewManager   – views CRUD, tab drag-reorder, sort management
@@ -20,7 +30,7 @@
  * SortPanel        – sort UI
  * ViewDescription  – per-view description between toolbar and view content
  */
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch, type VNode } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useBlockStore } from '@/stores/blocks'
@@ -28,7 +38,8 @@ import { WS_BLOCK_EVENT, type BlockEventPayload } from '@/stores/ws'
 import { useDrag } from '@/composables/useDrag'
 import {
   useDatabaseStore,
-  normalizeSelectOption,
+  optionLabel,
+  schemaOptions,
   clampFrozenColumns,
   isStickyHeaderEnabled,
   type PropertySchema,
@@ -37,15 +48,15 @@ import {
   type AggregationType,
   type ViewFilter,
   type FilterOperator,
-  type EntryQueryFilterGroup,
   type KeyReference,
   NAME_COL_KEY,
 } from '@/stores/database'
 import { isReadonlyPropertyType } from '@/stores/propertyTypes'
 
 // ── Composables ───────────────────────────────────────────────────────────────
-import { useViewManager, viewTypeIcon } from '@/composables/useViewManager'
-import { useFilterPanel, getFormulaResultType } from '@/composables/useFilterPanel'
+import { useDatabaseViewsStore } from '@/stores/databaseViews'
+import { useViewManager, viewTypeIcon, viewDisplayName } from '@/composables/useViewManager'
+import { useFilterPanel } from '@/composables/useFilterPanel'
 import { useColumnResize } from '@/composables/useColumnResize'
 import { useExport } from '@/composables/useExport'
 
@@ -79,21 +90,6 @@ import AutomationsModal from './AutomationsModal.vue'
 import DatabaseTemplateEditor from './DatabaseTemplateEditor.vue'
 import TemplateManagerPanel from './subcomponents/TemplateManagerPanel.vue'
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-
-const PREF_VIEWS       = 'views'
-const PREF_ACTIVE_VIEW = 'active_view'
-
-// Window event emitted by BlockPropertySection when a property added from the
-// side panel must be hidden in every view of this database. Kept as a
-// plain string literal shared by both components to avoid a new shared module.
-const DB_HIDE_SCHEMA_EVENT = 'capybarca:db-hide-schema-in-views'
-
-const READONLY_SCHEMA_TYPES = new Set([
-  'id', 'created_by', 'created_time', 'last_edited_by', 'last_edited_time',
-  'parent_item', 'sub_item',
-])
-
 // ── Props ─────────────────────────────────────────────────────────────────────
 
 const props = defineProps<{
@@ -103,6 +99,12 @@ const props = defineProps<{
    * Suppresses the large title / icon header.
    */
   inline?: boolean
+  /**
+   * The block that shows this database, when it is not the database block
+   * itself: a ``linked_database`` block. Each placement keeps its own choice
+   * of view.
+   */
+  placementId?: string
 }>()
 
 // ── Dependencies ──────────────────────────────────────────────────────────────
@@ -110,7 +112,11 @@ const props = defineProps<{
 const { t }       = useI18n()
 const blockStore  = useBlockStore()
 const dbStore     = useDatabaseStore()
+const viewsStore  = useDatabaseViewsStore()
 const drag        = useDrag()
+
+/** The block whose choice of view this instance shows and stores. */
+const placementId = props.placementId ?? props.blockId
 
 // ── Base state ────────────────────────────────────────────────────────────────
 
@@ -187,13 +193,13 @@ function onSearchBlur(): void {
   if (!nameSearchQuery.value.trim()) nameSearchActive.value = false
 }
 
-// ── Display limit (load-more pagination) ─────────────────────────────────────
+// ── Load-more pagination ──────────────────────────────────────────────────────
 
-const INITIAL_DISPLAY_LIMIT = 100
-const displayLimit = ref(INITIAL_DISPLAY_LIMIT)
+/** Entries loaded when a view is opened, switched, filtered or sorted. */
+const PAGE_SIZE = 100
 
 /**
- * True when the server has more entries than the current page.
+ * True when the server has more entries than the ones loaded.
  * Drives the visibility of the load-more bar below the view.
  */
 const hasMore = computed(() => totalEntries.value > displayedEntries.value.length)
@@ -380,19 +386,17 @@ const flatTreeEntries = computed((): FlatTreeEntry[] => {
 // The composable receives a stable function reference that calls the real
 // implementation once it is defined, so onQueryNeeded works immediately.
 
-// Stable reference for filter/sort/view-switch initiated queries.
-// These reset displayLimit to INITIAL_DISPLAY_LIMIT before re-querying,
-// whereas WS-driven refreshes and row operations keep the current limit.
+// Stable reference for filter/sort/view-switch initiated loads. These start
+// over with the first page, whereas WS-driven refreshes and row operations
+// reload the range already loaded.
 let _resetQueryFn: () => Promise<void> = async () => {}
 
 const vm = useViewManager({
-  blockId:             props.blockId,
+  databaseId:    props.blockId,
+  placementId,
   schemas,
   NAME_COL_KEY,
-  PREF_VIEWS,
-  PREF_ACTIVE_VIEW,
-  READONLY_SCHEMA_TYPES,
-  onQueryNeeded:       () => _resetQueryFn(),
+  onQueryNeeded: () => _resetQueryFn(),
 })
 
 const {
@@ -403,7 +407,7 @@ const {
   deleteConfirmViewId,
   viewSettingsViewId, viewSettingsView,
   showSortPanel, sortCount,
-  saveViews, saveActiveViewId, buildDefaultView,
+  saveViews, saveActiveViewId,
   addView,
   startRenameView, commitRenameView, cancelRenameView,
   onTabDragStart, onTabDragOver, onTabDragLeave, onTabDrop, onTabDragEnd,
@@ -419,82 +423,60 @@ const {
 const isCalendarView = computed(() => activeView.value?.viewType === 'calendar')
 
 /**
- * Calendar views (including the agenda subtype) must always receive the full
- * entry set — they render entries across a time axis and cannot work with a
- * paginated subset. All other views (table, kanban, …) use the display limit
- * for load-more pagination.
+ * Calendar views (including the agenda subtype) always receive the full entry
+ * set — they render entries across a time axis and cannot work with a
+ * paginated subset. The backend never pages them; all other views load a
+ * page at a time.
  */
 const isUnlimitedView = computed(() =>
   activeView.value?.viewType === 'calendar',
 )
 
 /**
- * Incremented per query. Typing in the name search fires queries in quick
- * succession; only the response to the latest one may update the view.
+ * Load entries of the active view into this instance's result slot.
+ *
+ * *limit* null loads everything. With *append*, the entries are added below
+ * the ones already loaded. Overlapping loads (a search typed quickly) are
+ * resolved in the store: only the latest one changes the result.
  */
-let _querySeq = 0
-
-async function queryFromActiveView(): Promise<void> {
+async function _loadEntries(offset: number, limit: number | null, append: boolean): Promise<void> {
   const view = activeView.value
-  const seq  = ++_querySeq
-  const filter_groups: EntryQueryFilterGroup[] = (view?.filterGroups ?? []).map((g) => ({
-    conjunction: g.conjunction,
-    filters: g.filters.map((f) => {
-      const schema = schemas.value.find((s) => s.id === f.schemaId)
-      return {
-        schemaId:          f.schemaId,
-        operator:          f.operator,
-        value:             f.value,
-        value2:            f.value2,
-        dateMode:          f.dateMode,
-        dateOffset:        f.dateOffset,
-        formulaResultType: schema?.type === 'formula'
-          ? getFormulaResultType(f.schemaId, displayedEntries.value)
-          : undefined,
-      }
-    }),
-  }))
-  // The name search narrows the view: one more group, ANDed with the view's.
-  const nameQuery = nameSearchQuery.value.trim()
-  if (nameQuery) {
-    filter_groups.push({
-      conjunction: 'and',
-      filters: [{ schemaId: NAME_COL_KEY, operator: 'contains', value: nameQuery }],
-    })
-  }
-  const sorts = (view?.sorts ?? []).map((s) => ({
-    schemaId:  s.schemaId,
-    direction: s.direction,
-  }))
-  const result = await dbStore.queryEntries(
+  if (!view) return
+  const result = await dbStore.loadViewPage(
     props.blockId,
+    view.id,
     {
-      filter_groups,
-      sorts,
-      limit: isUnlimitedView.value ? undefined : displayLimit.value,
+      offset,
+      limit: isUnlimitedView.value ? null : limit,
+      search: nameSearchQuery.value.trim(),
     },
     queryResultKey,
+    append,
   )
-  if (seq !== _querySeq) return
+  if (activeView.value?.id !== view.id) return
   displayedEntries.value = result.entries
   totalEntries.value     = result.total
 }
 
-// Wire the stable reference so viewManager's onQueryNeeded works.
+/**
+ * Reload the range already loaded, after a change to the entries: the user's
+ * own, or one another client reported. At least one page is loaded, so a
+ * view that was empty shows a new entry.
+ */
+async function queryFromActiveView(): Promise<void> {
+  await _loadEntries(0, Math.max(PAGE_SIZE, displayedEntries.value.length), false)
+}
+
+/** Start over with the first page, after the view or its filters changed. */
 async function resetAndQuery(): Promise<void> {
-  displayLimit.value = INITIAL_DISPLAY_LIMIT
-  await queryFromActiveView()
+  await _loadEntries(0, PAGE_SIZE, false)
 }
 
 _resetQueryFn = resetAndQuery
 
-/**
- * Extend the displayed page by the given number of rows and re-query.
- * Does not reset — continues from the current position.
- */
+/** Load the next *increment* entries and add them below the loaded ones. */
 async function loadMore(increment: number): Promise<void> {
-  displayLimit.value += increment
-  await queryFromActiveView()
+  await _loadEntries(displayedEntries.value.length, increment, true)
 }
 
 // ── Composable: filter panel ──────────────────────────────────────────────────
@@ -755,23 +737,16 @@ function _onDbEntriesUpdated(e: Event): void {
   }
 }
 
+/**
+ * Another client, or a bilateral relation created from another database,
+ * changed this database's properties. The backend has already hidden new
+ * ones in every view, so the properties and the views are fetched again.
+ */
 async function _handleRemoteSchemaUpdate(): Promise<void> {
-  const knownIds = new Set(schemas.value.map((s) => s.id))
-  await dbStore.fetchSchemas(props.blockId)
-  const newSchemas = schemas.value.filter((s) => !knownIds.has(s.id))
-  if (newSchemas.length === 0) return
-
-  let dirty = false
-  for (const view of views.value) {
-    if (!view.hiddenColumns) view.hiddenColumns = []
-    for (const s of newSchemas) {
-      if (!view.hiddenColumns.includes(s.id)) {
-        view.hiddenColumns.push(s.id)
-        dirty = true
-      }
-    }
-  }
-  if (dirty) await saveViews()
+  await Promise.all([
+    dbStore.fetchSchemas(props.blockId),
+    viewsStore.refreshViews(props.blockId),
+  ])
 }
 
 function _onDbSchemaUpdated(e: Event): void {
@@ -784,87 +759,45 @@ function _onDbSchemaUpdated(e: Event): void {
   }
 }
 
-/**
- * A property added from the property section (side panel / full-page
- * entry view) must be hidden in every view of this database. That schema is
- * created on the same client, so it is already in the store by the time the
- * standard "remote schema" path runs — that path only reacts to
- * previously-unknown schemas and would do nothing here. BlockPropertySection
- * therefore emits this dedicated event so a live DatabaseBlock can sync its
- * in-memory views immediately. Persistence is owned by the dispatcher.
- */
-function _onHideSchemaInViews(e: Event): void {
-  const detail = (e as CustomEvent<{ databaseId?: string; schemaId?: string }>).detail
-  if (!detail || detail.databaseId !== props.blockId || !detail.schemaId) return
-  const schemaId = detail.schemaId
-  for (const view of views.value) {
-    if (!view.hiddenColumns) view.hiddenColumns = []
-    if (!view.hiddenColumns.includes(schemaId)) {
-      view.hiddenColumns.push(schemaId)
-    }
-  }
-}
-
 onMounted(async () => {
+  // The first request for a database's views also creates its system
+  // properties, so the properties are fetched once the views are there.
   await Promise.all([
     blockStore.fetchBlock(props.blockId),
-    blockStore.fetchPreferences(props.blockId),
-    dbStore.fetchSchemas(props.blockId),
+    viewsStore.fetchViews(props.blockId, placementId)
+      .then(() => dbStore.fetchSchemas(props.blockId)),
   ])
-
-  await dbStore.seedReadonlySchemas(props.blockId)
-
-  const rawViews    = blockStore.getPreference(props.blockId, PREF_VIEWS, null) as DatabaseView[] | null
-  const rawActiveId = blockStore.getPreference(props.blockId, PREF_ACTIVE_VIEW, null) as string | null
-
-  if (rawViews && Array.isArray(rawViews) && rawViews.length > 0) {
-    // Migrate legacy flat filters and missing viewType fields.
-    let migrated = false
-    for (const v of rawViews) {
-      if (!v.viewType) { v.viewType = 'table'; migrated = true }
-      if (!v.filterGroups) { v.filterGroups = []; migrated = true }
-      if (v.filters && v.filters.length > 0) {
-        v.filterGroups.push({
-          id: crypto.randomUUID(),
-          conjunction: 'and',
-          filters: v.filters,
-        })
-        v.filters = []
-        migrated = true
-      }
-    }
-    views.value = rawViews
-    activeViewId.value =
-      rawActiveId && rawViews.some((v) => v.id === rawActiveId)
-        ? rawActiveId
-        : rawViews[0].id
-    if (migrated) await saveViews()
-  } else {
-    const legacyWidths = blockStore.getPreference(props.blockId, 'col_widths', {}) as Record<string, number>
-    const defaultView  = buildDefaultView(legacyWidths)
-    views.value        = [defaultView]
-    activeViewId.value = defaultView.id
-    await saveViews()
-    await saveActiveViewId()
-  }
 
   syncColWidthsFromView(activeView.value)
   loadFoldState()
-  await queryFromActiveView()
+  await resetAndQuery()
   isLoading.value = false
   document.addEventListener('click', closeAllPanels)
   window.addEventListener(WS_BLOCK_EVENT, _onDbEntriesUpdated)
   window.addEventListener(WS_BLOCK_EVENT, _onDbSchemaUpdated)
-  window.addEventListener(DB_HIDE_SCHEMA_EVENT, _onHideSchemaInViews)
   window.addEventListener('resize', measureFrozenOffsets)
   nextTick(() => { _attachFrozenObserver(); measureFrozenOffsets() })
+
+  // From here on, whatever changes the active view – a tab click, a new or
+  // deleted view, a view removed by another client – loads its first page.
+  // So does a change of its type, since views on a time axis are not paged.
+  watch(
+    () => [activeView.value?.id, activeView.value?.viewType] as const,
+    ([id, type], [previousId, previousType]) => {
+      if (!id || (id === previousId && type === previousType)) return
+      if (id !== previousId) {
+        activeCell.value = null
+        syncColWidthsFromView(activeView.value)
+      }
+      resetAndQuery()
+    },
+  )
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', closeAllPanels)
   window.removeEventListener(WS_BLOCK_EVENT, _onDbEntriesUpdated)
   window.removeEventListener(WS_BLOCK_EVENT, _onDbSchemaUpdated)
-  window.removeEventListener(DB_HIDE_SCHEMA_EVENT, _onHideSchemaInViews)
   window.removeEventListener('resize', measureFrozenOffsets)
   _frozenRO?.disconnect()
   _frozenRO = null
@@ -876,32 +809,24 @@ onUnmounted(() => {
 
 // ── View switching (orchestrates multiple composables) ────────────────────────
 
+/** Show another view here; the watch on the active view loads it. */
 async function switchView(viewId: string): Promise<void> {
   if (activeViewId.value === viewId) return
   activeViewId.value = viewId
-  activeCell.value   = null
-  displayLimit.value = INITIAL_DISPLAY_LIMIT
-  syncColWidthsFromView(activeView.value)
   await saveActiveViewId()
-  await queryFromActiveView()
 }
 
 // ── Add schema ────────────────────────────────────────────────────────────────
 
 const showAddSchema = ref(false)
 
-async function onAddSchemaPanelClose(newSchemaId?: string): Promise<void> {
+/**
+ * The panel creates the property with the active view as the one it is
+ * visible in; the backend hides it in every other view, and the store reloads
+ * the views.
+ */
+function onAddSchemaPanelClose(): void {
   showAddSchema.value = false
-  if (!newSchemaId) return
-  let changed = false
-  for (const view of views.value) {
-    if (view.id === activeViewId.value) continue
-    if (!view.hiddenColumns.includes(newSchemaId)) {
-      view.hiddenColumns = [...view.hiddenColumns, newSchemaId]
-      changed = true
-    }
-  }
-  if (changed) await saveViews()
 }
 
 // ── Property settings modal ───────────────────────────────────────────────────
@@ -1291,12 +1216,15 @@ async function handleRelationChange(
 ): Promise<void> {
   await dbStore.upsertValue(props.blockId, entry.id, schema.id, value)
   if (schema.type === 'parent_item') {
-    // sub_item mirrors were updated server-side; refresh the full list so the
-    // tree rebuilds with the correct parent/child relationships.
+    // sub_item mirrors were updated server-side; reload so the tree rebuilds
+    // with the correct parent/child relationships.
     await queryFromActiveView()
     return
   }
   if (schema.type === 'relation' && schema.config?.direction === 'bilateral') {
+    // The mirror value was written server-side on the target entry. Views and
+    // side views of the target database reload on the WebSocket event that
+    // write broadcasts, and a side view fetches its entry fresh when opened.
     const targetId  = schema.config.target_database_id as string | undefined
     const refetches: Promise<unknown>[] = [
       dbStore.fetchSchemas(props.blockId),
@@ -1304,11 +1232,6 @@ async function handleRelationChange(
     ]
     if (targetId && targetId !== props.blockId) {
       refetches.push(dbStore.fetchSchemas(targetId))
-      // The bilateral mirror value was written server-side on the target
-      // entry. Without re-fetching the target database's entries, its cached
-      // values stay stale and any SideView opened on a linked target entry
-      // shows an empty synced relation until a full page reload.
-      refetches.push(dbStore.fetchEntries(targetId))
     }
     await Promise.all(refetches)
   }
@@ -1571,6 +1494,7 @@ function getEntryGroupKey(entry: DatabaseEntry, schema: PropertySchema): string 
   if (!val) return ''
   switch (schema.type) {
     case 'select': {
+      // Option ids; a combination of options forms a group of its own.
       const mode = (schema.config?.mode as string | undefined) ?? 'single'
       if (mode === 'multiple') {
         const opts = (val.options as string[] | undefined) ?? []
@@ -1612,14 +1536,25 @@ const tableGroups = computed<TableGroup[]>(() => {
 
   const groupMap = new Map<string, TableGroup>()
 
+  const options = schema.type === 'select' ? schemaOptions(schema) : []
+
+  /** What a group key reads as: option labels for select, else the key. */
+  function groupLabel(key: string): string {
+    if (key === '') return t('db.groupBy.ungrouped')
+    if (schema!.type === 'checkbox') {
+      return key === 'true' ? t('db.filter.checkboxTrue') : t('db.filter.checkboxFalse')
+    }
+    if (schema!.type === 'select') {
+      return key.split('\x00').map(id => optionLabel(options, id)).filter(Boolean).join(', ')
+        || t('db.groupBy.ungrouped')
+    }
+    return key
+  }
+
   for (const entry of filteredAndSortedEntries.value) {
     const key = getEntryGroupKey(entry, schema)
     if (!groupMap.has(key)) {
-      const label = key !== ''
-        ? (schema.type === 'checkbox'
-            ? (key === 'true' ? t('db.filter.checkboxTrue') : t('db.filter.checkboxFalse'))
-            : key)
-        : t('db.groupBy.ungrouped')
+      const label = groupLabel(key)
       groupMap.set(key, { key, label, entries: [], groupValue: groupKeyToValue(key, schema) })
     }
     groupMap.get(key)!.entries.push(entry)
@@ -1627,11 +1562,10 @@ const tableGroups = computed<TableGroup[]>(() => {
 
   let orderedKeys: string[]
   if (schema.type === 'select' && (schema.config?.mode as string | undefined) !== 'multiple') {
-    const rawOpts    = (schema.config?.options as unknown[] | undefined) ?? []
-    const optionLabels = rawOpts.map(o => normalizeSelectOption(o).label)
+    const optionIds = options.map(o => o.id)
     orderedKeys = [
-      ...optionLabels.filter(l => groupMap.has(l)),
-      ...[...groupMap.keys()].filter(k => k !== '' && !optionLabels.includes(k)),
+      ...optionIds.filter(id => groupMap.has(id)),
+      ...[...groupMap.keys()].filter(k => k !== '' && !optionIds.includes(k)),
       ...([''].filter(k => groupMap.has(k))),
     ]
   } else {
@@ -1820,7 +1754,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
             @dblclick.stop="startRenameView(view.id)"
           >
             <Icon :icon="viewTypeIcon(view.viewType)" width="12" height="12" class="db__tab-type-icon" />
-            {{ view.name }}
+            {{ viewDisplayName(view, t) }}
           </span>
           <div class="db__tab-menu-wrap">
             <button
@@ -2245,7 +2179,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                       @blur="saveNameEdit(entry)"
                       @keydown.enter.prevent="saveNameEdit(entry)"
                       @keydown.escape.prevent="editingNameId = null"
-                      @vue:mounted="($el: HTMLInputElement) => $el.focus()"
+                      @vue:mounted="(vnode: VNode) => (vnode.el as HTMLInputElement | null)?.focus()"
                     />
                     <div v-else class="db__name-cell">
                       <!-- Sub-item depth indent -->
@@ -2464,7 +2398,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                         @blur="saveNameEdit(entry)"
                         @keydown.enter.prevent="saveNameEdit(entry)"
                         @keydown.escape.prevent="editingNameId = null"
-                        @vue:mounted="($el: HTMLInputElement) => $el.focus()"
+                        @vue:mounted="(vnode: VNode) => (vnode.el as HTMLInputElement | null)?.focus()"
                       />
                       <div v-else class="db__name-cell">
                         <div class="db__entry-icon-wrap">
@@ -2714,6 +2648,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
     <AddSchemaPanel
       v-if="showAddSchema"
       :database-id="blockId"
+      :visible-in-view-id="activeViewId || undefined"
       @close="onAddSchemaPanelClose"
     />
 

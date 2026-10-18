@@ -27,6 +27,7 @@ import type { DatabaseView, PropertySchema, ViewType } from '@/stores/database'
 import { useDatabaseStore, clampFrozenColumns, MAX_FROZEN_COLUMNS, NAME_COL_KEY } from '@/stores/database'
 import { getPropertyTypeIcon, isReadonlyPropertyType } from '@/stores/propertyTypes'
 import { orderAndSplitColumns } from './viewSettingsHelpers'
+import { viewDisplayName } from '@/composables/useViewManager'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
@@ -279,7 +280,7 @@ function hideAll() {
         <span class="vsm__header-title">
           <Icon icon="mdi:tune-variant" width="15" height="15" />
           {{ t('db.viewSettings.title') }}
-          <span class="vsm__header-view-name">— {{ view.name }}</span>
+          <span class="vsm__header-view-name">— {{ viewDisplayName(view, t) }}</span>
         </span>
         <button class="vsm__close" @click="emit('close')" :aria-label="t('actions.cancel')">
           <Icon icon="mdi:close" width="15" height="15" />

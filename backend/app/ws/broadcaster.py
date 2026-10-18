@@ -5,9 +5,10 @@ Serialises a block mutation event into the wire envelope and forwards it to the
 WebSocket connections that are allowed to see it.
 
 This is the single call-site for WebSocket push, and the single place where the
-question "who may see this event?" is answered. The router layer calls
-``broadcast_block_event`` after each committed mutation; the service layer
-remains synchronous and DB-only.
+question "who may see this event?" is answered. Request handlers are
+synchronous and run in worker threads; they call ``emit_block_event`` after
+each committed mutation. ``broadcast_block_event`` is the counterpart for code
+running on the event loop. The service layer remains synchronous and DB-only.
 
 Scoping
 -------
@@ -50,11 +51,19 @@ Wire format (server → client):
         }
     }
 """
+import functools
 import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Iterable, Optional, Set
+from typing import TYPE_CHECKING, Any, Iterable, Optional, Set
+
+import anyio
+import anyio.from_thread
+import anyio.to_thread
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -82,49 +91,101 @@ def _allowed_user_ids(
     *,
     event_type: str,
     block_id: Optional[str],
+    db: Optional["Session"] = None,
 ) -> Set[uuid.UUID]:
     """
     Return the subset of *user_ids* permitted to receive this event.
 
-    One database session, one lookup per distinct account. Any account that
-    cannot be resolved to an active user is dropped: a session may outlive the
-    account it was issued to, and a WebSocket held open across a deactivation
-    must not keep receiving.
+    Any account that cannot be resolved to an active user is dropped: a
+    session may outlive the account it was issued to, and a WebSocket held
+    open across a deactivation must not keep receiving.
+
+    The cost does not grow with the number of connected accounts: all of them
+    are loaded in one query, and the permission of the block is resolved once
+    and then applied to each account, since it does not depend on who asks.
+
+    *db* is the session to use. Request handlers pass their own, so the check
+    runs in the request's transaction and connection; without one, a
+    short-lived session is opened.
     """
+    if db is not None:
+        return _allowed_in(db, user_ids, event_type=event_type, block_id=block_id)
+
     # Imported inside the call so the module attribute is read at call time.
     # The test fixture redirects SessionLocal on the module, which a name bound
     # at import time would not see.
     import app.database.database as db_module
+
+    with db_module.SessionLocal() as own_db:
+        return _allowed_in(own_db, user_ids, event_type=event_type, block_id=block_id)
+
+
+def _allowed_in(
+    db: "Session",
+    user_ids: Iterable[uuid.UUID],
+    *,
+    event_type: str,
+    block_id: Optional[str],
+) -> Set[uuid.UUID]:
+    """Evaluate the three scoping rules for *user_ids* inside *db*."""
+    from sqlalchemy import select
+
     from app.permissions import repository as perm_repo
-    from app.users import repository as user_repo
+    from app.users.model import User
+
+    candidates: Set[uuid.UUID] = set()
+    for user_id in user_ids:
+        try:
+            candidates.add(uuid.UUID(str(user_id)))
+        except (AttributeError, TypeError, ValueError):
+            # A malformed identifier cannot name an account.
+            continue
+    if not candidates:
+        return set()
+
+    active = [
+        user
+        for user in db.scalars(select(User).where(User.id.in_(candidates)))
+        if user.is_active
+    ]
+    if not active:
+        return set()
+
+    if event_type == PURGE_EVENT_TYPE:
+        return {user.id for user in active}
 
     target = _coerce_block_id(block_id)
-    allowed: Set[uuid.UUID] = set()
+    if target is None:
+        # Workspace-level event, or a block_id that will not parse.
+        return {user.id for user in active if user.role == "admin"}
 
-    with db_module.SessionLocal() as db:
-        for user_id in user_ids:
-            try:
-                user = user_repo.get_by_id(db, user_id)
-            except Exception:
-                # A malformed identifier cannot name an account.
-                user = None
-            if user is None or not user.is_active:
-                continue
+    if all(user.role == "admin" for user in active):
+        # Admins pass every check; resolving the permission would be wasted.
+        return {user.id for user in active}
 
-            if event_type == PURGE_EVENT_TYPE:
-                allowed.add(user_id)
-                continue
+    effective = perm_repo.resolve_effective_permissions(db, [target])[target]
+    return {user.id for user in active if effective.admits(user)}
 
-            if target is None:
-                # Workspace-level event, or a block_id that will not parse.
-                if user.role == "admin":
-                    allowed.add(user_id)
-                continue
 
-            if perm_repo.can_user_access(db, target, user):
-                allowed.add(user_id)
-
-    return allowed
+def _envelope(
+    *,
+    event_type: str,
+    block_id: Optional[str],
+    before: Optional[Any],
+    after: Optional[Any],
+    event_id: Optional[str],
+    created_at: Optional[str],
+) -> str:
+    """Serialise one event into the wire format described in the module docstring."""
+    payload = {
+        "event_id": event_id,
+        "event_type": event_type,
+        "block_id": block_id,
+        "before": before,
+        "after": after,
+        "created_at": created_at or _iso_now(),
+    }
+    return json.dumps({"type": "block.event", "payload": payload})
 
 
 async def broadcast_block_event(
@@ -139,8 +200,15 @@ async def broadcast_block_event(
     """
     Broadcast a block mutation event to the clients permitted to see it.
 
-    Returns the number of connections reached. A no-op when nobody is
-    connected, so it stays safe to call unconditionally after every commit.
+    For callers that run on the event loop. Returns the number of connections
+    the event was queued for; the manager sends it from there without anyone
+    waiting on the clients. A no-op when nobody is connected, so it stays safe
+    to call unconditionally after every commit.
+
+    The recipient check needs the database, which is synchronous; it runs in
+    a worker thread so the event loop keeps serving other requests and the
+    open WebSocket connections meanwhile. Request handlers, which run in a
+    worker thread already, use :func:`emit_block_event` instead.
 
     Parameters
     ----------
@@ -168,24 +236,89 @@ async def broadcast_block_event(
         # Nobody is listening; do not open a database session to find that out.
         return 0
 
-    payload = {
-        "event_id": event_id,
-        "event_type": event_type,
-        "block_id": block_id,
-        "before": before,
-        "after": after,
-        "created_at": created_at or _iso_now(),
-    }
-    message = json.dumps({"type": "block.event", "payload": payload})
+    message = _envelope(
+        event_type=event_type,
+        block_id=block_id,
+        before=before,
+        after=after,
+        event_id=event_id,
+        created_at=created_at,
+    )
 
-    allowed = _allowed_user_ids(
-        manager.user_ids(), event_type=event_type, block_id=block_id
+    allowed = await anyio.to_thread.run_sync(
+        functools.partial(
+            _allowed_user_ids,
+            manager.user_ids(),
+            event_type=event_type,
+            block_id=block_id,
+        )
     )
     if not allowed:
         return 0
 
     # A connection opened between the lookup above and the send below is only
     # reached if its account was already admitted, so the race resolves closed.
-    return await manager.broadcast(
+    return manager.broadcast(
         message, recipient_filter=lambda user_id: user_id in allowed
     )
+
+
+def emit_block_event(
+    *,
+    event_type: str,
+    block_id: Optional[str],
+    before: Optional[Any],
+    after: Optional[Any],
+    event_id: Optional[str] = None,
+    created_at: Optional[str] = None,
+    db: Optional["Session"] = None,
+) -> int:
+    """
+    Broadcast a block mutation event from a synchronous request handler.
+
+    Request handlers run in AnyIO's worker threads so that their blocking
+    database work never stalls the event loop. This function performs the
+    recipient check in that same thread, using the handler's session when
+    *db* is given, and hands the event to the event loop, which queues it for
+    each recipient. It returns as soon as the event is queued and never waits
+    for a client to read it: the handler holds a worker thread and a database
+    connection, and one client that stopped reading must not keep them.
+
+    Parameters are those of :func:`broadcast_block_event`, plus *db*. Returns
+    the number of connections the event was queued for.
+
+    Called outside a worker thread there is no event loop to hand the send
+    to. The event is then dropped with a warning instead of failing a request
+    whose changes are already committed.
+    """
+    from app.ws.manager import manager
+
+    if manager.active_count == 0:
+        return 0
+
+    message = _envelope(
+        event_type=event_type,
+        block_id=block_id,
+        before=before,
+        after=after,
+        event_id=event_id,
+        created_at=created_at,
+    )
+    allowed = _allowed_user_ids(
+        manager.user_ids(), event_type=event_type, block_id=block_id, db=db
+    )
+    if not allowed:
+        return 0
+
+    send = functools.partial(
+        manager.broadcast, message, recipient_filter=lambda user_id: user_id in allowed
+    )
+    try:
+        return anyio.from_thread.run_sync(send)
+    except RuntimeError:
+        logger.warning(
+            "Dropped %s event for %s: emit_block_event was called outside a "
+            "worker thread, so no event loop was available to send it.",
+            event_type, block_id,
+        )
+        return 0

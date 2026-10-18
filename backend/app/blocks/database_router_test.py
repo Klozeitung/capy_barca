@@ -1,7 +1,7 @@
 """
 Tests for the database router.
 
-All tests run against the isolated in-memory SQLite database provided by
+All tests run against the isolated PostgreSQL test database provided by
 the autouse ``isolated_db`` fixture in conftest.py, and exercise the HTTP
 layer via the ``http_client`` fixture defined there.
 """
@@ -196,7 +196,10 @@ def test_create_schema_with_config(http_client):
         f"/api/databases/{db_id}/schemas",
         json={"name": "Status", "type": "select", "config": {"options": ["Todo", "Done"]}},
     )
-    assert resp.json()["config"] == {"options": ["Todo", "Done"]}
+    # Plain labels are stored as options with ids.
+    options = resp.json()["config"]["options"]
+    assert [o["label"] for o in options] == ["Todo", "Done"]
+    assert all(o["id"] for o in options)
 
 
 def test_create_schema_duplicate_name_returns_409(http_client):
@@ -254,7 +257,11 @@ def test_update_schema_changes_name(http_client):
 def test_update_schema_changes_config(http_client):
     db_id = _create_database(http_client)
     schema = _create_schema(http_client, db_id)
-    new_config = {"options": ["Low", "Medium", "High"]}
+    new_config = {"options": [
+        {"id": "o-low", "label": "Low"},
+        {"id": "o-mid", "label": "Medium"},
+        {"id": "o-high", "label": "High"},
+    ]}
     updated = http_client.patch(
         f"/api/databases/{db_id}/schemas/{schema['id']}",
         json={"config": new_config},
@@ -1726,8 +1733,8 @@ def test_query_entries_name_contains_filter(http_client):
     e1 = _create_entry(http_client, db_id)
     e2 = _create_entry(http_client, db_id)
     # Set titles via block update
-    http_client.patch(f"/api/blocks/{e1['id']}", json={"content": {"title": "Napoleon"}})
-    http_client.patch(f"/api/blocks/{e2['id']}", json={"content": {"title": "Wellington"}})
+    http_client.patch(f"/api/blocks/{e1['id']}", json={"content": {"title": "Chameleon"}})
+    http_client.patch(f"/api/blocks/{e2['id']}", json={"content": {"title": "Falcon"}})
 
     result = _query(http_client, db_id, filters=[
         {"schema_id": "__name__", "operator": "contains", "value": "leon"}
@@ -1739,10 +1746,10 @@ def test_query_entries_name_contains_filter(http_client):
 def test_query_entries_name_eq_filter_case_insensitive(http_client):
     db_id = _create_database(http_client)
     e1 = _create_entry(http_client, db_id)
-    http_client.patch(f"/api/blocks/{e1['id']}", json={"content": {"title": "Napoleon"}})
+    http_client.patch(f"/api/blocks/{e1['id']}", json={"content": {"title": "Chameleon"}})
 
     result = _query(http_client, db_id, filters=[
-        {"schema_id": "__name__", "operator": "eq", "value": "napoleon"}
+        {"schema_id": "__name__", "operator": "eq", "value": "chameleon"}
     ])
     assert result["total"] == 1
 
@@ -1808,7 +1815,7 @@ def test_query_entries_is_not_empty_filter(http_client):
 
 def test_query_entries_multiple_filters_anded(http_client):
     db_id = _create_database(http_client)
-    schema = _create_schema(http_client, db_id, name="Rank", type_="number")
+    schema = _create_schema(http_client, db_id, name="Score", type_="number")
     e1 = _create_entry(http_client, db_id)
     e2 = _create_entry(http_client, db_id)
     http_client.patch(f"/api/blocks/{e1['id']}", json={"content": {"title": "Alpha"}})
@@ -1840,7 +1847,7 @@ def test_query_entries_sort_by_name_asc(http_client):
 
 def test_query_entries_sort_by_number_schema_desc(http_client):
     db_id = _create_database(http_client)
-    schema = _create_schema(http_client, db_id, name="Rank", type_="number")
+    schema = _create_schema(http_client, db_id, name="Score", type_="number")
     e1 = _create_entry(http_client, db_id)
     e2 = _create_entry(http_client, db_id)
     e3 = _create_entry(http_client, db_id)
@@ -2287,7 +2294,13 @@ def test_update_schema_nuance_propagates_to_bilateral_mirror(http_client):
     mirror = next(s for s in schemas_b if s["name"] == "Linked Back")
     mn = mirror["config"]["nuance"]
     assert mn["enabled"] is True
-    assert mn["options"] == [{"label": "successfully"}]
+    source = next(
+        s for s in http_client.get(f"/api/databases/{db_a}/schemas").json()
+        if s["id"] == schema["id"]
+    )
+    # Both sides share the option set, ids included.
+    assert mn["options"] == source["config"]["nuance"]["options"]
+    assert [o["label"] for o in mn["options"]] == ["successfully"]
     # The mirror's own framing is the source's synced side.
     assert mn["affix1"] == "held by"
     assert mn["orientation"] == "appended"
@@ -3039,7 +3052,7 @@ def test_upsert_pings_automation_engine(http_client, monkeypatch):
 
     received: list = []
 
-    async def fake_receive(event, db):
+    def fake_receive(event, db):
         received.append(event)
 
     monkeypatch.setattr(dr, "automation_receive", fake_receive)
@@ -3067,7 +3080,7 @@ def test_upsert_engine_failure_does_not_break_response(http_client, monkeypatch)
     """
     import app.blocks.database_router as dr
 
-    async def exploding_receive(event, db):
+    def exploding_receive(event, db):
         raise RuntimeError("engine on fire")
 
     monkeypatch.setattr(dr, "automation_receive", exploding_receive)
@@ -3425,13 +3438,13 @@ def test_resolve_titles_resolves_requested_ids(http_client):
     db_id = _create_database(http_client)
     e1 = _create_entry(http_client, db_id)
     e2 = _create_entry(http_client, db_id)
-    _set_title(http_client, e1["id"], "Napoleon")
-    _set_title(http_client, e2["id"], "Wellington")
+    _set_title(http_client, e1["id"], "Chameleon")
+    _set_title(http_client, e2["id"], "Falcon")
 
     result = _resolve_titles(http_client, db_id, [e1["id"], e2["id"]])
     by_id = {r["id"]: r for r in result}
-    assert by_id[e1["id"]]["title"] == "Napoleon"
-    assert by_id[e2["id"]]["title"] == "Wellington"
+    assert by_id[e1["id"]]["title"] == "Chameleon"
+    assert by_id[e2["id"]]["title"] == "Falcon"
     assert by_id[e1["id"]]["database_id"] == db_id
 
 
@@ -3642,77 +3655,77 @@ def _keyed_relation_config(target_db_id, key_property_id, direction="unilateral"
     }
 
 
-def _plot_setup(http_client, direction="bilateral", mirror_name="Characters"):
+def _keyed_setup(http_client, direction="bilateral", mirror_name="Mirror Link"):
     """
-    Build the model case: a character database keyed on a plotbeat date.
+    Build the model case: database A relates to database B, keyed on a date in B.
 
-    Returns ``(cdb, pdb, date_schema, plot_schema)``.
+    Returns ``(adb, bdb, date_schema, link_schema)``.
     """
-    cdb = _create_database(http_client, title="Characters")
-    pdb = _create_database(http_client, title="Plotbeats")
-    date_schema = _create_schema(http_client, pdb, name="Date", type_="date")
-    plot_schema = _create_relation_schema(
-        http_client, cdb, pdb, name="Plot",
+    adb = _create_database(http_client, title="Database A")
+    bdb = _create_database(http_client, title="Database B")
+    date_schema = _create_schema(http_client, bdb, name="Date", type_="date")
+    link_schema = _create_relation_schema(
+        http_client, adb, bdb, name="Link",
         direction=direction, mirror_name=mirror_name,
     )
-    return cdb, pdb, date_schema, plot_schema
+    return adb, bdb, date_schema, link_schema
 
 
 # ── Mode exclusivity ──────────────────────────────────────────────────────────
 
 
 def test_create_keyed_relation_succeeds(http_client):
-    cdb = _create_database(http_client)
-    pdb = _create_database(http_client)
-    date_schema = _create_schema(http_client, pdb, name="Date", type_="date")
+    adb = _create_database(http_client)
+    bdb = _create_database(http_client)
+    date_schema = _create_schema(http_client, bdb, name="Date", type_="date")
 
     schema = _create_schema(
-        http_client, cdb, name="Plot", type_="relation",
-        config=_keyed_relation_config(pdb, date_schema["id"]),
+        http_client, adb, name="Link", type_="relation",
+        config=_keyed_relation_config(bdb, date_schema["id"]),
     )
     assert schema["config"]["keying"]["enabled"] is True
     assert schema["config"]["keying"]["key_property_id"] == date_schema["id"]
 
 
 def test_create_keyed_and_timelined_relation_returns_422(http_client):
-    cdb = _create_database(http_client)
-    pdb = _create_database(http_client)
-    date_schema = _create_schema(http_client, pdb, name="Date", type_="date")
+    adb = _create_database(http_client)
+    bdb = _create_database(http_client)
+    date_schema = _create_schema(http_client, bdb, name="Date", type_="date")
 
-    config = _keyed_relation_config(pdb, date_schema["id"])
+    config = _keyed_relation_config(bdb, date_schema["id"])
     config["hasTimeline"] = True
     resp = http_client.post(
-        f"/api/databases/{cdb}/schemas",
-        json={"name": "Plot", "type": "relation", "config": config},
+        f"/api/databases/{adb}/schemas",
+        json={"name": "Link", "type": "relation", "config": config},
     )
     assert resp.status_code == 422
 
 
 def test_create_keyed_and_nuanced_relation_returns_422(http_client):
-    cdb = _create_database(http_client)
-    pdb = _create_database(http_client)
-    date_schema = _create_schema(http_client, pdb, name="Date", type_="date")
+    adb = _create_database(http_client)
+    bdb = _create_database(http_client)
+    date_schema = _create_schema(http_client, bdb, name="Date", type_="date")
 
-    config = _keyed_relation_config(pdb, date_schema["id"])
+    config = _keyed_relation_config(bdb, date_schema["id"])
     config["nuance"] = {"enabled": True, "options": [{"label": "reluctantly"}]}
     resp = http_client.post(
-        f"/api/databases/{cdb}/schemas",
-        json={"name": "Plot", "type": "relation", "config": config},
+        f"/api/databases/{adb}/schemas",
+        json={"name": "Link", "type": "relation", "config": config},
     )
     assert resp.status_code == 422
 
 
 def test_enable_keying_on_timelined_relation_returns_422(http_client):
-    cdb, pdb, date_schema, plot = _plot_setup(http_client, direction="unilateral",
+    adb, bdb, date_schema, link = _keyed_setup(http_client, direction="unilateral",
                                               mirror_name=None)
     http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
-        json={"config": {**plot["config"], "hasTimeline": True}},
+        f"/api/databases/{adb}/schemas/{link['id']}",
+        json={"config": {**link["config"], "hasTimeline": True}},
     )
     resp = http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
+        f"/api/databases/{adb}/schemas/{link['id']}",
         json={"config": {
-            **plot["config"],
+            **link["config"],
             "hasTimeline": True,
             "keying": _keying(date_schema["id"]),
         }},
@@ -3721,16 +3734,16 @@ def test_enable_keying_on_timelined_relation_returns_422(http_client):
 
 
 def test_enable_timeline_on_keyed_relation_returns_422(http_client):
-    cdb, pdb, date_schema, plot = _plot_setup(http_client, direction="unilateral",
+    adb, bdb, date_schema, link = _keyed_setup(http_client, direction="unilateral",
                                               mirror_name=None)
     http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
-        json={"config": {**plot["config"], "keying": _keying(date_schema["id"])}},
+        f"/api/databases/{adb}/schemas/{link['id']}",
+        json={"config": {**link["config"], "keying": _keying(date_schema["id"])}},
     )
     resp = http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
+        f"/api/databases/{adb}/schemas/{link['id']}",
         json={"config": {
-            **plot["config"],
+            **link["config"],
             "keying": _keying(date_schema["id"]),
             "hasTimeline": True,
         }},
@@ -3740,30 +3753,30 @@ def test_enable_timeline_on_keyed_relation_returns_422(http_client):
 
 def test_rejected_mode_combination_leaves_schema_untouched(http_client):
     """The gate runs before any write, so a 422 must not persist anything."""
-    cdb, pdb, date_schema, plot = _plot_setup(http_client, direction="unilateral",
+    adb, bdb, date_schema, link = _keyed_setup(http_client, direction="unilateral",
                                               mirror_name=None)
     http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
+        f"/api/databases/{adb}/schemas/{link['id']}",
         json={"config": {
-            **plot["config"],
+            **link["config"],
             "keying": _keying(date_schema["id"]),
             "hasTimeline": True,
         }},
     )
-    schemas = http_client.get(f"/api/databases/{cdb}/schemas").json()
-    stored = next(s for s in schemas if s["id"] == plot["id"])
+    schemas = http_client.get(f"/api/databases/{adb}/schemas").json()
+    stored = next(s for s in schemas if s["id"] == link["id"])
     assert stored["config"].get("hasTimeline") in (None, False)
     assert stored["config"].get("keying", {}).get("enabled") is not True
 
 
 def test_disabled_keying_may_coexist_with_timeline(http_client):
     """Only an *enabled* keying block is exclusive; a reset one is inert."""
-    cdb, pdb, date_schema, plot = _plot_setup(http_client, direction="unilateral",
+    adb, bdb, date_schema, link = _keyed_setup(http_client, direction="unilateral",
                                               mirror_name=None)
     resp = http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
+        f"/api/databases/{adb}/schemas/{link['id']}",
         json={"config": {
-            **plot["config"],
+            **link["config"],
             "keying": {"enabled": False},
             "hasTimeline": True,
         }},
@@ -3776,34 +3789,34 @@ def test_disabled_keying_may_coexist_with_timeline(http_client):
 
 def test_timeline_on_mirror_of_keyed_relation_returns_422(http_client):
     """A keyed side restricts the other side to vanilla or keyed."""
-    cdb, pdb, date_schema, plot = _plot_setup(http_client)
+    adb, bdb, date_schema, link = _keyed_setup(http_client)
     http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
-        json={"config": {**plot["config"], "keying": _keying(date_schema["id"])}},
+        f"/api/databases/{adb}/schemas/{link['id']}",
+        json={"config": {**link["config"], "keying": _keying(date_schema["id"])}},
     )
     mirror = next(
-        s for s in http_client.get(f"/api/databases/{pdb}/schemas").json()
-        if s["name"] == "Characters"
+        s for s in http_client.get(f"/api/databases/{bdb}/schemas").json()
+        if s["name"] == "Mirror Link"
     )
     resp = http_client.patch(
-        f"/api/databases/{pdb}/schemas/{mirror['id']}",
+        f"/api/databases/{bdb}/schemas/{mirror['id']}",
         json={"config": {**mirror["config"], "hasTimeline": True}},
     )
     assert resp.status_code == 422
 
 
 def test_nuance_on_mirror_of_keyed_relation_returns_422(http_client):
-    cdb, pdb, date_schema, plot = _plot_setup(http_client)
+    adb, bdb, date_schema, link = _keyed_setup(http_client)
     http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
-        json={"config": {**plot["config"], "keying": _keying(date_schema["id"])}},
+        f"/api/databases/{adb}/schemas/{link['id']}",
+        json={"config": {**link["config"], "keying": _keying(date_schema["id"])}},
     )
     mirror = next(
-        s for s in http_client.get(f"/api/databases/{pdb}/schemas").json()
-        if s["name"] == "Characters"
+        s for s in http_client.get(f"/api/databases/{bdb}/schemas").json()
+        if s["name"] == "Mirror Link"
     )
     resp = http_client.patch(
-        f"/api/databases/{pdb}/schemas/{mirror['id']}",
+        f"/api/databases/{bdb}/schemas/{mirror['id']}",
         json={"config": {
             **mirror["config"],
             "nuance": {"enabled": True, "options": [{"label": "briefly"}]},
@@ -3818,62 +3831,62 @@ def test_keying_on_mirror_of_timelined_relation_returns_422(http_client):
     Timeline propagates bilaterally, so a keyed mirror of a timelined relation
     is refused on the mirror side as well.
     """
-    cdb, pdb, date_schema, plot = _plot_setup(http_client)
+    adb, bdb, date_schema, link = _keyed_setup(http_client)
     http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
-        json={"config": {**plot["config"], "hasTimeline": True}},
+        f"/api/databases/{adb}/schemas/{link['id']}",
+        json={"config": {**link["config"], "hasTimeline": True}},
     )
     mirror = next(
-        s for s in http_client.get(f"/api/databases/{pdb}/schemas").json()
-        if s["name"] == "Characters"
+        s for s in http_client.get(f"/api/databases/{bdb}/schemas").json()
+        if s["name"] == "Mirror Link"
     )
-    rank = _create_schema(http_client, cdb, name="Rank", type_="number")
+    score = _create_schema(http_client, adb, name="Score", type_="number")
     resp = http_client.patch(
-        f"/api/databases/{pdb}/schemas/{mirror['id']}",
-        json={"config": {**mirror["config"], "keying": _keying(rank["id"])}},
+        f"/api/databases/{bdb}/schemas/{mirror['id']}",
+        json={"config": {**mirror["config"], "keying": _keying(score["id"])}},
     )
     assert resp.status_code == 422
 
 
 def test_both_sides_keyed_independently_is_allowed(http_client):
     """
-    The intended pairing: characters ordered chronologically on one side,
-    beats ordered by cast rank on the other. Two read-side pointers over the
+    The intended pairing: entries of A ordered chronologically on one side,
+    entries of B ordered by score on the other. Two read-side pointers over the
     same untouched edge set.
     """
-    cdb, pdb, date_schema, plot = _plot_setup(http_client)
-    rank = _create_schema(http_client, cdb, name="Rank", type_="number")
+    adb, bdb, date_schema, link = _keyed_setup(http_client)
+    score = _create_schema(http_client, adb, name="Score", type_="number")
 
     resp_a = http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
-        json={"config": {**plot["config"], "keying": _keying(date_schema["id"])}},
+        f"/api/databases/{adb}/schemas/{link['id']}",
+        json={"config": {**link["config"], "keying": _keying(date_schema["id"])}},
     )
     assert resp_a.status_code == 200
 
     mirror = next(
-        s for s in http_client.get(f"/api/databases/{pdb}/schemas").json()
-        if s["name"] == "Characters"
+        s for s in http_client.get(f"/api/databases/{bdb}/schemas").json()
+        if s["name"] == "Mirror Link"
     )
     resp_b = http_client.patch(
-        f"/api/databases/{pdb}/schemas/{mirror['id']}",
-        json={"config": {**mirror["config"], "keying": _keying(rank["id"])}},
+        f"/api/databases/{bdb}/schemas/{mirror['id']}",
+        json={"config": {**mirror["config"], "keying": _keying(score["id"])}},
     )
     assert resp_b.status_code == 200
 
     mirror_after = next(
-        s for s in http_client.get(f"/api/databases/{pdb}/schemas").json()
+        s for s in http_client.get(f"/api/databases/{bdb}/schemas").json()
         if s["id"] == mirror["id"]
     )
-    assert mirror_after["config"]["keying"]["key_property_id"] == rank["id"]
+    assert mirror_after["config"]["keying"]["key_property_id"] == score["id"]
 
 
 def test_keying_lock_does_not_affect_unilateral_relations(http_client):
     """A unilateral relation has no opposite side to lock."""
-    cdb, pdb, date_schema, plot = _plot_setup(http_client, direction="unilateral",
+    adb, bdb, date_schema, link = _keyed_setup(http_client, direction="unilateral",
                                               mirror_name=None)
     resp = http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
-        json={"config": {**plot["config"], "keying": _keying(date_schema["id"])}},
+        f"/api/databases/{adb}/schemas/{link['id']}",
+        json={"config": {**link["config"], "keying": _keying(date_schema["id"])}},
     )
     assert resp.status_code == 200
 
@@ -3887,88 +3900,88 @@ def test_keying_does_not_propagate_to_mirror(http_client):
     the side that configured it. Propagating it would also write a
     key_property_id from one database into a relation pointing at the other.
     """
-    cdb, pdb, date_schema, plot = _plot_setup(http_client)
+    adb, bdb, date_schema, link = _keyed_setup(http_client)
     http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
-        json={"config": {**plot["config"], "keying": _keying(date_schema["id"])}},
+        f"/api/databases/{adb}/schemas/{link['id']}",
+        json={"config": {**link["config"], "keying": _keying(date_schema["id"])}},
     )
     mirror = next(
-        s for s in http_client.get(f"/api/databases/{pdb}/schemas").json()
-        if s["name"] == "Characters"
+        s for s in http_client.get(f"/api/databases/{bdb}/schemas").json()
+        if s["name"] == "Mirror Link"
     )
     assert mirror["config"].get("keying", {}).get("enabled") is not True
 
 
 def test_keying_does_not_alter_stored_related_ids(http_client):
     """Sorting is a view transform; the stored edge order stays untouched."""
-    cdb, pdb, date_schema, plot = _plot_setup(http_client, direction="unilateral",
+    adb, bdb, date_schema, link = _keyed_setup(http_client, direction="unilateral",
                                               mirror_name=None)
-    character = _create_entry(http_client, cdb)
-    beat_late = _create_entry(http_client, pdb)
-    beat_early = _create_entry(http_client, pdb)
-    _upsert_value(http_client, pdb, beat_late["id"], date_schema["id"],
+    source_entry = _create_entry(http_client, adb)
+    item_late = _create_entry(http_client, bdb)
+    item_early = _create_entry(http_client, bdb)
+    _upsert_value(http_client, bdb, item_late["id"], date_schema["id"],
                   {"start": "2140-01-01"})
-    _upsert_value(http_client, pdb, beat_early["id"], date_schema["id"],
+    _upsert_value(http_client, bdb, item_early["id"], date_schema["id"],
                   {"start": "2130-01-01"})
 
     # Linked in reverse chronological order.
-    _upsert_value(http_client, cdb, character["id"], plot["id"],
-                  {"related_ids": [beat_late["id"], beat_early["id"]]})
+    _upsert_value(http_client, adb, source_entry["id"], link["id"],
+                  {"related_ids": [item_late["id"], item_early["id"]]})
 
     http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
-        json={"config": {**plot["config"], "keying": _keying(date_schema["id"])}},
+        f"/api/databases/{adb}/schemas/{link['id']}",
+        json={"config": {**link["config"], "keying": _keying(date_schema["id"])}},
     )
 
-    entries = http_client.get(f"/api/databases/{cdb}/entries").json()
-    row = next(e for e in entries if e["id"] == character["id"])
-    assert row["values"][plot["id"]]["related_ids"] == [
-        beat_late["id"], beat_early["id"],
+    entries = http_client.get(f"/api/databases/{adb}/entries").json()
+    row = next(e for e in entries if e["id"] == source_entry["id"])
+    assert row["values"][link["id"]]["related_ids"] == [
+        item_late["id"], item_early["id"],
     ]
 
 
 def test_reverting_keyed_relation_to_vanilla_restores_insertion_order(http_client):
-    cdb, pdb, date_schema, plot = _plot_setup(http_client, direction="unilateral",
+    adb, bdb, date_schema, link = _keyed_setup(http_client, direction="unilateral",
                                               mirror_name=None)
-    character = _create_entry(http_client, cdb)
-    beat_a = _create_entry(http_client, pdb)
-    beat_b = _create_entry(http_client, pdb)
-    _upsert_value(http_client, cdb, character["id"], plot["id"],
-                  {"related_ids": [beat_b["id"], beat_a["id"]]})
+    source_entry = _create_entry(http_client, adb)
+    item_a = _create_entry(http_client, bdb)
+    item_b = _create_entry(http_client, bdb)
+    _upsert_value(http_client, adb, source_entry["id"], link["id"],
+                  {"related_ids": [item_b["id"], item_a["id"]]})
 
     http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
-        json={"config": {**plot["config"], "keying": _keying(date_schema["id"])}},
+        f"/api/databases/{adb}/schemas/{link['id']}",
+        json={"config": {**link["config"], "keying": _keying(date_schema["id"])}},
     )
     http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
-        json={"config": {**plot["config"], "keying": {"enabled": False}}},
+        f"/api/databases/{adb}/schemas/{link['id']}",
+        json={"config": {**link["config"], "keying": {"enabled": False}}},
     )
 
-    entries = http_client.get(f"/api/databases/{cdb}/entries").json()
-    row = next(e for e in entries if e["id"] == character["id"])
-    assert row["values"][plot["id"]]["related_ids"] == [beat_b["id"], beat_a["id"]]
+    entries = http_client.get(f"/api/databases/{adb}/entries").json()
+    row = next(e for e in entries if e["id"] == source_entry["id"])
+    assert row["values"][link["id"]]["related_ids"] == [item_b["id"], item_a["id"]]
 
 
 def test_bilateral_sync_still_works_on_keyed_relation(http_client):
     """Keying must not disturb the mirror write on value upsert."""
-    cdb, pdb, date_schema, plot = _plot_setup(http_client)
+    adb, bdb, date_schema, link = _keyed_setup(http_client)
     http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
-        json={"config": {**plot["config"], "keying": _keying(date_schema["id"])}},
+        f"/api/databases/{adb}/schemas/{link['id']}",
+        json={"config": {**link["config"], "keying": _keying(date_schema["id"])}},
     )
-    character = _create_entry(http_client, cdb)
-    beat = _create_entry(http_client, pdb)
-    _upsert_value(http_client, cdb, character["id"], plot["id"],
-                  {"related_ids": [beat["id"]]})
+    source_entry = _create_entry(http_client, adb)
+    item = _create_entry(http_client, bdb)
+    _upsert_value(http_client, adb, source_entry["id"], link["id"],
+                  {"related_ids": [item["id"]]})
 
     mirror = next(
-        s for s in http_client.get(f"/api/databases/{pdb}/schemas").json()
-        if s["name"] == "Characters"
+        s for s in http_client.get(f"/api/databases/{bdb}/schemas").json()
+        if s["name"] == "Mirror Link"
     )
-    entries = http_client.get(f"/api/databases/{pdb}/entries").json()
-    row = next(e for e in entries if e["id"] == beat["id"])
-    assert row["values"][mirror["id"]]["related_ids"] == [character["id"]]
+    entries = http_client.get(f"/api/databases/{bdb}/entries").json()
+    row = next(e for e in entries if e["id"] == item["id"])
+    assert row["values"][mirror["id"]]["related_ids"] == [source_entry["id"]]
 
 
 # ── Key-references pre-flight ─────────────────────────────────────────────────
@@ -3983,25 +3996,25 @@ def _key_references(http_client, database_id, schema_id):
 
 
 def test_key_references_empty_for_unreferenced_property(http_client):
-    cdb, pdb, date_schema, plot = _plot_setup(http_client, direction="unilateral",
+    adb, bdb, date_schema, link = _keyed_setup(http_client, direction="unilateral",
                                               mirror_name=None)
-    assert _key_references(http_client, pdb, date_schema["id"]) == []
+    assert _key_references(http_client, bdb, date_schema["id"]) == []
 
 
 def test_key_references_names_the_referring_relation(http_client):
-    cdb, pdb, date_schema, plot = _plot_setup(http_client, direction="unilateral",
+    adb, bdb, date_schema, link = _keyed_setup(http_client, direction="unilateral",
                                               mirror_name=None)
     http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
-        json={"config": {**plot["config"], "keying": _keying(date_schema["id"])}},
+        f"/api/databases/{adb}/schemas/{link['id']}",
+        json={"config": {**link["config"], "keying": _keying(date_schema["id"])}},
     )
 
-    refs = _key_references(http_client, pdb, date_schema["id"])
+    refs = _key_references(http_client, bdb, date_schema["id"])
     assert len(refs) == 1
-    assert refs[0]["schema_id"] == plot["id"]
-    assert refs[0]["schema_name"] == "Plot"
-    assert refs[0]["database_id"] == cdb
-    assert refs[0]["database_title"] == "Characters"
+    assert refs[0]["schema_id"] == link["id"]
+    assert refs[0]["schema_name"] == "Link"
+    assert refs[0]["database_id"] == adb
+    assert refs[0]["database_title"] == "Database A"
 
 
 def test_key_references_unknown_schema_returns_404(http_client):
@@ -4026,106 +4039,106 @@ def test_key_references_wrong_database_returns_404(http_client):
 
 
 def test_deleting_key_property_resets_referring_relation_to_vanilla(http_client):
-    cdb, pdb, date_schema, plot = _plot_setup(http_client, direction="unilateral",
+    adb, bdb, date_schema, link = _keyed_setup(http_client, direction="unilateral",
                                               mirror_name=None)
     http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
-        json={"config": {**plot["config"], "keying": _keying(date_schema["id"])}},
+        f"/api/databases/{adb}/schemas/{link['id']}",
+        json={"config": {**link["config"], "keying": _keying(date_schema["id"])}},
     )
 
-    resp = http_client.delete(f"/api/databases/{pdb}/schemas/{date_schema['id']}")
+    resp = http_client.delete(f"/api/databases/{bdb}/schemas/{date_schema['id']}")
     assert resp.status_code == 204
 
     stored = next(
-        s for s in http_client.get(f"/api/databases/{cdb}/schemas").json()
-        if s["id"] == plot["id"]
+        s for s in http_client.get(f"/api/databases/{adb}/schemas").json()
+        if s["id"] == link["id"]
     )
     assert stored["config"]["keying"] == {"enabled": False}
 
 
 def test_deleting_key_property_leaves_the_relation_itself_intact(http_client):
     """Only the keying config is cleared; links and mode are preserved."""
-    cdb, pdb, date_schema, plot = _plot_setup(http_client, direction="unilateral",
+    adb, bdb, date_schema, link = _keyed_setup(http_client, direction="unilateral",
                                               mirror_name=None)
-    character = _create_entry(http_client, cdb)
-    beat = _create_entry(http_client, pdb)
-    _upsert_value(http_client, cdb, character["id"], plot["id"],
-                  {"related_ids": [beat["id"]]})
+    source_entry = _create_entry(http_client, adb)
+    item = _create_entry(http_client, bdb)
+    _upsert_value(http_client, adb, source_entry["id"], link["id"],
+                  {"related_ids": [item["id"]]})
     http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
-        json={"config": {**plot["config"], "keying": _keying(date_schema["id"])}},
+        f"/api/databases/{adb}/schemas/{link['id']}",
+        json={"config": {**link["config"], "keying": _keying(date_schema["id"])}},
     )
 
-    http_client.delete(f"/api/databases/{pdb}/schemas/{date_schema['id']}")
+    http_client.delete(f"/api/databases/{bdb}/schemas/{date_schema['id']}")
 
     stored = next(
-        s for s in http_client.get(f"/api/databases/{cdb}/schemas").json()
-        if s["id"] == plot["id"]
+        s for s in http_client.get(f"/api/databases/{adb}/schemas").json()
+        if s["id"] == link["id"]
     )
-    assert stored["config"]["target_database_id"] == pdb
-    entries = http_client.get(f"/api/databases/{cdb}/entries").json()
-    row = next(e for e in entries if e["id"] == character["id"])
-    assert row["values"][plot["id"]]["related_ids"] == [beat["id"]]
+    assert stored["config"]["target_database_id"] == bdb
+    entries = http_client.get(f"/api/databases/{adb}/entries").json()
+    row = next(e for e in entries if e["id"] == source_entry["id"])
+    assert row["values"][link["id"]]["related_ids"] == [item["id"]]
 
 
 def test_deleting_key_property_clears_all_referrers(http_client):
-    cdb, pdb, date_schema, plot = _plot_setup(http_client, direction="unilateral",
+    adb, bdb, date_schema, link = _keyed_setup(http_client, direction="unilateral",
                                               mirror_name=None)
     second = _create_relation_schema(
-        http_client, cdb, pdb, name="Backstory", direction="unilateral",
+        http_client, adb, bdb, name="Backstory", direction="unilateral",
     )
-    for schema in (plot, second):
+    for schema in (link, second):
         http_client.patch(
-            f"/api/databases/{cdb}/schemas/{schema['id']}",
+            f"/api/databases/{adb}/schemas/{schema['id']}",
             json={"config": {**schema["config"], "keying": _keying(date_schema["id"])}},
         )
 
-    http_client.delete(f"/api/databases/{pdb}/schemas/{date_schema['id']}")
+    http_client.delete(f"/api/databases/{bdb}/schemas/{date_schema['id']}")
 
-    schemas = http_client.get(f"/api/databases/{cdb}/schemas").json()
-    for schema in (plot, second):
+    schemas = http_client.get(f"/api/databases/{adb}/schemas").json()
+    for schema in (link, second):
         stored = next(s for s in schemas if s["id"] == schema["id"])
         assert stored["config"]["keying"] == {"enabled": False}
 
 
 def test_retyping_key_property_out_of_keyable_set_resets_referrer(http_client):
-    cdb, pdb, date_schema, plot = _plot_setup(http_client, direction="unilateral",
+    adb, bdb, date_schema, link = _keyed_setup(http_client, direction="unilateral",
                                               mirror_name=None)
     http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
-        json={"config": {**plot["config"], "keying": _keying(date_schema["id"])}},
+        f"/api/databases/{adb}/schemas/{link['id']}",
+        json={"config": {**link["config"], "keying": _keying(date_schema["id"])}},
     )
 
     resp = http_client.patch(
-        f"/api/databases/{pdb}/schemas/{date_schema['id']}",
+        f"/api/databases/{bdb}/schemas/{date_schema['id']}",
         json={"type": "checkbox"},
     )
     assert resp.status_code == 200
 
     stored = next(
-        s for s in http_client.get(f"/api/databases/{cdb}/schemas").json()
-        if s["id"] == plot["id"]
+        s for s in http_client.get(f"/api/databases/{adb}/schemas").json()
+        if s["id"] == link["id"]
     )
     assert stored["config"]["keying"] == {"enabled": False}
 
 
 def test_retyping_key_property_within_keyable_set_preserves_keying(http_client):
     """date -> number stays sortable; only the comparator semantics change."""
-    cdb, pdb, date_schema, plot = _plot_setup(http_client, direction="unilateral",
+    adb, bdb, date_schema, link = _keyed_setup(http_client, direction="unilateral",
                                               mirror_name=None)
     http_client.patch(
-        f"/api/databases/{cdb}/schemas/{plot['id']}",
-        json={"config": {**plot["config"], "keying": _keying(date_schema["id"])}},
+        f"/api/databases/{adb}/schemas/{link['id']}",
+        json={"config": {**link["config"], "keying": _keying(date_schema["id"])}},
     )
 
     http_client.patch(
-        f"/api/databases/{pdb}/schemas/{date_schema['id']}",
+        f"/api/databases/{bdb}/schemas/{date_schema['id']}",
         json={"type": "number"},
     )
 
     stored = next(
-        s for s in http_client.get(f"/api/databases/{cdb}/schemas").json()
-        if s["id"] == plot["id"]
+        s for s in http_client.get(f"/api/databases/{adb}/schemas").json()
+        if s["id"] == link["id"]
     )
     assert stored["config"]["keying"]["enabled"] is True
     assert stored["config"]["keying"]["key_property_id"] == date_schema["id"]
@@ -4155,34 +4168,34 @@ def _resolve_with_values(http_client, database_id, ids, value_schema_id):
 
 
 def test_resolve_titles_returns_requested_key_values(http_client):
-    pdb = _create_database(http_client)
-    date_schema = _create_schema(http_client, pdb, name="Date", type_="date")
-    beat = _create_entry(http_client, pdb)
-    _upsert_value(http_client, pdb, beat["id"], date_schema["id"],
+    bdb = _create_database(http_client)
+    date_schema = _create_schema(http_client, bdb, name="Date", type_="date")
+    item = _create_entry(http_client, bdb)
+    _upsert_value(http_client, bdb, item["id"], date_schema["id"],
                   {"start": "2136-08-14"})
 
-    result = _resolve_with_values(http_client, pdb, [beat["id"]], date_schema["id"])
+    result = _resolve_with_values(http_client, bdb, [item["id"]], date_schema["id"])
     assert len(result) == 1
     assert result[0]["value"] == {"start": "2136-08-14"}
 
 
 def test_resolve_titles_key_value_is_null_when_entry_has_none(http_client):
-    pdb = _create_database(http_client)
-    date_schema = _create_schema(http_client, pdb, name="Date", type_="date")
-    beat = _create_entry(http_client, pdb)
+    bdb = _create_database(http_client)
+    date_schema = _create_schema(http_client, bdb, name="Date", type_="date")
+    item = _create_entry(http_client, bdb)
 
-    result = _resolve_with_values(http_client, pdb, [beat["id"]], date_schema["id"])
+    result = _resolve_with_values(http_client, bdb, [item["id"]], date_schema["id"])
     assert result[0]["value"] is None
 
 
 def test_resolve_titles_omits_value_when_not_requested(http_client):
-    pdb = _create_database(http_client)
-    date_schema = _create_schema(http_client, pdb, name="Date", type_="date")
-    beat = _create_entry(http_client, pdb)
-    _upsert_value(http_client, pdb, beat["id"], date_schema["id"],
+    bdb = _create_database(http_client)
+    date_schema = _create_schema(http_client, bdb, name="Date", type_="date")
+    item = _create_entry(http_client, bdb)
+    _upsert_value(http_client, bdb, item["id"], date_schema["id"],
                   {"start": "2136-08-14"})
 
-    result = _resolve_titles(http_client, pdb, [beat["id"]])
+    result = _resolve_titles(http_client, bdb, [item["id"]])
     assert result[0]["value"] is None
 
 
@@ -4192,22 +4205,22 @@ def test_resolve_titles_dangling_key_pointer_degrades_to_null_values(http_client
     The response carries null values, which the cell reads as "fall back to
     seniority order".
     """
-    pdb = _create_database(http_client)
-    beat = _create_entry(http_client, pdb)
+    bdb = _create_database(http_client)
+    item = _create_entry(http_client, bdb)
 
-    result = _resolve_with_values(http_client, pdb, [beat["id"]], uuid.uuid4())
+    result = _resolve_with_values(http_client, bdb, [item["id"]], uuid.uuid4())
     assert len(result) == 1
     assert result[0]["value"] is None
 
 
 def test_resolve_titles_foreign_key_property_yields_null_values(http_client):
     """A value_schema_id from another database resolves to nothing, not 404."""
-    pdb = _create_database(http_client)
+    bdb = _create_database(http_client)
     other = _create_database(http_client)
     foreign = _create_schema(http_client, other, name="Date", type_="date")
-    beat = _create_entry(http_client, pdb)
+    item = _create_entry(http_client, bdb)
 
-    result = _resolve_with_values(http_client, pdb, [beat["id"]], foreign["id"])
+    result = _resolve_with_values(http_client, bdb, [item["id"]], foreign["id"])
     assert result[0]["value"] is None
 
 
@@ -4217,33 +4230,318 @@ def test_resolve_titles_key_values_ignore_display_limit(http_client):
     them off the paginated entry cache would blind the cell to linked entries
     past the display limit of a large target database.
     """
-    pdb = _create_database(http_client)
-    date_schema = _create_schema(http_client, pdb, name="Date", type_="date")
-    created = [_create_entry(http_client, pdb) for _ in range(5)]
+    bdb = _create_database(http_client)
+    date_schema = _create_schema(http_client, bdb, name="Date", type_="date")
+    created = [_create_entry(http_client, bdb) for _ in range(5)]
     last = created[-1]
-    _upsert_value(http_client, pdb, last["id"], date_schema["id"],
+    _upsert_value(http_client, bdb, last["id"], date_schema["id"],
                   {"start": "2199-12-31"})
 
-    page = _query(http_client, pdb, limit=2)
+    page = _query(http_client, bdb, limit=2)
     assert all(e["id"] != last["id"] for e in page["entries"])
 
-    result = _resolve_with_values(http_client, pdb, [last["id"]], date_schema["id"])
+    result = _resolve_with_values(http_client, bdb, [last["id"]], date_schema["id"])
     assert result[0]["value"] == {"start": "2199-12-31"}
 
 
 def test_resolve_titles_key_values_for_multiple_entries(http_client):
-    pdb = _create_database(http_client)
-    date_schema = _create_schema(http_client, pdb, name="Date", type_="date")
-    early = _create_entry(http_client, pdb)
-    late = _create_entry(http_client, pdb)
-    _upsert_value(http_client, pdb, early["id"], date_schema["id"],
+    bdb = _create_database(http_client)
+    date_schema = _create_schema(http_client, bdb, name="Date", type_="date")
+    early = _create_entry(http_client, bdb)
+    late = _create_entry(http_client, bdb)
+    _upsert_value(http_client, bdb, early["id"], date_schema["id"],
                   {"start": "2130-01-01"})
-    _upsert_value(http_client, pdb, late["id"], date_schema["id"],
+    _upsert_value(http_client, bdb, late["id"], date_schema["id"],
                   {"start": "2140-01-01"})
 
     result = _resolve_with_values(
-        http_client, pdb, [early["id"], late["id"]], date_schema["id"]
+        http_client, bdb, [early["id"], late["id"]], date_schema["id"]
     )
     by_id = {r["id"]: r["value"] for r in result}
     assert by_id[early["id"]] == {"start": "2130-01-01"}
     assert by_id[late["id"]] == {"start": "2140-01-01"}
+
+
+# ─── GET /api/databases/{id}/entries/{entry_id} ───────────────────────────────
+
+
+def test_get_entry_returns_the_entry_with_its_values(http_client):
+    db_id = _create_database(http_client)
+    text = _create_schema(http_client, db_id, name="Text", type_="text")
+    entry = _create_entry(http_client, db_id)
+    _upsert_value(http_client, db_id, entry["id"], text["id"], {"text": "Value A"})
+
+    resp = http_client.get(f"/api/databases/{db_id}/entries/{entry['id']}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["entry"]["id"] == entry["id"]
+    assert body["entry"]["values"][text["id"]] == {"text": "Value A"}
+    assert body["relations"] == {}
+    assert body["key_values"] == {}
+
+
+def test_get_entry_resolves_its_relations(http_client):
+    adb = _create_database(http_client)
+    bdb = _create_database(http_client)
+    when = _create_schema(http_client, bdb, name="When", type_="date")
+    linked = _create_entry(http_client, bdb)
+    http_client.patch(f"/api/blocks/{linked['id']}", json={"content": {"title": "Entry B"}})
+    _upsert_value(http_client, bdb, linked["id"], when["id"], {"start": "2000-07-28"})
+    link = _create_schema(http_client, adb, name="Link", type_="relation", config={
+        "target_database_id": bdb,
+        "keying": {"enabled": True, "key_property_id": when["id"]},
+    })
+    entry = _create_entry(http_client, adb)
+    _upsert_value(http_client, adb, entry["id"], link["id"], {"related_ids": [linked["id"]]})
+
+    body = http_client.get(f"/api/databases/{adb}/entries/{entry['id']}").json()
+
+    assert body["relations"][linked["id"]] == {
+        "id": linked["id"], "title": "Entry B", "database_id": bdb,
+    }
+    assert body["key_values"] == {when["id"]: {linked["id"]: {"start": "2000-07-28"}}}
+
+
+def test_get_entry_of_another_database_returns_404(http_client):
+    adb = _create_database(http_client)
+    bdb = _create_database(http_client)
+    entry = _create_entry(http_client, bdb)
+    assert http_client.get(f"/api/databases/{adb}/entries/{entry['id']}").status_code == 404
+
+
+def test_get_entry_unknown_entry_returns_404(http_client):
+    db_id = _create_database(http_client)
+    assert http_client.get(f"/api/databases/{db_id}/entries/{uuid.uuid4()}").status_code == 404
+
+
+def test_get_entry_unknown_database_returns_404(http_client):
+    resp = http_client.get(f"/api/databases/{uuid.uuid4()}/entries/{uuid.uuid4()}")
+    assert resp.status_code == 404
+
+
+def test_get_entry_without_read_access_returns_404(http_client):
+    import app.database.database as db_module
+    from app.main import app
+    from app.permissions import repository as perm_repo
+    from app.session.deps import get_current_user, require_session
+    from app.users.model import User
+
+    db_id = _create_database(http_client)
+    entry = _create_entry(http_client, db_id)
+    with db_module.SessionLocal() as db:
+        perm_repo.set_permission(db, uuid.UUID(db_id), "private", [])
+        member = User(
+            id=uuid.uuid4(), username=f"member_{uuid.uuid4().hex[:8]}",
+            password_hash="x", role="member", is_active=True,
+        )
+        db.add(member)
+        db.commit()
+        db.refresh(member)
+        db.expunge(member)
+    app.dependency_overrides[require_session] = lambda: member.id
+    app.dependency_overrides[get_current_user] = lambda: member
+
+    assert http_client.get(f"/api/databases/{db_id}/entries/{entry['id']}").status_code == 404
+
+
+# ─── POST /api/databases/{id}/schemas with visible_in_view_id ─────────────────
+
+
+def test_create_schema_hides_the_property_in_other_views(http_client):
+    db_id = _create_database(http_client)
+    shown = http_client.get(f"/api/databases/{db_id}/views").json()["views"][0]["id"]
+    other = http_client.post(f"/api/databases/{db_id}/views", json={}).json()["id"]
+
+    created = http_client.post(
+        f"/api/databases/{db_id}/schemas",
+        json={"name": "Notes", "type": "text", "visible_in_view_id": shown},
+    ).json()
+
+    by_id = {v["id"]: v for v in http_client.get(f"/api/databases/{db_id}/views").json()["views"]}
+    assert created["id"] not in by_id[shown]["settings"]["hiddenColumns"]
+    assert created["id"] in by_id[other]["settings"]["hiddenColumns"]
+
+
+def test_create_schema_without_a_view_hides_it_everywhere(http_client):
+    db_id = _create_database(http_client)
+    http_client.get(f"/api/databases/{db_id}/views")
+
+    created = _create_schema(http_client, db_id, name="Notes", type_="text")
+
+    view = http_client.get(f"/api/databases/{db_id}/views").json()["views"][0]
+    assert created["id"] in view["settings"]["hiddenColumns"]
+
+
+# ─── Option ids ───────────────────────────────────────────────────────────────
+
+
+def _options_schema(http_client, db_id, labels=("Value A", "Value B", "Value C"), mode="single"):
+    schema = _create_schema(
+        http_client, db_id, name="Status", type_="select",
+        config={"mode": mode, "options": list(labels)},
+    )
+    return schema, {o["label"]: o["id"] for o in schema["config"]["options"]}
+
+
+def _set_options(http_client, db_id, schema, options, **extra):
+    resp = http_client.patch(
+        f"/api/databases/{db_id}/schemas/{schema['id']}",
+        json={"config": {**schema["config"], **extra, "options": options}},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _stored(http_client, db_id, entry_id, schema_id):
+    entries = http_client.get(f"/api/databases/{db_id}/entries").json()
+    return next(e for e in entries if e["id"] == entry_id)["values"].get(schema_id)
+
+
+def test_option_sent_without_id_keeps_its_id(http_client):
+    db_id = _create_database(http_client)
+    schema, ids = _options_schema(http_client, db_id)
+
+    updated = _set_options(http_client, db_id, schema, ["Value A", "Value B", "Value C", "Value D"])
+
+    by_label = {o["label"]: o["id"] for o in updated["config"]["options"]}
+    assert {k: by_label[k] for k in ids} == ids
+    assert by_label["Value D"] not in ids.values()
+
+
+def test_renaming_an_option_keeps_values_and_refreshes_formulas(http_client):
+    db_id = _create_database(http_client)
+    schema, ids = _options_schema(http_client, db_id)
+    formula = _create_schema(
+        http_client, db_id, name="Shown", type_="formula",
+        config={"expression": "prop('Status')"},
+    )
+    entry = _create_entry(http_client, db_id)
+    _upsert_value(http_client, db_id, entry["id"], schema["id"], {"option": ids["Value A"]})
+    assert _stored(http_client, db_id, entry["id"], formula["id"])["result"] == "Value A"
+
+    options = [
+        {"id": ids["Value A"], "label": "Value Z"},
+        {"id": ids["Value B"], "label": "Value B"},
+        {"id": ids["Value C"], "label": "Value C"},
+    ]
+    _set_options(http_client, db_id, schema, options)
+
+    assert _stored(http_client, db_id, entry["id"], schema["id"]) == {"option": ids["Value A"]}
+    assert _stored(http_client, db_id, entry["id"], formula["id"])["result"] == "Value Z"
+
+
+def test_deleting_an_option_removes_it_everywhere(http_client):
+    import app.database.database as db_module
+    from app.automations.automations_models import Automation
+
+    db_id = _create_database(http_client)
+    schema, ids = _options_schema(http_client, db_id, mode="multiple")
+    both = _create_entry(http_client, db_id)
+    only = _create_entry(http_client, db_id)
+    _upsert_value(http_client, db_id, both["id"], schema["id"],
+                  {"options": [ids["Value A"], ids["Value B"]]})
+    _upsert_value(http_client, db_id, only["id"], schema["id"], {"options": [ids["Value A"]]})
+    view = http_client.get(f"/api/databases/{db_id}/views").json()["views"][0]
+    http_client.patch(f"/api/databases/{db_id}/views/{view['id']}", json={"filter_groups": [
+        {"conjunction": "and", "filters": [
+            {"schemaId": schema["id"], "operator": "contains", "value": ids["Value A"]},
+        ]},
+    ]})
+    with db_module.SessionLocal() as db:
+        automation = Automation(
+            database_id=uuid.UUID(db_id), name="Rule", trigger={},
+            actions=[{
+                "endpoint": f"PUT /api/databases/{db_id}/entries/x/values/{schema['id']}",
+                "body": {"value": {"options": [ids["Value A"]]}},
+            }],
+        )
+        db.add(automation)
+        db.commit()
+        automation_id = automation.id
+
+    usage = http_client.get(
+        f"/api/databases/{db_id}/schemas/{schema['id']}/options/{ids['Value A']}/usage"
+    ).json()
+    assert usage == {"entries": 2}
+
+    remaining = [o for o in schema["config"]["options"] if o["label"] != "Value A"]
+    _set_options(http_client, db_id, schema, remaining)
+
+    assert _stored(http_client, db_id, both["id"], schema["id"]) == {"options": [ids["Value B"]]}
+    assert _stored(http_client, db_id, only["id"], schema["id"]) is None
+    assert http_client.get(f"/api/databases/{db_id}/views").json()["views"][0]["filter_groups"] == []
+    with db_module.SessionLocal() as db:
+        assert db.get(Automation, automation_id).actions[0]["body"] == {"value": None}
+
+
+def test_option_usage_of_unknown_schema_returns_404(http_client):
+    db_id = _create_database(http_client)
+    resp = http_client.get(f"/api/databases/{db_id}/schemas/{uuid.uuid4()}/options/x/usage")
+    assert resp.status_code == 404
+
+
+def test_deleting_a_nuance_option_removes_it_on_both_sides(http_client):
+    db_a = _create_database(http_client)
+    db_b = _create_database(http_client)
+    schema = _create_relation_schema(
+        http_client, db_a, db_b, name="Linked", direction="bilateral", mirror_name="Linked Back",
+    )
+    nuance = {"enabled": True, "options": ["Value A", "Value B"], "affix1": "", "affix2": "",
+              "orientation": "prepended", "synced": {}}
+    updated = http_client.patch(
+        f"/api/databases/{db_a}/schemas/{schema['id']}",
+        json={"config": {**schema["config"], "nuance": nuance}},
+    ).json()
+    ids = {o["label"]: o["id"] for o in updated["config"]["nuance"]["options"]}
+    entry_a = _create_entry(http_client, db_a)
+    entry_b = _create_entry(http_client, db_b)
+    _upsert_value(http_client, db_a, entry_a["id"], schema["id"], {
+        "related_ids": [entry_b["id"]], "nuances": {entry_b["id"]: ids["Value A"]},
+    })
+    mirror = next(
+        s for s in http_client.get(f"/api/databases/{db_b}/schemas").json()
+        if s["name"] == "Linked Back"
+    )
+    assert _stored(http_client, db_b, entry_b["id"], mirror["id"])["nuances"] == {
+        entry_a["id"]: ids["Value A"],
+    }
+
+    kept = [o for o in updated["config"]["nuance"]["options"] if o["label"] == "Value B"]
+    http_client.patch(
+        f"/api/databases/{db_a}/schemas/{schema['id']}",
+        json={"config": {**updated["config"], "nuance": {**updated["config"]["nuance"], "options": kept}}},
+    )
+
+    source_value = _stored(http_client, db_a, entry_a["id"], schema["id"])
+    mirror_value = _stored(http_client, db_b, entry_b["id"], mirror["id"])
+    assert source_value["related_ids"] == [entry_b["id"]]
+    assert "nuances" not in source_value
+    assert "nuances" not in mirror_value
+
+
+def _sorted_titles(http_client, db_id, schema_id, direction="asc"):
+    result = _query(http_client, db_id, sorts=[{"schema_id": schema_id, "direction": direction}])
+    return [(e["content"] or {}).get("title") for e in result["entries"]]
+
+
+def _titled_entry(http_client, db_id, title, schema_id, option_id):
+    entry = _create_entry(http_client, db_id)
+    http_client.patch(f"/api/blocks/{entry['id']}", json={"content": {"title": title}})
+    _upsert_value(http_client, db_id, entry["id"], schema_id, {"option": option_id})
+
+
+def test_select_sorts_by_label_by_default_and_by_order_when_asked(http_client):
+    db_id = _create_database(http_client)
+    # Configured order differs from alphabetical order.
+    schema, ids = _options_schema(http_client, db_id, labels=("beta", "Alpha", "gamma"))
+    _titled_entry(http_client, db_id, "Entry 1", schema["id"], ids["gamma"])
+    _titled_entry(http_client, db_id, "Entry 2", schema["id"], ids["beta"])
+    _titled_entry(http_client, db_id, "Entry 3", schema["id"], ids["Alpha"])
+
+    assert _sorted_titles(http_client, db_id, schema["id"]) == ["Entry 3", "Entry 2", "Entry 1"]
+
+    _set_options(http_client, db_id, schema, schema["config"]["options"], manualSortOrder=True)
+
+    assert _sorted_titles(http_client, db_id, schema["id"]) == ["Entry 2", "Entry 3", "Entry 1"]
+    assert _sorted_titles(http_client, db_id, schema["id"], "desc") == ["Entry 1", "Entry 3", "Entry 2"]

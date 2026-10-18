@@ -1,11 +1,10 @@
 """
-Tests for the Block, PropertySchema, and PropertyValue models.
+Tests for the Block, PropertySchema, PropertyValue and database view models.
 
-All tests run against the isolated in-memory SQLite database provided by the
-autouse ``isolated_db`` fixture in conftest.py. The SQLite engine does not
-support PostgreSQL-specific features (JSONB, TIMESTAMPTZ, triggers), but
-correctly exercises model structure, ORM behaviour, relationships, and
-constraint enforcement.
+All tests run against the isolated PostgreSQL test database provided by the
+autouse ``isolated_db`` fixture in conftest.py, whose schema is built by the
+migrations. They exercise model structure, ORM behaviour, relationships, and
+constraint enforcement as the database actually applies them.
 
 Trigger behaviour (auto-updating updated_at on UPDATE) is a PostgreSQL
 concern and is verified by the integration test suite running against a live
@@ -21,6 +20,8 @@ import app.session.session as s
 from app.blocks.models import (
     WORKSPACE_ROOT_ID,
     Block,
+    DatabaseView,
+    DatabaseViewSelection,
     PropertySchema,
     PropertyValue,
 )
@@ -208,17 +209,32 @@ def test_linked_database_reference_id_points_to_database(db, workspace, database
 
 
 def test_linked_database_reference_id_fk_is_set_null():
-    """The reference_id FK is configured with ON DELETE SET NULL at the ORM level.
-
-    The actual runtime cascade (reference_id → NULL when target is deleted) is a
-    PostgreSQL-level behaviour and is covered by the integration test suite.
-    SQLite does not enforce FK actions without PRAGMA foreign_keys = ON, so we
-    verify the SQLAlchemy Column definition directly instead.
-    """
+    """The reference_id FK is configured with ON DELETE SET NULL at the ORM level."""
     col = Block.__table__.c.reference_id
     fks = list(col.foreign_keys)
     assert len(fks) == 1
     assert fks[0].ondelete == "SET NULL"
+
+
+def test_linked_database_reference_is_cleared_when_the_target_is_deleted(
+    db, workspace, database_block
+):
+    """The database applies ON DELETE SET NULL when the referenced block goes."""
+    linked = Block(
+        type="linked_database",
+        position=3.0,
+        parent_id=workspace.id,
+        reference_id=database_block.id,
+    )
+    db.add(linked)
+    db.commit()
+    linked_id = linked.id
+
+    db.delete(database_block)
+    db.commit()
+    db.expire_all()
+
+    assert db.get(Block, linked_id).reference_id is None
 
 
 # ─── PropertySchema ───────────────────────────────────────────────────────────
@@ -351,12 +367,12 @@ def test_property_schema_group_can_be_set_explicitly(db, database_block):
         name="GroupCustom",
         type="text",
         position=2.0,
-        group="Kontakt",
+        group="Contact",
     )
     db.add(schema)
     db.commit()
     db.refresh(schema)
-    assert schema.group == "Kontakt"
+    assert schema.group == "Contact"
 
 
 def test_property_value_relationship_to_page(db, page, database_block):
@@ -410,3 +426,72 @@ def test_block_owner_id_is_independent_of_created_by(db, database_block):
     assert block.owner_id == uid
     # The Block row has no 'created_by' column — that is a property schema type.
     assert not hasattr(block, "created_by")
+
+
+# ─── DatabaseView / DatabaseViewSelection ─────────────────────────────────────
+
+
+def test_database_view_defaults(db, database_block):
+    view = DatabaseView(database_id=database_block.id, position=1.0)
+    db.add(view)
+    db.commit()
+    db.refresh(view)
+
+    assert view.name == ""
+    assert view.view_type == "table"
+    assert view.description is None
+    assert view.filter_groups == []
+    assert view.sorts == []
+    assert view.settings == {}
+    assert view.created_at is not None
+
+
+def test_database_view_requires_an_existing_database(db, workspace):
+    db.add(DatabaseView(database_id=uuid.uuid4(), position=1.0))
+    with pytest.raises(sa.exc.IntegrityError):
+        db.commit()
+    db.rollback()
+
+
+def test_database_views_are_deleted_with_their_database(db, database_block):
+    view = DatabaseView(database_id=database_block.id, position=1.0)
+    db.add(view)
+    db.commit()
+    view_id = view.id
+
+    db.execute(sa.delete(Block).where(Block.id == database_block.id))
+    db.commit()
+
+    assert db.get(DatabaseView, view_id) is None
+
+
+def test_view_selection_is_deleted_with_its_view(db, database_block):
+    view = DatabaseView(database_id=database_block.id, position=1.0)
+    db.add(view)
+    db.flush()
+    db.add(DatabaseViewSelection(placement_id=database_block.id, view_id=view.id))
+    db.commit()
+
+    db.execute(sa.delete(DatabaseView).where(DatabaseView.id == view.id))
+    db.commit()
+
+    assert db.get(DatabaseViewSelection, database_block.id) is None
+
+
+def test_view_selection_is_deleted_with_its_placement(db, workspace, database_block):
+    linked = Block(
+        type="linked_database", position=2.0, parent_id=workspace.id,
+        reference_id=database_block.id,
+    )
+    view = DatabaseView(database_id=database_block.id, position=1.0)
+    db.add_all([linked, view])
+    db.flush()
+    db.add(DatabaseViewSelection(placement_id=linked.id, view_id=view.id))
+    db.commit()
+    linked_id = linked.id
+
+    db.execute(sa.delete(Block).where(Block.id == linked_id))
+    db.commit()
+
+    assert db.get(DatabaseViewSelection, linked_id) is None
+    assert db.get(DatabaseView, view.id) is not None

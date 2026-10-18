@@ -133,7 +133,8 @@
     "delete": "Delete",
     "duplicate": "Duplicate",
     "restore": "Restore",
-    "rename": "Rename"
+    "rename": "Rename",
+    "remove": "Remove"
   },
   "auth": {
     "loginTitle": "Sign in",
@@ -352,6 +353,11 @@
       "selectOptions": "Options",
       "selectOptionsEmpty": "No options yet",
       "selectOptionPlaceholder": "Add option…",
+      "manualSortOrder": "Sort by this order",
+      "renameOption": "Rename option",
+      "optionLabelInvalid": "Every option needs a name of its own that is not empty.",
+      "optionRemoveCount": "No entry uses \"{label}\". | \"{label}\" will be removed from one entry. | \"{label}\" will be removed from {count} entries.",
+      "optionRemoveUnknown": "\"{label}\" will be removed from every entry that uses it.",
       "relationTarget": "Target database",
       "relationSelf": "This database (self-referential)",
       "relationDirection": "Direction",
@@ -505,6 +511,11 @@
       "createAndLink": "Create & link \"{query}\"",
       "moreResults": "{shown} of {total} matches – refine your search"
     },
+    "select": {
+      "searchPlaceholder": "Search or create…",
+      "clear": "Clear selection",
+      "create": "Create \"{query}\""
+    },
     "views": {
       "defaultName": "View 1",
       "addView": "Add view",
@@ -547,6 +558,7 @@
         "between": "is between"
       },
       "selectAny": "Any value",
+      "searchEntry": "Search entry…",
       "checkboxTrue": "Checked",
       "checkboxFalse": "Unchecked",
       "dateModes": {
@@ -815,7 +827,7 @@
     "permissionsNote": "Permissions are managed via the gear button in page settings. Admins always see all blocks.",
     "sectionDatabases": "Databases",
     "databasesTitle": "Databases",
-    "databasesOverview": "A database stores entries as rows and properties as typed columns (text, number, date, select, relation, rollup, and more). The same data can appear through different views — table, calendar, and others — each with its own filters and sorting. Columns, the name column included, can be hidden per view in the view settings; rename the name column by double-clicking its header.",
+    "databasesOverview": "A database stores entries as rows and properties as typed columns (text, number, date, select, relation, rollup, and more). The same data can appear through different views — table, calendar, and others — each with its own filters and sorting. Columns, the name column included, can be hidden per view in the view settings; rename the name column by double-clicking its header. Rename the options of a select property in its settings; entries keep them. Views are shared by everyone; each database and each embedded database remembers on its own which view it shows.",
     "databasesDates": "Your date format is set under Settings → Date and applies everywhere; a single date property can override it in its own settings. Date fields cover the years 1 to 9999.",
     "databasesGroups": "In the properties side panel you can organise properties into groups. Custom groups fold and unfold, rename on double-click, and reorder by drag-and-drop via the handle on the right of the group header. The default group always stays on top.",
     "databasesKeying": "A relation property can be keyed: choose a property of the target database to sort the relation's entries by. The chosen value is shown beside each entry.",

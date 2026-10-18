@@ -118,7 +118,7 @@ def http_client(isolated_db):
     client instance (avoids the per-request cookies DeprecationWarning).
 
     ``isolated_db`` is explicitly requested to guarantee fixture ordering:
-    the in-memory DB must be ready before we seed the workspace root.
+    the test database must be emptied before we seed the workspace root.
 
     ``get_current_user`` is overridden via FastAPI dependency overrides so
     that endpoints receive a fake admin user without a live session. Admins
@@ -309,6 +309,42 @@ def test_list_children_unknown_parent_returns_404(http_client):
     assert response.status_code == 404
 
 
+# ─── GET /api/blocks/{block_id}/tree ─────────────────────────────────────────
+
+
+def _create(client, type_, parent_id, **extra):
+    resp = client.post("/api/blocks", json={"type": type_, "parent_id": str(parent_id), **extra})
+    assert resp.status_code == 201
+    return resp.json()["id"]
+
+
+def test_tree_returns_nested_content_mentions_and_loaded_parents(http_client):
+    page = _create(http_client, "page", WORKSPACE_ROOT_ID)
+    other = _create(http_client, "page", WORKSPACE_ROOT_ID)
+    toggle = _create(http_client, "toggle", page)
+    inner = _create(http_client, "paragraph", toggle, content={"text": f"See @{other}|"})
+
+    resp = http_client.get(f"/api/blocks/{page}/tree")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [b["id"] for b in body["blocks"]] == [toggle, inner]
+    assert set(body["loaded"]) == {page, toggle}
+    assert [b["id"] for b in body["mentioned"]] == [other]
+
+
+def test_tree_of_an_empty_page_lists_the_page_as_loaded(http_client):
+    page = _create(http_client, "page", WORKSPACE_ROOT_ID)
+
+    body = http_client.get(f"/api/blocks/{page}/tree").json()
+
+    assert body == {"blocks": [], "loaded": [page], "mentioned": []}
+
+
+def test_tree_unknown_block_returns_404(http_client):
+    assert http_client.get(f"/api/blocks/{uuid.uuid4()}/tree").status_code == 404
+
+
 # ─── PATCH /api/blocks/{block_id} ────────────────────────────────────────────
 
 
@@ -359,11 +395,11 @@ def captured_broadcasts(monkeypatch):
 
     events: list[tuple[str, Any]] = []
 
-    async def _capture(*, event_type, block_id, before, after, **_kwargs):
+    def _capture(*, event_type, block_id, before, after, **_kwargs):
         events.append((event_type, after))
         return 0
 
-    monkeypatch.setattr(router_module, "broadcast_block_event", _capture)
+    monkeypatch.setattr(router_module, "emit_block_event", _capture)
     return events
 
 
@@ -1422,6 +1458,37 @@ def test_children_of_foreign_private_block_returns_404(workspace_root, client_fa
     block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
     client = client_factory(member)
     assert client.get(f"/api/blocks/{block_id}/children").status_code == 404
+
+
+def test_tree_of_foreign_private_block_returns_404(workspace_root, client_factory):
+    member = _make_user()
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    client = client_factory(member)
+    assert client.get(f"/api/blocks/{block_id}/tree").status_code == 404
+
+
+def test_tree_leaves_out_foreign_private_content(workspace_root, client_factory):
+    member = _make_user()
+    page = _seed_block(owner_id=member.id, mode="everyone")
+    with s.SessionLocal() as db:
+        hidden = Block(
+            id=uuid.uuid4(), parent_id=uuid.UUID(page), type="toggle",
+            position=1.0, state="active", owner_id=uuid.uuid4(),
+        )
+        db.add(hidden)
+        db.flush()
+        perm_repo.set_permission(db, hidden.id, "private", [])
+        db.add(Block(
+            id=uuid.uuid4(), parent_id=hidden.id, type="paragraph",
+            position=1.0, state="active",
+        ))
+        db.commit()
+    client = client_factory(member)
+
+    body = client.get(f"/api/blocks/{page}/tree").json()
+
+    assert body["blocks"] == []
+    assert body["loaded"] == [page]
 
 
 def test_trash_excludes_blocks_owned_by_others(workspace_root, client_factory):

@@ -37,6 +37,7 @@ import {
   type PropertySchema,
   normalizeSelectOption,
   optionColorStyle,
+  optionLabel,
 } from '@/stores/database'
 import { useBlockStore } from '@/stores/blocks'
 import { getRawCellValue, getTimelineDisplayMode, getNuanceConfig, formatPeriodKey, resolveDateFormat, type TimelineDisplayMode } from './cellUtils'
@@ -508,11 +509,11 @@ function slotOptions(slot: TimelineSlot): string[] {
   return (slot.value.options as string[] | undefined) ?? []
 }
 
-function toggleSlotOption(slot: TimelineSlot, label: string) {
+function toggleSlotOption(slot: TimelineSlot, id: string) {
   const current = slotOptions(slot)
-  const next = current.includes(label)
-    ? current.filter(x => x !== label)
-    : [...current, label]
+  const next = current.includes(id)
+    ? current.filter(x => x !== id)
+    : [...current, id]
   slot.value = { options: next }
 }
 
@@ -721,11 +722,11 @@ onUnmounted(() => {
               <div v-else-if="schema.type === 'select' && !isMultiSelect()" class="te__select-chips">
                 <button
                   v-for="opt in schemaOptions()"
-                  :key="opt.label"
+                  :key="opt.id"
                   class="te__chip"
-                  :class="{ 'te__chip--active': slotOption(slot) === opt.label }"
-                  :style="slotOption(slot) === opt.label ? optionColorStyle(opt.color) : undefined"
-                  @click="setSlotOption(slot, opt.label)"
+                  :class="{ 'te__chip--active': slotOption(slot) === opt.id }"
+                  :style="slotOption(slot) === opt.id ? optionColorStyle(opt.color) : undefined"
+                  @click="setSlotOption(slot, opt.id)"
                 >
                   {{ opt.label }}
                 </button>
@@ -735,11 +736,11 @@ onUnmounted(() => {
               <div v-else-if="schema.type === 'select' && isMultiSelect()" class="te__select-chips">
                 <button
                   v-for="opt in schemaOptions()"
-                  :key="opt.label"
+                  :key="opt.id"
                   class="te__chip"
-                  :class="{ 'te__chip--active': slotOptions(slot).includes(opt.label) }"
-                  :style="slotOptions(slot).includes(opt.label) ? optionColorStyle(opt.color) : undefined"
-                  @click="toggleSlotOption(slot, opt.label)"
+                  :class="{ 'te__chip--active': slotOptions(slot).includes(opt.id) }"
+                  :style="slotOptions(slot).includes(opt.id) ? optionColorStyle(opt.color) : undefined"
+                  @click="toggleSlotOption(slot, opt.id)"
                 >
                   {{ opt.label }}
                 </button>
@@ -802,9 +803,9 @@ onUnmounted(() => {
               >
                 <code class="te__pool-range-key">{{ range ? formatPeriodKey(range) : t('db.timeline.alwaysValid') }}</code>
                 <span
-                  v-if="nuanceCfg && nuanceValue(entry.uid, range)"
+                  v-if="nuanceCfg && optionLabel(nuanceCfg.options, nuanceValue(entry.uid, range))"
                   class="te__pool-nuance-tag"
-                >{{ nuanceValue(entry.uid, range) }}</span>
+                >{{ optionLabel(nuanceCfg.options, nuanceValue(entry.uid, range)) }}</span>
                 <button
                   class="te__delete-btn"
                   @click="removePoolRange(entry.uid, range)"
@@ -907,8 +908,8 @@ onUnmounted(() => {
                   <option value="">{{ t('db.timeline.nuanceNone') }}</option>
                   <option
                     v-for="opt in nuanceCfg.options"
-                    :key="opt.label"
-                    :value="opt.label"
+                    :key="opt.id"
+                    :value="opt.id"
                   >{{ opt.label }}</option>
                 </select>
               </div>

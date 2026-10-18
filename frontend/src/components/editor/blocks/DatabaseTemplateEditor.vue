@@ -91,7 +91,7 @@ async function load(): Promise<void> {
   error.value = false
   try {
     await blockStore.fetchBlock(props.templateId)
-    await blockStore.fetchChildren(props.templateId)
+    await blockStore.fetchTree(props.templateId)
     await dbStore.fetchSchemas(props.databaseId)
     // Fetch templates so values are populated in the store.
     await templateStore.fetchTemplates(props.databaseId)

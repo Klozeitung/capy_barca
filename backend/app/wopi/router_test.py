@@ -508,6 +508,33 @@ def test_put_file_status_ok_in_response(wopi_client, prepared):
     assert data["status"] == "ok"
 
 
+def test_put_file_runs_its_blocking_checks_in_a_worker_thread(
+    wopi_client, prepared, monkeypatch
+):
+    """
+    The handler stays async to stream the body, so the authorization query and
+    the file lookup must be handed to a worker thread; run on the event loop
+    they would stall every other request for their duration.
+    """
+    import app.wopi.router as wopi_module
+
+    offloaded: list[str] = []
+    original = wopi_module.run_in_threadpool
+
+    async def _recording(func, *args, **kwargs):
+        offloaded.append(func.__name__)
+        return await original(func, *args, **kwargs)
+
+    monkeypatch.setattr(wopi_module, "run_in_threadpool", _recording)
+
+    resp = wopi_client.post(
+        f"/api/wopi/files/{prepared['token']}/contents", content=b"content"
+    )
+
+    assert resp.status_code == 200
+    assert offloaded == ["_authorize_claims", "_find_file"]
+
+
 def test_put_file_refuses_a_token_whose_user_lost_access(
     wopi_client, tmp_drive_dir, test_secret, member_user
 ):

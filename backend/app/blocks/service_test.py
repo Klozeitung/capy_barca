@@ -1,7 +1,7 @@
 """
 Tests for the block service.
 
-All tests run against the isolated in-memory SQLite database provided by
+All tests run against the isolated PostgreSQL test database provided by
 the autouse ``isolated_db`` fixture in conftest.py. The service is called
 directly; no HTTP layer is involved.
 """
@@ -506,12 +506,21 @@ def test_purge_unilateral_relation_not_cleaned_up(db, workspace, database_a, dat
     assert affected == set()
 
 
-# ON DELETE CASCADE on blocks.parent_id is a PostgreSQL-level constraint defined
-# in migration 0002. It cannot be reliably tested against SQLite because SQLite
-# requires PRAGMA foreign_keys=ON to enforce FKs, which in turn triggers RESTRICT
-# violations during test teardown and corrupts subsequent tests. Cascade behaviour
-# is covered by the migration itself and verified by running against the live
-# PostgreSQL container.
+def test_database_refuses_to_delete_a_block_that_still_has_children(db, page):
+    """
+    blocks.parent_id is ON DELETE RESTRICT (migration 0002): the database
+    itself refuses to remove a parent while children reference it, which is
+    why purge removes a subtree from the leaves up.
+    """
+    from sqlalchemy import delete
+    from sqlalchemy.exc import IntegrityError
+
+    repo.create_block(db, type="paragraph", position=1.0, parent_id=page.id)
+    db.commit()
+    with pytest.raises(IntegrityError):
+        db.execute(delete(Block).where(Block.id == page.id))
+        db.flush()
+    db.rollback()
 
 
 # ─── restore ──────────────────────────────────────────────────────────────────

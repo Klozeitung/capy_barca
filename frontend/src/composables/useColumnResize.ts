@@ -12,8 +12,8 @@ import { ref, type Ref } from 'vue'
 import type { DatabaseView } from '@/stores/database'
 
 export function useColumnResize(options: {
-  views: Ref<DatabaseView[]>
-  activeViewId: Ref<string>
+  views: Readonly<Ref<DatabaseView[]>>
+  activeViewId: Readonly<Ref<string>>
   saveViews: () => Promise<void>
 }) {
   const { views, activeViewId, saveViews } = options

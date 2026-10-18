@@ -56,6 +56,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.security.limiter import limiter
 from app.session.deps import get_current_user, get_db, require_block_access
@@ -359,15 +360,19 @@ async def put_file(token: str, request: Request, db: Session = Depends(get_db)) 
     cost of a save the caller's choice.
 
     Collabora sends a raw request body rather than a multipart part, so this
-    calls ``write_stream`` directly instead of going through the multipart
-    adapter.
+    calls ``write_stream`` directly instead of the multipart helper.
+
+    The handler stays ``async`` because the body is still arriving while it is
+    written. The authorization check and the file lookup are blocking, so
+    they run in a worker thread and the event loop keeps serving other
+    requests meanwhile.
     """
     from app.media import upload as upload_helper
 
     claims = _decode_token(token)
-    _authorize_claims(db, claims)
+    await run_in_threadpool(_authorize_claims, db, claims)
 
-    file_path = _find_file(claims["file_uuid"], claims["block_id"])
+    file_path = await run_in_threadpool(_find_file, claims["file_uuid"], claims["block_id"])
 
     # The temporary name starts with a dot so that _find_file's glob cannot
     # pick it up while the write is in flight, and so a leftover from a

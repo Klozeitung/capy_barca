@@ -69,9 +69,7 @@ def _collect_subtree_ids(db: Session, root_id: uuid.UUID) -> list[uuid.UUID]:
     Return the IDs of *root_id* and all its descendants via breadth-first
     traversal.
 
-    This is intentionally done in application code rather than a recursive
-    CTE so that the behaviour is identical under SQLite (tests) and
-    PostgreSQL (production).
+    Done in application code, one query per tree level.
 
     Parameters
     ----------

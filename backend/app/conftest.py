@@ -1,71 +1,226 @@
-import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+"""
+Shared pytest fixtures.
 
-import app.automations.automations_models  # noqa: F401 – registers Automation with Base
-import app.blocks.models  # noqa: F401 – registers Block, PropertySchema, PropertyValue,
-                           #               BlockPreference, BlockEvent with Base
-import app.permissions.model  # noqa: F401 – registers BlockPermission, BlockPermissionGrant with Base
-import app.comments.comments_models  # noqa: F401 – registers Comment with Base
-import app.media.model  # noqa: F401 – registers MediaFile with Base
-import app.comments.comments_router as comments_router_module
-import app.database.database as db_module
-import app.session.deps as deps_module
-import app.session.session as s
-import app.session.user_login as user_login_module
-import app.session.user_registration as user_registration_module
-import app.setup_router as setup_router_module
-import app.users.model  # noqa: F401 – registers User with Base
-from app.session.session import SessionRecord
+The suite runs against PostgreSQL, the database CapyBarca uses in production.
+Tests therefore exercise the real column types (JSONB), the real foreign-key
+enforcement and the real query planner instead of an approximation of them.
+
+Test database
+-------------
+``TEST_DATABASE_URL`` names the database the suite may use. It is mandatory,
+and its database name must end in ``_test``: the suite drops and recreates the
+``public`` schema of that database at the start of every run and deletes every
+row before every test, so it must never be pointed at real data. setup.sh
+creates ``<POSTGRES_DB>_test`` next to the production database and passes the
+URL in; CI starts a dedicated PostgreSQL service.
+
+``DATABASE_URL`` is overwritten with the test URL before the application is
+imported, so even code that bypasses the fixtures below cannot reach any other
+database.
+
+Schema
+------
+The schema is built by running the Alembic migrations, not from the models.
+That is what an installation actually runs, so the tests see the same tables,
+types and indexes as production.
+
+Isolation
+---------
+Every test starts with all tables empty, including the rows that migrations
+seed (the workspace root block). Tests that need the root create it, exactly
+as they did before. Deleting rows is considerably faster than TRUNCATE for
+tables this small and keeps the suite within the runtime of the previous
+in-memory setup.
+"""
+import os
+from pathlib import Path
+
+import pytest
+from sqlalchemy.engine import make_url
+
+_TEST_DATABASE_SUFFIX = "_test"
+
+
+def _resolve_test_database_url() -> str:
+    """
+    Return TEST_DATABASE_URL after checking that it is safe to wipe.
+
+    Aborts the run when the variable is missing, when its database name lacks
+    the ``_test`` suffix, or when it names the same database as DATABASE_URL.
+    """
+    url = os.environ.get("TEST_DATABASE_URL", "").strip()
+    if not url:
+        pytest.exit(
+            "TEST_DATABASE_URL is not set. The test suite needs a PostgreSQL "
+            "database whose name ends in '_test', for example "
+            "postgresql://user:password@localhost:5432/capybarca_db_test",
+            returncode=4,
+        )
+    database = make_url(url).database or ""
+    if not database.endswith(_TEST_DATABASE_SUFFIX):
+        pytest.exit(
+            f"TEST_DATABASE_URL names the database {database!r}. The suite "
+            f"deletes all data in the database it runs against and only accepts "
+            f"names ending in {_TEST_DATABASE_SUFFIX!r}.",
+            returncode=4,
+        )
+    configured = os.environ.get("DATABASE_URL", "").strip()
+    if configured and (make_url(configured).database or "") == database:
+        pytest.exit(
+            "TEST_DATABASE_URL and DATABASE_URL name the same database. The "
+            "suite refuses to run against the application's own database.",
+            returncode=4,
+        )
+    return url
+
+
+_TEST_DATABASE_URL = _resolve_test_database_url()
+os.environ["DATABASE_URL"] = _TEST_DATABASE_URL
+
+# Application modules read DATABASE_URL at import time, so they are imported
+# only after it has been redirected above.
+from sqlalchemy import MetaData, create_engine, event, text  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+
+import app.automations.automations_models  # noqa: E402,F401 – registers Automation with Base
+import app.blocks.models  # noqa: E402,F401 – registers Block, PropertySchema, PropertyValue,
+                           #                    BlockPreference, BlockEvent with Base
+import app.permissions.model  # noqa: E402,F401 – registers BlockPermission, BlockPermissionGrant
+import app.comments.comments_models  # noqa: E402,F401 – registers Comment with Base
+import app.media.model  # noqa: E402,F401 – registers MediaFile with Base
+import app.database.database as db_module  # noqa: E402
+import app.session.deps as deps_module  # noqa: E402
+import app.session.session as s  # noqa: E402
+import app.session.user_login as user_login_module  # noqa: E402
+import app.session.user_registration as user_registration_module  # noqa: E402
+import app.setup_router as setup_router_module  # noqa: E402
+import app.users.model  # noqa: E402,F401 – registers User with Base
+from app.database.database import normalize_database_url  # noqa: E402
+
+_BACKEND_DIR = Path(__file__).resolve().parents[1]
+
+# Modules that bind ``SessionLocal`` by name at import time. Each is pointed at
+# the test engine for every test, so a module reloaded by a test (see
+# database_test.py) cannot leave a stale factory behind for the next one.
+_SESSION_FACTORY_MODULES = (
+    s,
+    db_module,
+    deps_module,
+    user_login_module,
+    user_registration_module,
+    setup_router_module,
+)
+
+
+def _run_migrations() -> None:
+    """
+    Apply every Alembic migration to the test database.
+
+    The configuration is built in code rather than read from alembic.ini: the
+    ini file installs its own logging configuration, which would disable the
+    application loggers that several tests inspect through ``caplog``.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    config = Config()
+    config.set_main_option("script_location", str(_BACKEND_DIR / "alembic"))
+    command.upgrade(config, "head")
+
+
+@pytest.fixture(scope="session")
+def test_engine():
+    """
+    Engine for the test database, with a freshly migrated schema.
+
+    Session-scoped: the schema is rebuilt once per run. The yielded engine is
+    owned by this fixture rather than taken from ``app.database.database``,
+    because a test that reloads that module replaces its engine.
+    """
+    engine = create_engine(normalize_database_url(_TEST_DATABASE_URL))
+    with engine.begin() as connection:
+        connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+        connection.execute(text("CREATE SCHEMA public"))
+    _run_migrations()
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def _tables_in_delete_order(test_engine) -> list[str]:
+    """
+    Every application table, ordered so that referencing tables come first.
+
+    Reflected from the migrated database rather than taken from the models, so
+    a table that exists only in a migration is cleared as well.
+    """
+    metadata = MetaData()
+    metadata.reflect(test_engine)
+    return [
+        table.name
+        for table in reversed(metadata.sorted_tables)
+        if table.name != "alembic_version"
+    ]
 
 
 @pytest.fixture(autouse=True)
-def isolated_db(monkeypatch):
+def isolated_db(test_engine, _tables_in_delete_order, monkeypatch):
     """
-    Replace every live database session factory with an in-memory SQLite
-    instance for the duration of each test.
+    Give every test an empty database and route all sessions to it.
 
-    Patched references
-    ------------------
-    1. ``app.session.session.SessionLocal``        – session/auth token logic
-    2. ``app.database.database.SessionLocal``      – canonical source for late importers
-    3. ``app.session.deps.SessionLocal``           – ``get_db`` in the shared deps module.
-                                                     Every router now reaches the database
-                                                     through this one, the block router
-                                                     included: it re-exports ``get_db``
-                                                     from deps rather than defining its own.
-    4. ``app.session.user_login.SessionLocal``     – verifyLogin DB session
-    5. ``app.session.user_registration.SessionLocal`` – create_admin DB session
-    6. ``app.setup_router.SessionLocal``           – _is_configured DB session
-
-    StaticPool ensures all connections within a test share the same in-memory
-    database, so tables created by ``create_all`` are visible to every
-    subsequent ``SessionLocal()`` call.
-
-    Autouse ensures every test in the suite benefits from full isolation
-    without any per-test boilerplate.
+    Rows are deleted before the test rather than after, so a test that fails
+    half-way leaves its data in place for inspection and still cannot affect
+    the next one.
     """
-    test_engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+    with test_engine.begin() as connection:
+        for table in _tables_in_delete_order:
+            connection.execute(text(f'DELETE FROM "{table}"'))
 
-    TestSession = sessionmaker(bind=test_engine, autocommit=False, autoflush=False)
-    SessionRecord.metadata.create_all(test_engine)
-
-    monkeypatch.setattr(s, "SessionLocal", TestSession)
-    monkeypatch.setattr(db_module, "SessionLocal", TestSession)
-    monkeypatch.setattr(deps_module, "SessionLocal", TestSession)
-    monkeypatch.setattr(user_login_module, "SessionLocal", TestSession)
-    monkeypatch.setattr(user_registration_module, "SessionLocal", TestSession)
-    monkeypatch.setattr(setup_router_module, "SessionLocal", TestSession)
+    test_session = sessionmaker(bind=test_engine, autocommit=False, autoflush=False)
+    for module in _SESSION_FACTORY_MODULES:
+        monkeypatch.setattr(module, "SessionLocal", test_session)
 
     yield
 
-    SessionRecord.metadata.drop_all(test_engine)
-    test_engine.dispose()
+
+class QueryCounter:
+    """
+    Counts the SQL statements sent to the test database inside a ``with`` block.
+
+    Used by tests that pin how many queries an operation costs, so that an
+    operation which starts issuing one query per row is caught regardless of
+    how fast the test machine is.
+    """
+
+    def __init__(self, engine):
+        self._engine = engine
+        self.count = 0
+        self.statements: list[str] = []
+
+    def _on_execute(self, conn, cursor, statement, parameters, context, executemany):
+        self.count += 1
+        self.statements.append(statement)
+
+    def __enter__(self) -> "QueryCounter":
+        event.listen(self._engine, "before_cursor_execute", self._on_execute)
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        event.remove(self._engine, "before_cursor_execute", self._on_execute)
+
+
+@pytest.fixture
+def count_queries(test_engine):
+    """
+    Return a factory for :class:`QueryCounter` bound to the test engine.
+
+    Usage::
+
+        with count_queries() as counter:
+            ...
+        assert counter.count <= 3
+    """
+    return lambda: QueryCounter(test_engine)
 
 
 @pytest.fixture
@@ -75,14 +230,12 @@ def http_client():
 
     Every router, the block router included, consumes ``require_session`` and
     ``get_current_user`` from ``app.session.deps``, so a single pair of FastAPI
-    dependency overrides authenticates all of them. The block router used to
-    need a second mechanism — a monkeypatched ``app.blocks.router.validate_token``
-    for its own module-local ``require_session`` — which is gone along with the
-    duplicate auth path it existed for.
+    dependency overrides authenticates all of them.
 
-    The ``isolated_db`` fixture (autouse) ensures a clean in-memory database
-    for each test.  The fake user carries the admin role so permission checks
-    that distinguish members from admins pass without extra setup.
+    The ``isolated_db`` fixture (autouse) ensures an empty database for each
+    test. The fake user carries the admin role so permission checks that
+    distinguish members from admins pass without extra setup. It exists only
+    in memory; tests that need the account as a database row create it.
     """
     import uuid
 
@@ -101,17 +254,19 @@ def http_client():
     )
 
     # One override pair covers every router.
-    app.dependency_overrides[require_session] = lambda: "stub-session"
+    app.dependency_overrides[require_session] = lambda: fake_user.id
     app.dependency_overrides[get_current_user] = lambda: fake_user
 
-    # Seed the workspace root block that Alembic migration 0002 normally inserts.
-    # Only HTTP-layer tests (those that use http_client) need this row to exist;
-    # lower-level tests (models, service, repository) seed it themselves.
-    from app.blocks.models import Block, WORKSPACE_ROOT_ID
+    # Seed the workspace root block that Alembic migration 0002 inserts. The
+    # isolation fixture removes it together with every other row, so the
+    # HTTP-layer tests that rely on it put it back here; lower-level tests
+    # (models, service, repository) seed it themselves.
     from datetime import datetime, timezone
-    import app.database.database as _db_module_inner
+
+    from app.blocks.models import Block, WORKSPACE_ROOT_ID
+
     _now = datetime.now(timezone.utc)
-    with _db_module_inner.SessionLocal() as _seed_db:
+    with db_module.SessionLocal() as _seed_db:
         _seed_db.merge(Block(
             id=WORKSPACE_ROOT_ID,
             parent_id=None,
@@ -125,9 +280,12 @@ def http_client():
         ))
         _seed_db.commit()
 
-    # The cookie is redundant while get_current_user is overridden, but it keeps
-    # the client realistic for anything that reads the raw session value.
-    with TestClient(app, cookies={"session": "stub-token"}) as client:
-        yield client
-
-    app.dependency_overrides.clear()
+    try:
+        # The cookie is redundant while get_current_user is overridden, but it
+        # keeps the client realistic for anything that reads the raw value.
+        with TestClient(app, cookies={"session": "stub-token"}) as client:
+            yield client
+    finally:
+        # Cleared even when the test body raises, so a failing test cannot
+        # leave every later test authenticated.
+        app.dependency_overrides.clear()

@@ -45,7 +45,7 @@ import {
   type AutomationTrigger,
   type AutomationAction,
 } from '@/stores/automations'
-import { useDatabaseStore, NAME_COL_KEY, type PropertySchema, type FilterOperator, type ViewFilter, type DateFilterMode, type DatabaseEntry } from '@/stores/database'
+import { useDatabaseStore, NAME_COL_KEY, schemaOptions, type PropertySchema, type FilterOperator, type ViewFilter, type DateFilterMode, type DatabaseEntry } from '@/stores/database'
 import { useBlockStore } from '@/stores/blocks'
 import { getOperatorsForSchemaId, filterNeedsValue } from '@/composables/useFilterPanel'
 import { apiClient } from '@/api/client'
@@ -419,14 +419,9 @@ function actionTargetSchema(action: FormActionItem): PropertySchema | undefined 
   return dbStore.getSchemas(action.targetDbId).find(s => s.id === action.targetPropertyId)
 }
 
+/** The options an action can write; the value written is the option's id. */
 function actionSelectOptions(action: FormActionItem): { value: string; label: string }[] {
-  const schema = actionTargetSchema(action)
-  const opts = schema?.config?.options
-  if (!Array.isArray(opts)) return []
-  return opts.map((o: { value?: string; label?: string }) => ({
-    value: o.value ?? '',
-    label: o.value ?? '',
-  }))
+  return schemaOptions(actionTargetSchema(action)).map(o => ({ value: o.id, label: o.label }))
 }
 
 // ── Trigger summary (list view) ───────────────────────────────────────────────
@@ -455,7 +450,11 @@ function buildActionBody(
   boolVal: boolean,
 ): Record<string, unknown> {
   switch (schema.type) {
-    case 'select':  return { value: strVal ? { option: strVal } : null }
+    case 'select':
+      if (!strVal) return { value: null }
+      return schema.config?.mode === 'multiple'
+        ? { value: { options: [strVal] } }
+        : { value: { option: strVal } }
     case 'checkbox':return { value: { checked: boolVal } }
     case 'number':  return { value: strVal !== '' ? { number: Number(strVal) } : null }
     default:        return { value: strVal !== '' ? { text: strVal } : null }
@@ -468,7 +467,10 @@ function parseActionValue(
 ): { strVal: string; boolVal: boolean } {
   const v = (body?.value ?? {}) as Record<string, unknown>
   switch (schema.type) {
-    case 'select':  return { strVal: (v.option as string) ?? '', boolVal: false }
+    case 'select': {
+      const ids = v.options as string[] | undefined
+      return { strVal: (v.option as string | undefined) ?? ids?.[0] ?? '', boolVal: false }
+    }
     case 'checkbox':return { strVal: '', boolVal: (v.checked as boolean) ?? false }
     case 'number':  return { strVal: v.number !== undefined ? String(v.number) : '', boolVal: false }
     default:        return { strVal: (v.text as string) ?? '', boolVal: false }

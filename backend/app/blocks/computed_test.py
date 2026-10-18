@@ -156,7 +156,7 @@ def test_infer_result_type_date_range_dict_start_only():
 def test_infer_result_type_relation_descriptor_dict_is_not_date():
     # A resolved relation descriptor is also a dict but carries no start/end;
     # it must not be mistaken for a date result.
-    descriptor = {"id": "u1", "title": "Vyrenell", "database_id": "db"}
+    descriptor = {"id": "u1", "title": "City X", "database_id": "db"}
     assert _infer_result_type(descriptor) == "text"
 
 
@@ -224,7 +224,7 @@ def test_extract_scalar_select_list():
 
 def test_extract_scalar_select_option_key():
     # Current frontend format: SelectCell stores {"option": "label"}
-    assert _extract_scalar("select", {"option": "A · Einkommen Block 1"}) == "A · Einkommen Block 1"
+    assert _extract_scalar("select", {"option": "A · Value Block 1"}) == "A · Value Block 1"
 
 
 def test_extract_scalar_select_option_key_empty_string():
@@ -239,12 +239,12 @@ def test_extract_scalar_select_option_key_takes_priority():
 
 def test_extract_scalar_select_options_key_multi():
     # Multi-select frontend format: {"options": ["label", …]} — first label
-    # is returned so prop('Typ') == "Geburt" works for the single-value case.
-    assert _extract_scalar("select", {"options": ["Geburt"]}) == "Geburt"
+    # is returned so prop('Kind') == "Value A" works for the single-value case.
+    assert _extract_scalar("select", {"options": ["Value A"]}) == "Value A"
 
 
 def test_extract_scalar_select_options_key_multiple_values():
-    assert _extract_scalar("select", {"options": ["Geburt", "Tod"]}) == "Geburt"
+    assert _extract_scalar("select", {"options": ["Value A", "Value B"]}) == "Value A"
 
 
 def test_extract_scalar_select_options_key_empty_list():
@@ -277,7 +277,7 @@ def test_extract_scalar_formula_relation_result_returns_ids():
     # routes through the relation chip path instead of [object Object].
     value = {
         "result": [
-            {"id": "u1", "title": "Vyrenell", "database_id": "db"},
+            {"id": "u1", "title": "City X", "database_id": "db"},
             {"id": "u2", "title": "Other", "database_id": "db"},
         ],
         "relation": True,
@@ -970,8 +970,8 @@ def test_extract_scalar_checkbox_timeline_last_slot():
 
 
 def test_extract_scalar_select_timeline_last_slot():
-    val = {"_timeline": {"": {"option": "Geburt"}}}
-    assert _extract_scalar("select", val) == "Geburt"
+    val = {"_timeline": {"": {"option": "Value A"}}}
+    assert _extract_scalar("select", val) == "Value A"
 
 
 def test_extract_scalar_date_timeline_last_slot():
@@ -1187,30 +1187,30 @@ def test_formula_multiselect_condition_returns_relation_chips(db, database_block
     relation prop must fire, so the relation target renders as chips.
 
     Mirrors the real-world formula:
-        if(prop('Typ') == "Geburt", prop('Ort'), "")
-    where 'Typ' is a multi-select storing {"options": ["Geburt"]}.
+        if(prop('Kind') == "Value A", prop('Place'), "")
+    where 'Kind' is a multi-select storing {"options": ["Value A"]}.
     """
     target = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
-    target.content = {"title": "Vyrenell"}
+    target.content = {"title": "City X"}
     db.commit()
 
-    typ = repo.create_schema(
-        db, database_id=database_block.id, name="Typ", type="select",
-        position=1.0, config={"mode": "multiple", "options": [{"label": "Geburt"}]},
+    kind = repo.create_schema(
+        db, database_id=database_block.id, name="Kind", type="select",
+        position=1.0, config={"mode": "multiple", "options": [{"label": "Value A"}]},
     )
-    ort = repo.create_schema(
-        db, database_id=database_block.id, name="Ort", type="relation",
+    place = repo.create_schema(
+        db, database_id=database_block.id, name="Place", type="relation",
         position=2.0, config={"target_database_id": str(database_block.id)},
     )
     formula = repo.create_schema(
-        db, database_id=database_block.id, name="Formel", type="formula",
-        position=3.0, config={"expression": "if(prop('Typ')==\"Geburt\",prop('Ort'),\"\")"},
+        db, database_id=database_block.id, name="Formula", type="formula",
+        position=3.0, config={"expression": "if(prop('Kind')==\"Value A\",prop('Place'),\"\")"},
     )
     db.commit()
 
-    repo.upsert_value(db, page_id=entry.id, schema_id=typ.id, value={"options": ["Geburt"]})
+    repo.upsert_value(db, page_id=entry.id, schema_id=kind.id, value={"options": ["Value A"]})
     repo.upsert_value(
-        db, page_id=entry.id, schema_id=ort.id,
+        db, page_id=entry.id, schema_id=place.id,
         value={"related_ids": [str(target.id)]},
     )
     db.commit()
@@ -1222,32 +1222,32 @@ def test_formula_multiselect_condition_returns_relation_chips(db, database_block
     assert pv is not None
     assert pv.value.get("relation") is True
     assert len(pv.value["result"]) == 1
-    assert pv.value["result"][0]["title"] == "Vyrenell"
+    assert pv.value["result"][0]["title"] == "City X"
 
 
 def test_formula_multiselect_condition_not_met_stays_empty(db, database_block, entry):
     """When the multi-select value does not match, the else branch ("") wins."""
     target = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
-    target.content = {"title": "Vyrenell"}
+    target.content = {"title": "City X"}
     db.commit()
 
-    typ = repo.create_schema(
-        db, database_id=database_block.id, name="Typ", type="select",
-        position=1.0, config={"mode": "multiple", "options": [{"label": "Tod"}]},
+    kind = repo.create_schema(
+        db, database_id=database_block.id, name="Kind", type="select",
+        position=1.0, config={"mode": "multiple", "options": [{"label": "Value B"}]},
     )
-    ort = repo.create_schema(
-        db, database_id=database_block.id, name="Ort", type="relation",
+    place = repo.create_schema(
+        db, database_id=database_block.id, name="Place", type="relation",
         position=2.0, config={"target_database_id": str(database_block.id)},
     )
     formula = repo.create_schema(
-        db, database_id=database_block.id, name="Formel", type="formula",
-        position=3.0, config={"expression": "if(prop('Typ')==\"Geburt\",prop('Ort'),\"\")"},
+        db, database_id=database_block.id, name="Formula", type="formula",
+        position=3.0, config={"expression": "if(prop('Kind')==\"Value A\",prop('Place'),\"\")"},
     )
     db.commit()
 
-    repo.upsert_value(db, page_id=entry.id, schema_id=typ.id, value={"options": ["Tod"]})
+    repo.upsert_value(db, page_id=entry.id, schema_id=kind.id, value={"options": ["Value B"]})
     repo.upsert_value(
-        db, page_id=entry.id, schema_id=ort.id,
+        db, page_id=entry.id, schema_id=place.id,
         value={"related_ids": [str(target.id)]},
     )
     db.commit()
@@ -1267,94 +1267,94 @@ def test_rollup_over_relation_formula_resolves_chips_and_skips_empty(db, workspa
     not emit placeholder chips for entries whose formula result is empty.
 
     Setup mirrors the real data:
-      Plot DB        : entries with an 'Ort' relation and a formula
-                       'Geburtsort Formel' = prop('Ort')
-      Characters DB  : 'Plot' relation -> Plot entries
-                       'Geburtsort Test' rollup (show_original) over the
-                       Plot formula column.
+      Source DB      : entries with an 'Place' relation and a formula
+                       'Place Formula' = prop('Place')
+      Reader DB      : 'Source' relation -> source entries
+                       'Place Rollup' rollup (show_original) over the
+                       source formula column.
     """
-    # ── Target DB that 'Ort' points at (the birthplace entries) ───────────────
+    # ── Target DB that 'Place' points at ─────────────────────────────────────
     places_db = repo.create_block(db, type="database", position=1.0, parent_id=workspace.id)
     db.commit()
-    vyrenell = repo.create_block(db, type="page", position=1.0, parent_id=places_db.id)
-    vyrenell.content = {"title": "Vyrenell"}
+    city_x = repo.create_block(db, type="page", position=1.0, parent_id=places_db.id)
+    city_x.content = {"title": "City X"}
     db.commit()
 
-    # ── Plot DB: Ort relation + formula returning prop('Ort') ─────────────────
-    plot_db = repo.create_block(db, type="database", position=2.0, parent_id=workspace.id)
+    # ── Source DB: Place relation + formula returning prop('Place') ───────────
+    source_db = repo.create_block(db, type="database", position=2.0, parent_id=workspace.id)
     db.commit()
-    ort = repo.create_schema(
-        db, database_id=plot_db.id, name="Ort", type="relation",
+    place = repo.create_schema(
+        db, database_id=source_db.id, name="Place", type="relation",
         position=1.0, config={"target_database_id": str(places_db.id)},
     )
-    geburtsort_formel = repo.create_schema(
-        db, database_id=plot_db.id, name="Geburtsort Formel", type="formula",
-        position=2.0, config={"expression": "prop('Ort')"},
+    place_formula = repo.create_schema(
+        db, database_id=source_db.id, name="Place Formula", type="formula",
+        position=2.0, config={"expression": "prop('Place')"},
     )
     db.commit()
 
-    # Plot entry WITH a birthplace
-    plot_with = repo.create_block(db, type="page", position=1.0, parent_id=plot_db.id)
-    plot_with.content = {"title": "Geburt Alfred"}
+    # Source entry WITH a place
+    source_with = repo.create_block(db, type="page", position=1.0, parent_id=source_db.id)
+    source_with.content = {"title": "Event Person A"}
     db.commit()
     repo.upsert_value(
-        db, page_id=plot_with.id, schema_id=ort.id,
-        value={"related_ids": [str(vyrenell.id)]},
+        db, page_id=source_with.id, schema_id=place.id,
+        value={"related_ids": [str(city_x.id)]},
     )
-    # Plot entry WITHOUT a birthplace (empty Ort)
-    plot_without = repo.create_block(db, type="page", position=2.0, parent_id=plot_db.id)
-    plot_without.content = {"title": "Alfred Test"}
+    # Source entry WITHOUT a place (empty Place)
+    source_without = repo.create_block(db, type="page", position=2.0, parent_id=source_db.id)
+    source_without.content = {"title": "Person A Test"}
     db.commit()
     repo.upsert_value(
-        db, page_id=plot_without.id, schema_id=ort.id, value={"related_ids": []},
+        db, page_id=source_without.id, schema_id=place.id, value={"related_ids": []},
     )
     db.commit()
 
-    compute_all_for_entry(db, plot_db.id, plot_with.id)
-    compute_all_for_entry(db, plot_db.id, plot_without.id)
+    compute_all_for_entry(db, source_db.id, source_with.id)
+    compute_all_for_entry(db, source_db.id, source_without.id)
     db.commit()
 
-    # ── Characters DB: Plot relation + rollup (show_original) over formula ────
-    chars_db = repo.create_block(db, type="database", position=3.0, parent_id=workspace.id)
+    # ── Reader DB: Source relation + rollup (show_original) over formula ──────
+    reader_db = repo.create_block(db, type="database", position=3.0, parent_id=workspace.id)
     db.commit()
-    plot_rel = repo.create_schema(
-        db, database_id=chars_db.id, name="Plot", type="relation",
-        position=1.0, config={"target_database_id": str(plot_db.id)},
+    source_rel = repo.create_schema(
+        db, database_id=reader_db.id, name="Source", type="relation",
+        position=1.0, config={"target_database_id": str(source_db.id)},
     )
-    geburtsort_test = repo.create_schema(
-        db, database_id=chars_db.id, name="Geburtsort Test", type="rollup",
+    place_rollup = repo.create_schema(
+        db, database_id=reader_db.id, name="Place Rollup", type="rollup",
         position=2.0, config={
-            "relation_schema_id": str(plot_rel.id),
-            "rollup_schema_id": str(geburtsort_formel.id),
+            "relation_schema_id": str(source_rel.id),
+            "rollup_schema_id": str(place_formula.id),
             "function": "show_original",
         },
     )
     db.commit()
 
-    # Character linked to BOTH plot entries (one with, one without birthplace)
-    prince = repo.create_block(db, type="page", position=1.0, parent_id=chars_db.id)
-    prince.content = {"title": "Prince Alfred"}
+    # Entry linked to BOTH source entries (one with, one without place)
+    reader_entry = repo.create_block(db, type="page", position=1.0, parent_id=reader_db.id)
+    reader_entry.content = {"title": "Person B"}
     db.commit()
     repo.upsert_value(
-        db, page_id=prince.id, schema_id=plot_rel.id,
-        value={"related_ids": [str(plot_with.id), str(plot_without.id)]},
+        db, page_id=reader_entry.id, schema_id=source_rel.id,
+        value={"related_ids": [str(source_with.id), str(source_without.id)]},
     )
     db.commit()
 
-    compute_all_for_entry(db, chars_db.id, prince.id)
+    compute_all_for_entry(db, reader_db.id, reader_entry.id)
     db.commit()
 
-    pv = repo.get_value(db, prince.id, geburtsort_test.id)
+    pv = repo.get_value(db, reader_entry.id, place_rollup.id)
     assert pv is not None
     # Resolved to relation chips, not raw descriptors / [object Object].
     assert pv.value.get("relation") is True
     result = pv.value["result"]
     assert isinstance(result, list)
-    # Exactly ONE chip: Vyrenell. The empty-birthplace plot entry contributes
+    # Exactly ONE chip: City X. The source entry without a place contributes
     # no placeholder chip.
     assert len(result) == 1
-    assert result[0]["title"] == "Vyrenell"
-    assert result[0]["id"] == str(vyrenell.id)
+    assert result[0]["title"] == "City X"
+    assert result[0]["id"] == str(city_x.id)
 
 
 def test_rollup_over_timeline_relation_target_resolves_members(db, database_block, entry):
@@ -1367,9 +1367,9 @@ def test_rollup_over_timeline_relation_target_resolves_members(db, database_bloc
     while flat relation targets worked.
     """
     org = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
-    org.content = {"title": "ACME GmbH"}
+    org.content = {"title": "Organisation X"}
     member = repo.create_block(db, type="page", position=3.0, parent_id=database_block.id)
-    member.content = {"title": "Lyz"}
+    member.content = {"title": "Person C"}
     db.commit()
 
     rel = repo.create_schema(
@@ -1415,7 +1415,7 @@ def test_rollup_over_timeline_relation_target_resolves_members(db, database_bloc
     result = pv.value.get("result")
     assert isinstance(result, list) and len(result) == 1
     assert result[0]["id"] == str(member.id)
-    assert result[0]["title"] == "Lyz"
+    assert result[0]["title"] == "Person C"
 
 
 def test_rollup_over_timeline_text_show_original(db, database_block, entry):
@@ -1749,3 +1749,18 @@ def test_same_db_cascade_finds_formula_dependents(db, database_block):
 
 def test_same_db_cascade_without_dependents_reports_nothing(db, database_block, entry):
     assert compute_same_db_rollup_dependents(db, database_block.id, entry.id) is False
+
+
+# ─── Option ids ───────────────────────────────────────────────────────────────
+
+
+def test_extract_select_turns_option_ids_into_labels():
+    config = {"options": [{"id": "o1", "label": "Value A"}, {"id": "o2", "label": "Value B"}]}
+    assert _extract_scalar("select", {"option": "o2"}, config) == "Value B"
+    assert _extract_scalar("select", {"options": ["o1", "o2"]}, config) == "Value A"
+    assert _extract_scalar("select", {"_timeline": {"": {"option": "o1"}}}, config) == "Value A"
+
+
+def test_extract_select_passes_unknown_ids_through():
+    config = {"options": [{"id": "o1", "label": "Value A"}]}
+    assert _extract_scalar("select", {"option": "o9"}, config) == "o9"

@@ -10,17 +10,22 @@
  *
  * The row is intentionally id-agnostic: it emits semantic changes only, and the
  * host wraps them with whatever group/filter identifiers it uses. All logic is
- * shared via the pure helpers in useFilterPanel; only the relation-entry cache
- * (which is async and component-local) lives here.
+ * shared via the pure helpers in useFilterPanel; only the relation-entry
+ * search (which is async and component-local) lives here.
+ *
+ * The value of a relation filter is picked from a server-side search of the
+ * target database by title, as in the relation picker, so it reaches every
+ * entry without loading the whole target database.
  *
  * Styling is supplied by the host via the *Class props (Variant A skinning), so
  * each host keeps its own visual identity while the structure and behaviour stay
  * unified. Defaults match the view FilterPanel's db__panel-* classes.
  */
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   useDatabaseStore,
+  ENTRY_SEARCH_LIMIT,
   type PropertySchema,
   type DatabaseEntry,
   type ViewFilter,
@@ -89,21 +94,76 @@ const emit = defineEmits<{
 const { t }   = useI18n()
 const dbStore = useDatabaseStore()
 
-// ── Relation-entry cache (loaded lazily per schema) ───────────────────────────
+// ── Relation value: server-side search ────────────────────────────────────────
 
-const relationEntries = ref<Record<string, DatabaseEntry[]>>({})
+/** Delay between the last keystroke and the search request. */
+const RELATION_SEARCH_DEBOUNCE_MS = 250
 
-function getRelationEntries(schemaId: string): DatabaseEntry[] {
-  if (schemaId in relationEntries.value) return relationEntries.value[schemaId]
-  const schema   = props.schemas.find((s) => s.id === schemaId)
-  const targetId = schema?.config?.target_database_id as string | undefined
-  if (!targetId) return []
-  relationEntries.value[schemaId] = []
-  dbStore.fetchEntries(targetId).then((entries) => {
-    relationEntries.value[schemaId] = entries
-  })
-  return []
+const relationQuery   = ref('')
+const relationResults = ref<DatabaseEntry[]>([])
+const relationTotal   = ref(0)
+let _relationTimer: ReturnType<typeof setTimeout> | null = null
+let _relationSeq = 0
+
+/** Target database of the relation this row filters on, if it is one. */
+const relationTargetId = computed<string | null>(() => {
+  if (!isRelationFilter(props.filter, props.schemas, props.nameColKey)) return null
+  const schema = props.schemas.find((s) => s.id === props.filter.schemaId)
+  return (schema?.config?.target_database_id as string | undefined) ?? null
+})
+
+async function runRelationSearch(): Promise<void> {
+  const targetId = relationTargetId.value
+  if (!targetId) return
+  const seq = ++_relationSeq
+  try {
+    const result = await dbStore.searchEntries(targetId, relationQuery.value, ENTRY_SEARCH_LIMIT)
+    if (seq !== _relationSeq) return
+    relationResults.value = result.entries
+    relationTotal.value   = result.total
+  } catch {
+    if (seq !== _relationSeq) return
+    relationResults.value = []
+    relationTotal.value   = 0
+  }
 }
+
+function onRelationQueryInput(value: string): void {
+  relationQuery.value = value
+  if (_relationTimer) clearTimeout(_relationTimer)
+  _relationTimer = setTimeout(() => {
+    _relationTimer = null
+    runRelationSearch()
+  }, RELATION_SEARCH_DEBOUNCE_MS)
+}
+
+// A new relation property starts over with an empty search; the chosen
+// entry's title is resolved so it shows even when the search does not list it.
+watch(
+  relationTargetId,
+  (targetId) => {
+    relationQuery.value   = ''
+    relationResults.value = []
+    relationTotal.value   = 0
+    if (!targetId) return
+    runRelationSearch()
+    if (props.filter.value) dbStore.resolveEntryTitles(targetId, [props.filter.value])
+  },
+  { immediate: true },
+)
+
+onUnmounted(() => {
+  if (_relationTimer) clearTimeout(_relationTimer)
+})
+
+/** True when the chosen entry is not among the listed results. */
+const selectedOutsideResults = computed<boolean>(() =>
+  !!props.filter.value && !relationResults.value.some((e) => e.id === props.filter.value),
+)
+
+const selectedTitle = computed<string>(() =>
+  (dbStore.getRelationTitle(props.filter.value) ?? '').trim() || t('main.untitled'),
+)
 
 function entryTitle(entry: DatabaseEntry): string {
   return ((entry.content?.title as string | undefined) ?? '').trim() || t('main.untitled')
@@ -225,8 +285,8 @@ function isNumberFilter(): boolean {
         @change="emit('value-change', ($event.target as HTMLSelectElement).value)"
       >
         <option value="">{{ t('db.filter.selectAny') }}</option>
-        <option v-for="opt in getSelectOptions(filter, schemas, nameColKey)" :key="opt" :value="opt">
-          {{ opt }}
+        <option v-for="opt in getSelectOptions(filter, schemas, nameColKey)" :key="opt.id" :value="opt.id">
+          {{ opt.label }}
         </option>
       </select>
     </template>
@@ -239,26 +299,37 @@ function isNumberFilter(): boolean {
         @change="emit('value-change', ($event.target as HTMLSelectElement).value)"
       >
         <option value="">{{ t('db.filter.selectAny') }}</option>
-        <option v-for="opt in getSelectOptions(filter, schemas, nameColKey)" :key="opt" :value="opt">
-          {{ opt }}
+        <option v-for="opt in getSelectOptions(filter, schemas, nameColKey)" :key="opt.id" :value="opt.id">
+          {{ opt.label }}
         </option>
       </select>
     </template>
 
     <!-- Relation filter -->
     <template v-else-if="isRelationFilter(filter, schemas, nameColKey)">
+      <input
+        type="text"
+        :class="valueInputClass"
+        :value="relationQuery"
+        :placeholder="t('db.filter.searchEntry')"
+        @input="onRelationQueryInput(($event.target as HTMLInputElement).value)"
+      />
       <select
         :class="valueSelectClass"
         :value="filter.value"
         @change="emit('value-change', ($event.target as HTMLSelectElement).value)"
       >
         <option value="">{{ t('db.filter.selectAny') }}</option>
+        <option v-if="selectedOutsideResults" :value="filter.value">{{ selectedTitle }}</option>
         <option
-          v-for="entry in getRelationEntries(filter.schemaId)"
+          v-for="entry in relationResults"
           :key="entry.id"
           :value="entry.id"
         >
           {{ entryTitle(entry) }}
+        </option>
+        <option v-if="relationTotal > relationResults.length" disabled value="">
+          {{ t('db.relation.moreResults', { shown: relationResults.length, total: relationTotal }) }}
         </option>
       </select>
     </template>

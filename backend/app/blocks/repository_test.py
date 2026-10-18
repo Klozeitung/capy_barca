@@ -1,7 +1,7 @@
 """
 Tests for the block repository.
 
-All tests run against the isolated in-memory SQLite database provided by
+All tests run against the isolated PostgreSQL test database provided by
 the autouse ``isolated_db`` fixture in conftest.py. The repository is
 exercised via an ORM session; no HTTP layer is involved.
 """
@@ -530,7 +530,7 @@ def test_list_relation_schemas_by_key_property_scans_across_databases(db, worksp
 
 def test_list_relation_schemas_by_key_property_ignores_other_key_property(db, workspace, database_block, schema):
     other_prop = repo.create_schema(
-        db, database_id=database_block.id, name="Rank", type="number", position=2.0
+        db, database_id=database_block.id, name="Score", type="number", position=2.0
     )
     db.commit()
     other_db = repo.create_block(db, type="database", position=3.0, parent_id=workspace.id)
@@ -756,35 +756,35 @@ def test_query_entries_empty_database(db, database_block):
 
 
 def test_query_entries_name_contains_filter(db, database_block):
-    _make_entry(db, database_block, "Napoleon", position=1.0)
-    _make_entry(db, database_block, "Wellington", position=2.0)
+    _make_entry(db, database_block, "Chameleon", position=1.0)
+    _make_entry(db, database_block, "Falcon", position=2.0)
     f = repo.FilterDescriptor(
         schema_id="__name__", schema_type=None, schema_config=None,
         operator="contains", value="leon",
     )
     entries, total = repo.query_entries(db, database_block.id, [_g(f)], [])
     assert total == 1
-    assert entries[0].content["title"] == "Napoleon"
+    assert entries[0].content["title"] == "Chameleon"
 
 
 def test_query_entries_name_not_contains_filter(db, database_block):
-    _make_entry(db, database_block, "Napoleon", position=1.0)
-    _make_entry(db, database_block, "Wellington", position=2.0)
+    _make_entry(db, database_block, "Chameleon", position=1.0)
+    _make_entry(db, database_block, "Falcon", position=2.0)
     f = repo.FilterDescriptor(
         schema_id="__name__", schema_type=None, schema_config=None,
         operator="not_contains", value="leon",
     )
     entries, total = repo.query_entries(db, database_block.id, [_g(f)], [])
     assert total == 1
-    assert entries[0].content["title"] == "Wellington"
+    assert entries[0].content["title"] == "Falcon"
 
 
 def test_query_entries_name_eq_filter(db, database_block):
-    _make_entry(db, database_block, "Napoleon", position=1.0)
-    _make_entry(db, database_block, "Wellington", position=2.0)
+    _make_entry(db, database_block, "Chameleon", position=1.0)
+    _make_entry(db, database_block, "Falcon", position=2.0)
     f = repo.FilterDescriptor(
         schema_id="__name__", schema_type=None, schema_config=None,
-        operator="eq", value="napoleon",
+        operator="eq", value="chameleon",
     )
     entries, total = repo.query_entries(db, database_block.id, [_g(f)], [])
     assert total == 1
@@ -792,7 +792,7 @@ def test_query_entries_name_eq_filter(db, database_block):
 
 def test_query_entries_name_is_empty_filter(db, database_block):
     _make_entry(db, database_block, title=None, position=1.0)
-    _make_entry(db, database_block, "Napoleon", position=2.0)
+    _make_entry(db, database_block, "Chameleon", position=2.0)
     f = repo.FilterDescriptor(
         schema_id="__name__", schema_type=None, schema_config=None,
         operator="is_empty", value="",
@@ -824,7 +824,7 @@ def test_query_entries_text_schema_contains(db, workspace, database_block):
 
 def test_query_entries_number_gt_filter(db, workspace, database_block):
     schema = repo.create_schema(
-        db, database_id=database_block.id, name="Rank", type="number", position=1.0
+        db, database_id=database_block.id, name="Score", type="number", position=1.0
     )
     db.commit()
     e1 = _make_entry(db, database_block, position=1.0)
@@ -867,7 +867,7 @@ def test_query_entries_is_empty_filter(db, workspace, database_block):
 
 def test_query_entries_multiple_filters_are_anded(db, workspace, database_block):
     schema = repo.create_schema(
-        db, database_id=database_block.id, name="Rank", type="number", position=1.0
+        db, database_id=database_block.id, name="Score", type="number", position=1.0
     )
     db.commit()
     e1 = _make_entry(db, database_block, "Alpha",   position=1.0)
@@ -887,9 +887,9 @@ def test_query_entries_multiple_filters_are_anded(db, workspace, database_block)
         operator="gte", value="5",
     )
     entries, total = repo.query_entries(db, database_block.id, [_g(name_f, num_f)], [])
-    # "Bravo" contains "a" and rank >= 5; "Charlie" contains "a" but rank < 5 is False,
-    # actually "Charlie" rank=10 >= 5 and "Charlie" contains "a" → both match
-    # "Alpha" rank=1 < 5 → excluded
+    # "Bravo" contains "a" and score >= 5; "Charlie" contains "a" but score < 5 is False,
+    # actually "Charlie" score=10 >= 5 and "Charlie" contains "a" → both match
+    # "Alpha" score=1 < 5 → excluded
     assert total == 2
     ids = {e.id for e in entries}
     assert e1.id not in ids
@@ -918,7 +918,7 @@ def test_query_entries_sort_by_name_desc(db, database_block):
 
 def test_query_entries_sort_by_number_schema(db, workspace, database_block):
     schema = repo.create_schema(
-        db, database_id=database_block.id, name="Rank", type="number", position=1.0
+        db, database_id=database_block.id, name="Score", type="number", position=1.0
     )
     db.commit()
     e1 = _make_entry(db, database_block, position=1.0)
@@ -1049,11 +1049,11 @@ def test_query_entries_excludes_trashed_entries(db, database_block):
 
 def test_query_name_neq_includes_entries_with_no_title(db, database_block):
     """neq must not exclude entries whose title is NULL."""
-    titled   = _make_entry(db, database_block, "Napoleon", position=1.0)
+    titled   = _make_entry(db, database_block, "Chameleon", position=1.0)
     untitled = _make_entry(db, database_block, title=None, position=2.0)
     f = repo.FilterDescriptor(
         schema_id="__name__", schema_type=None, schema_config=None,
-        operator="neq", value="Napoleon",
+        operator="neq", value="Chameleon",
     )
     entries, total = repo.query_entries(db, database_block.id, [_g(f)], [])
     ids = {e.id for e in entries}
@@ -1063,11 +1063,11 @@ def test_query_name_neq_includes_entries_with_no_title(db, database_block):
 
 def test_query_name_not_contains_includes_entries_with_no_title(db, database_block):
     """not_contains must not exclude entries whose title is NULL."""
-    titled   = _make_entry(db, database_block, "Napoleon", position=1.0)
+    titled   = _make_entry(db, database_block, "Chameleon", position=1.0)
     untitled = _make_entry(db, database_block, title=None, position=2.0)
     f = repo.FilterDescriptor(
         schema_id="__name__", schema_type=None, schema_config=None,
-        operator="not_contains", value="Napoleon",
+        operator="not_contains", value="Chameleon",
     )
     entries, total = repo.query_entries(db, database_block.id, [_g(f)], [])
     ids = {e.id for e in entries}
@@ -1078,7 +1078,7 @@ def test_query_name_not_contains_includes_entries_with_no_title(db, database_blo
 def test_query_name_contains_excludes_entries_with_no_title(db, database_block):
     """contains must not match NULL titles."""
     _make_entry(db, database_block, title=None, position=1.0)
-    titled = _make_entry(db, database_block, "Napoleon", position=2.0)
+    titled = _make_entry(db, database_block, "Chameleon", position=2.0)
     f = repo.FilterDescriptor(
         schema_id="__name__", schema_type=None, schema_config=None,
         operator="contains", value="n",
@@ -1094,7 +1094,7 @@ def test_query_name_contains_excludes_entries_with_no_title(db, database_block):
 def test_query_entries_number_neq_includes_entries_with_no_value(db, workspace, database_block):
     """neq must match entries that have no PropertyValue row at all."""
     schema = repo.create_schema(
-        db, database_id=database_block.id, name="Rank", type="number", position=1.0
+        db, database_id=database_block.id, name="Score", type="number", position=1.0
     )
     db.commit()
     e_has_value = _make_entry(db, database_block, position=1.0)
@@ -1113,7 +1113,7 @@ def test_query_entries_number_neq_includes_entries_with_no_value(db, workspace, 
 
 def test_query_entries_number_neq_excludes_matching_value(db, workspace, database_block):
     schema = repo.create_schema(
-        db, database_id=database_block.id, name="Rank", type="number", position=1.0
+        db, database_id=database_block.id, name="Score", type="number", position=1.0
     )
     db.commit()
     e1 = _make_entry(db, database_block, position=1.0)
@@ -1362,3 +1362,144 @@ def test_resolve_filter_descriptor_date_fields_passthrough(db, database_block):
     assert d.value2 == "2026-12-31"
     assert d.date_mode == "exact"
     assert d.date_offset == 0
+
+
+# ─── infer_formula_result_types ───────────────────────────────────────────────
+
+
+def _formula(db, database_block, name):
+    schema = repo.create_schema(
+        db, database_id=database_block.id, name=name, type="formula", position=1.0,
+        config={"expression": "1"},
+    )
+    db.commit()
+    return schema
+
+
+def _entry(db, database_block):
+    entry = repo.create_block(db, type="page", position=1.0, parent_id=database_block.id)
+    db.commit()
+    return entry
+
+
+def test_infer_formula_result_types_reads_stored_results(db, database_block):
+    number = _formula(db, database_block, "Number")
+    text = _formula(db, database_block, "Text")
+    entry = _entry(db, database_block)
+    repo.upsert_value(db, page_id=entry.id, schema_id=number.id,
+                      value={"result": 4, "result_type": "number"})
+    repo.upsert_value(db, page_id=entry.id, schema_id=text.id,
+                      value={"result": "x", "result_type": "text"})
+    db.commit()
+
+    assert repo.infer_formula_result_types(db, [number.id, text.id]) == {
+        number.id: "number", text.id: "text",
+    }
+
+
+def test_infer_formula_result_types_skips_values_without_a_result(db, database_block):
+    formula = _formula(db, database_block, "Number")
+    empty = _entry(db, database_block)
+    filled = _entry(db, database_block)
+    repo.upsert_value(db, page_id=empty.id, schema_id=formula.id,
+                      value={"result": None, "result_type": "text"})
+    repo.upsert_value(db, page_id=filled.id, schema_id=formula.id,
+                      value={"result": 2, "result_type": "number"})
+    db.commit()
+
+    assert repo.infer_formula_result_types(db, [formula.id]) == {formula.id: "number"}
+
+
+def test_infer_formula_result_types_omits_formulas_without_values(db, database_block):
+    formula = _formula(db, database_block, "Number")
+    assert repo.infer_formula_result_types(db, [formula.id]) == {}
+    assert repo.infer_formula_result_types(db, []) == {}
+
+
+# ─── ensure_readonly_schemas ──────────────────────────────────────────────────
+
+
+def test_ensure_readonly_schemas_creates_each_missing_type_once(db, database_block):
+    created = repo.ensure_readonly_schemas(db, database_block.id)
+    db.commit()
+    again = repo.ensure_readonly_schemas(db, database_block.id)
+
+    types = [s.type for s in repo.list_schemas(db, database_block.id)]
+    assert created
+    assert again == []
+    assert len(types) == len(set(types))
+
+
+# ─── Schema lifecycle hooks into views ────────────────────────────────────────
+
+
+def test_create_and_delete_schema_keep_views_consistent(db, database_block):
+    from app.blocks import views
+
+    [shown] = views.ensure_views(db, database_block.id)
+    other = views.create_view(db, database_block.id)
+    db.commit()
+
+    schema = repo.create_schema(
+        db, database_id=database_block.id, name="Notes", type="text", position=9.0,
+        visible_in_view_id=shown.id,
+    )
+    db.commit()
+    assert str(schema.id) not in shown.settings["hiddenColumns"]
+    assert str(schema.id) in other.settings["hiddenColumns"]
+
+    repo.delete_schema(db, schema)
+    db.commit()
+    assert str(schema.id) not in other.settings["hiddenColumns"]
+
+
+# ─── Select sort by option ────────────────────────────────────────────────────
+
+
+def _select_sort_setup(db, database_block, manual):
+    config = {"options": [
+        {"id": "o-beta", "label": "beta"},
+        {"id": "o-alpha", "label": "Alpha"},
+        {"id": "o-gamma", "label": "gamma"},
+    ]}
+    if manual:
+        config["manualSortOrder"] = True
+    schema = repo.create_schema(
+        db, database_id=database_block.id, name="Choice", type="select", position=1.0,
+        config=config,
+    )
+    db.commit()
+    entries = {}
+    for position, option_id in enumerate(("o-gamma", "o-beta", "o-alpha", None), start=1):
+        entry = _make_entry(db, database_block, position=float(position))
+        if option_id:
+            repo.upsert_value(db, page_id=entry.id, schema_id=schema.id, value={"option": option_id})
+        entries[option_id] = entry
+    db.commit()
+    return schema, entries
+
+
+def _order(db, database_block, schema, direction="asc"):
+    s = repo.SortDescriptor(
+        schema_id=str(schema.id), schema_type="select",
+        schema_config=schema.config, direction=direction,
+    )
+    entries, _ = repo.query_entries(db, database_block.id, [], [s])
+    return [e.id for e in entries]
+
+
+def test_select_sorts_alphabetically_by_label_ignoring_case(db, database_block):
+    schema, entries = _select_sort_setup(db, database_block, manual=False)
+    assert _order(db, database_block, schema) == [
+        entries["o-alpha"].id, entries["o-beta"].id, entries["o-gamma"].id, entries[None].id,
+    ]
+
+
+def test_select_sorts_by_configured_order_when_asked(db, database_block):
+    schema, entries = _select_sort_setup(db, database_block, manual=True)
+    assert _order(db, database_block, schema) == [
+        entries["o-beta"].id, entries["o-alpha"].id, entries["o-gamma"].id, entries[None].id,
+    ]
+    assert _order(db, database_block, schema, "desc")[:3] == [
+        entries["o-gamma"].id, entries["o-alpha"].id, entries["o-beta"].id,
+    ]

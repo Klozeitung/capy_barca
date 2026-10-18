@@ -105,7 +105,10 @@ describe('displayValue – timeline scalar export ("all" mode) is unaffected', (
       database_id: 'db-1',
       name: 'Status',
       type: 'select',
-      config: { hasTimeline: true, timelineDisplayMode: 'all', mode: 'single' },
+      config: {
+        hasTimeline: true, timelineDisplayMode: 'all', mode: 'single',
+        options: [{ id: 'o-active', label: 'Active' }, { id: 'o-other', label: 'Other' }],
+      },
       position: 0,
       group: 'Standard',
     }
@@ -118,14 +121,14 @@ describe('displayValue – timeline scalar export ("all" mode) is unaffected', (
       values: {
         'schema-status': {
           _timeline: {
-            '1990-04-12T00:00:00→2000-09-18T00:00:00': { option: 'Active' },
-            '2000-09-18T00:00:00→2001-03-02T00:00:00': { option: 'Nonexistent' },
+            '1990-04-12T00:00:00→2000-09-18T00:00:00': { option: 'o-active' },
+            '2000-09-18T00:00:00→2001-03-02T00:00:00': { option: 'o-other' },
           },
         },
       },
     }
     expect(displayValue(entry, schema)).toBe(
-      '12.04.1990 → 18.09.2000: Active · 18.09.2000 → 02.03.2001: Nonexistent',
+      '12.04.1990 → 18.09.2000: Active · 18.09.2000 → 02.03.2001: Other',
     )
   })
 })
@@ -139,8 +142,15 @@ import {
   type NuanceConfig,
 } from '../cellUtils'
 
+const NUANCE_OPTIONS = [
+  { id: 'n-success', label: 'successfully' },
+  { id: 'n-former', label: 'formerly' },
+]
+
 function nuanceConfig(over: Partial<NuanceConfig> = {}): NuanceConfig {
-  return { enabled: true, options: [], affix1: '', affix2: '', orientation: 'prepended', ...over }
+  return {
+    enabled: true, options: NUANCE_OPTIONS, affix1: '', affix2: '', orientation: 'prepended', ...over,
+  }
 }
 
 describe('getNuanceConfig', () => {
@@ -169,32 +179,40 @@ describe('formatNuancedRelation', () => {
   })
 
   it('prepends the nuance group before the title (prepended)', () => {
-    expect(formatNuancedRelation('Grandmaster', 'successfully', cfg())).toBe('successfully Grandmaster')
+    expect(formatNuancedRelation('Role X', 'successfully', cfg())).toBe('successfully Role X')
     expect(
-      formatNuancedRelation('Grandmaster', 'successfully', cfg({ affix1: 'as', affix2: 'elected' })),
-    ).toBe('as successfully elected Grandmaster')
+      formatNuancedRelation('Role X', 'successfully', cfg({ affix1: 'as', affix2: 'elected' })),
+    ).toBe('as successfully elected Role X')
   })
 
   it('appends the nuance group after the title (appended)', () => {
     expect(
-      formatNuancedRelation('Grandmaster', 'successfully', cfg({ orientation: 'appended', affix1: 'as', affix2: 'confirmed' })),
-    ).toBe('Grandmaster as successfully confirmed')
+      formatNuancedRelation('Role X', 'successfully', cfg({ orientation: 'appended', affix1: 'as', affix2: 'confirmed' })),
+    ).toBe('Role X as successfully confirmed')
   })
 })
 
 describe('nuanceLabelFor', () => {
-  it('reads the label for a related id, empty when missing', () => {
-    const slot = { related_ids: ['a'], nuances: { a: 'lead' } }
-    expect(nuanceLabelFor(slot, 'a')).toBe('lead')
-    expect(nuanceLabelFor(slot, 'b')).toBe('')
-    expect(nuanceLabelFor(null, 'a')).toBe('')
+  it('reads the label of the stored option id, empty when missing', () => {
+    const slot = { related_ids: ['a', 'c'], nuances: { a: 'n-success', c: 'n-gone' } }
+    expect(nuanceLabelFor(slot, 'a', nuanceConfig())).toBe('successfully')
+    expect(nuanceLabelFor(slot, 'b', nuanceConfig())).toBe('')
+    expect(nuanceLabelFor(slot, 'c', nuanceConfig())).toBe('')
+    expect(nuanceLabelFor(null, 'a', nuanceConfig())).toBe('')
+    expect(nuanceLabelFor(slot, 'a', null)).toBe('')
+  })
+
+  it('follows a renamed option', () => {
+    const slot = { related_ids: ['a'], nuances: { a: 'n-success' } }
+    const renamed = nuanceConfig({ options: [{ id: 'n-success', label: 'barely' }] })
+    expect(nuanceLabelFor(slot, 'a', renamed)).toBe('barely')
   })
 })
 
 describe('displayValue – nuanced timeline relation', () => {
   it('renders the nuance group in an always-valid slot ("all" mode)', () => {
     const schema = relationSchema({ nuance: nuanceConfig() })
-    const value = { _timeline: { '': { related_ids: ['alpha-id'], nuances: { 'alpha-id': 'successfully' } } } }
+    const value = { _timeline: { '': { related_ids: ['alpha-id'], nuances: { 'alpha-id': 'n-success' } } } }
     expect(displayValue(entryWithPartner(value), schema, undefined, resolveTitle)).toBe('successfully Alpha')
   })
 
@@ -204,7 +222,7 @@ describe('displayValue – nuanced timeline relation', () => {
       _timeline: {
         '2100-03-10T08:45:00→2101-06-20T00:00:00': {
           related_ids: ['alpha-id', 'beta-id'],
-          nuances: { 'alpha-id': 'successfully' },
+          nuances: { 'alpha-id': 'n-success' },
         },
       },
     }
@@ -225,7 +243,7 @@ describe('displayValue – nuanced flat relation ("last" mode)', () => {
       position: 0,
       group: 'Standard',
     }
-    const value = { related_ids: ['alpha-id'], nuances: { 'alpha-id': 'successfully' } }
+    const value = { related_ids: ['alpha-id'], nuances: { 'alpha-id': 'n-success' } }
     expect(displayValue(entryWithPartner(value), schema, undefined, resolveTitle)).toBe('successfully Alpha')
   })
 })
@@ -420,9 +438,9 @@ function targetSchema(type: string, config: Record<string, unknown> = {}): Prope
 
 function keyingSchema(over: Record<string, unknown> = {}): PropertySchema {
   return {
-    id: 'schema-plot',
+    id: 'schema-events',
     database_id: 'db-1',
-    name: 'Plot',
+    name: 'Events',
     type: 'relation',
     config: {
       target_database_id: 'db-target',
@@ -500,18 +518,20 @@ describe('keyComparable', () => {
   })
 
   it('reads a select property as its option index, not its label', () => {
-    const schema = targetSchema('select', { options: ['Act III', 'Act I', 'Act II'] })
-    expect(keyComparable({ option: 'Act III' }, schema)).toBe(0)
-    expect(keyComparable({ option: 'Act I' }, schema)).toBe(1)
-    expect(keyComparable({ option: 'Retired' }, schema)).toBeNull()
+    const schema = targetSchema('select', { options: [
+      { id: 's3', label: 'Stage 3' }, { id: 's1', label: 'Stage 1' }, { id: 's2', label: 'Stage 2' },
+    ] })
+    expect(keyComparable({ option: 's3' }, schema)).toBe(0)
+    expect(keyComparable({ option: 's1' }, schema)).toBe(1)
+    expect(keyComparable({ option: 'gone' }, schema)).toBeNull()
   })
 
   it('reads a multi-select by its earliest option', () => {
     const schema = targetSchema('select', {
       mode: 'multiple',
-      options: [{ label: 'A' }, { label: 'B' }, { label: 'C' }],
+      options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }, { id: 'c', label: 'C' }],
     })
-    expect(keyComparable({ options: ['C', 'B'] }, schema)).toBe(1)
+    expect(keyComparable({ options: ['c', 'b'] }, schema)).toBe(1)
     expect(keyComparable({ options: [] }, schema)).toBeNull()
   })
 
@@ -609,10 +629,12 @@ describe('sortIdsByKey', () => {
   })
 
   it('sorts selects by option order rather than alphabetically', () => {
-    const selectSchema = targetSchema('select', { options: ['Zeta', 'Alpha'] })
+    const selectSchema = targetSchema('select', {
+      options: [{ id: 'o-zeta', label: 'Zeta' }, { id: 'o-alpha', label: 'Alpha' }],
+    })
     const values: Record<string, Record<string, unknown>> = {
-      alpha: { option: 'Alpha' },
-      zeta: { option: 'Zeta' },
+      alpha: { option: 'o-alpha' },
+      zeta: { option: 'o-zeta' },
     }
     expect(
       sortIdsByKey(['alpha', 'zeta'], (id: string) => values[id], selectSchema, ASC),
@@ -627,7 +649,8 @@ describe('formatKeyValue', () => {
   })
 
   it('renders a select label and a plain number', () => {
-    expect(formatKeyValue({ option: 'Act I' }, targetSchema('select'))).toBe('Act I')
+    const select = targetSchema('select', { options: [{ id: 's1', label: 'Stage 1' }] })
+    expect(formatKeyValue({ option: 's1' }, select)).toBe('Stage 1')
     expect(formatKeyValue({ number: 12 }, targetSchema('number'))).toBe('12')
   })
 
@@ -648,15 +671,15 @@ import type { RelationKeyResolver } from '../cellUtils'
 
 function keyedRelationSchema(over: Record<string, unknown> = {}): PropertySchema {
   return {
-    id: 'schema-plot',
+    id: 'schema-events',
     database_id: 'db-characters',
-    name: 'Plot',
+    name: 'Events',
     type: 'relation',
     config: {
-      target_database_id: 'db-plotbeats',
+      target_database_id: 'db-events',
       keying: {
         enabled: true,
-        key_property_id: 'schema-beatdate',
+        key_property_id: 'schema-eventdate',
         key_order: 'asc',
         key_empty_first: false,
         ...over,
@@ -667,33 +690,33 @@ function keyedRelationSchema(over: Record<string, unknown> = {}): PropertySchema
   }
 }
 
-function entryWithPlot(relatedIds: string[]): DatabaseEntry {
+function entryWithEvents(relatedIds: string[]): DatabaseEntry {
   return {
     id: 'character-1',
     position: 0,
     content: { title: 'Source' },
     icon: null,
     state: 'active',
-    values: { 'schema-plot': { related_ids: relatedIds } },
+    values: { 'schema-events': { related_ids: relatedIds } },
   }
 }
 
-const BEAT_TITLES: Record<string, string> = {
-  'beat-late': 'The Confrontation',
-  'beat-early': 'The Departure',
-  'beat-undated': 'Sometime in Act 3',
+const EVENT_TITLES: Record<string, string> = {
+  'event-late': 'Event B',
+  'event-early': 'Event A',
+  'event-undated': 'Sometime in Stage 3',
 }
-const resolveBeatTitle = (id: string): string => BEAT_TITLES[id] ?? ''
+const resolveEventTitle = (id: string): string => EVENT_TITLES[id] ?? ''
 
-const BEAT_DATES: Record<string, Record<string, unknown> | null> = {
-  'beat-late': { start: '2105-02-11' },
-  'beat-early': { start: '2100-03-10' },
-  'beat-undated': null,
+const EVENT_DATES: Record<string, Record<string, unknown> | null> = {
+  'event-late': { start: '2105-02-11' },
+  'event-early': { start: '2100-03-10' },
+  'event-undated': null,
 }
 
-const beatDateSchema: PropertySchema = {
-  id: 'schema-beatdate',
-  database_id: 'db-plotbeats',
+const eventDateSchema: PropertySchema = {
+  id: 'schema-eventdate',
+  database_id: 'db-events',
   name: 'Date',
   type: 'date',
   config: {},
@@ -702,154 +725,154 @@ const beatDateSchema: PropertySchema = {
 }
 
 const keyResolver: RelationKeyResolver = {
-  schemaFor: (id: string) => (id === 'schema-beatdate' ? beatDateSchema : null),
+  schemaFor: (id: string) => (id === 'schema-eventdate' ? eventDateSchema : null),
   valueFor: (keyPropertyId: string, entryId: string) =>
-    keyPropertyId === 'schema-beatdate' ? (BEAT_DATES[entryId] ?? null) : null,
+    keyPropertyId === 'schema-eventdate' ? (EVENT_DATES[entryId] ?? null) : null,
 }
 
 describe('displayValue – keyed relation export', () => {
   it('orders the linked entries by their key value and prefixes each', () => {
     expect(
       displayValue(
-        entryWithPlot(['beat-late', 'beat-early']),
+        entryWithEvents(['event-late', 'event-early']),
         keyedRelationSchema(),
         undefined,
-        resolveBeatTitle,
+        resolveEventTitle,
         keyResolver,
       ),
-    ).toBe('10.03.2100: The Departure · 11.02.2105: The Confrontation')
+    ).toBe('10.03.2100: Event A · 11.02.2105: Event B')
   })
 
   it('honours a descending order', () => {
     expect(
       displayValue(
-        entryWithPlot(['beat-early', 'beat-late']),
+        entryWithEvents(['event-early', 'event-late']),
         keyedRelationSchema({ key_order: 'desc' }),
         undefined,
-        resolveBeatTitle,
+        resolveEventTitle,
         keyResolver,
       ),
-    ).toBe('11.02.2105: The Confrontation · 10.03.2100: The Departure')
+    ).toBe('11.02.2105: Event B · 10.03.2100: Event A')
   })
 
   it('renders an entry without a key value as the bare title, placed last', () => {
     expect(
       displayValue(
-        entryWithPlot(['beat-undated', 'beat-early']),
+        entryWithEvents(['event-undated', 'event-early']),
         keyedRelationSchema(),
         undefined,
-        resolveBeatTitle,
+        resolveEventTitle,
         keyResolver,
       ),
-    ).toBe('10.03.2100: The Departure · Sometime in Act 3')
+    ).toBe('10.03.2100: Event A · Sometime in Stage 3')
   })
 
   it('honours the empty-first placement', () => {
     expect(
       displayValue(
-        entryWithPlot(['beat-early', 'beat-undated']),
+        entryWithEvents(['event-early', 'event-undated']),
         keyedRelationSchema({ key_empty_first: true }),
         undefined,
-        resolveBeatTitle,
+        resolveEventTitle,
         keyResolver,
       ),
-    ).toBe('Sometime in Act 3 · 10.03.2100: The Departure')
+    ).toBe('Sometime in Stage 3 · 10.03.2100: Event A')
   })
 
   it('falls back to the vanilla export when no resolver is supplied', () => {
     // Every existing caller passes four arguments and must be unaffected.
     expect(
       displayValue(
-        entryWithPlot(['beat-late', 'beat-early']),
+        entryWithEvents(['event-late', 'event-early']),
         keyedRelationSchema(),
         undefined,
-        resolveBeatTitle,
+        resolveEventTitle,
       ),
-    ).toBe('The Confrontation, The Departure')
+    ).toBe('Event B, Event A')
   })
 
   it('falls back to the vanilla export when the key property no longer resolves', () => {
     const dangling: RelationKeyResolver = { schemaFor: () => null, valueFor: () => null }
     expect(
       displayValue(
-        entryWithPlot(['beat-late', 'beat-early']),
+        entryWithEvents(['event-late', 'event-early']),
         keyedRelationSchema(),
         undefined,
-        resolveBeatTitle,
+        resolveEventTitle,
         dangling,
       ),
-    ).toBe('The Confrontation, The Departure')
+    ).toBe('Event B, Event A')
   })
 
   it('leaves a vanilla relation untouched even when a resolver is present', () => {
     const vanilla: PropertySchema = {
       ...keyedRelationSchema(),
-      config: { target_database_id: 'db-plotbeats' },
+      config: { target_database_id: 'db-events' },
     }
     expect(
       displayValue(
-        entryWithPlot(['beat-late', 'beat-early']),
+        entryWithEvents(['event-late', 'event-early']),
         vanilla,
         undefined,
-        resolveBeatTitle,
+        resolveEventTitle,
         keyResolver,
       ),
-    ).toBe('The Confrontation, The Departure')
+    ).toBe('Event B, Event A')
   })
 
   it('prefers the established rendering when legacy data is keyed and nuanced', () => {
     const both = keyedRelationSchema()
     both.config = { ...both.config, nuance: nuanceConfig() }
-    const entry = entryWithPlot(['beat-late'])
-    entry.values['schema-plot'] = {
-      related_ids: ['beat-late'],
-      nuances: { 'beat-late': 'successfully' },
+    const entry = entryWithEvents(['event-late'])
+    entry.values['schema-events'] = {
+      related_ids: ['event-late'],
+      nuances: { 'event-late': 'n-success' },
     }
     expect(
-      displayValue(entry, both, undefined, resolveBeatTitle, keyResolver),
-    ).toBe('successfully The Confrontation')
+      displayValue(entry, both, undefined, resolveEventTitle, keyResolver),
+    ).toBe('successfully Event B')
   })
 
   it('prefers the timeline rendering when legacy data is keyed and timelined', () => {
     const both = keyedRelationSchema()
     both.config = { ...both.config, hasTimeline: true, timelineDisplayMode: 'all' }
-    const entry = entryWithPlot([])
-    entry.values['schema-plot'] = { _timeline: { '': { related_ids: ['beat-early'] } } }
+    const entry = entryWithEvents([])
+    entry.values['schema-events'] = { _timeline: { '': { related_ids: ['event-early'] } } }
     expect(
-      displayValue(entry, both, undefined, resolveBeatTitle, keyResolver),
-    ).toBe('The Departure')
+      displayValue(entry, both, undefined, resolveEventTitle, keyResolver),
+    ).toBe('Event A')
   })
 
   it('falls back to the raw id when a title cannot be resolved', () => {
     expect(
       displayValue(
-        entryWithPlot(['beat-early']),
+        entryWithEvents(['event-early']),
         keyedRelationSchema(),
         undefined,
         () => '',
         keyResolver,
       ),
-    ).toBe('10.03.2100: beat-early')
+    ).toBe('10.03.2100: event-early')
   })
 
   it('returns empty for a relation with no links', () => {
     expect(
-      displayValue(entryWithPlot([]), keyedRelationSchema(), undefined, resolveBeatTitle, keyResolver),
+      displayValue(entryWithEvents([]), keyedRelationSchema(), undefined, resolveEventTitle, keyResolver),
     ).toBe('')
   })
 
   it('formats the key with the key property\'s own configuration', () => {
-    const isoSchema: PropertySchema = { ...beatDateSchema, config: { dateFormat: 'YYYY-MM-DD' } }
+    const isoSchema: PropertySchema = { ...eventDateSchema, config: { dateFormat: 'YYYY-MM-DD' } }
     const isoResolver: RelationKeyResolver = { ...keyResolver, schemaFor: () => isoSchema }
     expect(
       displayValue(
-        entryWithPlot(['beat-early']),
+        entryWithEvents(['event-early']),
         keyedRelationSchema(),
         undefined,
-        resolveBeatTitle,
+        resolveEventTitle,
         isoResolver,
       ),
-    ).toBe('2100-03-10: The Departure')
+    ).toBe('2100-03-10: Event A')
   })
 })
 
@@ -891,7 +914,7 @@ describe('displayValue – links to trashed entries are omitted', () => {
     })
     const value = {
       related_ids: ['trashed-id', 'alpha-id'],
-      nuances: { 'trashed-id': 'formerly', 'alpha-id': 'successfully' },
+      nuances: { 'trashed-id': 'n-former', 'alpha-id': 'n-success' },
     }
     expect(
       displayValue(entryWithPartner(value), schema, undefined, resolveWithTrashed),
@@ -906,16 +929,16 @@ describe('displayValue – links to trashed entries are omitted', () => {
 
   it('drops a trashed link from a keyed relation before ordering', () => {
     const resolve = (id: string): string | null =>
-      id === 'beat-late' ? null : (BEAT_TITLES[id] ?? '')
+      id === 'event-late' ? null : (EVENT_TITLES[id] ?? '')
     expect(
       displayValue(
-        entryWithPlot(['beat-late', 'beat-undated', 'beat-early']),
+        entryWithEvents(['event-late', 'event-undated', 'event-early']),
         keyedRelationSchema(),
         undefined,
         resolve,
         keyResolver,
       ),
-    ).toBe('10.03.2100: The Departure · Sometime in Act 3')
+    ).toBe('10.03.2100: Event A · Sometime in Stage 3')
   })
 
   it('drops trashed parent_item and sub_item links', () => {
@@ -937,5 +960,27 @@ describe('displayValue – links to trashed entries are omitted', () => {
     expect(
       displayValue(entryWithPartner(value), relationSchema(), undefined, resolveWithTrashed),
     ).toBe('unknown-id')
+  })
+})
+
+// ── Select labels ─────────────────────────────────────────────────────────────
+
+import { formatSelectValue } from '../cellUtils'
+
+describe('formatSelectValue', () => {
+  const options = [{ id: 'o1', label: 'Value A' }, { id: 'o2', label: 'Value B' }]
+
+  it('shows the labels of the stored ids', () => {
+    expect(formatSelectValue({ option: 'o2' }, targetSchema('select', { options }))).toBe('Value B')
+    expect(
+      formatSelectValue({ options: ['o2', 'o1'] }, targetSchema('select', { options, mode: 'multiple' })),
+    ).toBe('Value B, Value A')
+  })
+
+  it('leaves out ids the property no longer offers', () => {
+    expect(
+      formatSelectValue({ options: ['gone', 'o1'] }, targetSchema('select', { options, mode: 'multiple' })),
+    ).toBe('Value A')
+    expect(formatSelectValue({ option: 'gone' }, targetSchema('select', { options }))).toBe('')
   })
 })

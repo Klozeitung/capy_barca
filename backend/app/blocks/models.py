@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.database import Base
@@ -58,12 +59,16 @@ class Block(Base):
         nullable=True,
         default=None,
     )
-    type: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    type: Mapped[str] = mapped_column(sa.Text, nullable=False, index=True)
     position: Mapped[float] = mapped_column(sa.Float, nullable=False)
     state: Mapped[str] = mapped_column(
-        sa.Text, nullable=False, default="active", server_default="active"
+        sa.Text,
+        nullable=False,
+        default="active",
+        server_default="active",
+        index=True,
     )
-    content: Mapped[Optional[Any]] = mapped_column(sa.JSON, nullable=True, default=None)
+    content: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True, default=None)
     icon: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True, default=None)
     cover: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True, default=None)
     # Owner of this block.  No FK so that deleting a user does not affect
@@ -157,7 +162,7 @@ class PropertySchema(Base):
     )
     name: Mapped[str] = mapped_column(sa.Text, nullable=False)
     type: Mapped[str] = mapped_column(sa.Text, nullable=False)
-    config: Mapped[Optional[Any]] = mapped_column(sa.JSON, nullable=True, default=None)
+    config: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True, default=None)
     position: Mapped[float] = mapped_column(sa.Float, nullable=False)
     group: Mapped[str] = mapped_column(
         sa.Text, nullable=False, default="Standard", server_default="Standard"
@@ -216,7 +221,7 @@ class PropertyValue(Base):
         sa.ForeignKey("property_schemas.id", ondelete="CASCADE"),
         nullable=False,
     )
-    value: Mapped[Optional[Any]] = mapped_column(sa.JSON, nullable=True, default=None)
+    value: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
     )
@@ -310,14 +315,99 @@ class BlockEvent(Base):
         index=True,
     )
     event_type: Mapped[str] = mapped_column(sa.Text, nullable=False)
-    before: Mapped[Optional[Any]] = mapped_column(sa.JSON, nullable=True, default=None)
-    after: Mapped[Optional[Any]] = mapped_column(sa.JSON, nullable=True, default=None)
+    before: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True, default=None)
+    after: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
-        sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+        index=True,
     )
 
     block: Mapped[Optional["Block"]] = relationship(
         "Block",
         back_populates="events",
         lazy="select",
+    )
+
+
+class DatabaseView(Base):
+    """
+    A saved way of looking at a database: which entries it shows, in which
+    order, and how they are laid out.
+
+    Views belong to the database block and are shared by every user and every
+    placement of that database. ``filter_groups`` and ``sorts`` are what the
+    backend executes when it renders the view; ``settings`` carries the
+    presentation the frontend applies on top (column order, widths, hidden
+    columns, calendar options and so on). The shapes of all three are
+    validated in ``app.blocks.views`` on every write.
+
+    ``name`` is empty for a view that was never named. The frontend shows its
+    localized default name for it, so no language is baked into the data.
+    """
+
+    __tablename__ = "database_views"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid, primary_key=True, default=uuid.uuid4
+    )
+    database_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid,
+        sa.ForeignKey("blocks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(
+        sa.Text, nullable=False, default="", server_default=""
+    )
+    view_type: Mapped[str] = mapped_column(
+        sa.Text, nullable=False, default="table", server_default="table"
+    )
+    position: Mapped[float] = mapped_column(sa.Float, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(
+        sa.Text, nullable=True, default=None
+    )
+    filter_groups: Mapped[Any] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=sa.text("'[]'::jsonb")
+    )
+    sorts: Mapped[Any] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=sa.text("'[]'::jsonb")
+    )
+    settings: Mapped[Any] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=sa.text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+        onupdate=sa.func.now(),
+    )
+
+
+class DatabaseViewSelection(Base):
+    """
+    The view a placement of a database currently shows.
+
+    A placement is the block that displays the database: the database block
+    itself, or a ``linked_database`` block pointing at it. Each placement
+    keeps its own selection, shared by all users. Deleting the view or the
+    placement removes the row; the placement then shows the first view.
+    """
+
+    __tablename__ = "database_view_selections"
+
+    placement_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid,
+        sa.ForeignKey("blocks.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    view_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid,
+        sa.ForeignKey("database_views.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )

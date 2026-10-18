@@ -65,8 +65,10 @@ async def lifespan(app: FastAPI):
     # Schema creation is handled by Alembic (entrypoint.sh runs
     # `alembic upgrade head` before uvicorn starts). The lifespan hook is
     # responsible only for runtime housekeeping.
+    from app.session.deps import configure_worker_threads
     from app.session.session import purge_expired
 
+    configure_worker_threads()
     purge_expired()
     _migrate_env_user_to_db()
     yield
@@ -126,7 +128,7 @@ _cors_credentials = True
 
 app = FastAPI(
     title="CapyBarca API",
-    version="0.15.23",
+    version="0.16.0.4",
     lifespan=lifespan,
 )
 
@@ -146,6 +148,7 @@ app.add_middleware(
 from app.automations.automations_router import automations_router  # noqa: E402
 from app.blocks.database_router import database_router  # noqa: E402
 from app.blocks.router import block_router  # noqa: E402
+from app.blocks.views_router import views_router  # noqa: E402
 from app.comments.comments_router import comments_router  # noqa: E402
 from app.media.router import media_router  # noqa: E402
 from app.permissions.router import permissions_router  # noqa: E402
@@ -164,6 +167,7 @@ app.include_router(media_router)
 app.include_router(login_router)
 app.include_router(setup_router)
 app.include_router(users_router)
+app.include_router(views_router)
 app.include_router(wopi_router)
 app.include_router(ws_router)
 

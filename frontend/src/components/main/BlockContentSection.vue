@@ -25,7 +25,7 @@
  *
  * Structural blocks (page, database, …) continue to render as navigable
  * list items with the existing icon / label representation.
- * Database blocks can optionally be rendered inline via the context menu.   (#8)
+ * Database blocks can optionally be rendered inline via the context menu.
  *
  * Toggle blocks additionally render a nested BlockContentSection for their
  * children when open; the open/closed state is stored locally per session.
@@ -44,21 +44,21 @@
  *   Ctrl+Shift+Click       → duplicate
  *   Ctrl+Alt+Click         → delete
  *
- * Changes vs. original
- * --------------------
- * #5  Context-menu position clamps to viewport via nextTick + measured dimensions.
- * #8  Database blocks can be shown as an inline table via the context menu.
- *     State is persisted in localStorage (key: db-inline-ids).
- * #9  onAddBlock only creates a new block when the last one is not already an
- *     empty paragraph — otherwise it focuses that block instead.
- * #10 draggable="true" is now on the handle span for all block types, not the
- *     outer content-block div. This prevents the browser from intercepting
- *     clicks anywhere on the block as a drag gesture, which previously broke
- *     native textarea cursor placement. onDragStart cancels drag events
- *     (e.preventDefault) that do not originate from the handle.
- * #11 Layout blocks expose an "Add column" item in the drag handle context menu
- *     (visible when column count < 4). The footer button inside LayoutBlock has
- *     been removed in favour of this placement.
+ * Behaviour details
+ * -----------------
+ * - The context-menu position clamps to the viewport via nextTick and the
+ *   measured menu dimensions.
+ * - Database blocks can be shown as an inline table via the context menu.
+ *   The state is persisted in localStorage (key: db-inline-ids).
+ * - onAddBlock only creates a new block when the last one is not already an
+ *   empty paragraph; otherwise it focuses that block instead.
+ * - draggable="true" sits on the handle span for all block types, not on the
+ *   outer content-block div. This keeps the browser from treating clicks
+ *   anywhere on the block as a drag gesture, which would break native
+ *   textarea cursor placement. onDragStart cancels drag events
+ *   (e.preventDefault) that do not originate from the handle.
+ * - Layout blocks expose an "Add column" item in the drag handle context menu
+ *   (visible when the column count is below 4).
  */
 import { computed, ref, watch, nextTick, onMounted, type Component } from 'vue'
 import { useRouter } from 'vue-router'
@@ -83,9 +83,9 @@ import EmbedBlock from '@/components/editor/blocks/EmbedBlock.vue'
 import LayoutBlock from '@/components/editor/blocks/layout/LayoutBlock.vue'
 import SynchedOriginBlock from '@/components/editor/blocks/layout/SynchedOriginBlock.vue'
 import SynchedMirrorBlock from '@/components/editor/blocks/layout/SynchedMirrorBlock.vue'
-// #8 – for inline database view
+// Inline database view
 import DatabaseBlock from '@/components/editor/blocks/DatabaseBlock.vue'
-// #100 – table of contents block
+// Table of contents block
 import TableOfContentsBlock from '@/components/editor/blocks/TableOfContentsBlock.vue'
 import { useToggleState } from '@/composables/useToggleState'
 import { useDatabaseTemplatesStore } from '@/stores/databaseTemplates'
@@ -350,7 +350,7 @@ function onNavigate(blockId: string, direction: 'up' | 'down'): void {
   }
 }
 
-// ── #9 – Add block affordance (clicking empty area) ─────────────────────────
+// ── Add block affordance (clicking empty area) ──────────────────────────────
 // Only create a new block when the last one is not already an empty paragraph;
 // otherwise focus that block instead.
 
@@ -497,10 +497,9 @@ watch(
   { immediate: true },
 )
 
-// ── #8 – Inline-Datenbankansicht (persistent via localStorage) ───────────────
-// Speichert IDs von Datenbank-Blöcken, die aktuell inline angezeigt werden.
-// Der Zustand wird in localStorage unter DB_INLINE_STORAGE_KEY abgelegt, damit
-// er über Seitenreloads hinweg erhalten bleibt.
+// ── Inline database view (persisted via localStorage) ───────────────────────
+// Holds the ids of database blocks currently shown inline. The state is kept
+// in localStorage under DB_INLINE_STORAGE_KEY so it survives page reloads.
 
 const DB_INLINE_STORAGE_KEY = 'db-inline-ids'
 
@@ -512,7 +511,7 @@ function loadDbInlineIds(): Set<string> {
       if (Array.isArray(parsed)) return new Set<string>(parsed)
     }
   } catch {
-    // Ungültiger localStorage-Wert – mit leerem Set starten.
+    // Invalid localStorage value: start with an empty set.
   }
   return new Set<string>()
 }
@@ -521,7 +520,7 @@ function saveDbInlineIds(ids: Set<string>): void {
   try {
     localStorage.setItem(DB_INLINE_STORAGE_KEY, JSON.stringify([...ids]))
   } catch {
-    // localStorage nicht verfügbar (z. B. Private Browsing mit vollem Speicher).
+    // localStorage unavailable (e.g. private browsing with full storage).
   }
 }
 
@@ -553,12 +552,12 @@ interface ContextMenuState {
 
 const contextMenu = ref<ContextMenuState>({ visible: false, x: 0, y: 0, blockId: null })
 
-/** Ref auf das gerenderte Kontextmenü-Element für Viewport-Clamp (#5). */
+/** Rendered context-menu element, measured to clamp it to the viewport. */
 const contextMenuEl = ref<HTMLElement | null>(null)
 
 // ── Drive block delete confirmation ───────────────────────────────────────────
 
-/** ID des Drive-Blocks, für den der Lösch-Dialog offen ist. */
+/** ID of the drive block whose delete dialog is open. */
 const driveDeleteConfirmId = ref<string | null>(null)
 
 function openDriveDeleteConfirm(blockId: string): void {
@@ -576,8 +575,8 @@ async function confirmDriveDelete(): Promise<void> {
 }
 
 /**
- * Der Block, auf den sich das aktuelle Kontextmenü bezieht.
- * Wird im Template genutzt, um typ-spezifische Menüpunkte zu zeigen (#8).
+ * The block the current context menu refers to. Used in the template to show
+ * type-specific menu items.
  */
 const contextMenuBlock = computed<Block | null>(() =>
   contextMenu.value.blockId
@@ -588,8 +587,8 @@ const contextMenuBlock = computed<Block | null>(() =>
 async function openContextMenu(e: MouseEvent, block: Block): Promise<void> {
   contextMenu.value = { visible: true, x: e.clientX, y: e.clientY, blockId: block.id }
 
-  // #5 – Nach dem Render die tatsächliche Größe des Menüs auslesen und
-  // die Position an den Viewport klemmen, damit das Menü nie abgeschnitten wird.
+  // After rendering, read the menu's actual size and clamp its position to
+  // the viewport so the menu is never cut off.
   await nextTick()
   if (contextMenuEl.value) {
     const w = contextMenuEl.value.offsetWidth
@@ -619,7 +618,7 @@ function onContextMenuKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') closeContextMenu()
 }
 
-// ── Block colors (#26) ────────────────────────────────────────────────────────
+// ── Block colors ──────────────────────────────────────────────────────────────
 
 function blockColorStyle(block: Block): Record<string, string> {
   const style: Record<string, string> = {}
@@ -652,7 +651,7 @@ async function setBlockBgColor(key: string): Promise<void> {
   })
 }
 
-// #100 – Toggle conversion in context menu (headings, paragraph, text_toggle)
+// Toggle conversion in context menu (headings, paragraph, text_toggle)
 async function contextMenuConvertToggle(): Promise<void> {
   const id = contextMenu.value.blockId
   closeContextMenu()
@@ -687,7 +686,7 @@ async function contextMenuDelete(): Promise<void> {
   const block = id ? children.value.find((b) => b.id === id) : null
   closeContextMenu()
   if (!id) return
-  // Drive-Blöcke haben physische Dateien — Bestätigung erforderlich.
+  // Drive blocks hold physical files, so deleting one needs confirmation.
   if (block?.type === 'drive') {
     openDriveDeleteConfirm(id)
   } else {
@@ -695,14 +694,14 @@ async function contextMenuDelete(): Promise<void> {
   }
 }
 
-// #8 – Inline toggle for database blocks in context menu
+// Inline toggle for database blocks in context menu
 function contextMenuToggleInline(): void {
   const id = contextMenu.value.blockId
   closeContextMenu()
   if (id) toggleDbInline(id)
 }
 
-// #11 – Add column for layout blocks in context menu
+// Add column for layout blocks in context menu
 const LAYOUT_MAX_COLUMNS = 4
 
 /**
@@ -943,7 +942,7 @@ function clearDropState(id: string): void {
 const dropAtEnd = ref(false)
 
 function onDragStart(e: DragEvent, block: Block): void {
-  // (#10) Restrict drag initiation to the dedicated handle element for all
+  // Restrict drag initiation to the dedicated handle element for all
   // block types. draggable="true" now lives on the handle span (not the outer
   // div), so legitimate drags already arrive with e.target inside the handle.
   // This guard is a safety net for any stray dragstart that still bubbles
@@ -1104,7 +1103,7 @@ async function onDropEnd(e: DragEvent): Promise<void> {
         </div>
         <div v-if="contextMenuBlock" class="block-context-menu__divider" />
 
-        <!-- #8 – Inline toggle: database blocks only -->
+        <!-- Inline toggle: database blocks only -->
         <button
           v-if="contextMenuBlock?.type === 'database'"
           class="block-context-menu__item"
@@ -1118,7 +1117,7 @@ async function onDropEnd(e: DragEvent): Promise<void> {
           {{ isDbInline(contextMenu.blockId!) ? t('block.contextMenu.openFullPage') : t('block.contextMenu.showInline') }}
         </button>
 
-        <!-- #100 – Toggle conversion: headings, paragraph, text_toggle -->
+        <!-- Toggle conversion: headings, paragraph, text_toggle -->
         <button
           v-if="contextMenuBlock && isToggleConvertible(contextMenuBlock.type)"
           class="block-context-menu__item"
@@ -1150,7 +1149,7 @@ async function onDropEnd(e: DragEvent): Promise<void> {
           {{ (contextMenuBlock.content?.locked) ? t('block.contextMenu.unlockMirror') : t('block.contextMenu.lockMirror') }}
         </button>
 
-        <!-- #11 – Add column: layout blocks below maximum column count only -->
+        <!-- Add column: layout blocks below maximum column count only -->
         <button
           v-if="contextMenuBlock?.type === 'layout' && layoutColumnCount(contextMenuBlock.id) < LAYOUT_MAX_COLUMNS"
           class="block-context-menu__item"
@@ -1165,7 +1164,7 @@ async function onDropEnd(e: DragEvent): Promise<void> {
           {{ t('actions.duplicate') }}
         </button>
 
-        <!-- Color picker (#26) – alle Blöcke außer Divider und inline Datenbanken -->
+        <!-- Color picker: all blocks except dividers and inline databases -->
         <template v-if="contextMenuBlock
           && contextMenuBlock.type !== 'divider'
           && contextMenuBlock.type !== 'linked_database'
@@ -1208,7 +1207,7 @@ async function onDropEnd(e: DragEvent): Promise<void> {
       </div>
     </Teleport>
 
-    <!-- Drive-Block Lösch-Bestätigung -->
+    <!-- Drive block delete confirmation -->
     <Teleport to="body">
       <div
         v-if="driveDeleteConfirmId"
@@ -1302,12 +1301,10 @@ async function onDropEnd(e: DragEvent): Promise<void> {
         @drop="(e) => onDrop(e, block)"
       >
         <!-- Drag handle — click opens context menu / modifier shortcuts.
-             (#10) draggable="true" is now on the handle span for ALL block
-             types. Previously the outer div carried draggable for non-layout
-             blocks, which caused the browser to intercept clicks anywhere on
-             the block as a potential drag, preventing native textarea cursor
-             placement. With draggable scoped to the handle, only deliberate
-             handle interactions start a drag. -->
+             draggable="true" sits on the handle span for all block types,
+             so the browser does not treat clicks anywhere on the block as a
+             potential drag, which would prevent native textarea cursor
+             placement. Only deliberate handle interactions start a drag. -->
         <span
           class="content-block__drag-handle"
           draggable="true"
@@ -1404,18 +1401,20 @@ async function onDropEnd(e: DragEvent): Promise<void> {
 
       <!-- Inline view for linked_database blocks — always rendered directly below
            the block row. The referenced DB is shown via its own DatabaseBlock
-           (inline mode). When reference_id is null (target DB deleted), nothing
-           is rendered here; the row label already signals the broken link. -->
+           (inline mode), with this block as the placement that keeps its own
+           choice of view. When reference_id is null (target DB deleted),
+           nothing is rendered here; the row label already signals the broken
+           link. -->
       <div
         v-if="block.type === 'linked_database' && block.reference_id"
         class="content-block__db-inline"
         @dragover.stop
         @drop.stop
       >
-        <DatabaseBlock :block-id="block.reference_id" :inline="true" />
+        <DatabaseBlock :block-id="block.reference_id" :placement-id="block.id" :inline="true" />
       </div>
 
-      <!-- #8 – Inline database view below the block row.
+      <!-- Inline database view below the block row.
            Shown when the user chose "Show inline" in the context menu.
            The row (icon + label + navigation) is preserved. -->
       <div
@@ -1638,7 +1637,7 @@ async function onDropEnd(e: DragEvent): Promise<void> {
   margin-bottom: 2px;
 }
 
-/* ── #8 – Inline-Datenbankcontainer ─────────────────────────────────────── */
+/* ── Inline database container ───────────────────────────────────────────── */
 /*
  * DELIBERATE DESIGN — no outer border (do not revert):
  * The inline database table renders without an outer border so it integrates
@@ -1841,7 +1840,7 @@ async function onDropEnd(e: DragEvent): Promise<void> {
   background: var(--color-danger-subtle, rgba(211, 47, 47, 0.07));
 }
 
-/* ── Drive-Block Lösch-Bestätigung ───────────────────────────────────────── */
+/* ── Drive block delete confirmation ─────────────────────────────────────── */
 .drive-delete-overlay {
   position: fixed;
   inset: 0;

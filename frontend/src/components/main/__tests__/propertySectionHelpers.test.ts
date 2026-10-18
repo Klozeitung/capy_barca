@@ -4,9 +4,8 @@ import {
   removeGroupFromOrder,
   removeGroupFromFolded,
   reorderGroups,
-  hideSchemaInAllViews,
 } from '../propertySectionHelpers'
-import type { DatabaseView, PropertySchema } from '@/stores/database'
+import type { PropertySchema } from '@/stores/database'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -21,19 +20,6 @@ function schema(id: string, group?: string): PropertySchema {
     config: {},
     position: 0,
     group: group as string,
-  }
-}
-
-function view(id: string, hiddenColumns: string[] = []): DatabaseView {
-  return {
-    id,
-    name: id,
-    viewType: 'table',
-    colOrder: ['__name__'],
-    colWidths: {},
-    filterGroups: [],
-    sorts: [],
-    hiddenColumns,
   }
 }
 
@@ -127,37 +113,5 @@ describe('reorderGroups', () => {
     const order = ['A', 'B']
     expect(reorderGroups(order, 'A', 'A')).not.toBe(order)
     expect(reorderGroups(order, 'Ghost', 'A')).not.toBe(order)
-  })
-})
-
-// ── hideSchemaInAllViews ──────────────────────────────────────────────────────
-
-describe('hideSchemaInAllViews', () => {
-  it('adds the schema to every view that does not already hide it', () => {
-    const views = [view('v1'), view('v2', ['x'])]
-    const { views: out, changed } = hideSchemaInAllViews(views, 'new')
-    expect(changed).toBe(true)
-    expect(out[0].hiddenColumns).toEqual(['new'])
-    expect(out[1].hiddenColumns).toEqual(['x', 'new'])
-  })
-
-  it('reports no change and returns the original ref when all views already hide it', () => {
-    const views = [view('v1', ['new']), view('v2', ['new'])]
-    const result = hideSchemaInAllViews(views, 'new')
-    expect(result.changed).toBe(false)
-    expect(result.views).toBe(views)
-  })
-
-  it('does not mutate the input views', () => {
-    const views = [view('v1')]
-    hideSchemaInAllViews(views, 'new')
-    expect(views[0].hiddenColumns).toEqual([])
-  })
-
-  it('tolerates a missing hiddenColumns array', () => {
-    const broken = { ...view('v1'), hiddenColumns: undefined } as unknown as DatabaseView
-    const { views: out, changed } = hideSchemaInAllViews([broken], 'new')
-    expect(changed).toBe(true)
-    expect(out[0].hiddenColumns).toEqual(['new'])
   })
 })

@@ -148,19 +148,22 @@ function onBackdropClick(e: MouseEvent): void {
 function exportAsPdf(): void {
   emit('close')
   setTimeout(() => {
-    // beforeprint fires after print-CSS is applied — scrollHeight
-    // reflects the print font size and layout at that point.
-    function handleBeforePrint() {
-      document.querySelectorAll<HTMLTextAreaElement>('.editor-row__textarea').forEach(ta => {
-        ta.style.height = 'auto'
-        ta.style.height = ta.scrollHeight + 'px'
+    // Fit every editor to its content under the stylesheet in effect.
+    // beforeprint fires after print-CSS is applied, afterprint after the
+    // screen CSS is back, so scrollHeight reflects the right layout each time.
+    // The heights are set directly: an input event would make every editor
+    // save its unchanged text, one request per block on the page.
+    function fitEditors() {
+      document.querySelectorAll<HTMLElement>('.editor-row__textarea').forEach(el => {
+        el.style.height = 'auto'
+        el.style.height = el.scrollHeight + 'px'
       })
     }
+    function handleBeforePrint() {
+      fitEditors()
+    }
     function handleAfterPrint() {
-      // Dispatch input so Vue's auto-resize restores screen heights.
-      document.querySelectorAll<HTMLTextAreaElement>('.editor-row__textarea').forEach(ta => {
-        ta.dispatchEvent(new Event('input'))
-      })
+      fitEditors()
       window.removeEventListener('beforeprint', handleBeforePrint)
       window.removeEventListener('afterprint', handleAfterPrint)
     }

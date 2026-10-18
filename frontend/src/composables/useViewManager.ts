@@ -1,22 +1,27 @@
 /**
  * useViewManager
  *
- * Owns all database-view state: the views array, active view, rename flow,
- * tab drag-reorder, tab action menu, view description, view settings modal,
- * and sort management.
+ * UI state and actions around the views of one database placement: which
+ * view is active, the rename flow, tab drag-reorder, the tab action menu, the
+ * view description, the view settings modal, and sort management.
+ *
+ * The views themselves live in the databaseViews store, one list per
+ * database shared by every block that shows it. This composable changes them
+ * in place and asks the store to save what changed; the store sends only the
+ * changed fields. Which view is active is the choice of this placement (the
+ * database block itself or a linked block) and is saved per placement.
  *
  * Caller (DatabaseBlock.vue) is responsible for orchestrating cross-composable
- * side-effects such as syncing column widths and re-querying entries after a
+ * side-effects such as syncing column widths and reloading entries after a
  * view switch.
  */
 import { ref, computed, nextTick, type ComputedRef } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useBlockStore } from '@/stores/blocks'
+import { useDatabaseViewsStore } from '@/stores/databaseViews'
 import {
   normalizeViewDescription,
   type PropertySchema,
   type DatabaseView,
-  type ViewType,
 } from '@/stores/database'
 
 // ── View-type icon map (exported so template can reference it) ────────────────
@@ -36,30 +41,47 @@ export function viewTypeIcon(type?: string): string {
   return VIEW_TYPE_ICONS[type ?? 'table'] ?? 'mdi:table-large'
 }
 
+/**
+ * The name shown for a view. A view that was never named has an empty name
+ * in storage and shows the localized default.
+ */
+export function viewDisplayName(
+  view: Pick<DatabaseView, 'name'> | null | undefined,
+  t: (key: string) => string,
+): string {
+  return view?.name || t('db.views.defaultName')
+}
+
 // ── Composable ────────────────────────────────────────────────────────────────
 
 export function useViewManager(options: {
-  blockId: string
+  /** The database whose views are shown. */
+  databaseId: string
+  /** The block showing them: the database itself or a linked block. */
+  placementId: string
   schemas: ComputedRef<PropertySchema[]>
   NAME_COL_KEY: string
-  PREF_VIEWS: string
-  PREF_ACTIVE_VIEW: string
-  READONLY_SCHEMA_TYPES: Set<string>
   /** Called after any sort mutation that requires a backend re-query. */
   onQueryNeeded: () => Promise<void>
 }) {
-  const {
-    blockId, schemas, NAME_COL_KEY, PREF_VIEWS, PREF_ACTIVE_VIEW,
-    READONLY_SCHEMA_TYPES, onQueryNeeded,
-  } = options
+  const { databaseId, placementId, schemas, NAME_COL_KEY, onQueryNeeded } = options
 
   const { t } = useI18n()
-  const blockStore = useBlockStore()
+  const viewsStore = useDatabaseViewsStore()
 
   // ── Core state ──────────────────────────────────────────────────────────────
 
-  const views         = ref<DatabaseView[]>([])
-  const activeViewId  = ref<string>('')
+  const views = computed<DatabaseView[]>(() => viewsStore.getViews(databaseId))
+
+  /**
+   * The active view of this placement. Writing it changes the choice locally
+   * only; ``saveActiveViewId`` stores it.
+   */
+  const activeViewId = computed<string>({
+    get: () => viewsStore.getSelectedViewId(databaseId, placementId) ?? '',
+    set: (id: string) => { viewsStore.selections[placementId] = id },
+  })
+
   const showSortPanel = ref(false)
 
   // ── Rename ──────────────────────────────────────────────────────────────────
@@ -99,57 +121,45 @@ export function useViewManager(options: {
 
   // ── Persistence ─────────────────────────────────────────────────────────────
 
+  /** Save whatever changed in any view of this database. */
   async function saveViews(): Promise<void> {
-    await blockStore.setPreference(blockId, PREF_VIEWS, [...views.value])
+    await viewsStore.persistViews(databaseId)
   }
 
+  /** Save whatever changed in one view. */
+  async function saveView(viewId: string): Promise<void> {
+    await viewsStore.persistView(databaseId, viewId)
+  }
+
+  /** Store which view this placement shows. */
   async function saveActiveViewId(): Promise<void> {
-    await blockStore.setPreference(blockId, PREF_ACTIVE_VIEW, activeViewId.value)
-  }
-
-  // ── View factory ────────────────────────────────────────────────────────────
-
-  function buildDefaultView(
-    colWidths: Record<string, number> = {},
-    viewType: ViewType = 'table',
-  ): DatabaseView {
-    const hiddenColumns = schemas.value
-      .filter(s => READONLY_SCHEMA_TYPES.has(s.type))
-      .map(s => s.id)
-    return {
-      id: crypto.randomUUID(),
-      name: t('db.views.defaultName'),
-      viewType,
-      colOrder: [NAME_COL_KEY, ...schemas.value.map((s) => s.id)],
-      colWidths,
-      filterGroups: [],
-      sorts: [],
-      hiddenColumns,
-    }
+    if (!activeViewId.value) return
+    await viewsStore.selectView(databaseId, placementId, activeViewId.value)
   }
 
   // ── CRUD ────────────────────────────────────────────────────────────────────
 
   async function addView(): Promise<void> {
-    const newView = buildDefaultView()
-    newView.name = `${t('db.views.defaultName').replace(/\s\d+$/, '')} ${views.value.length + 1}`
-    views.value.push(newView)
-    activeViewId.value = newView.id
-    await saveViews()
+    const base = t('db.views.defaultName').replace(/\s\d+$/, '')
+    const created = await viewsStore.createView(databaseId, {
+      name: `${base} ${views.value.length + 1}`,
+    })
+    activeViewId.value = created.id
     await saveActiveViewId()
-    startRenameView(newView.id)
+    startRenameView(created.id)
   }
 
   async function deleteView(viewId: string): Promise<void> {
     if (views.value.length <= 1) return
     const idx = views.value.findIndex((v) => v.id === viewId)
     if (idx === -1) return
-    views.value.splice(idx, 1)
-    if (activeViewId.value === viewId) {
-      activeViewId.value = views.value[Math.max(0, idx - 1)].id
+    const wasActive = activeViewId.value === viewId
+    const fallback = views.value[idx === 0 ? 1 : idx - 1].id
+    await viewsStore.deleteView(databaseId, viewId)
+    if (wasActive) {
+      activeViewId.value = fallback
+      await saveActiveViewId()
     }
-    await saveViews()
-    await saveActiveViewId()
   }
 
   // ── Rename ──────────────────────────────────────────────────────────────────
@@ -158,7 +168,7 @@ export function useViewManager(options: {
     const view = views.value.find((v) => v.id === viewId)
     if (!view) return
     renamingViewId.value = viewId
-    viewNameDraft.value  = view.name
+    viewNameDraft.value  = viewDisplayName(view, t)
     await nextTick()
     const el = document.querySelector<HTMLInputElement>('.db__tab-rename-input')
     el?.focus()
@@ -167,13 +177,14 @@ export function useViewManager(options: {
 
   async function commitRenameView(viewId: string): Promise<void> {
     if (renamingViewId.value !== viewId) return
-    const view = views.value.find((v) => v.id === viewId)
-    if (view) {
-      const trimmed = viewNameDraft.value.trim()
-      view.name = trimmed || view.name
-    }
     renamingViewId.value = null
-    await saveViews()
+    const view = views.value.find((v) => v.id === viewId)
+    if (!view) return
+    const trimmed = viewNameDraft.value.trim()
+    // Keeping the shown default name does not turn it into a stored one.
+    if (!trimmed || trimmed === viewDisplayName(view, t)) return
+    view.name = trimmed
+    await saveView(viewId)
   }
 
   function cancelRenameView(): void {
@@ -201,18 +212,19 @@ export function useViewManager(options: {
     if (tabDropId.value === viewId) tabDropId.value = null
   }
 
-  function onTabDrop(e: DragEvent, targetId: string): void {
+  async function onTabDrop(e: DragEvent, targetId: string): Promise<void> {
     e.preventDefault()
     tabDropId.value = null
     const sourceId = tabDragId.value
     tabDragId.value = null
     if (!sourceId || sourceId === targetId) return
-    const fromIdx = views.value.findIndex((v) => v.id === sourceId)
-    const toIdx   = views.value.findIndex((v) => v.id === targetId)
+    const order   = views.value.map((v) => v.id)
+    const fromIdx = order.indexOf(sourceId)
+    const toIdx   = order.indexOf(targetId)
     if (fromIdx === -1 || toIdx === -1) return
-    const [moved] = views.value.splice(fromIdx, 1)
-    views.value.splice(toIdx, 0, moved)
-    saveViews()
+    order.splice(fromIdx, 1)
+    order.splice(toIdx, 0, sourceId)
+    await viewsStore.reorderViews(databaseId, order)
   }
 
   function onTabDragEnd(): void {
@@ -250,12 +262,9 @@ export function useViewManager(options: {
     viewTabMenuId.value = null
     const source = views.value.find((v) => v.id === viewId)
     if (!source) return
-    const copy: DatabaseView = JSON.parse(JSON.stringify(source))
-    copy.id   = crypto.randomUUID()
-    copy.name = `${source.name} (2)`
-    const idx = views.value.findIndex((v) => v.id === viewId)
-    views.value.splice(idx + 1, 0, copy)
-    await saveViews()
+    // Pending edits of the source belong in the copy.
+    await saveView(viewId)
+    await viewsStore.duplicateView(databaseId, viewId, `${viewDisplayName(source, t)} (2)`)
   }
 
   /**
@@ -273,13 +282,21 @@ export function useViewManager(options: {
     if (next === (view.description ?? '')) return
     if (next) view.description = next
     else delete view.description
-    await saveViews()
+    await saveView(viewId)
   }
 
-  function onViewUpdated(updated: DatabaseView): void {
-    const idx = views.value.findIndex(v => v.id === updated.id)
-    if (idx !== -1) views.value[idx] = updated
-    saveViews()
+  /**
+   * Take over a changed copy of a view, as the settings modal and the
+   * calendar views emit it, and save the difference.
+   */
+  async function onViewUpdated(updated: DatabaseView): Promise<void> {
+    const view = views.value.find((v) => v.id === updated.id)
+    if (!view) return
+    for (const key of Object.keys(view) as (keyof DatabaseView)[]) {
+      if (!(key in updated)) delete view[key]
+    }
+    Object.assign(view, updated)
+    await saveView(view.id)
   }
 
   // ── View settings modal ─────────────────────────────────────────────────────
@@ -295,21 +312,26 @@ export function useViewManager(options: {
 
   // ── Sort management ─────────────────────────────────────────────────────────
 
+  async function _saveActiveAndQuery(): Promise<void> {
+    const view = activeView.value
+    if (!view) return
+    await saveView(view.id)
+    await onQueryNeeded()
+  }
+
   async function addSort(): Promise<void> {
     const view = activeView.value
     if (!view) return
     const firstSchemaId = schemas.value[0]?.id ?? NAME_COL_KEY
     view.sorts.push({ id: crypto.randomUUID(), schemaId: firstSchemaId, direction: 'asc' })
-    await saveViews()
-    await onQueryNeeded()
+    await _saveActiveAndQuery()
   }
 
   async function removeSort(sortId: string): Promise<void> {
     const view = activeView.value
     if (!view) return
     view.sorts = view.sorts.filter((s) => s.id !== sortId)
-    await saveViews()
-    await onQueryNeeded()
+    await _saveActiveAndQuery()
   }
 
   async function onSortSchemaChange(sortId: string, newSchemaId: string): Promise<void> {
@@ -318,8 +340,7 @@ export function useViewManager(options: {
     const s = view.sorts.find((s) => s.id === sortId)
     if (!s) return
     s.schemaId = newSchemaId
-    await saveViews()
-    await onQueryNeeded()
+    await _saveActiveAndQuery()
   }
 
   async function onSortDirectionChange(sortId: string, newDirection: 'asc' | 'desc'): Promise<void> {
@@ -328,8 +349,7 @@ export function useViewManager(options: {
     const s = view.sorts.find((s) => s.id === sortId)
     if (!s) return
     s.direction = newDirection
-    await saveViews()
-    await onQueryNeeded()
+    await _saveActiveAndQuery()
   }
 
   // ── Public API ──────────────────────────────────────────────────────────────
@@ -352,9 +372,8 @@ export function useViewManager(options: {
     sortCount,
     // Persistence
     saveViews,
+    saveView,
     saveActiveViewId,
-    // View factory
-    buildDefaultView,
     // CRUD
     addView,
     deleteView,

@@ -38,7 +38,7 @@
 import { ref, computed, onUnmounted, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
-import { useDatabaseStore, type PropertySchema, type DatabaseEntry, normalizeSelectOption, optionColorStyle } from '@/stores/database'
+import { useDatabaseStore, type PropertySchema, type DatabaseEntry, optionColorStyle, optionLabel } from '@/stores/database'
 import { useBlockStore } from '@/stores/blocks'
 import { useEscapeKey } from '@/composables/useEscapeStack'
 import SideView from '@/components/main/SideView.vue'
@@ -177,19 +177,19 @@ const currentNuances = computed<Record<string, string>>(() => {
   return (val?.nuances as Record<string, string> | undefined) ?? {}
 })
 
-/** True when this id has a non-empty nuance label in the given map. */
+/** True when this id carries a nuance whose option still exists. */
 function hasNuance(id: string, map: Record<string, string>): boolean {
-  return !!nuanceCfg.value && !!(map?.[id])
+  return !!nuanceLabel(id, map)
 }
 
+/** The label of the nuance option stored for *id* in *map*, or ''. */
 function nuanceLabel(id: string, map: Record<string, string>): string {
-  return map?.[id] ?? ''
+  return nuanceCfg.value ? optionLabel(nuanceCfg.value.options, map?.[id]) : ''
 }
 
 /** Inline style for the nuance label chip, resolved from the shared options. */
 function nuanceStyle(label: string): Record<string, string> {
-  const opts = (nuanceCfg.value?.options ?? []).map(normalizeSelectOption)
-  const opt = opts.find(o => o.label === label)
+  const opt = (nuanceCfg.value?.options ?? []).find(o => o.label === label)
   return opt?.color ? optionColorStyle(opt.color) : {}
 }
 
@@ -506,11 +506,11 @@ function emitFlat(ids: string[], nuances: Record<string, string>) {
 /** Nuance is editable inline only for flat relations (timeline → TimelineEditor). */
 const nuanceEditable = computed(() => !!nuanceCfg.value && !hasTimeline.value)
 
-/** Set or clear the nuance label of a linked entry on a flat relation. */
-function setFlatNuance(uid: string, label: string) {
+/** Set or clear the nuance option of a linked entry on a flat relation. */
+function setFlatNuance(uid: string, optionId: string) {
   const ids = [...relatedIds.value]
   const nuances = { ...currentNuances.value }
-  if (label) nuances[uid] = label
+  if (optionId) nuances[uid] = optionId
   else delete nuances[uid]
   emitFlat(ids, nuances)
 }
@@ -724,7 +724,7 @@ async function onSideViewRefresh(): Promise<void> {
               @change="setFlatNuance(id, ($event.target as HTMLSelectElement).value)"
             >
               <option value="">{{ t('db.timeline.nuanceNone') }}</option>
-              <option v-for="opt in (nuanceCfg?.options ?? [])" :key="opt.label" :value="opt.label">{{ opt.label }}</option>
+              <option v-for="opt in (nuanceCfg?.options ?? [])" :key="opt.id" :value="opt.id">{{ opt.label }}</option>
             </select>
             <span v-else class="rel-cell__nuance-label" :style="nuanceStyle(nuanceLabel(id, currentNuances))">{{ nuanceLabel(id, currentNuances) }}</span>
             <span v-if="nuanceCfg?.affix2" class="rel-cell__affix">{{ nuanceCfg?.affix2 }}</span>
@@ -750,7 +750,7 @@ async function onSideViewRefresh(): Promise<void> {
               @change="setFlatNuance(id, ($event.target as HTMLSelectElement).value)"
             >
               <option value="">{{ t('db.timeline.nuanceNone') }}</option>
-              <option v-for="opt in (nuanceCfg?.options ?? [])" :key="opt.label" :value="opt.label">{{ opt.label }}</option>
+              <option v-for="opt in (nuanceCfg?.options ?? [])" :key="opt.id" :value="opt.id">{{ opt.label }}</option>
             </select>
             <span v-else class="rel-cell__nuance-label" :style="nuanceStyle(nuanceLabel(id, currentNuances))">{{ nuanceLabel(id, currentNuances) }}</span>
             <span v-if="nuanceCfg?.affix2" class="rel-cell__affix">{{ nuanceCfg?.affix2 }}</span>

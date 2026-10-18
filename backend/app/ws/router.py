@@ -27,6 +27,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, WebSocket, WebSocketDisconnect
+from starlette.concurrency import run_in_threadpool
 
 from app.session.session import validate_token
 from app.ws.manager import manager
@@ -54,8 +55,12 @@ async def websocket_endpoint(
     Whether the account is still active is not re-checked here: the
     broadcaster resolves it on every send, so a deactivation takes effect
     immediately rather than at the next reconnect.
+
+    The token lookup is a blocking database query and runs in a worker
+    thread, so a reconnecting client does not stall the event loop that
+    serves every other open connection.
     """
-    user_id = validate_token(session) if session else None
+    user_id = await run_in_threadpool(validate_token, session) if session else None
     if not user_id:
         await websocket.close(code=_CLOSE_UNAUTHORIZED)
         return
@@ -70,7 +75,9 @@ async def websocket_endpoint(
                 logger.debug("WS received non-JSON frame, ignoring")
                 continue
             if msg.get("type") == "ping":
-                await websocket.send_text(json.dumps({"type": "pong"}))
+                # Through the outbox, so the reply never races an event
+                # being sent on the same socket.
+                manager.send(websocket, json.dumps({"type": "pong"}))
     except WebSocketDisconnect:
         pass
     finally:

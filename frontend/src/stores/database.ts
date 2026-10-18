@@ -9,8 +9,10 @@
  * schemas      – keyed by databaseId → ordered list of PropertySchema
  * entries      – keyed by databaseId → the complete, unpaginated entry list,
  *                present only once ``fetchEntries`` has loaded it
- * queryResults – keyed by a caller-chosen result key → the (possibly
- *                paginated) entries of one view query, see ``queryEntries``
+ * queryResults – keyed by a caller-chosen result key → the entries one view
+ *                has loaded so far, see ``loadViewPage``
+ * entryDetails – keyed by entry ID → single entries loaded by ``fetchEntry``
+ *                for the side view and the entry page
  * allDatabases – flat list of DatabaseInfo (id + title), used by relation pickers
  *
  * The two entry caches are kept apart on purpose. A view shows a page of its
@@ -20,8 +22,14 @@
  *
  * View types (DatabaseView, ViewFilter, ViewSort) are defined here so that
  * DatabaseBlock and any future view-aware components share a single source of
- * truth.  Views themselves are persisted via blockStore.setPreference – the
- * database store does not own that persistence layer.
+ * truth. The views themselves live in the databaseViews store.
+ *
+ * Relations
+ * ---------
+ * View pages and single entries arrive with every relation they hold already
+ * resolved. ``ingestResolution`` puts that into the chip caches, so relation
+ * cells find their titles and key values in place and ask the server only for
+ * ids they learn of on their own, for instance after linking a new entry.
  *
  * Invalidation
  * ------------
@@ -38,6 +46,7 @@ import { apiClient } from '@/api/client'
 import { useDatabaseTemplatesStore } from '@/stores/databaseTemplates'
 import { useBlockStore } from '@/stores/blocks'
 import { WS_BLOCK_EVENT, type BlockEventPayload } from '@/stores/ws'
+import { useDatabaseViewsStore } from '@/stores/databaseViews'
 
 /** Pseudo schema id of the lead property, the entry title shown as "Name". */
 export const NAME_COL_KEY = '__name__'
@@ -75,22 +84,61 @@ export const SELECT_OPTION_COLORS = [
 export type SelectColorKey = typeof SELECT_OPTION_COLORS[number]['key']
 
 /**
- * A single option in a select / multi-select property.
- * Stored in config.options[]. Backward-compatible with legacy string[] configs.
+ * A single option of a select / multi-select property or of a relation's
+ * nuance. Stored in ``config.options`` (``config.nuance.options`` for
+ * nuances).
+ *
+ * Values store the ``id``, never the label, so an option can be renamed
+ * without touching any value. The backend assigns ids when a config is
+ * saved; the frontend gives a new option an id right away so it can be
+ * selected in the same step.
  */
 export interface SelectOption {
+  id: string
   label: string
   color?: SelectColorKey
 }
 
 /**
- * Normalize a raw config option (may be a legacy string or a SelectOption object)
- * into a SelectOption. Safe to call on any value from config.options.
+ * Normalize a raw config option into a SelectOption. Safe to call on any
+ * value from an option list. A plain string, or an option without id, uses
+ * its label as id; that only happens for configs the backend has not stored
+ * yet.
  */
 export function normalizeSelectOption(opt: unknown): SelectOption {
-  if (typeof opt === 'string') return { label: opt }
-  const o = opt as SelectOption
-  return { label: String(o.label ?? ''), color: o.color }
+  if (typeof opt === 'string') return { id: opt, label: opt }
+  const o = (opt ?? {}) as Partial<SelectOption>
+  const label = String(o.label ?? '')
+  const id = typeof o.id === 'string' && o.id ? o.id : label
+  return o.color ? { id, label, color: o.color } : { id, label }
+}
+
+/** The options a select property offers, in their configured order. */
+export function schemaOptions(schema: Pick<PropertySchema, 'config'> | null | undefined): SelectOption[] {
+  const raw = schema?.config?.options
+  return Array.isArray(raw) ? raw.map(normalizeSelectOption) : []
+}
+
+/** The nuance options of a relation property, in their configured order. */
+export function nuanceOptions(schema: Pick<PropertySchema, 'config'> | null | undefined): SelectOption[] {
+  const nuance = schema?.config?.nuance as Record<string, unknown> | undefined
+  const raw = nuance?.options
+  return Array.isArray(raw) ? raw.map(normalizeSelectOption) : []
+}
+
+/** The option with *id*, or undefined when the list has none. */
+export function findOption(options: SelectOption[], id: unknown): SelectOption | undefined {
+  return typeof id === 'string' ? options.find((o) => o.id === id) : undefined
+}
+
+/** The label of the option with *id*, or '' when the list has none. */
+export function optionLabel(options: SelectOption[], id: unknown): string {
+  return findOption(options, id)?.label ?? ''
+}
+
+/** A fresh id for an option created on the client. */
+export function newOptionId(): string {
+  return crypto.randomUUID()
 }
 
 /**
@@ -279,7 +327,7 @@ export interface ViewSort {
  *               'or':  ANY filter in the group must match.
  *
  * Multiple groups in a view are always ANDed together.
- * Example: (rank=General OR rank=Colonel) AND (faction=Empire AND active=true)
+ * Example: (status=A OR status=B) AND (kind=X AND active=true)
  * is expressed as two groups: first with 'or', second with 'and'.
  */
 export interface FilterGroup {
@@ -290,8 +338,13 @@ export interface FilterGroup {
 }
 
 /**
- * Persisted view descriptor stored as a JSON array under the block preference
- * key ``views``.  The active view ID is stored separately under ``active_view``.
+ * A database view in the shape the components work with. The backend stores
+ * ``name``, ``viewType``, ``description``, ``filterGroups`` and ``sorts`` as
+ * fields of their own and everything else under ``settings``; the
+ * databaseViews store translates between the two.
+ *
+ * ``name`` is empty for a view that was never named; ``viewDisplayName``
+ * supplies the localized default for it.
  *
  * ``colOrder`` – ordered list of column keys rendered by the table.
  *   '__name__' is always the first element (the Name column).
@@ -307,10 +360,7 @@ export interface FilterGroup {
 export interface DatabaseView {
   id: string
   name: string
-  /**
-   * Determines which renderer is used for this view.
-   * Defaults to 'table' when absent (backward-compatible migration applied on load).
-   */
+  /** Determines which renderer is used for this view. */
   viewType: ViewType
   colOrder: string[]
   colWidths: Record<string, number>
@@ -319,12 +369,6 @@ export interface DatabaseView {
    * together. This supersedes the legacy `filters` flat list.
    */
   filterGroups: FilterGroup[]
-  /**
-   * @deprecated Legacy flat filter list. Kept for migration only.
-   * On load, any non-empty `filters` is converted into a single AND group
-   * appended to `filterGroups`, then cleared.
-   */
-  filters?: ViewFilter[]
   sorts: ViewSort[]
   /** Column keys (schema IDs or '__name__') that are not rendered in this view. */
   hiddenColumns: string[]
@@ -471,6 +515,71 @@ export interface EntryQueryResponse {
   total: number
 }
 
+/**
+ * Resolved relations carried by a view page or a single entry.
+ *
+ * ``relations`` maps every linked entry id that resolved to its descriptor;
+ * an id the entries hold but the map lacks is gone or not readable.
+ * ``key_values`` maps a key property id to the values linked entries hold for
+ * it, by entry id.
+ */
+export interface RelationResolution {
+  relations: Record<string, RelationTitle>
+  key_values: Record<string, Record<string, Record<string, unknown> | null>>
+}
+
+/** Response of POST /views/{id}/entries. */
+export interface ViewPageResponse extends RelationResolution {
+  entries: DatabaseEntry[]
+  total: number
+  offset: number
+}
+
+/** Response of GET /entries/{id}. */
+export interface EntryDetailResponse extends RelationResolution {
+  entry: DatabaseEntry
+}
+
+/** Which part of a view to load; see ``loadViewPage``. */
+export interface ViewPageRequest {
+  offset: number
+  /** Null loads every entry; views on a time axis are never paged anyway. */
+  limit: number | null
+  search: string
+}
+
+/** Property types whose values link to entries. */
+const RELATION_TYPES = new Set(['relation', 'parent_item', 'sub_item'])
+
+/**
+ * Every entry id a relation value links to, across all timeline periods.
+ * Mirrors ``linked_ids`` in the backend's resolution module.
+ */
+function linkedIds(value: Record<string, unknown> | null | undefined): string[] {
+  if (!value || typeof value !== 'object') return []
+  if ('_timeline' in value) {
+    const timeline = value._timeline
+    if (!timeline || typeof timeline !== 'object') return []
+    const seen = new Set<string>()
+    for (const slot of Object.values(timeline as Record<string, unknown>)) {
+      const ids = (slot as Record<string, unknown> | null)?.related_ids
+      if (Array.isArray(ids)) for (const id of ids) if (typeof id === 'string') seen.add(id)
+    }
+    return [...seen]
+  }
+  const ids = value.related_ids
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : []
+}
+
+/** Key property of a keyed relation, or null when keying is off. */
+function keyPropertyOf(schema: PropertySchema): string | null {
+  const keying = schema.config?.keying as Record<string, unknown> | undefined
+  if (!keying || keying.enabled !== true) return null
+  return typeof keying.key_property_id === 'string' && keying.key_property_id
+    ? keying.key_property_id
+    : null
+}
+
 /** Result of ``searchEntries``. */
 export interface EntrySearchResult {
   /** Matching entries ordered by title, at most the requested limit. */
@@ -485,10 +594,16 @@ export interface EntrySearchResult {
   exactMatch: boolean
 }
 
-/** One view's query result, held under the key its caller chose. */
+/** One view's loaded entries, held under the key its caller chose. */
 interface QueryResultSlot {
   databaseId: string
   entries: DatabaseEntry[]
+}
+
+/** One entry loaded on its own, for the side view or the entry page. */
+interface EntryDetailSlot {
+  databaseId: string
+  entry: DatabaseEntry
 }
 
 // ── Store ─────────────────────────────────────────────────────────────────────
@@ -505,13 +620,20 @@ export const useDatabaseStore = defineStore('database', () => {
   const entries = ref<Record<string, DatabaseEntry[]>>({})
 
   /**
-   * View query results keyed by the caller's result key. A view's result is
+   * Loaded view entries keyed by the caller's result key. A view's result is
    * paginated and filtered, so it lives apart from ``entries`` and never
    * stands in for the whole database. Kept in the store rather than in the
    * view so that ``upsertValue`` and title updates reach the rows a view
    * renders.
    */
   const queryResults = ref<Record<string, QueryResultSlot>>({})
+
+  /**
+   * Single entries keyed by entry id, loaded by ``fetchEntry``. Kept apart
+   * from the view results for the same reason, and reached by the same
+   * in-place updates.
+   */
+  const entryDetails = ref<Record<string, EntryDetailSlot>>({})
 
   /** All database blocks available in the workspace (id + title). */
   const allDatabases = ref<DatabaseInfo[]>([])
@@ -582,6 +704,11 @@ export const useDatabaseStore = defineStore('database', () => {
     return result
   }
 
+  /**
+   * Create a property. The backend hides it in every view of the database
+   * except ``visible_in_view_id``, the view it was added from, if any; the
+   * views on screen are reloaded to show that.
+   */
   async function createSchema(
     databaseId: string,
     payload: {
@@ -590,13 +717,17 @@ export const useDatabaseStore = defineStore('database', () => {
       config?: Record<string, unknown> | null
       position?: number
       group?: string
+      visible_in_view_id?: string
     },
   ): Promise<PropertySchema> {
     const schema = await apiClient.post<PropertySchema>(
       `/api/databases/${databaseId}/schemas`,
       payload,
     )
-    await fetchSchemas(databaseId)
+    await Promise.all([
+      fetchSchemas(databaseId),
+      useDatabaseViewsStore().refreshViews(databaseId),
+    ])
     return schema
   }
 
@@ -626,9 +757,16 @@ export const useDatabaseStore = defineStore('database', () => {
     return schema
   }
 
+  /**
+   * Delete a property. The backend removes it from every view of the
+   * database, so the views on screen are reloaded as well.
+   */
   async function deleteSchema(databaseId: string, schemaId: string): Promise<void> {
     await apiClient.delete(`/api/databases/${databaseId}/schemas/${schemaId}`)
-    await fetchSchemas(databaseId)
+    await Promise.all([
+      fetchSchemas(databaseId),
+      useDatabaseViewsStore().refreshViews(databaseId),
+    ])
     // Values embedded in entries are now stale – re-fetch entries too.
     if (entries.value[databaseId] !== undefined) {
       await fetchEntries(databaseId)
@@ -676,6 +814,22 @@ export const useDatabaseStore = defineStore('database', () => {
     }
   }
 
+  /**
+   * Number of active entries that use one option of a property: a select
+   * option or a relation nuance. Pre-flight for removing the option, which
+   * removes it from every entry.
+   */
+  async function optionUsage(
+    databaseId: string,
+    schemaId: string,
+    optionId: string,
+  ): Promise<number> {
+    const result = await apiClient.get<{ entries: number }>(
+      `/api/databases/${databaseId}/schemas/${schemaId}/options/${encodeURIComponent(optionId)}/usage`,
+    )
+    return result.entries
+  }
+
   // ── Entries ───────────────────────────────────────────────────────────────
 
   async function fetchEntries(databaseId: string): Promise<DatabaseEntry[]> {
@@ -717,43 +871,111 @@ export const useDatabaseStore = defineStore('database', () => {
     )
   }
 
-  /** Latest request per result key; see ``queryEntries``. */
-  const _queryGenerations = new Map<string, number>()
+  /** Latest request per result key; see ``loadViewPage``. */
+  const _pageGenerations = new Map<string, number>()
 
   /**
-   * Run a server-side view query: filtered, sorted and paginated.
+   * Load part of a view: its entries, filtered, sorted and paginated by the
+   * backend according to the view, and narrowed by *request.search*.
    *
-   * When *resultKey* is given, the result is kept under that key in
-   * ``queryResults`` and the returned ``entries`` are that stored list, so
-   * in-place updates from ``upsertValue`` and from WebSocket title changes
-   * reach the rows the caller renders. A view passes a key unique to itself
-   * and releases it with ``releaseQueryResult`` when it unmounts.
+   * The entries are kept under *resultKey* in ``queryResults``. With
+   * *append*, they are added below what that key already holds, which is
+   * how loading more fetches only the next batch; otherwise they replace it.
+   * The returned ``entries`` are that stored list, so in-place updates from
+   * ``upsertValue`` and from WebSocket title changes reach the rows the
+   * caller renders. A view passes a key unique to itself and releases it
+   * with ``releaseQueryResult`` when it unmounts.
    *
-   * The result never touches ``entries``: a page of a database must not be
-   * mistaken for the whole of it.
+   * The resolved relations of the page go into the chip caches before the
+   * entries are stored, so relation cells render without asking for them.
    */
-  async function queryEntries(
+  async function loadViewPage(
     databaseId: string,
-    request: EntryQueryRequest,
-    resultKey?: string,
-  ): Promise<EntryQueryResponse> {
-    if (!resultKey) return _postQuery(databaseId, request)
-
-    // Queries for one key can overlap (a search typed quickly). Only the
-    // latest may replace the stored result, or an older response arriving
-    // late would put stale rows back.
-    const generation = (_queryGenerations.get(resultKey) ?? 0) + 1
-    _queryGenerations.set(resultKey, generation)
-    const result = await _postQuery(databaseId, request)
-    if (_queryGenerations.get(resultKey) !== generation) return result
-    queryResults.value[resultKey] = { databaseId, entries: result.entries }
-    return { entries: queryResults.value[resultKey].entries, total: result.total }
+    viewId: string,
+    request: ViewPageRequest,
+    resultKey: string,
+    append = false,
+  ): Promise<{ entries: DatabaseEntry[]; total: number }> {
+    // Requests for one key can overlap (a search typed quickly). Only the
+    // latest may change the stored result, or an older response arriving late
+    // would put stale rows back.
+    const generation = (_pageGenerations.get(resultKey) ?? 0) + 1
+    _pageGenerations.set(resultKey, generation)
+    const page = await apiClient.post<ViewPageResponse>(
+      `/api/databases/${databaseId}/views/${viewId}/entries`,
+      { offset: request.offset, limit: request.limit, search: request.search },
+    )
+    const current = queryResults.value[resultKey]
+    if (_pageGenerations.get(resultKey) !== generation) {
+      return { entries: current?.entries ?? [], total: page.total }
+    }
+    ingestResolution(databaseId, page.entries, page)
+    if (append && current && current.databaseId === databaseId) {
+      // Entries may have moved between two batches; never show one twice.
+      const known = new Set(current.entries.map((e) => e.id))
+      current.entries.push(...page.entries.filter((e) => !known.has(e.id)))
+    } else {
+      queryResults.value[resultKey] = { databaseId, entries: page.entries }
+    }
+    return { entries: queryResults.value[resultKey].entries, total: page.total }
   }
 
   /** Drop the view query result held under *resultKey*. */
   function releaseQueryResult(resultKey: string): void {
     delete queryResults.value[resultKey]
-    _queryGenerations.delete(resultKey)
+    _pageGenerations.delete(resultKey)
+  }
+
+  /**
+   * Load one entry with its values and resolved relations, and keep it in
+   * ``entryDetails`` where in-place updates reach it. Returns the stored
+   * entry.
+   */
+  async function fetchEntry(databaseId: string, entryId: string): Promise<DatabaseEntry> {
+    const detail = await apiClient.get<EntryDetailResponse>(
+      `/api/databases/${databaseId}/entries/${entryId}`,
+    )
+    ingestResolution(databaseId, [detail.entry], detail)
+    entryDetails.value[entryId] = { databaseId, entry: detail.entry }
+    return entryDetails.value[entryId].entry
+  }
+
+  /**
+   * Put the resolved relations of *entries* into the chip caches.
+   *
+   * Every id the entries link to counts as resolved afterwards: the ones in
+   * *resolution* with their descriptor, the others as gone, which hides their
+   * chips exactly as an empty answer from ``resolveEntryTitles`` does. Keyed
+   * relations get their key values the same way, null where the linked entry
+   * stores none. Needs the schemas of *databaseId* to be loaded.
+   */
+  function ingestResolution(
+    databaseId: string,
+    entries: DatabaseEntry[],
+    resolution: RelationResolution,
+  ): void {
+    const relationSchemas = getSchemas(databaseId).filter((s) => RELATION_TYPES.has(s.type))
+    if (relationSchemas.length === 0) return
+    for (const entry of entries) {
+      for (const schema of relationSchemas) {
+        const ids = linkedIds(entry.values[schema.id])
+        if (ids.length === 0) continue
+        for (const id of ids) {
+          const descriptor = resolution.relations[id]
+          if (descriptor) relationTitles.value[id] = descriptor
+          else delete relationTitles.value[id]
+          resolvedRelationIds.value.add(id)
+        }
+        const keyProperty = keyPropertyOf(schema)
+        if (!keyProperty) continue
+        const values = resolution.key_values[keyProperty] ?? {}
+        for (const id of ids) {
+          const cacheKey = keyValueCacheKey(keyProperty, id)
+          relationKeyValues.value[cacheKey] = values[id] ?? null
+          resolvedKeyValueIds.value.add(cacheKey)
+        }
+      }
+    }
   }
 
   /**
@@ -906,39 +1128,24 @@ export const useDatabaseStore = defineStore('database', () => {
     }
   }
 
+  /**
+   * Create an entry. The caller reloads what it displays; nothing else is
+   * fetched here, least of all the whole database.
+   */
   async function createEntry(databaseId: string): Promise<DatabaseEntry> {
-    const entry = await apiClient.post<DatabaseEntry>(
-      `/api/databases/${databaseId}/entries`,
-    )
-    await fetchEntries(databaseId)
-    return entry
+    return apiClient.post<DatabaseEntry>(`/api/databases/${databaseId}/entries`)
   }
 
   /**
    * Duplicate an existing entry, copying all writable property values,
    * content, icon and state in a single backend transaction.
    * The backend emits one ``database_entries_updated`` WS event so all
-   * connected clients refresh at once.
+   * connected clients refresh at once. The caller reloads what it displays.
    */
   async function duplicateEntry(databaseId: string, entryId: string): Promise<DatabaseEntry> {
-    const entry = await apiClient.post<DatabaseEntry>(
+    return apiClient.post<DatabaseEntry>(
       `/api/databases/${databaseId}/entries/${entryId}/duplicate`,
     )
-    await fetchEntries(databaseId)
-    return entry
-  }
-
-  /**
-   * Idempotently create the five system-managed readonly property schemas for
-   * a database. Safe to call on every mount; schemas that already exist are
-   * skipped server-side. Re-fetches schemas after the call.
-   */
-  async function seedReadonlySchemas(databaseId: string): Promise<PropertySchema[]> {
-    const result = await apiClient.post<PropertySchema[]>(
-      `/api/databases/${databaseId}/seed-readonly-schemas`,
-    )
-    await fetchSchemas(databaseId)
-    return result
   }
 
   /**
@@ -982,8 +1189,8 @@ export const useDatabaseStore = defineStore('database', () => {
   // ── In-place entry updates ────────────────────────────────────────────────
 
   /**
-   * Call *fn* with every cached copy of *entryId*: in the full entry lists and
-   * in every view result. Restricted to one database when *databaseId* is
+   * Call *fn* with every cached copy of *entryId*: in the full entry lists, in
+   * every view result and among the single entries. Restricted to one database when *databaseId* is
    * given; WebSocket events do not say which database a block belongs to, so
    * they search all of them.
    */
@@ -1006,6 +1213,8 @@ export const useDatabaseStore = defineStore('database', () => {
       const row = list.find((e) => e.id === entryId)
       if (row) fn(row)
     }
+    const detail = entryDetails.value[entryId]
+    if (detail && (databaseId === null || detail.databaseId === databaseId)) fn(detail.entry)
   }
 
   /**
@@ -1088,6 +1297,17 @@ export const useDatabaseStore = defineStore('database', () => {
   }
 
   /**
+   * Return one entry of *databaseId* if any cache holds it: the single entry
+   * loaded for it, a view that shows it, or the full list. Callers that need
+   * it fresh call ``fetchEntry``.
+   */
+  function getEntry(databaseId: string, entryId: string): DatabaseEntry | null {
+    const detail = entryDetails.value[entryId]
+    if (detail && detail.databaseId === databaseId) return detail.entry
+    return getEntries(databaseId).find((e) => e.id === entryId) ?? null
+  }
+
+  /**
    * Return the cached entries of *databaseId*, for looking up an entry that is
    * already on screen.
    *
@@ -1164,6 +1384,7 @@ export const useDatabaseStore = defineStore('database', () => {
     schemas,
     entries,
     queryResults,
+    entryDetails,
     allDatabases,
     relationTitles,
     relationKeyValues,
@@ -1179,18 +1400,21 @@ export const useDatabaseStore = defineStore('database', () => {
     deleteSchema,
     getSchemas,
     listKeyReferences,
+    optionUsage,
 
     // Entry operations
     fetchEntries,
-    queryEntries,
+    fetchEntry,
+    loadViewPage,
     releaseQueryResult,
     searchEntries,
     createEntry,
     duplicateEntry,
-    seedReadonlySchemas,
     upsertValue,
+    getEntry,
     getEntries,
     getNameLabel,
+    ingestResolution,
 
     // WebSocket (exposed for tests)
     _applyEntryEvent,

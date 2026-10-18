@@ -5,7 +5,7 @@ Uses the shared ``http_client`` fixture from conftest.py, which provides a
 fully authenticated TestClient via FastAPI dependency overrides (the same
 mechanism as automations_router_test, database_router_test, etc.).
 
-The ``isolated_db`` fixture (autouse) ensures a clean in-memory SQLite
+The ``isolated_db`` fixture (autouse) ensures a clean PostgreSQL test
 database for each test.
 """
 import uuid

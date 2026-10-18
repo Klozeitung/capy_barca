@@ -19,9 +19,13 @@ reaching them at all requires already knowing the id.
 
 Convention
 ----------
-* Read-only handlers (GET) remain synchronous ``def`` – no broadcast needed.
-* Mutation handlers (POST / PATCH / PUT / DELETE) are ``async def`` so they
-  can ``await`` the WebSocket broadcast after a successful ``db.commit()``.
+* Every handler is a synchronous ``def``. FastAPI runs those in a worker
+  thread, so their blocking database work never stalls the event loop that
+  serves all other requests and the open WebSocket connections.
+* Mutation handlers broadcast through ``emit_block_event`` after a successful
+  ``db.commit()``, passing their session so the recipient check costs no
+  extra connection. The event is then queued for each recipient on the event
+  loop; the handler never waits for a client to read it.
 * ``upsert_preference`` and ``rebalance_children`` are mutations but do not
   broadcast: preferences are per-client UI state; rebalance is an internal
   position normalisation that the client already handles locally.
@@ -38,13 +42,14 @@ from sqlalchemy.orm import Session
 
 from app.blocks import repository as repo
 from app.blocks import service
+from app.blocks import tree as page_tree
 from app.blocks.computed import compute_cross_db_dependents, compute_same_db_rollup_dependents
 from app.blocks.service import BlockConflict, BlockNotFound
 from app.blocks.types import validate_block_type
 from app.permissions import repository as perm_repo
 from app.session.deps import get_current_user, get_db, require_block_access
 from app.users.model import User
-from app.ws.broadcaster import broadcast_block_event
+from app.ws.broadcaster import emit_block_event
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +208,19 @@ class BlockResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class BlockTreeResponse(BaseModel):
+    """
+    Content of a page as ``GET /{block_id}/tree`` returns it.
+
+    ``loaded`` names every parent whose children are all in ``blocks``;
+    ``mentioned`` holds the blocks referenced by inline mentions.
+    """
+
+    blocks: list[BlockResponse]
+    loaded: list[uuid.UUID]
+    mentioned: list[BlockResponse]
+
+
 class DeleteResponse(BaseModel):
     affected: list[uuid.UUID]
 
@@ -290,10 +308,11 @@ def _cascade_entry_title_change(db: Session, block, before_content: Optional[dic
     return affected
 
 
-async def _broadcast_entries_updated(database_ids: list[str]) -> None:
+def _broadcast_entries_updated(db: Session, database_ids: list[str]) -> None:
     """Tell open views of each database in *database_ids* to re-query."""
     for db_id_str in database_ids:
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="database_entries_updated",
             block_id=db_id_str,
             before=None,
@@ -317,7 +336,7 @@ def _handle_service_errors(exc: Exception) -> None:
 
 
 @block_router.post("", response_model=BlockResponse, status_code=201)
-async def create_block(
+def create_block(
     payload: BlockCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -339,7 +358,8 @@ async def create_block(
             owner_id=current_user.id if current_user else None,
         )
         db.commit()
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="created",
             block_id=str(block.id),
             before=None,
@@ -403,24 +423,59 @@ def list_children(
     The ``state`` query parameter filters by block state. Defaults to
     ``active``. Pass ``state=`` (empty) to return children of all states.
     Children that the current user may not access are silently excluded.
+
+    The parent and all children are checked in one batched permission walk.
+    Children without a permission row of their own inherit the parent's, so
+    the cost depends on the depth of the tree, not on the number of children.
     """
     try:
         repo.get_block_or_raise(db, block_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
-    if not perm_repo.can_user_access(db, block_id, current_user):
-        raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
+    if current_user.role == "admin":
+        return repo.list_children(db, block_id, state=state or None)
+
     children = repo.list_children(db, block_id, state=state or None)
-    if current_user.role != "admin":
-        children = [
-            c for c in children
-            if perm_repo.can_user_access(db, c.id, current_user)
-        ]
-    return children
+    resolved = perm_repo.resolve_effective_permissions(
+        db, [block_id, *(c.id for c in children)]
+    )
+    if not resolved[block_id].admits(current_user):
+        raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
+    return [c for c in children if resolved[c.id].admits(current_user)]
+
+
+@block_router.get("/{block_id}/tree", response_model=BlockTreeResponse)
+def get_tree(
+    block_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return everything a page shows in one response.
+
+    Covers the active children of *block_id* and, recursively, of every
+    layout, column, toggle and synced block among them, including the children
+    of a synced mirror's origin. Subpages and databases are not entered. The
+    blocks that inline mentions in this content refer to come along in
+    ``mentioned``.
+
+    Blocks the caller may not read are left out with everything beneath them,
+    as the children endpoint does. Answers 404 for an unknown block and for
+    one the caller may not read.
+    """
+    block = repo.get_block(db, block_id)
+    if block is None or not perm_repo.can_user_access(db, block_id, current_user):
+        raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
+    result = page_tree.load_tree(db, block_id, current_user)
+    return BlockTreeResponse(
+        blocks=[BlockResponse.model_validate(b) for b in result.blocks],
+        loaded=result.loaded,
+        mentioned=[BlockResponse.model_validate(b) for b in result.mentioned],
+    )
 
 
 @block_router.patch("/{block_id}", response_model=BlockResponse)
-async def update_block(
+def update_block(
     block_id: uuid.UUID,
     payload: BlockUpdate,
     db: Session = Depends(get_db),
@@ -446,13 +501,14 @@ async def update_block(
         )
         db.commit()
         db.refresh(block)
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="content_updated",
             block_id=str(block.id),
             before=before_snapshot,
             after=_block_to_dict(block),
         )
-        await _broadcast_entries_updated(affected_db_ids)
+        _broadcast_entries_updated(db, affected_db_ids)
         return block
     except Exception as exc:
         db.rollback()
@@ -460,7 +516,7 @@ async def update_block(
 
 
 @block_router.patch("/{block_id}/appearance", response_model=BlockResponse)
-async def update_appearance(
+def update_appearance(
     block_id: uuid.UUID,
     payload: BlockAppearanceUpdate,
     db: Session = Depends(get_db),
@@ -480,7 +536,8 @@ async def update_appearance(
             cover=payload.cover,
         )
         db.commit()
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="appearance_updated",
             block_id=str(block.id),
             before=before_snapshot,
@@ -495,7 +552,7 @@ async def update_appearance(
 
 
 @block_router.post("/{block_id}/cover", response_model=BlockResponse)
-async def upload_cover(
+def upload_cover(
     block_id: uuid.UUID,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -541,7 +598,7 @@ async def upload_cover(
     dest = covers_dir / f"{block_id}{ext}"
     staging = upload_helper.staging_path(covers_dir)
     try:
-        await upload_helper.stream_to_disk(file, staging)
+        upload_helper.save_upload(file, staging)
         staging.replace(dest)
     finally:
         staging.unlink(missing_ok=True)
@@ -570,7 +627,8 @@ async def upload_cover(
             db.flush()
         db.commit()
         db.refresh(updated_block)
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="appearance_updated",
             block_id=str(updated_block.id),
             before=before_snapshot,
@@ -585,7 +643,7 @@ async def upload_cover(
 
 
 @block_router.delete("/{block_id}/cover", response_model=BlockResponse)
-async def remove_cover(
+def remove_cover(
     block_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -627,7 +685,8 @@ async def remove_cover(
         db.flush()
         db.commit()
         db.refresh(block)
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="appearance_updated",
             block_id=str(block.id),
             before=before_snapshot,
@@ -640,7 +699,7 @@ async def remove_cover(
 
 
 @block_router.post("/{block_id}/move", response_model=BlockResponse)
-async def move_block(
+def move_block(
     block_id: uuid.UUID,
     payload: BlockMove,
     db: Session = Depends(get_db),
@@ -664,7 +723,8 @@ async def move_block(
             new_position=payload.new_position,
         )
         db.commit()
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="moved",
             block_id=str(block.id),
             before=before_snapshot,
@@ -679,7 +739,7 @@ async def move_block(
 
 
 @block_router.post("/{block_id}/duplicate", response_model=BlockResponse, status_code=201)
-async def duplicate_block(
+def duplicate_block(
     block_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -721,7 +781,8 @@ async def duplicate_block(
             owner_id=current_user.id,
         )
         db.commit()
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="created",
             block_id=str(new_block.id),
             before=None,
@@ -734,7 +795,7 @@ async def duplicate_block(
 
 
 @block_router.delete("/{block_id}", response_model=DeleteResponse)
-async def soft_delete_block(
+def soft_delete_block(
     block_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -764,14 +825,16 @@ async def soft_delete_block(
 
         db.commit()
         for bid in affected:
-            await broadcast_block_event(
+            emit_block_event(
+                db=db,
                 event_type="state_changed",
                 block_id=str(bid),
                 before={"state": "active"},
                 after={"state": "trash"},
             )
         for db_id_str in cascade_db_ids:
-            await broadcast_block_event(
+            emit_block_event(
+                db=db,
                 event_type="database_entries_updated",
                 block_id=db_id_str,
                 before=None,
@@ -784,7 +847,7 @@ async def soft_delete_block(
 
 
 @block_router.post("/{block_id}/restore", response_model=RestoreResponse)
-async def restore_block(
+def restore_block(
     block_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -795,7 +858,8 @@ async def restore_block(
         restored = service.restore(db, block_id)
         db.commit()
         for bid in restored:
-            await broadcast_block_event(
+            emit_block_event(
+                db=db,
                 event_type="state_changed",
                 block_id=str(bid),
                 before={"state": "trash"},
@@ -808,7 +872,7 @@ async def restore_block(
 
 
 @block_router.delete("/{block_id}/purge", status_code=204)
-async def purge_block(
+def purge_block(
     block_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -834,7 +898,8 @@ async def purge_block(
         # so a filesystem error never rolls back the DB deletion.
         _cleanup_files_for_blocks(snapshots)
 
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="purged",
             block_id=str(block_id),
             before=None,
@@ -844,7 +909,8 @@ async def purge_block(
         # Notify any open DatabaseBlock views in target databases that their
         # mirror relation values have changed so they re-query immediately.
         for db_id_str in affected_db_ids:
-            await broadcast_block_event(
+            emit_block_event(
+                db=db,
                 event_type="database_entries_updated",
                 block_id=db_id_str,
                 before=None,
@@ -981,7 +1047,7 @@ def get_history(
 
 
 @block_router.post("/{block_id}/revert/{event_id}", response_model=BlockResponse)
-async def revert_event(
+def revert_event(
     block_id: uuid.UUID,
     event_id: uuid.UUID,
     db: Session = Depends(get_db),
@@ -1025,13 +1091,14 @@ async def revert_event(
         )
         db.commit()
         db.refresh(block)
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="reverted",
             block_id=str(block.id),
             before=before_snapshot,
             after=_block_to_dict(block),
         )
-        await _broadcast_entries_updated(affected_db_ids)
+        _broadcast_entries_updated(db, affected_db_ids)
         return block
     except Exception as exc:
         db.rollback()

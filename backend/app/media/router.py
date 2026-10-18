@@ -441,7 +441,7 @@ def get_capacity(
 
 
 @media_router.post("/upload/{category}/{block_id}", response_model=UploadResponse)
-async def upload_file(
+def upload_file(
     category: str,
     block_id: uuid.UUID,
     file: UploadFile = File(...),
@@ -476,7 +476,7 @@ async def upload_file(
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / stored_name
 
-    size = await upload_helper.stream_to_disk(file, dest_path)
+    size = upload_helper.save_upload(file, dest_path)
 
     if category in _MAPPED_CATEGORIES:
         _record_media_file(
@@ -497,7 +497,7 @@ async def upload_file(
 
 
 @media_router.delete("/{category}/{block_id}/{file_uuid}", response_model=DeleteResponse)
-async def delete_file(
+def delete_file(
     category: str,
     block_id: uuid.UUID,
     file_uuid: uuid.UUID,
@@ -611,7 +611,7 @@ class DriveFileMoveResponse(BaseModel):
 
 
 @media_router.post("/drive-file/move", response_model=DriveFileMoveResponse)
-async def move_drive_file(
+def move_drive_file(
     payload: DriveFileMoveRequest,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),

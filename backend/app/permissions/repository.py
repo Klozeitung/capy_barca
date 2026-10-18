@@ -5,9 +5,11 @@ All database access for the permission layer lives here.  No HTTP concerns;
 the router layer translates exceptions into HTTP responses.
 """
 import uuid
-from typing import Optional
+from dataclasses import dataclass
+from typing import Iterable, Optional
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
 
 from app.permissions.model import BlockPermission, BlockPermissionGrant
 from app.users.model import User
@@ -38,6 +40,129 @@ def get_grants(db: Session, block_id: uuid.UUID) -> list[uuid.UUID]:
 # ─── Effective permission resolution ─────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class EffectivePermission:
+    """
+    The permission that governs a block, after inheritance is resolved.
+
+    ``owner_id`` is the owner of the block that carries the explicit row, which
+    is not necessarily the block the question was asked about. ``grants`` keeps
+    the order of the stored grant rows.
+
+    The value does not depend on who asks, so one instance answers the access
+    question for any number of users (see :meth:`admits`).
+    """
+
+    mode: str
+    owner_id: Optional[uuid.UUID]
+    grants: tuple[uuid.UUID, ...]
+
+    def admits(self, user: User) -> bool:
+        """Return True if *user* may read a block governed by this permission."""
+        if user.role == "admin":
+            return True
+        if self.mode == "everyone":
+            return True
+        if self.mode == "private":
+            return self.owner_id is not None and user.id == self.owner_id
+        if self.mode == "whitelist":
+            return (self.owner_id is not None and user.id == self.owner_id) or (
+                user.id in self.grants
+            )
+        # Residual fallback (shouldn't be reached in practice — the workspace
+        # root row always anchors the walk with mode='everyone').
+        return True
+
+
+# Returned when no explicit row is found before the chain ends or the depth
+# limit is reached.
+_UNRESTRICTED = EffectivePermission(mode="everyone", owner_id=None, grants=())
+
+
+def resolve_effective_permissions(
+    db: Session,
+    block_ids: Iterable[uuid.UUID],
+) -> dict[uuid.UUID, EffectivePermission]:
+    """
+    Resolve the effective permission of many blocks at once.
+
+    The parent chains of all requested blocks are walked together, one level
+    at a time. Each level costs two queries (the blocks themselves and their
+    permission rows) plus one for the grants of the rows found, however many
+    blocks share that level. Siblings converge on their common parent after
+    the first level, so listing the children of a page costs the depth of the
+    tree in queries, not the number of children times that depth.
+
+    Every requested id is present in the result. A block that does not exist
+    and carries no permission row resolves to ``everyone``, as a missing chain
+    always has.
+
+    The walk for each block examines at most ``_MAX_DEPTH`` blocks, including
+    itself, and stops at a block it has already visited, so corrupted or
+    circular parent links cannot loop.
+    """
+    from app.blocks.models import Block  # local import — avoids circular
+
+    requested = list(dict.fromkeys(block_ids))
+    if not requested:
+        return {}
+
+    parent_of: dict[uuid.UUID, Optional[uuid.UUID]] = {}
+    owner_of: dict[uuid.UUID, Optional[uuid.UUID]] = {}
+    explicit: dict[uuid.UUID, BlockPermission] = {}
+    examined: set[uuid.UUID] = set()
+
+    frontier = set(requested)
+    for _ in range(_MAX_DEPTH):
+        frontier -= examined
+        if not frontier:
+            break
+        examined |= frontier
+
+        for block_id, parent_id, owner_id in db.execute(
+            select(Block.id, Block.parent_id, Block.owner_id).where(
+                Block.id.in_(frontier)
+            )
+        ):
+            parent_of[block_id] = parent_id
+            owner_of[block_id] = owner_id
+
+        for perm in db.scalars(
+            select(BlockPermission)
+            .where(BlockPermission.block_id.in_(frontier))
+            .options(selectinload(BlockPermission.grants))
+        ):
+            explicit[perm.block_id] = perm
+
+        # Only blocks without an explicit row inherit, so only their parents
+        # need to be examined on the next level.
+        frontier = {
+            parent_of[block_id]
+            for block_id in frontier
+            if block_id not in explicit and parent_of.get(block_id) is not None
+        }
+
+    def _resolve(start: uuid.UUID) -> EffectivePermission:
+        current: Optional[uuid.UUID] = start
+        visited: set[uuid.UUID] = set()
+        while current is not None and len(visited) < _MAX_DEPTH and current not in visited:
+            visited.add(current)
+            perm = explicit.get(current)
+            if perm is not None:
+                return EffectivePermission(
+                    mode=perm.mode,
+                    owner_id=owner_of.get(current),
+                    grants=tuple(g.user_id for g in perm.grants),
+                )
+            if current not in parent_of:
+                # The block does not exist; its chain ends here.
+                break
+            current = parent_of[current]
+        return _UNRESTRICTED
+
+    return {block_id: _resolve(block_id) for block_id in requested}
+
+
 def resolve_effective_permission(
     db: Session,
     block_id: uuid.UUID,
@@ -56,27 +181,10 @@ def resolve_effective_permission(
 
     Falls back to ``('everyone', None, [])`` when no explicit row is found
     before reaching a root block (no parent) or exhausting *_MAX_DEPTH*.
+    Single-block form of :func:`resolve_effective_permissions`.
     """
-    from app.blocks.models import Block  # local import — avoids circular
-
-    current_id: Optional[uuid.UUID] = block_id
-    depth = 0
-
-    while current_id is not None and depth < _MAX_DEPTH:
-        perm = get_permission_row(db, current_id)
-        block = db.get(Block, current_id)
-
-        if perm is not None:
-            owner_id = block.owner_id if block else None
-            grants = [g.user_id for g in perm.grants]
-            return perm.mode, owner_id, grants
-
-        if block is None:
-            break
-        current_id = block.parent_id
-        depth += 1
-
-    return "everyone", None, []
+    effective = resolve_effective_permissions(db, [block_id])[block_id]
+    return effective.mode, effective.owner_id, list(effective.grants)
 
 
 def find_permission_source(
@@ -112,25 +220,29 @@ def can_user_access(
     """
     Return True if *user* is allowed to read *block_id*.
 
-    Admin users bypass all permission checks.  For non-admins the effective
-    permission is resolved via :func:`resolve_effective_permission`.
+    Admin users bypass all permission checks without touching the database.
+    For non-admins the effective permission is resolved via
+    :func:`resolve_effective_permissions`.
     """
     if user.role == "admin":
         return True
+    return resolve_effective_permissions(db, [block_id])[block_id].admits(user)
 
-    mode, owner_id, grants = resolve_effective_permission(db, block_id)
 
-    if mode == "everyone":
-        return True
-    if mode == "private":
-        return owner_id is not None and user.id == owner_id
-    if mode == "whitelist":
-        return (owner_id is not None and user.id == owner_id) or (
-            user.id in grants
-        )
-    # Residual fallback (shouldn't be reached in practice — the workspace root
-    # row always anchors the walk with mode='everyone').
-    return True
+def filter_accessible(
+    db: Session, block_ids: Iterable[uuid.UUID], user: User
+) -> set[uuid.UUID]:
+    """
+    Return the subset of *block_ids* that *user* may read.
+
+    Resolves all of them in one batched walk instead of one walk per block.
+    Admins receive the full set without a query.
+    """
+    ids = set(block_ids)
+    if user.role == "admin" or not ids:
+        return ids
+    resolved = resolve_effective_permissions(db, ids)
+    return {block_id for block_id, effective in resolved.items() if effective.admits(user)}
 
 
 # ─── Accessibility warning ────────────────────────────────────────────────────

@@ -10,9 +10,11 @@ from dataclasses import dataclass, field as dc_field
 from datetime import date, timedelta
 from typing import Optional
 
-from sqlalchemy import and_, false, func, or_, select
+from sqlalchemy import and_, case, false, func, or_, select
+from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.orm import Session, aliased
 
+from app.blocks import options
 from app.blocks.models import (
     Block,
     BlockEvent,
@@ -220,6 +222,25 @@ _NUMERIC_ROLLUP_FUNCTIONS: frozenset[str] = frozenset({
 })
 
 
+def _select_sort_expression(option_expr, schema_config: Optional[dict]):
+    """
+    Sort key of a single-select value.
+
+    Values store option ids, which say nothing about order. By default the
+    options sort alphabetically by label, ignoring case; with the property's
+    manual-order toggle on they sort in the order the options are configured.
+    Ids without an option, and empty values, sort last.
+    """
+    choices = options.option_list('select', schema_config)
+    if not choices:
+        return option_expr
+    if (schema_config or {}).get(options.MANUAL_SORT_KEY) is True:
+        whens = {o['id']: index for index, o in enumerate(choices)}
+    else:
+        whens = {o['id']: o['label'].lower() for o in choices}
+    return case(whens, value=option_expr, else_=None)
+
+
 def _value_key(schema_type: str) -> str:
     """Return the JSONB field name that holds the filterable scalar for a type."""
     if schema_type == 'number':
@@ -244,8 +265,8 @@ def _value_key(schema_type: str) -> str:
 
 
 # Escape character for LIKE patterns built from user input. Declared explicitly
-# on every LIKE because PostgreSQL and SQLite disagree on whether a backslash
-# escapes by default.
+# on every LIKE so the pattern never depends on the database's default escape
+# behaviour.
 _LIKE_ESCAPE = '\\'
 
 
@@ -543,9 +564,8 @@ def _build_filter_clause(f: FilterDescriptor):
         #   - A row with value['checked'] = false (toggled on then off)
         # The "true" state is exclusively: a row with value['checked'] = true.
         #
-        # Use as_boolean() rather than as_string() so SQLAlchemy generates the
-        # correct comparison for both PostgreSQL (returns 'true'/'false' strings
-        # via ->>) and SQLite (returns integer 1/0 via json_extract).
+        # Use as_boolean() rather than as_string() so the JSON value is compared
+        # as a boolean instead of as the strings 'true'/'false' that ->> yields.
         checked_bool = PV.value['checked'].as_boolean()
         has_true = pv_base().where(checked_bool == True).exists()  # noqa: E712
         wants_true = f.value == 'true'   # '' and 'false' both mean false
@@ -784,6 +804,10 @@ def query_entries(
                 val_expr = PV.value['result'].as_float()
             else:
                 val_expr = PV.value['result'].as_string()
+        elif schema_type == 'select':
+            val_expr = _select_sort_expression(
+                PV.value['option'].as_string(), s.schema_config,
+            )
         else:
             val_expr = PV.value[_value_key(schema_type)].as_string()
 
@@ -1111,9 +1135,8 @@ def list_relation_schemas_by_key_property(
     actually alter.
 
     Filtering happens in Python rather than through a JSON path predicate: the
-    candidate set is just the relation schemas of the workspace, and a Python
-    filter behaves identically on PostgreSQL and on the SQLite used by the
-    test suite.
+    candidate set is just the relation schemas of the workspace, small enough
+    that a readable Python filter costs nothing measurable.
     """
     target = str(key_property_id)
     stmt = (
@@ -1141,8 +1164,18 @@ def create_schema(
     type: str,
     position: float,
     config: Optional[dict] = None,
+    visible_in_view_id: Optional[uuid.UUID] = None,
 ) -> PropertySchema:
-    """Insert a new PropertySchema for *database_id* and return it."""
+    """
+    Insert a new PropertySchema for *database_id* and return it.
+
+    A new property starts hidden in every view of the database, so it does not
+    surface in views that were arranged without it. *visible_in_view_id* names
+    the one view, if any, where it should appear right away: the view it was
+    added from.
+    """
+    from app.blocks import views  # local import — views imports this module
+
     schema = PropertySchema(
         database_id=database_id,
         name=name,
@@ -1153,6 +1186,7 @@ def create_schema(
     db.add(schema)
     db.flush()
     db.refresh(schema)
+    views.hide_schema_in_views(db, database_id, schema.id, except_view_id=visible_in_view_id)
     return schema
 
 
@@ -1180,9 +1214,158 @@ def update_schema(
 
 
 def delete_schema(db: Session, schema: PropertySchema) -> None:
-    """Delete *schema* and cascade-delete all associated PropertyValues."""
+    """
+    Delete *schema* and cascade-delete all associated PropertyValues.
+
+    Every view of the database forgets the property in the same transaction:
+    filters and sorts on it, its column order, width, visibility and
+    aggregation entries, and any grouping or calendar setting pointing at it.
+    """
+    from app.blocks import views  # local import — views imports this module
+
+    views.forget_schema_in_views(db, schema.database_id, schema.id)
     db.delete(schema)
     db.flush()
+
+
+def infer_formula_result_types(
+    db: Session, schema_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    """
+    Return the result type each formula property currently produces.
+
+    A formula's result type is not part of its configuration; it is recorded
+    with every computed value under ``result_type``. The first stored value
+    that has a result and a result type decides, which is what filters on
+    formula columns need to compare correctly. Properties without such a value are absent from the
+    result, and callers fall back to text.
+    """
+    if not schema_ids:
+        return {}
+    result_type = PropertyValue.value['result_type'].as_string()
+    stmt = (
+        select(PropertyValue.property_schema_id, result_type)
+        .where(
+            PropertyValue.property_schema_id.in_(schema_ids),
+            result_type.is_not(None),
+            PropertyValue.value['result'].as_string().is_not(None),
+        )
+        .ext(distinct_on(PropertyValue.property_schema_id))
+        .order_by(PropertyValue.property_schema_id)
+    )
+    return {schema_id: value for schema_id, value in db.execute(stmt)}
+
+
+def ensure_readonly_schemas(db: Session, database_id: uuid.UUID) -> list[PropertySchema]:
+    """
+    Create the system-managed property schemas a database is missing.
+
+    Idempotent: schemas that already exist are left unchanged, and only the
+    newly created ones are returned. Flushes but does not commit.
+
+    Schemas seeded (in order)
+    -------------------------
+    id               – auto-incrementing sequential integer
+    created_by       – username of the entry creator
+    created_time     – ISO-8601 UTC creation timestamp
+    last_edited_by   – username of the last editor
+    last_edited_time – ISO-8601 UTC last-edit timestamp
+    parent_item      – single-parent relation (user-writable)
+    sub_item         – backend-managed child list (mirror of parent_item)
+
+    The ``parent_item`` / ``sub_item`` pair is always created together.
+    Each schema's ``config.partner_schema_id`` stores the UUID of its
+    counterpart so the sync helper can resolve the mirror without a
+    full schema scan.
+    """
+    existing = list_schemas(db, database_id)
+    existing_types = {s.type for s in existing}
+
+    readonly_defaults: list[dict] = [
+        {"type": "id",               "name": "ID",                "config": {"prefix": "", "next_id": 1}},
+        {"type": "created_by",       "name": "Created by",        "config": None},
+        {"type": "created_time",     "name": "Created time",      "config": None},
+        {"type": "last_edited_by",   "name": "Last edited by",    "config": None},
+        {"type": "last_edited_time", "name": "Last edited time",  "config": None},
+    ]
+
+    created: list = []
+    position = (existing[-1].position + 1.0) if existing else 1.0
+
+    for defn in readonly_defaults:
+        if defn["type"] not in existing_types:
+            schema = create_schema(
+                db,
+                database_id=database_id,
+                name=defn["name"],
+                type=defn["type"],
+                position=position,
+                config=defn["config"],
+            )
+            created.append(schema)
+            position += 1.0
+
+    # ── Sub-item pair ────────────────────────────────────────────────────────
+    # Create parent_item and sub_item together so their partner_schema_id
+    # references can be back-filled in a single commit.
+    has_parent_item = "parent_item" in existing_types
+    has_sub_item    = "sub_item"    in existing_types
+
+    if not has_parent_item and not has_sub_item:
+        pi_schema = create_schema(
+            db,
+            database_id=database_id,
+            name="Parent item",
+            type="parent_item",
+            position=position,
+            config={},
+        )
+        position += 1.0
+        si_schema = create_schema(
+            db,
+            database_id=database_id,
+            name="Sub-items",
+            type="sub_item",
+            position=position,
+            config={"partner_schema_id": str(pi_schema.id)},
+        )
+        position += 1.0
+        # Back-fill the partner reference on parent_item now that sub_item has an ID.
+        update_schema(db, pi_schema, config={"partner_schema_id": str(si_schema.id)})
+        created.extend([pi_schema, si_schema])
+
+    elif not has_parent_item:
+        # sub_item already exists without its partner — create parent_item and link.
+        si_existing = next((s for s in existing if s.type == "sub_item"), None)
+        pi_schema = create_schema(
+            db,
+            database_id=database_id,
+            name="Parent item",
+            type="parent_item",
+            position=position,
+            config={"partner_schema_id": str(si_existing.id)} if si_existing else {},
+        )
+        created.append(pi_schema)
+
+    elif not has_sub_item:
+        # parent_item already exists without its partner — create sub_item and link.
+        pi_existing = next((s for s in existing if s.type == "parent_item"), None)
+        si_schema = create_schema(
+            db,
+            database_id=database_id,
+            name="Sub-items",
+            type="sub_item",
+            position=position,
+            config={"partner_schema_id": str(pi_existing.id)} if pi_existing else {},
+        )
+        if pi_existing and not (pi_existing.config or {}).get("partner_schema_id"):
+            update_schema(
+                db, pi_existing,
+                config={"partner_schema_id": str(si_schema.id)},
+            )
+        created.append(si_schema)
+
+    return created
 
 
 # ─── PropertyValue ────────────────────────────────────────────────────────────

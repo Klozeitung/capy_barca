@@ -81,10 +81,10 @@ async function handleUpload(event: Event) {
   }
 
   if (uploaded.length > 0) {
+    // upsertValue patches every cached copy of the entry in place.
     await dbStore.upsertValue(props.databaseId, props.entry.id, props.schema.id, {
       files: [...existing, ...uploaded],
     })
-    await dbStore.fetchEntries(props.databaseId)
   }
 
   // Reset so the same file can be re-selected immediately.
@@ -108,7 +108,6 @@ async function removeFile(fileUuid: string) {
     props.schema.id,
     updated.length > 0 ? { files: updated } : null,
   )
-  await dbStore.fetchEntries(props.databaseId)
 }
 </script>
 

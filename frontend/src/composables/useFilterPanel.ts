@@ -12,10 +12,9 @@
  *    the active view, schemas, displayed entries, saveViews and onQueryNeeded.
  */
 import { ref, computed, type ComputedRef, type Ref } from 'vue'
-import { useI18n } from 'vue-i18n'
 import {
-  useDatabaseStore,
-  normalizeSelectOption,
+  schemaOptions,
+  type SelectOption,
   type PropertySchema,
   type DatabaseEntry,
   type DatabaseView,
@@ -183,14 +182,16 @@ export function isRelationFilter(
   return schema !== null && schema.type === 'relation'
 }
 
+/**
+ * The options a select filter can test. The filter value is the option's id,
+ * so a renamed option keeps its filters.
+ */
 export function getSelectOptions(
   filter: ViewFilter,
   schemas: PropertySchema[],
   nameColKey: string,
-): string[] {
-  const schema = getFilterSchema(filter, schemas, nameColKey)
-  const raw = (schema?.config?.options as (string | object)[] | undefined) ?? []
-  return raw.map((o) => normalizeSelectOption(o).label)
+): SelectOption[] {
+  return schemaOptions(getFilterSchema(filter, schemas, nameColKey))
 }
 
 // ── Composable ────────────────────────────────────────────────────────────────
@@ -204,32 +205,11 @@ export function useFilterPanel(options: {
   onQueryNeeded: () => Promise<void>
 }) {
   const { activeView, schemas, displayedEntries, nameColKey, saveViews, onQueryNeeded } = options
-  const { t } = useI18n()
-  const dbStore = useDatabaseStore()
 
   // ── UI state ────────────────────────────────────────────────────────────────
 
   const showFilterPanel  = ref(false)
   const filterCount      = computed(() => activeView.value?.filterGroups.length ?? 0)
-
-  // Relation entries cache: populated lazily on first access per schema.
-  const relationFilterEntries = ref<Record<string, DatabaseEntry[]>>({})
-
-  function getRelationEntries(schemaId: string): DatabaseEntry[] {
-    if (schemaId in relationFilterEntries.value) return relationFilterEntries.value[schemaId]
-    const schema   = schemas.value.find((s) => s.id === schemaId)
-    const targetId = schema?.config?.target_database_id as string | undefined
-    if (!targetId) return []
-    relationFilterEntries.value[schemaId] = []
-    dbStore.fetchEntries(targetId).then((entries) => {
-      relationFilterEntries.value[schemaId] = entries
-    })
-    return []
-  }
-
-  function relationEntryTitle(entry: DatabaseEntry): string {
-    return ((entry.content?.title as string | undefined) ?? '').trim() || t('main.untitled')
-  }
 
   // ── Internal helpers ────────────────────────────────────────────────────────
 
@@ -378,9 +358,6 @@ export function useFilterPanel(options: {
   return {
     showFilterPanel,
     filterCount,
-    relationFilterEntries,
-    getRelationEntries,
-    relationEntryTitle,
     // Group
     addGroup,
     removeGroup,

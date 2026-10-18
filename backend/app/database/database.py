@@ -35,13 +35,66 @@ def normalize_database_url(url: str) -> str:
     return url
 
 
-_DATABASE_URL: str = normalize_database_url(
-    os.getenv("DATABASE_URL", "sqlite:///./capybarca.db")
+def _require_database_url() -> str:
+    """
+    Return the configured database URL, refusing to start without one.
+
+    PostgreSQL is the only supported backend: the models use JSONB, which no
+    other database provides. There is deliberately no fallback, so a missing
+    variable fails loudly at start-up instead of producing an application that
+    breaks on the first JSON query.
+    """
+    url = os.getenv("DATABASE_URL", "").strip()
+    if not url:
+        raise RuntimeError(
+            "DATABASE_URL is not set. CapyBarca requires a PostgreSQL database; "
+            "docker-compose.yml provides the variable, and the test suite derives "
+            "it from TEST_DATABASE_URL."
+        )
+    return normalize_database_url(url)
+
+
+def _int_from_env(name: str, default: int, minimum: int) -> int:
+    """Read a non-negative integer setting, falling back to *default* when unset."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise RuntimeError(f"{name} must be an integer, got {raw!r}") from None
+    if value < minimum:
+        raise RuntimeError(f"{name} must be at least {minimum}, got {value}")
+    return value
+
+
+# ─── Connection pool ──────────────────────────────────────────────────────────
+#
+# Every request holds one pooled connection for its whole duration (see
+# app.session.deps.get_db), and app.session.deps admits only as many requests
+# at a time as the pool can serve. The pool is sized for AnyIO's 40 worker
+# threads:
+# 10 connections kept open plus up to 30 opened under load. With fewer, a burst
+# of requests queues on the pool instead of on the database.
+#
+# pool_pre_ping tests a connection before handing it out, so a connection the
+# server closed in the meantime (database restart, idle timeout) is replaced
+# transparently instead of failing the request that drew it.
+
+_POOL_SIZE = _int_from_env("DB_POOL_SIZE", default=10, minimum=1)
+_MAX_OVERFLOW = _int_from_env("DB_MAX_OVERFLOW", default=30, minimum=0)
+
+# The most connections the pool hands out at the same time.
+POOL_CAPACITY = _POOL_SIZE + _MAX_OVERFLOW
+
+_DATABASE_URL: str = _require_database_url()
+
+engine = create_engine(
+    _DATABASE_URL,
+    pool_size=_POOL_SIZE,
+    max_overflow=_MAX_OVERFLOW,
+    pool_pre_ping=True,
 )
-
-_connect_args = {"check_same_thread": False} if _DATABASE_URL.startswith("sqlite") else {}
-
-engine = create_engine(_DATABASE_URL, connect_args=_connect_args)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 

@@ -12,7 +12,7 @@
  * the formatSlotScalar plain-text helper.
  */
 import { computed } from 'vue'
-import { normalizeSelectOption, optionColorStyle, type DatabaseEntry, type PropertySchema } from '@/stores/database'
+import { optionColorStyle, schemaOptions, type DatabaseEntry, type PropertySchema, type SelectOption } from '@/stores/database'
 import { getRawCellValue, formatSlotScalar, formatPeriodKey } from './cellUtils'
 
 const props = defineProps<{
@@ -22,20 +22,13 @@ const props = defineProps<{
 
 const isSelect    = computed(() => props.schema.type === 'select')
 const isMulti     = computed(() => isSelect.value && props.schema.config?.mode === 'multiple')
-const schemaOpts  = computed(() =>
-  ((props.schema.config?.options as unknown[] | undefined) ?? []).map(normalizeSelectOption)
-)
-
-function chipStyle(label: string) {
-  const opt = schemaOpts.value.find(o => o.label === label)
-  return opt ? optionColorStyle(opt.color) : undefined
-}
+const schemaOpts  = computed(() => new Map(schemaOptions(props.schema).map(o => [o.id, o])))
 
 interface SlotRow {
   key: string
   period: string
-  valueStr: string      // plain text — used for non-select types
-  options: string[]     // chip labels — used for select types
+  valueStr: string         // plain text — used for non-select types
+  options: SelectOption[]  // chips — used for select types; values store ids
 }
 
 const rows = computed<SlotRow[]>(() => {
@@ -53,13 +46,16 @@ const rows = computed<SlotRow[]>(() => {
 
   return sorted.map(k => {
     const sv = timeline[k] as Record<string, unknown>
-    let options: string[] = []
+    let ids: string[] = []
     if (isMulti.value) {
-      options = (sv?.options as string[] | undefined) ?? []
+      ids = (sv?.options as string[] | undefined) ?? []
     } else if (isSelect.value) {
       const opt = (sv?.option as string | undefined) ?? ''
-      if (opt) options = [opt]
+      if (opt) ids = [opt]
     }
+    const options = ids
+      .map(id => schemaOpts.value.get(id))
+      .filter((o): o is SelectOption => o !== undefined)
     return {
       key: k,
       period: formatPeriodKey(k),
@@ -78,11 +74,11 @@ const rows = computed<SlotRow[]>(() => {
       <!-- select / multiselect: render chips with colours -->
       <div v-if="isSelect" class="tsl__chips">
         <span
-          v-for="label in row.options"
-          :key="label"
+          v-for="opt in row.options"
+          :key="opt.id"
           class="tsl__chip"
-          :style="chipStyle(label)"
-        >{{ label }}</span>
+          :style="optionColorStyle(opt.color)"
+        >{{ opt.label }}</span>
         <span v-if="row.options.length === 0" class="tsl__empty">—</span>
       </div>
 

@@ -1,16 +1,15 @@
 """
 Tests for the automations router.
 
-All tests run against the isolated in-memory SQLite database provided by
-the autouse ``isolated_db`` fixture in conftest.py and exercise the HTTP
-layer via the ``http_client`` fixture defined there.
+All tests run against the PostgreSQL test database provided by the autouse
+``isolated_db`` fixture in conftest.py and exercise the HTTP layer via the
+``http_client`` fixture defined there.
 
 That fixture authenticates as an admin, who bypasses the permission layer, so
 the CRUD tests below exercise endpoint behaviour rather than authorization.
-The authorization section at the end builds its own member clients and seeds
-real database blocks — the ``database_id`` values used by the CRUD tests are
-random UUIDs that point at no block at all, which is fine for an admin and
-useless for testing a permission rule.
+Their databases are created through the API, since automations.database_id
+references an existing block. The authorization section at the end builds
+its own member clients and seeds database blocks with explicit permissions.
 """
 import uuid
 
@@ -27,6 +26,16 @@ from app.users.model import User
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
+
+
+def _new_database(http_client) -> str:
+    """Create a database block below the workspace root and return its id."""
+    resp = http_client.post(
+        "/api/blocks",
+        json={"type": "database", "parent_id": str(WORKSPACE_ROOT_ID)},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
 
 
 def _sample_trigger(db_uuid: str = "", property_uuid: str = "") -> dict:
@@ -50,7 +59,7 @@ def _create_automation(
     actions: list | None = None,
     enabled: bool = True,
 ) -> dict:
-    db_id = database_id or str(uuid.uuid4())
+    db_id = database_id or _new_database(http_client)
     body = {
         "database_id": db_id,
         "name": name,
@@ -82,8 +91,8 @@ def test_list_automations_returns_created(http_client):
 
 
 def test_list_automations_filter_by_database_id(http_client):
-    db_a = str(uuid.uuid4())
-    db_b = str(uuid.uuid4())
+    db_a = _new_database(http_client)
+    db_b = _new_database(http_client)
     _create_automation(http_client, database_id=db_a, name="For A")
     _create_automation(http_client, database_id=db_b, name="For B")
 
@@ -111,7 +120,7 @@ def test_get_automation_not_found(http_client):
 
 
 def test_create_automation_returns_201(http_client):
-    db_id = str(uuid.uuid4())
+    db_id = _new_database(http_client)
     resp = http_client.post("/api/automations", json={
         "database_id": db_id,
         "name": "New Auto",
@@ -122,7 +131,7 @@ def test_create_automation_returns_201(http_client):
 
 
 def test_create_automation_response_fields(http_client):
-    db_id = str(uuid.uuid4())
+    db_id = _new_database(http_client)
     trigger = _sample_trigger(db_uuid=db_id)
     actions = [{"endpoint": "PUT /api/foo", "body": {}}]
     resp = http_client.post("/api/automations", json={
@@ -185,7 +194,7 @@ def test_update_automation_not_found(http_client):
 
 
 def test_update_automation_partial_leaves_other_fields(http_client):
-    db_id = str(uuid.uuid4())
+    db_id = _new_database(http_client)
     trigger = _sample_trigger(db_uuid=db_id)
     auto = _create_automation(http_client, database_id=db_id, trigger=trigger)
 

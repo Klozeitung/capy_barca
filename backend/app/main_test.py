@@ -9,7 +9,19 @@ client = TestClient(app)
 
 def test_app_is_initialized():
     assert app.title == "CapyBarca API"
-    assert app.version == "0.15.23"
+    assert app.version == "0.16.0.4"
+
+
+def test_startup_sizes_the_worker_threads_above_the_request_gate():
+    import anyio.to_thread
+
+    from app.session import deps
+
+    with TestClient(app) as started:
+        tokens = started.portal.call(
+            lambda: anyio.to_thread.current_default_thread_limiter().total_tokens
+        )
+    assert tokens >= deps.REQUEST_SLOTS + deps.THREAD_HEADROOM
 
 
 def test_health_returns_200():
@@ -22,6 +34,12 @@ def test_health_response_body():
     data = response.json()
     assert data["status"] == "ok"
     assert data["service"] == "capybarca"
+
+
+def test_view_routes_are_registered():
+    paths = set(app.openapi()["paths"])
+    assert "/api/databases/{database_id}/views" in paths
+    assert "/api/databases/{database_id}/views/{view_id}/entries" in paths
 
 
 def test_login_route_is_registered():

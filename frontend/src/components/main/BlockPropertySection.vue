@@ -41,12 +41,10 @@ import {
   useDatabaseStore,
   type PropertySchema,
   type DatabaseEntry,
-  type DatabaseView,
   type KeyReference,
 } from '@/stores/database'
 import { isReadonlyPropertyType, getSchemaIcon } from '@/stores/propertyTypes'
 import {
-  hideSchemaInAllViews,
   removeGroupFromFolded,
   removeGroupFromOrder,
   reorderGroups,
@@ -75,11 +73,6 @@ const DEFAULT_GROUP = 'Standard'
 const PREF_GROUP_ORDER = 'property_group_order'
 const PREF_GROUPS_FOLDED = 'property_groups_folded'
 const PREF_VISIBILITY = 'property_sideview_visibility'
-// Shared with DatabaseBlock: the persisted list of database views.
-const PREF_VIEWS = 'views'
-// Window event consumed by a live DatabaseBlock to hide a freshly added
-// property in its in-memory views. Mirrors the constant in DatabaseBlock.
-const DB_HIDE_SCHEMA_EVENT = 'capybarca:db-hide-schema-in-views'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
@@ -407,38 +400,9 @@ async function onAddSchemaPanelClose(newSchemaId?: string): Promise<void> {
     await dbStore.updateSchema(props.databaseId, newSchemaId, { group: targetGroup })
   }
 
-  // A property added from the property section is hidden in *all*
-  // database views; the table renders it only after the user opts in via the
-  // view settings. (When added from a DatabaseBlock view it is hidden in every
-  // view except the active one — that path lives in DatabaseBlock.)
-  //
-  // 1) Sync any live DatabaseBlock (e.g. the table behind this side panel)
-  //    immediately so the new column does not flash into its views.
-  window.dispatchEvent(new CustomEvent(DB_HIDE_SCHEMA_EVENT, {
-    detail: { databaseId: props.databaseId, schemaId: newSchemaId },
-  }))
-  // 2) Persist so the change survives where no DatabaseBlock is mounted
-  //    (e.g. the full-page entry view).
-  await hideNewSchemaInAllViews(newSchemaId)
-}
-
-/**
- * Add the given schema to the hiddenColumns of every persisted view so a
- * property created from the side panel does not surface in any table view
- * until explicitly enabled. Preferences are re-fetched first so a concurrently
- * open DatabaseBlock's view edits are not clobbered.
- */
-async function hideNewSchemaInAllViews(schemaId: string): Promise<void> {
-  await blockStore.fetchPreferences(props.databaseId)
-  const stored = blockStore.getPreference<DatabaseView[] | null>(
-    props.databaseId,
-    PREF_VIEWS,
-    null,
-  )
-  if (!stored || !Array.isArray(stored) || stored.length === 0) return
-
-  const { views, changed } = hideSchemaInAllViews(stored, schemaId)
-  if (changed) await blockStore.setPreference(props.databaseId, PREF_VIEWS, views)
+  // The property was created without a view, so the backend hides it in
+  // every view of the database: the table shows it only after the user opts
+  // in via the view settings. The views on screen were reloaded with it.
 }
 
 // ── Add group ─────────────────────────────────────────────────────────────────

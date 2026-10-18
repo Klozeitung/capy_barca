@@ -87,11 +87,11 @@ def list_automations(
         require_block_access(db, database_id, current_user)
         return repo.list_automations(db, database_id=database_id)
 
-    return [
-        automation
-        for automation in repo.list_automations(db)
-        if perm_repo.can_user_access(db, automation.database_id, current_user)
-    ]
+    automations = repo.list_automations(db)
+    allowed = perm_repo.filter_accessible(
+        db, [automation.database_id for automation in automations], current_user
+    )
+    return [a for a in automations if a.database_id in allowed]
 
 
 @automations_router.get("/{automation_id}", response_model=AutomationResponse)

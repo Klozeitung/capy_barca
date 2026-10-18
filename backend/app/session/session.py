@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import sqlalchemy as sa
 from sqlalchemy import Column, DateTime, String, delete
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from app.database.database import Base, SessionLocal
 
@@ -23,8 +24,14 @@ class SessionRecord(Base):
     expires_at = Column(DateTime, nullable=False, index=True)
     # Nullable so that rows created before the multi-user migration (which
     # have no associated user) can still be represented in the table.
-    # All tokens created after the migration carry a user_id.
-    user_id = Column(sa.UUID(as_uuid=True), nullable=True, index=True)
+    # All tokens created after the migration carry a user_id. Deleting the
+    # account removes its sessions (ON DELETE CASCADE, migration 0008).
+    user_id = Column(
+        sa.UUID(as_uuid=True),
+        sa.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
 
 
 def _hash_token(token: str) -> str:
@@ -73,7 +80,7 @@ def create_token(user_id: uuid.UUID | None = None) -> str:
     return token
 
 
-def validate_token(token: str) -> uuid.UUID | None:
+def validate_token(token: str, db: Session | None = None) -> uuid.UUID | None:
     """
     Check whether *token* is an active, non-expired session token.
 
@@ -83,6 +90,10 @@ def validate_token(token: str) -> uuid.UUID | None:
     ----------
     token:
         The token to validate.
+    db:
+        Session to run the lookup in. Request handlers pass the session of
+        the request, so authentication costs no extra connection checkout.
+        Without one, a short-lived session is opened for the call.
 
     Returns
     -------
@@ -97,15 +108,22 @@ def validate_token(token: str) -> uuid.UUID | None:
     The falsy contract is preserved: ``None`` is falsy, a UUID is truthy, so
     existing ``if not validate_token(token)`` guards continue to work.
     """
-    with SessionLocal() as db:
-        record = db.get(SessionRecord, _hash_token(token))
-        if record is None:
-            return None
-        if record.expires_at < _now():
-            db.delete(record)
-            db.commit()
-            return None
-        return record.user_id
+    if db is not None:
+        return _validate_in(db, token)
+    with SessionLocal() as own_db:
+        return _validate_in(own_db, token)
+
+
+def _validate_in(db: Session, token: str) -> uuid.UUID | None:
+    """Look *token* up in *db*, evicting it when it has expired."""
+    record = db.get(SessionRecord, _hash_token(token))
+    if record is None:
+        return None
+    if record.expires_at < _now():
+        db.delete(record)
+        db.commit()
+        return None
+    return record.user_id
 
 
 def revoke_token(token: str) -> None:

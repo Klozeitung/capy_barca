@@ -49,7 +49,15 @@
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
-import { useDatabaseStore, type PropertySchema, type SelectOption, normalizeSelectOption, optionColorStyle, SELECT_OPTION_COLORS } from '@/stores/database'
+import {
+  useDatabaseStore,
+  type PropertySchema,
+  type SelectOption,
+  normalizeSelectOption,
+  newOptionId,
+  optionColorStyle,
+  SELECT_OPTION_COLORS,
+} from '@/stores/database'
 import { getSchemaIcon } from '@/stores/propertyTypes'
 import { isKeyableProperty } from './cells/cellUtils'
 
@@ -109,7 +117,8 @@ const DATE_FORMATS = [
   'YYYY-DD-MM',
 ] as const
 
-// select — options stored as SelectOption[]; normalises legacy string[] transparently
+// select — options carry an id; values store the id, so a label can be edited
+// here freely and every value follows.
 const selectMode = ref<'single' | 'multiple'>(
   (props.schema.config?.mode as 'single' | 'multiple' | undefined) ?? 'single',
 )
@@ -117,6 +126,8 @@ const selectOptions = ref<SelectOption[]>(
   ((props.schema.config?.options as (string | SelectOption)[] | undefined) ?? []).map(normalizeSelectOption),
 )
 const newOption = ref('')
+// Sort by the order of the options below instead of alphabetically by label.
+const selectManualSort = ref<boolean>(props.schema.config?.manualSortOrder === true)
 
 // relation
 const targetDatabaseId = ref<string>(
@@ -146,6 +157,92 @@ const nuanceSyncedAffix2 = ref<string>((_nuanceSynced.affix2 as string | undefin
 const nuanceOptions = ref<SelectOption[]>(
   ((_nuanceCfg.options as (string | SelectOption)[] | undefined) ?? []).map(normalizeSelectOption),
 )
+
+// ── Option removal and labels ─────────────────────────────────────────────────
+
+/**
+ * Ids of the options the property already stores. Removing one of them
+ * removes it from every entry on save, so the removal is confirmed with the
+ * number of entries using it; an option added in this dialog goes at once.
+ */
+const savedOptionIds = new Set<string>([
+  ...selectOptions.value.map((o) => o.id),
+  ...nuanceOptions.value.map((o) => o.id),
+])
+
+type OptionKind = 'select' | 'nuance'
+
+interface PendingRemoval {
+  kind: OptionKind
+  id: string
+  label: string
+  /** Entries using the option, or null when the count could not be read. */
+  count: number | null
+}
+
+const pendingRemoval = ref<PendingRemoval | null>(null)
+const optionsError = ref('')
+
+function optionList(kind: OptionKind) {
+  return kind === 'select' ? selectOptions : nuanceOptions
+}
+
+function dropOption(kind: OptionKind, id: string): void {
+  const list = optionList(kind)
+  list.value = list.value.filter((o) => o.id !== id)
+}
+
+async function requestRemoveOption(kind: OptionKind, index: number): Promise<void> {
+  const option = optionList(kind).value[index]
+  if (!option) return
+  if (!savedOptionIds.has(option.id)) {
+    dropOption(kind, option.id)
+    return
+  }
+  let count: number | null = null
+  try {
+    count = await dbStore.optionUsage(props.databaseId, props.schema.id, option.id)
+  } catch {
+    count = null
+  }
+  if (count === 0) {
+    dropOption(kind, option.id)
+    return
+  }
+  pendingRemoval.value = { kind, id: option.id, label: option.label, count }
+}
+
+function confirmRemoveOption(): void {
+  const pending = pendingRemoval.value
+  pendingRemoval.value = null
+  if (pending) dropOption(pending.kind, pending.id)
+}
+
+function cancelRemoveOption(): void {
+  pendingRemoval.value = null
+}
+
+function removalText(pending: PendingRemoval): string {
+  return pending.count === null
+    ? t('db.settings.optionRemoveUnknown', { label: pending.label })
+    : t('db.settings.optionRemoveCount', { label: pending.label, count: pending.count }, pending.count)
+}
+
+/**
+ * The options as they are saved: labels trimmed. Null when a label is empty
+ * or used twice, which the dialog reports instead of saving.
+ */
+function cleanedOptions(list: SelectOption[]): SelectOption[] | null {
+  const seen = new Set<string>()
+  const result: SelectOption[] = []
+  for (const option of list) {
+    const label = option.label.trim()
+    if (!label || seen.has(label)) return null
+    seen.add(label)
+    result.push({ ...option, label })
+  }
+  return result
+}
 const newNuanceOption = ref('')
 
 const isBilateralRelation = computed(() => relationDirection.value === 'bilateral')
@@ -813,6 +910,18 @@ async function save() {
 
   let config: Record<string, unknown> | null = props.schema.config
 
+  const savedSelectOptions = cleanedOptions(selectOptions.value)
+  const savedNuanceOptions = cleanedOptions(nuanceOptions.value)
+  if (
+    (props.schema.type === 'select' && !savedSelectOptions) ||
+    (props.schema.type === 'relation' && nuanceEnabled.value && !savedNuanceOptions)
+  ) {
+    optionsError.value = t('db.settings.optionLabelInvalid')
+    isSaving.value = false
+    return
+  }
+  optionsError.value = ''
+
   switch (props.schema.type) {
     case 'number':
       config = { format: numberFormat.value, hasTimeline: hasTimeline.value }
@@ -821,7 +930,12 @@ async function save() {
       config = { includeTime: dateIncludeTime.value, hasEndDate: dateHasEndDate.value, dateFormat: dateFormat.value, hasTimeline: hasTimeline.value }
       break
     case 'select':
-      config = { mode: selectMode.value, options: selectOptions.value, hasTimeline: hasTimeline.value }
+      config = {
+        mode: selectMode.value,
+        options: savedSelectOptions,
+        hasTimeline: hasTimeline.value,
+        manualSortOrder: selectManualSort.value,
+      }
       break
     case 'relation':
       // direction and target_database_id are immutable after creation.
@@ -838,7 +952,7 @@ async function save() {
         nuance: nuanceEnabled.value
           ? {
               enabled: true,
-              options: nuanceOptions.value,
+              options: savedNuanceOptions,
               affix1: nuanceAffix1.value.slice(0, 20),
               affix2: nuanceAffix2.value.slice(0, 20),
               orientation: nuanceOrientation.value,
@@ -954,13 +1068,9 @@ async function save() {
 
 function addOption() {
   const trimmed = newOption.value.trim()
-  if (!trimmed || selectOptions.value.some(o => o.label === trimmed)) return
-  selectOptions.value.push({ label: trimmed })
+  if (!trimmed || selectOptions.value.some(o => o.label.trim() === trimmed)) return
+  selectOptions.value.push({ id: newOptionId(), label: trimmed })
   newOption.value = ''
-}
-
-function removeOption(index: number) {
-  selectOptions.value.splice(index, 1)
 }
 
 function moveOption(index: number, direction: -1 | 1) {
@@ -974,13 +1084,9 @@ function moveOption(index: number, direction: -1 | 1) {
 
 function addNuanceOption() {
   const trimmed = newNuanceOption.value.trim()
-  if (!trimmed || nuanceOptions.value.some(o => o.label === trimmed)) return
-  nuanceOptions.value.push({ label: trimmed })
+  if (!trimmed || nuanceOptions.value.some(o => o.label.trim() === trimmed)) return
+  nuanceOptions.value.push({ id: newOptionId(), label: trimmed })
   newNuanceOption.value = ''
-}
-
-function removeNuanceOption(index: number) {
-  nuanceOptions.value.splice(index, 1)
 }
 
 function moveNuanceOption(index: number, direction: -1 | 1) {
@@ -1091,12 +1197,17 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
             <div class="psm__options-list">
               <div
                 v-for="(opt, idx) in selectOptions"
-                :key="idx"
+                :key="opt.id"
                 class="psm__option-row"
               >
                 <Icon icon="mdi:drag-horizontal-variant" width="14" height="14" class="psm__option-drag" />
-                <!-- Chip preview with color -->
-                <span class="psm__option-chip" :style="optionColorStyle(opt.color)">{{ opt.label }}</span>
+                <!-- Editable chip: renaming keeps every value, which stores the id -->
+                <input
+                  v-model="opt.label"
+                  class="psm__option-chip psm__option-chip-input"
+                  :style="optionColorStyle(opt.color)"
+                  :aria-label="t('db.settings.renameOption')"
+                />
                 <!-- Color dot picker -->
                 <div class="psm__color-dots">
                   <button
@@ -1124,7 +1235,7 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
                 >
                   <Icon icon="mdi:chevron-down" width="13" height="13" />
                 </button>
-                <button class="psm__option-remove" @click="removeOption(idx)">
+                <button class="psm__option-remove" @click="requestRemoveOption('select', idx)">
                   <Icon icon="mdi:close" width="13" height="13" />
                 </button>
               </div>
@@ -1132,6 +1243,12 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
                 {{ t('db.settings.selectOptionsEmpty') }}
               </div>
             </div>
+            <div v-if="pendingRemoval?.kind === 'select'" class="psm__option-confirm">
+              <span>{{ removalText(pendingRemoval) }}</span>
+              <button class="psm__btn psm__btn--ghost" @click="cancelRemoveOption">{{ t('actions.cancel') }}</button>
+              <button class="psm__btn psm__btn--danger" @click="confirmRemoveOption">{{ t('actions.delete') }}</button>
+            </div>
+            <span v-if="optionsError" class="psm__error">{{ optionsError }}</span>
             <div class="psm__option-add-row">
               <input
                 v-model="newOption"
@@ -1143,6 +1260,10 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
                 <Icon icon="mdi:plus" width="15" height="15" />
               </button>
             </div>
+            <label class="psm__check-label psm__option-sort">
+              <input type="checkbox" v-model="selectManualSort" class="psm__checkbox" />
+              {{ t('db.settings.manualSortOrder') }}
+            </label>
           </div>
         </template>
 
@@ -1366,11 +1487,16 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
               <div class="psm__options-list">
                 <div
                   v-for="(opt, idx) in nuanceOptions"
-                  :key="idx"
+                  :key="opt.id"
                   class="psm__option-row"
                 >
                   <Icon icon="mdi:drag-horizontal-variant" width="14" height="14" class="psm__option-drag" />
-                  <span class="psm__option-chip" :style="optionColorStyle(opt.color)">{{ opt.label }}</span>
+                  <input
+                    v-model="opt.label"
+                    class="psm__option-chip psm__option-chip-input"
+                    :style="optionColorStyle(opt.color)"
+                    :aria-label="t('db.settings.renameOption')"
+                  />
                   <div class="psm__color-dots">
                     <button
                       v-for="c in SELECT_OPTION_COLORS"
@@ -1389,7 +1515,7 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
                   <button class="psm__option-move" :disabled="idx === nuanceOptions.length - 1" @click="moveNuanceOption(idx, 1)">
                     <Icon icon="mdi:chevron-down" width="13" height="13" />
                   </button>
-                  <button class="psm__option-remove" @click="removeNuanceOption(idx)">
+                  <button class="psm__option-remove" @click="requestRemoveOption('nuance', idx)">
                     <Icon icon="mdi:close" width="13" height="13" />
                   </button>
                 </div>
@@ -1397,6 +1523,12 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
                   {{ t('db.settings.selectOptionsEmpty') }}
                 </div>
               </div>
+              <div v-if="pendingRemoval?.kind === 'nuance'" class="psm__option-confirm">
+                <span>{{ removalText(pendingRemoval) }}</span>
+                <button class="psm__btn psm__btn--ghost" @click="cancelRemoveOption">{{ t('actions.cancel') }}</button>
+                <button class="psm__btn psm__btn--danger" @click="confirmRemoveOption">{{ t('actions.delete') }}</button>
+              </div>
+              <span v-if="optionsError && nuanceEnabled" class="psm__error">{{ optionsError }}</span>
               <div class="psm__option-add-row">
                 <input
                   v-model="newNuanceOption"
@@ -1967,6 +2099,42 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
   text-overflow: ellipsis;
 }
 
+/* Editable chip: looks like the chip, edits like a field */
+.psm__option-chip-input {
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--color-text);
+  /* Take the space left in the row without pushing the buttons out. */
+  flex: 1 1 0;
+  width: 0;
+  min-width: 60px;
+  max-width: none;
+  flex-shrink: 1;
+  outline: none;
+}
+
+.psm__option-chip-input:focus {
+  box-shadow: 0 0 0 2px var(--color-accent-subtle);
+}
+
+/* Confirmation shown before a stored option is removed */
+.psm__option-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 0.8125rem;
+  color: var(--color-text);
+}
+
+.psm__option-confirm span {
+  flex: 1;
+}
+
+.psm__option-sort {
+  margin-top: 6px;
+}
+
 /* Color dot strip */
 .psm__color-dots {
   display: flex;
@@ -2388,6 +2556,15 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
 .psm__btn--primary:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+.psm__btn--danger {
+  background: var(--color-danger-subtle, rgba(220, 50, 50, 0.12));
+  color: var(--color-danger, #e55);
+}
+
+.psm__btn--danger:hover {
+  filter: brightness(1.1);
 }
 
 /* ── Read-only relation info display ─────────────────────────────────────── */

@@ -14,9 +14,15 @@ three callers, which had grown three versions of the same loop between them:
 * ``app.wopi.router`` saves a document Collabora sends back, reading a raw
   request body rather than a multipart part.
 
-The last of those is why the ceiling lives in ``write_stream``, which takes any
-async iterable of chunks. ``stream_to_disk`` is the multipart adapter on top of
-it, so there is one place the limit is enforced and one place it can be wrong.
+The ceiling is enforced in one place, ``_CappedWriter``, which both entry
+points share:
+
+* ``save_upload`` writes a multipart file. By the time a handler runs,
+  Starlette has already spooled the part into a temporary file, so reading it
+  is plain blocking file I/O; it is meant for synchronous handlers, which run
+  in a worker thread.
+* ``write_stream`` consumes an async iterable of chunks, for the WOPI save,
+  whose body arrives as a raw stream that is still being received.
 """
 import mimetypes
 import os
@@ -88,6 +94,55 @@ def assert_type_permitted(ext: str, category: str) -> None:
         raise HTTPException(status_code=415, detail=TYPE_REFUSED)
 
 
+class _CappedWriter:
+    """
+    Writes chunks to a file and stops at the upload ceiling.
+
+    Written incrementally rather than read whole: a single read pulls the entire
+    body into memory before anything is checked, so the size limit would arrive
+    after the damage. Streaming also lets the ceiling stop the write at the
+    moment it is crossed.
+
+    The ceiling falls back to ``MAX_UPLOAD_BYTES`` read at construction time
+    rather than bound as a default argument value, so patching the module
+    attribute actually changes it.
+    """
+
+    def __init__(self, dest_path: Path, max_bytes: Optional[int]) -> None:
+        self.dest_path = dest_path
+        self.ceiling = MAX_UPLOAD_BYTES if max_bytes is None else max_bytes
+        self.size = 0
+        self.too_large = False
+
+    def __enter__(self) -> "_CappedWriter":
+        self._sink = self.dest_path.open("wb")
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self._sink.close()
+
+    def write(self, chunk: bytes) -> bool:
+        """Write *chunk*; return False, writing nothing, once the ceiling is crossed."""
+        self.size += len(chunk)
+        if self.size > self.ceiling:
+            self.too_large = True
+            return False
+        self._sink.write(chunk)
+        return True
+
+    def finish(self) -> int:
+        """
+        Return the bytes stored, or refuse an oversized body.
+
+        A body past the ceiling raises 413 and the partial file is removed
+        first, so a refused write leaves nothing behind.
+        """
+        if self.too_large:
+            self.dest_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=413, detail=TOO_LARGE)
+        return self.size
+
+
 async def write_stream(
     chunks: AsyncIterable[bytes],
     dest_path: Path,
@@ -97,44 +152,17 @@ async def write_stream(
     """
     Write an async stream of *chunks* to *dest_path*, returning the bytes stored.
 
-    Written incrementally rather than read whole: a single read pulls the entire
-    body into memory before anything is checked, so the size limit would arrive
-    after the damage. Streaming also lets the ceiling stop the write at the
-    moment it is crossed.
-
-    A body past the ceiling raises 413 and the partial file is removed first, so
-    a refused write leaves nothing behind.
-
-    ``max_bytes`` falls back to ``MAX_UPLOAD_BYTES`` read at call time rather
-    than bound as a default argument value, so patching the module attribute
-    actually changes the ceiling.
+    For bodies that are still arriving while they are written. Raises 413 past
+    the ceiling, see ``_CappedWriter``.
     """
-    ceiling = MAX_UPLOAD_BYTES if max_bytes is None else max_bytes
-
-    size = 0
-    too_large = False
-    with dest_path.open("wb") as sink:
+    with _CappedWriter(dest_path, max_bytes) as writer:
         async for chunk in chunks:
-            size += len(chunk)
-            if size > ceiling:
-                too_large = True
+            if not writer.write(chunk):
                 break
-            sink.write(chunk)
-
-    if too_large:
-        dest_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=413, detail=TOO_LARGE)
-
-    return size
+    return writer.finish()
 
 
-async def _read_in_chunks(file: UploadFile) -> AsyncIterable[bytes]:
-    """Adapt an UploadFile to the chunk stream ``write_stream`` consumes."""
-    while chunk := await file.read(UPLOAD_CHUNK_BYTES):
-        yield chunk
-
-
-async def stream_to_disk(
+def save_upload(
     file: UploadFile,
     dest_path: Path,
     *,
@@ -143,12 +171,16 @@ async def stream_to_disk(
     """
     Write an uploaded *file* to *dest_path* and return the number of bytes stored.
 
-    The multipart entry point to ``write_stream``; the ceiling, the 413 and the
-    removal of a partial file all happen there.
+    Synchronous: the multipart part is already spooled to a temporary file,
+    so this is ordinary file I/O and belongs in a worker thread, where
+    synchronous request handlers run. Raises 413 past the ceiling, see
+    ``_CappedWriter``.
     """
-    return await write_stream(
-        _read_in_chunks(file), dest_path, max_bytes=max_bytes
-    )
+    with _CappedWriter(dest_path, max_bytes) as writer:
+        while chunk := file.file.read(UPLOAD_CHUNK_BYTES):
+            if not writer.write(chunk):
+                break
+    return writer.finish()
 
 
 def staging_path(directory: Path) -> Path:

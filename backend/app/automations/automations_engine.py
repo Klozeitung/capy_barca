@@ -74,6 +74,14 @@ mode == "specific"
     ``negative`` entries form a deny-list: the actor must not match any.
     Both lists are evaluated independently and combined with AND logic.
     An empty entries list passes all actors.
+
+Execution context
+-----------------
+The engine is synchronous throughout. It is invoked from request handlers,
+which FastAPI runs in a worker thread, and it does blocking database work
+from start to finish; running it on the event loop would stall every other
+request for as long as an automation takes. Broadcasts go through
+``emit_block_event``, which hands only the sending to the event loop.
 """
 import logging
 import re
@@ -128,7 +136,7 @@ class TriggerEvent:
 # ─── Layer 1 — Receiver ───────────────────────────────────────────────────────
 
 
-async def receive(event: TriggerEvent, db: Session) -> None:
+def receive(event: TriggerEvent, db: Session) -> None:
     """
     Gate and dispatch an incoming trigger event.
 
@@ -147,7 +155,7 @@ async def receive(event: TriggerEvent, db: Session) -> None:
         return
 
     for automation in matches:
-        await _execute(automation, event, db)
+        _execute(automation, event, db)
 
 
 # ─── Layer 2 — Query ─────────────────────────────────────────────────────────
@@ -285,7 +293,7 @@ _BULK_PUT_VALUES_RE = re.compile(
 )
 
 
-async def _execute(automation: Automation, event: TriggerEvent, db: Session) -> None:
+def _execute(automation: Automation, event: TriggerEvent, db: Session) -> None:
     """
     Resolve template variables and dispatch each action in *automation*.
 
@@ -310,9 +318,9 @@ async def _execute(automation: Automation, event: TriggerEvent, db: Session) -> 
             body = _render_body(body_raw, ctx)
 
             if filter_spec is not None:
-                await _dispatch_bulk(endpoint, filter_spec, body, db)
+                _dispatch_bulk(endpoint, filter_spec, body, db)
             else:
-                await _dispatch(endpoint, body, db)
+                _dispatch(endpoint, body, db)
 
         except Exception as exc:
             logger.error(
@@ -353,7 +361,7 @@ def _render_body(obj: Any, ctx: dict[str, str]) -> Any:
     return obj
 
 
-async def _dispatch(endpoint: str, body: Any, db: Session) -> None:
+def _dispatch(endpoint: str, body: Any, db: Session) -> None:
     """
     Map a resolved endpoint string to the corresponding service-layer call.
 
@@ -361,7 +369,7 @@ async def _dispatch(endpoint: str, body: Any, db: Session) -> None:
     """
     m = _PUT_VALUES_RE.match(endpoint)
     if m:
-        await _handle_upsert_value(
+        _handle_upsert_value(
             db=db,
             db_uuid=m.group("db_id"),
             entry_id=m.group("entry_id"),
@@ -373,7 +381,7 @@ async def _dispatch(endpoint: str, body: Any, db: Session) -> None:
     raise ValueError(f"No handler registered for endpoint: {endpoint!r}")
 
 
-async def _dispatch_bulk(
+def _dispatch_bulk(
     endpoint: str,
     filter_spec: dict,
     body: Any,
@@ -390,7 +398,7 @@ async def _dispatch_bulk(
     """
     m = _BULK_PUT_VALUES_RE.match(endpoint)
     if m:
-        await _handle_bulk_upsert_value(
+        _handle_bulk_upsert_value(
             db=db,
             db_uuid=m.group("db_id"),
             schema_id=m.group("schema_id"),
@@ -402,7 +410,7 @@ async def _dispatch_bulk(
     raise ValueError(f"No bulk handler registered for endpoint: {endpoint!r}")
 
 
-async def _handle_upsert_value(
+def _handle_upsert_value(
     db: Session,
     db_uuid: str,
     entry_id: str,
@@ -421,7 +429,7 @@ async def _handle_upsert_value(
         compute_all_for_entry,
         compute_same_db_rollup_dependents,
     )
-    from app.ws.broadcaster import broadcast_block_event
+    from app.ws.broadcaster import emit_block_event
 
     try:
         db_id   = uuid.UUID(db_uuid)
@@ -443,7 +451,8 @@ async def _handle_upsert_value(
         db.rollback()
         raise
 
-    await broadcast_block_event(
+    emit_block_event(
+        db=db,
         event_type="database_entries_updated",
         block_id=db_uuid,
         before=None,
@@ -451,7 +460,7 @@ async def _handle_upsert_value(
     )
 
 
-async def _handle_bulk_upsert_value(
+def _handle_bulk_upsert_value(
     db: Session,
     db_uuid: str,
     schema_id: str,
@@ -490,7 +499,7 @@ async def _handle_bulk_upsert_value(
         compute_all_for_entry,
         compute_same_db_rollup_dependents,
     )
-    from app.ws.broadcaster import broadcast_block_event
+    from app.ws.broadcaster import emit_block_event
 
     try:
         db_id = uuid.UUID(db_uuid)
@@ -608,7 +617,8 @@ async def _handle_bulk_upsert_value(
                 exc_info=True,
             )
 
-    await broadcast_block_event(
+    emit_block_event(
+        db=db,
         event_type="database_entries_updated",
         block_id=db_uuid,
         before=None,

@@ -967,7 +967,30 @@ fi
 
 echo "Suite: ${#BACKEND_TESTS[@]} test files from ${TEST_SUITE_FILE}"
 
-if docker compose exec -T backend pytest "${BACKEND_TESTS[@]}" -v; then
+# The suite runs against PostgreSQL and deletes everything in the database it
+# uses, so it gets its own: <POSTGRES_DB>_test on the same server, created on
+# first use and kept afterwards (the suite rebuilds its schema on every run).
+# backup.sh dumps POSTGRES_DB only, so the test database never ends up in a
+# backup. Both commands run inside the containers, which already carry the
+# credentials; the single-quoted scripts are expanded there, not here.
+echo "Preparing test database..."
+if docker compose exec -T db sh -c '
+    psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
+        "SELECT 1 FROM pg_database WHERE datname = '\''${POSTGRES_DB}_test'\''" \
+        | grep -q 1 \
+    || createdb -U "$POSTGRES_USER" "${POSTGRES_DB}_test"
+'; then
+    echo -e "${GREEN}[OK] Test database ready.${NC}"
+else
+    echo -e "${RED}[ERROR] Could not create the test database.${NC}"
+    exit 1
+fi
+
+# TEST_DATABASE_URL is DATABASE_URL with the database name swapped, so it
+# carries the same credentials and encoding as the application's own URL.
+if docker compose exec -T backend sh -c '
+    TEST_DATABASE_URL="${DATABASE_URL%/*}/${POSTGRES_DB}_test" exec pytest "$@"
+' pytest "${BACKEND_TESTS[@]}" -v; then
     echo -e "${GREEN}[OK] Backend tests passed.${NC}"
 else
     echo ""

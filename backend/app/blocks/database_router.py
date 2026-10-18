@@ -12,10 +12,13 @@ cutting business logic.
 
 Convention
 ----------
-* Read-only handlers (GET) are synchronous ``def``.
-* Mutation handlers that broadcast a WebSocket event are ``async def``.
-* Schema CRUD and value upsert are ``def`` – they are contained mutations
-  that do not require a broadcast (clients re-fetch after their own writes).
+* Every handler is a synchronous ``def``. FastAPI runs those in a worker
+  thread, so their blocking database work — including the formula and rollup
+  cascades of a value change — never stalls the event loop that serves all
+  other requests and the open WebSocket connections.
+* Mutation handlers broadcast through ``emit_block_event`` after a successful
+  ``db.commit()``, passing their session so the recipient check costs no
+  extra connection.
 
 Entry templates
 ---------------
@@ -63,7 +66,7 @@ Relation keying
 A relation property may nominate a *key property* of its target database, at
 ``config.keying``.  The key property serves at once as the sort key for the
 relation's linked entries and as the value rendered beside each of them, so a
-plot relation can read chronologically instead of in insertion order.
+relation can read chronologically instead of in insertion order.
 
 Keying is a read-side pointer, not edge data.  It never participates in
 bilateral synchronisation, never rewrites stored ``related_ids``, and is
@@ -105,7 +108,7 @@ using Kahn's topological-sort algorithm.  A detected cycle returns 422.
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -114,8 +117,9 @@ from sqlalchemy.orm import Session
 
 from app.automations.automations_engine import TriggerEvent
 from app.automations.automations_engine import receive as automation_receive
+from app.blocks import options as opts
 from app.blocks import repository as repo
-from app.blocks import service
+from app.blocks import resolution, service, views
 from app.blocks.computed import (
     _ROLLUP_FUNCTIONS,
     CycleError,
@@ -124,15 +128,17 @@ from app.blocks.computed import (
     compute_all_for_entry,
     compute_cross_db_dependents,
     compute_same_db_rollup_dependents,
+    recompute_database_and_readers,
     has_any_cycle,
 )
 from app.blocks.formula_engine import FormulaError, rename_prop_in_expression, validate_syntax
+from app.blocks.models import PropertySchema
 from app.blocks.router import get_db
 from app.blocks.service import BlockConflict, BlockNotFound
 from app.permissions import repository as perm_repo
 from app.session.deps import get_current_user, require_session
 from app.users.model import User
-from app.ws.broadcaster import broadcast_block_event
+from app.ws.broadcaster import emit_block_event
 
 logger = logging.getLogger(__name__)
 
@@ -188,11 +194,16 @@ _KEYABLE_PROPERTY_TYPES: frozenset[str] = frozenset(
 
 
 class SchemaCreate(BaseModel):
+    """
+    ``visible_in_view_id`` names the view the property is added from. The new
+    property starts hidden in every other view of the database.
+    """
     name: str
     type: str
     position: Optional[float] = None
     config: Optional[dict] = None
     group: str = "Standard"
+    visible_in_view_id: Optional[uuid.UUID] = None
 
 
 class SchemaUpdate(BaseModel):
@@ -340,6 +351,22 @@ class EntryTitleResponse(BaseModel):
     title: Optional[str]
     database_id: uuid.UUID
     value: Optional[dict] = None
+
+
+class EntryDetailResponse(BaseModel):
+    """
+    One entry with its values and the resolution of the relations it holds,
+    in the same shape a view page uses for its ``relations`` and
+    ``key_values``.
+    """
+    entry: EntryResponse
+    relations: dict[str, dict]
+    key_values: dict[str, dict[str, Any]]
+
+
+class OptionUsageResponse(BaseModel):
+    """How many active entries use one option of a property."""
+    entries: int
 
 
 class KeyReferenceResponse(BaseModel):
@@ -1730,7 +1757,7 @@ def list_schemas(
     response_model=SchemaResponse,
     status_code=201,
 )
-async def create_schema(
+def create_schema(
     database_id: uuid.UUID,
     payload: SchemaCreate,
     db: Session = Depends(get_db),
@@ -1748,8 +1775,12 @@ async def create_schema(
     target database.  A ``database_schema_updated`` WebSocket event is broadcast
     to the target database so open table views can refresh their schema lists
     immediately (and hide the new property automatically).
+
+    The options of a select property and the nuance options of a relation are
+    stored in canonical form, each with an id (see ``app.blocks.options``).
     """
     _get_database_or_raise(db, database_id)
+    config = opts.normalize_config(payload.type, payload.config)
     position = (
         payload.position
         if payload.position is not None
@@ -1782,7 +1813,8 @@ async def create_schema(
             name=payload.name,
             type=payload.type,
             position=position,
-            config=payload.config,
+            config=config,
+            visible_in_view_id=payload.visible_in_view_id,
         )
         schema.group = payload.group
 
@@ -1822,7 +1854,8 @@ async def create_schema(
     # open DatabaseBlock views can refresh their schema list and auto-hide the
     # new mirror property.  Fires after commit so clients fetch committed data.
     if mirror_created_in is not None:
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="database_schema_updated",
             block_id=str(mirror_created_in),
             before=None,
@@ -1836,7 +1869,7 @@ async def create_schema(
     "/{database_id}/schemas/{schema_id}",
     response_model=SchemaResponse,
 )
-async def update_schema(
+def update_schema(
     database_id: uuid.UUID,
     schema_id: uuid.UUID,
     payload: SchemaUpdate,
@@ -1853,6 +1886,18 @@ async def update_schema(
 
     When a formula or rollup schema's config changes, all entries in the
     database are recomputed within the same transaction.
+
+    Options
+    -------
+    The options of a select property and the nuance options of a relation
+    are stored in canonical form, each with an id; an option sent without id
+    keeps the id of the existing option with the same label. An option that
+    disappears from the config is removed in the same transaction from every
+    entry and template value, from the filters of every view and from every
+    automation. When options are renamed or removed, the formulas and rollups
+    that show them are recomputed, here and in databases that read this one.
+    A nuance option removed on one side of a bilateral relation is removed
+    from the mirror's values as well, since both sides share the option set.
     """
     _get_database_or_raise(db, database_id)
     schema = repo.get_schema(db, schema_id)
@@ -1873,8 +1918,25 @@ async def update_schema(
     _migrated_entry_dbs: set[uuid.UUID] = set()
 
     effective_type = payload.type if payload.type is not None else schema.type
-    effective_config = payload.config if payload.config is not None else schema.config
+    new_config = (
+        opts.normalize_config(effective_type, payload.config, old_config)
+        if payload.config is not None
+        else None
+    )
+    effective_config = new_config if new_config is not None else schema.config
     effective_name = payload.name if payload.name is not None else schema.name
+
+    # Options that disappear with this update. Only a config edit on an
+    # unchanged type removes options; a retype leaves the stored values alone,
+    # as it always has.
+    removed_options: set[str] = set()
+    options_relabelled = False
+    if new_config is not None and effective_type == schema.type:
+        removed_options = opts.removed_ids(effective_type, old_config, new_config)
+        options_relabelled = (
+            effective_type == opts.SELECT_TYPE
+            and opts.labels_changed(effective_type, old_config, new_config)
+        )
 
     if effective_type in ("formula", "rollup") and payload.config is not None:
         _validate_computed_config(effective_type, effective_config)
@@ -1909,11 +1971,17 @@ async def update_schema(
             schema,
             name=payload.name,
             type=payload.type,
-            config=payload.config,
+            config=new_config,
             position=payload.position,
         )
         if payload.group is not None:
             updated.group = payload.group
+
+        if removed_options:
+            if _purge_options(db, updated, removed_options):
+                _migrated_entry_dbs.add(database_id)
+        if options_relabelled:
+            _migrated_entry_dbs.update(recompute_database_and_readers(db, database_id))
 
         if _retyped_out_of_keyable:
             _clear_keying_for_property(db, schema_id)
@@ -2032,6 +2100,7 @@ async def update_schema(
                                 mirror = repo.get_schema_by_name(db, target_db_id, current_mirror_name)
                                 if mirror is not None:
                                     src_nuance = new_config.get("nuance") or {}
+                                    mirror_old_cfg = dict(mirror.config or {})
                                     mirror_cfg = dict(mirror.config or {})
                                     if src_nuance.get("enabled"):
                                         synced = src_nuance.get("synced") or {}
@@ -2050,6 +2119,13 @@ async def update_schema(
                                     else:
                                         mirror_cfg["nuance"] = {"enabled": False}
                                     repo.update_schema(db, mirror, config=mirror_cfg)
+                                    # The option set is shared, so a nuance
+                                    # removed here is gone on the mirror too.
+                                    mirror_removed = opts.removed_ids(
+                                        opts.RELATION_TYPE, mirror_old_cfg, mirror_cfg,
+                                    )
+                                    if mirror_removed and _purge_options(db, mirror, mirror_removed):
+                                        _migrated_entry_dbs.add(mirror.database_id)
 
                         # There is deliberately no Case E for keying.
                         #
@@ -2058,9 +2134,10 @@ async def update_schema(
                         # stored structure, so the sides must agree on it.
                         # Keying is a read-side pointer into the target
                         # database and touches no edge, so the two sides
-                        # configure it independently — cdb.plot keyed on
-                        # pdb.date alongside pdb.characters keyed on
-                        # cdb.firstAppearance is a valid and intended pairing.
+                        # configure it independently — a relation in database A
+                        # keyed on a date in B, alongside its mirror in B keyed
+                        # on a different date in A, is a valid and intended
+                        # pairing.
                         # Propagating it here would collapse that into a single
                         # shared setting and, worse, write a key_property_id
                         # from one database into a relation pointing at the
@@ -2144,13 +2221,53 @@ async def update_schema(
     # commit so clients always fetch committed data. Pure schema edits leave the
     # set empty and emit nothing.
     for _bcast_db_id in _migrated_entry_dbs:
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="database_entries_updated",
             block_id=str(_bcast_db_id),
             before=None,
             after={"database_id": str(_bcast_db_id)},
         )
     return updated
+
+
+def _purge_options(db: Session, schema: PropertySchema, removed: set[str]) -> bool:
+    """
+    Remove deleted options of *schema* from its values, from the filters of
+    its database's views and from automations. Returns True when a stored
+    value changed, so the caller broadcasts an entries update.
+    """
+    changed = opts.purge_values(db, schema, removed)
+    views.forget_options_in_views(db, schema.database_id, schema.id, removed)
+    opts.purge_automations(db, schema.id, removed)
+    return changed > 0
+
+
+@database_router.get(
+    "/{database_id}/schemas/{schema_id}/options/{option_id}/usage",
+    response_model=OptionUsageResponse,
+)
+def get_option_usage(
+    database_id: uuid.UUID,
+    schema_id: uuid.UUID,
+    option_id: str,
+    db: Session = Depends(get_db),
+    _session: uuid.UUID = Depends(require_session),
+):
+    """
+    Count the active entries that use one option of a property.
+
+    Pre-flight for deleting an option, so the confirmation can say how many
+    entries lose it. Works for select options and relation nuance options.
+    """
+    _get_database_or_raise(db, database_id)
+    schema = repo.get_schema(db, schema_id)
+    if schema is None or schema.database_id != database_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Schema {schema_id} not found in database {database_id}",
+        )
+    return OptionUsageResponse(entries=opts.count_usage(db, schema, option_id))
 
 
 @database_router.delete(
@@ -2494,6 +2611,9 @@ def resolve_entry_titles(
     by a concurrent delete degrades the cell to seniority order instead of
     breaking it.
 
+    The resolution itself is ``app.blocks.resolution.resolve_titles``, the
+    same implementation view pages and single entries use for their relations.
+
     Permission
     ----------
     Non-admin users that do not have access to the database block receive an
@@ -2505,36 +2625,52 @@ def resolve_entry_titles(
         return []
     if not payload.ids:
         return []
-    blocks = repo.list_blocks_by_ids(
-        db,
-        payload.ids,
-        parent_id=database_id,
-        state="active",
-        exclude_types=frozenset({"entry_template"}),
-    )
-    if not blocks:
-        return []
-
-    values_by_entry: dict[uuid.UUID, Optional[dict]] = {}
-    if payload.value_schema_id is not None:
-        value_schema = repo.get_schema(db, payload.value_schema_id)
-        if value_schema is not None and value_schema.database_id == database_id:
-            values_map = repo.list_values_for_pages(db, [block.id for block in blocks])
-            for entry_id, property_values in values_map.items():
-                for pv in property_values:
-                    if pv.property_schema_id == payload.value_schema_id:
-                        values_by_entry[entry_id] = pv.value
-                        break
-
     return [
         EntryTitleResponse(
-            id=block.id,
-            title=(block.content or {}).get("title"),
-            database_id=database_id,
-            value=values_by_entry.get(block.id),
+            id=title.id,
+            title=title.title,
+            database_id=title.database_id,
+            value=title.value,
         )
-        for block in blocks
+        for title in resolution.resolve_titles(
+            db, database_id, payload.ids, payload.value_schema_id
+        )
     ]
+
+
+@database_router.get(
+    "/{database_id}/entries/{entry_id}",
+    response_model=EntryDetailResponse,
+)
+def get_entry(
+    database_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return one entry with its property values and resolved relations.
+
+    For the entry page and the side view, which used to load the whole
+    database to find a single entry in it. Entry templates are entries too
+    and are returned the same way.
+
+    Answers 404 when the entry is not a child of the database, and when the
+    caller may not read the database, so the response does not confirm that
+    either exists.
+    """
+    _get_database_or_raise(db, database_id)
+    if not perm_repo.can_user_access(db, database_id, current_user):
+        raise HTTPException(status_code=404, detail=f"Entry {entry_id} not found")
+    entry = repo.get_block(db, entry_id)
+    if entry is None or entry.parent_id != database_id:
+        raise HTTPException(status_code=404, detail=f"Entry {entry_id} not found")
+
+    payload = views.entry_payloads(db, [entry])[0]
+    resolved = resolution.resolve_relations(
+        db, repo.list_schemas(db, database_id), [payload["values"]], current_user,
+    )
+    return EntryDetailResponse(entry=payload, **resolved.as_payload())
 
 
 @database_router.post(
@@ -2542,7 +2678,7 @@ def resolve_entry_titles(
     response_model=EntryResponse,
     status_code=201,
 )
-async def create_entry(
+def create_entry(
     database_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -2563,7 +2699,8 @@ async def create_entry(
         _populate_readonly_properties(db, database_id, block.id, block.created_at, current_user.id)
         compute_all_for_entry(db, database_id, block.id)
         db.commit()
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="created",
             block_id=str(block.id),
             before=None,
@@ -2599,7 +2736,7 @@ async def create_entry(
     response_model=EntryResponse,
     status_code=201,
 )
-async def duplicate_entry(
+def duplicate_entry(
     database_id: uuid.UUID,
     entry_id: uuid.UUID,
     db: Session = Depends(get_db),
@@ -2736,7 +2873,8 @@ async def duplicate_entry(
         raise
 
     # One broadcast for the source database after the full commit.
-    await broadcast_block_event(
+    emit_block_event(
+        db=db,
         event_type="database_entries_updated",
         block_id=str(database_id),
         before=None,
@@ -2746,7 +2884,8 @@ async def duplicate_entry(
     # databases that had rollup dependants recomputed by the cascade.
     other_dbs = bilateral_target_dbs | {str(d) for d in cascade_db_ids}
     for target_db_id in other_dbs:
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="database_entries_updated",
             block_id=target_db_id,
             before=None,
@@ -2777,8 +2916,9 @@ def seed_readonly_schemas(
     Idempotently create the system-managed property schemas for a database
     if they do not already exist.
 
-    Safe to call on every frontend mount — schemas that already exist are
-    left unchanged. Only newly created schemas are returned.
+    Schemas that already exist are left unchanged. Only newly created schemas
+    are returned. The logic lives in ``repository.ensure_readonly_schemas``,
+    which the view endpoints also run when a database is first displayed.
 
     Schemas seeded (in order)
     -------------------------
@@ -2796,92 +2936,7 @@ def seed_readonly_schemas(
     full schema scan.
     """
     _get_database_or_raise(db, database_id)
-    existing = repo.list_schemas(db, database_id)
-    existing_types = {s.type for s in existing}
-
-    readonly_defaults: list[dict] = [
-        {"type": "id",               "name": "ID",                "config": {"prefix": "", "next_id": 1}},
-        {"type": "created_by",       "name": "Created by",        "config": None},
-        {"type": "created_time",     "name": "Created time",      "config": None},
-        {"type": "last_edited_by",   "name": "Last edited by",    "config": None},
-        {"type": "last_edited_time", "name": "Last edited time",  "config": None},
-    ]
-
-    created: list = []
-    position = (existing[-1].position + 1.0) if existing else 1.0
-
-    for defn in readonly_defaults:
-        if defn["type"] not in existing_types:
-            schema = repo.create_schema(
-                db,
-                database_id=database_id,
-                name=defn["name"],
-                type=defn["type"],
-                position=position,
-                config=defn["config"],
-            )
-            created.append(schema)
-            position += 1.0
-
-    # ── Sub-item pair ────────────────────────────────────────────────────────
-    # Create parent_item and sub_item together so their partner_schema_id
-    # references can be back-filled in a single commit.
-    has_parent_item = "parent_item" in existing_types
-    has_sub_item    = "sub_item"    in existing_types
-
-    if not has_parent_item and not has_sub_item:
-        pi_schema = repo.create_schema(
-            db,
-            database_id=database_id,
-            name="Parent item",
-            type="parent_item",
-            position=position,
-            config={},
-        )
-        position += 1.0
-        si_schema = repo.create_schema(
-            db,
-            database_id=database_id,
-            name="Sub-items",
-            type="sub_item",
-            position=position,
-            config={"partner_schema_id": str(pi_schema.id)},
-        )
-        position += 1.0
-        # Back-fill the partner reference on parent_item now that sub_item has an ID.
-        repo.update_schema(db, pi_schema, config={"partner_schema_id": str(si_schema.id)})
-        created.extend([pi_schema, si_schema])
-
-    elif not has_parent_item:
-        # sub_item already exists without its partner — create parent_item and link.
-        si_existing = next((s for s in existing if s.type == "sub_item"), None)
-        pi_schema = repo.create_schema(
-            db,
-            database_id=database_id,
-            name="Parent item",
-            type="parent_item",
-            position=position,
-            config={"partner_schema_id": str(si_existing.id)} if si_existing else {},
-        )
-        created.append(pi_schema)
-
-    elif not has_sub_item:
-        # parent_item already exists without its partner — create sub_item and link.
-        pi_existing = next((s for s in existing if s.type == "parent_item"), None)
-        si_schema = repo.create_schema(
-            db,
-            database_id=database_id,
-            name="Sub-items",
-            type="sub_item",
-            position=position,
-            config={"partner_schema_id": str(pi_existing.id)} if pi_existing else {},
-        )
-        if pi_existing and not (pi_existing.config or {}).get("partner_schema_id"):
-            repo.update_schema(
-                db, pi_existing,
-                config={"partner_schema_id": str(si_schema.id)},
-            )
-        created.append(si_schema)
+    created = repo.ensure_readonly_schemas(db, database_id)
 
     if created:
         db.commit()
@@ -2895,7 +2950,7 @@ def seed_readonly_schemas(
     "/{database_id}/entries/{entry_id}/values/{schema_id}",
     status_code=204,
 )
-async def upsert_value(
+def upsert_value(
     database_id: uuid.UUID,
     entry_id: uuid.UUID,
     schema_id: uuid.UUID,
@@ -3141,14 +3196,16 @@ async def upsert_value(
 
     # Broadcast database_entries_updated for this DB and all cascade-affected DBs.
     # Fires after commit so clients always fetch committed data.
-    await broadcast_block_event(
+    emit_block_event(
+        db=db,
         event_type="database_entries_updated",
         block_id=str(database_id),
         before=None,
         after={"database_id": str(database_id)},
     )
     for affected_id in affected_db_ids:
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="database_entries_updated",
             block_id=str(affected_id),
             before=None,
@@ -3160,7 +3217,8 @@ async def upsert_value(
     # notified yet.  Broadcast separately so open DatabaseBlock views for the
     # target database refresh immediately without requiring a full page reload.
     if bilateral_target_db_str:
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="database_entries_updated",
             block_id=bilateral_target_db_str,
             before=None,
@@ -3172,7 +3230,7 @@ async def upsert_value(
     # Failures are logged but never propagate to the caller — a broken
     # automation must not surface as a request error.
     try:
-        await automation_receive(
+        automation_receive(
             TriggerEvent(
                 action_type="PropertyUpdate",
                 origin="user",
@@ -3211,7 +3269,7 @@ class EntryTemplateResponse(BaseModel):
     response_model=EntryTemplateResponse,
     status_code=201,
 )
-async def create_entry_template(
+def create_entry_template(
     database_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -3233,7 +3291,8 @@ async def create_entry_template(
         _populate_readonly_properties(db, database_id, block.id, block.created_at, current_user.id)
         compute_all_for_entry(db, database_id, block.id)
         db.commit()
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="database_entries_updated",
             block_id=str(database_id),
             before=None,
@@ -3299,7 +3358,7 @@ def list_entry_templates(
     "/{database_id}/entry-templates/{template_id}/apply/{entry_id}",
     status_code=204,
 )
-async def apply_entry_template(
+def apply_entry_template(
     database_id: uuid.UUID,
     template_id: uuid.UUID,
     entry_id: uuid.UUID,
@@ -3419,14 +3478,16 @@ async def apply_entry_template(
         db.rollback()
         raise
 
-    await broadcast_block_event(
+    emit_block_event(
+        db=db,
         event_type="database_entries_updated",
         block_id=str(database_id),
         before=None,
         after={"database_id": str(database_id)},
     )
     for affected_id in bilateral_target_dbs:
-        await broadcast_block_event(
+        emit_block_event(
+            db=db,
             event_type="database_entries_updated",
             block_id=str(affected_id),
             before=None,

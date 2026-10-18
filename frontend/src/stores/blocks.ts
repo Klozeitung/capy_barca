@@ -24,6 +24,19 @@ export interface BlockPreference {
   value: unknown
 }
 
+/**
+ * Response of GET /api/blocks/{id}/tree.
+ *
+ * ``loaded`` names every parent whose children are all in ``blocks``; a
+ * parent listed there without children in ``blocks`` has none.
+ * ``mentioned`` holds the blocks that inline mentions in the content refer to.
+ */
+export interface BlockTree {
+  blocks: Block[]
+  loaded: string[]
+  mentioned: Block[]
+}
+
 export interface DeleteResult {
   affected: string[]
 }
@@ -42,8 +55,9 @@ export interface RebalanceResult {
  * Central block store.
  *
  * Maintains a flat map of block data keyed by block ID, and a separate
- * children map keyed by parent ID. Children are loaded lazily on first
- * access and cached until explicitly invalidated.
+ * children map keyed by parent ID. A page loads its whole content at once
+ * through ``fetchTree``; any container it did not cover loads its children
+ * lazily on first access. Both are cached until explicitly invalidated.
  *
  * _storeBlock patches existing objects in-place (Object.assign) rather than
  * replacing them. This keeps all references to the same block object valid
@@ -66,6 +80,19 @@ export const useBlockStore = defineStore('blocks', () => {
   const blocks = ref<Record<string, Block>>({})
   const childrenMap = ref<Record<string, string[]>>({})
   const loadingChildren = ref<Record<string, boolean>>({})
+
+  /**
+   * Children requests in flight, by parent ID. Components that mount at the
+   * same time and ask for the same children share one request.
+   */
+  const _childrenRequests = new Map<string, Promise<Block[]>>()
+
+  /**
+   * Tree requests in flight, by root ID. While one runs, ``fetchChildren``
+   * waits for it before asking for children on its own, because the tree
+   * most likely holds them already.
+   */
+  const _treeRequests = new Map<string, Promise<Block[]>>()
 
   /**
    * Preferences keyed by blockId then by key.
@@ -173,20 +200,86 @@ export const useBlockStore = defineStore('blocks', () => {
     return blocks.value[block.id]
   }
 
+  /**
+   * Load the direct children of *parentId*.
+   *
+   * Served from the cache when it holds them, unless *force* is set. A call
+   * while a tree is loading waits for the tree first, and a call while a
+   * request for the same parent is running waits for that request instead
+   * of starting another. A forced call always starts a new one, and
+   * only the latest request per parent writes its result to the cache, so a
+   * slower, older response cannot overwrite a fresher one.
+   */
   async function fetchChildren(parentId: string, force = false): Promise<Block[]> {
-    if (!force && childrenMap.value[parentId] !== undefined) {
-      return childrenMap.value[parentId]
-        .map((id) => blocks.value[id])
-        .filter(Boolean)
+    if (!force) {
+      if (childrenMap.value[parentId] === undefined && _treeRequests.size > 0) {
+        await Promise.allSettled(_treeRequests.values())
+      }
+      if (childrenMap.value[parentId] !== undefined) {
+        return childrenMap.value[parentId]
+          .map((id) => blocks.value[id])
+          .filter(Boolean)
+      }
+      const pending = _childrenRequests.get(parentId)
+      if (pending) return pending
     }
     loadingChildren.value[parentId] = true
-    try {
-      const children = await apiClient.get<Block[]>(`/api/blocks/${parentId}/children`)
-      _storeChildren(parentId, children)
-      return children
-    } finally {
-      loadingChildren.value[parentId] = false
+    const request: Promise<Block[]> = apiClient
+      .get<Block[]>(`/api/blocks/${parentId}/children`)
+      .then((children) => {
+        if (_childrenRequests.get(parentId) === request) _storeChildren(parentId, children)
+        return children
+      })
+      .finally(() => {
+        if (_childrenRequests.get(parentId) === request) {
+          _childrenRequests.delete(parentId)
+          loadingChildren.value[parentId] = false
+        }
+      })
+    _childrenRequests.set(parentId, request)
+    return request
+  }
+
+  /**
+   * Load everything the page *rootId* shows in one request: its children
+   * and, at any depth, those of its layouts, columns, toggles and synced
+   * blocks, plus the blocks its inline mentions refer to.
+   *
+   * Every parent the response covers is cached as loaded, including those
+   * without children, so no component asks for them again. Served from the
+   * cache when the children of *rootId* are already there, unless *force*
+   * is set; a call while the same tree is loading shares that request.
+   * Returns the children of *rootId*.
+   */
+  async function fetchTree(rootId: string, force = false): Promise<Block[]> {
+    if (!force) {
+      if (childrenMap.value[rootId] !== undefined) return getChildren(rootId)
+      const pending = _treeRequests.get(rootId)
+      if (pending) return pending
     }
+    loadingChildren.value[rootId] = true
+    const request: Promise<Block[]> = apiClient
+      .get<BlockTree>(`/api/blocks/${rootId}/tree`)
+      .then((tree) => {
+        tree.mentioned.forEach(_storeBlock)
+        const byParent: Record<string, Block[]> = {}
+        for (const parentId of tree.loaded) byParent[parentId] = []
+        for (const block of tree.blocks) {
+          if (block.parent_id && byParent[block.parent_id]) byParent[block.parent_id].push(block)
+        }
+        for (const [parentId, children] of Object.entries(byParent)) {
+          _storeChildren(parentId, children)
+        }
+        return getChildren(rootId)
+      })
+      .finally(() => {
+        if (_treeRequests.get(rootId) === request) {
+          _treeRequests.delete(rootId)
+          loadingChildren.value[rootId] = false
+        }
+      })
+    _treeRequests.set(rootId, request)
+    return request
   }
 
   function getChildren(parentId: string): Block[] {
@@ -351,6 +444,7 @@ export const useBlockStore = defineStore('blocks', () => {
     // Block operations
     fetchBlock,
     fetchChildren,
+    fetchTree,
     getChildren,
     hasLoadedChildren,
     createBlock,

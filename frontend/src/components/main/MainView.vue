@@ -16,7 +16,7 @@
  *   BlockTopSection for non-entry pages). Collapsible, default hidden,
  *   matching the PropertySection default. Available on all block types.
  */
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
@@ -28,6 +28,7 @@ import DatabaseBlock from '@/components/editor/blocks/DatabaseBlock.vue'
 import PageSettingsModal from './PageSettingsModal.vue'
 import { useBlockStore } from '@/stores/blocks'
 import { useDatabaseStore, type DatabaseEntry } from '@/stores/database'
+import { WS_BLOCK_EVENT, type BlockEventPayload } from '@/stores/ws'
 
 const props = defineProps<{
   blockId?: string | null
@@ -53,14 +54,20 @@ async function load(id: string | null | undefined): Promise<void> {
   showProperties.value = false
   showComments.value = false
   try {
-    await blockStore.fetchBlock(id)
-    // Fetch parent block to determine whether this block is a database entry.
-    // Guard against unnecessary network round-trips when already cached.
-    const b = blockStore.blocks[id]
-    if (b?.parent_id && !blockStore.blocks[b.parent_id]) {
-      await blockStore.fetchBlock(b.parent_id)
-    }
-    await blockStore.fetchChildren(id)
+    // The content is requested together with the block rather than after
+    // it: the page renders as soon as the block is there, and its sections
+    // wait for this request instead of asking for their children one by one.
+    await Promise.all([
+      blockStore.fetchBlock(id).then(async () => {
+        // Fetch parent block to determine whether this block is a database
+        // entry. Guard against unnecessary round-trips when already cached.
+        const b = blockStore.blocks[id]
+        if (b?.parent_id && !blockStore.blocks[b.parent_id]) {
+          await blockStore.fetchBlock(b.parent_id)
+        }
+      }),
+      blockStore.fetchTree(id),
+    ])
     // Honor ?showProperties=1 passed from SideView.openAsPage().
     if (isEntry.value && route.query.showProperties === '1') {
       showProperties.value = true
@@ -91,7 +98,7 @@ const entryDatabaseId = computed<string | null>(() =>
 
 const entry = computed<DatabaseEntry | null>(() => {
   if (!entryDatabaseId.value || !props.blockId) return null
-  return dbStore.getEntries(entryDatabaseId.value).find(e => e.id === props.blockId) ?? null
+  return dbStore.getEntry(entryDatabaseId.value, props.blockId)
 })
 
 // ── Property section visibility ───────────────────────────────────────────────
@@ -99,14 +106,33 @@ const entry = computed<DatabaseEntry | null>(() => {
 /** Whether BlockPropertySection is currently expanded. Local state only. */
 const showProperties = ref(false)
 
-// Load schemas and entries on demand — only when the section is first opened.
+// Load the schemas and this one entry on demand, when the section is opened.
+// The schemas come first because the entry's relations are filed by them.
 watch(showProperties, async (show) => {
-  if (!show || !entryDatabaseId.value) return
+  if (!show || !entryDatabaseId.value || !props.blockId) return
   await dbStore.fetchSchemas(entryDatabaseId.value)
-  if (!entry.value) {
-    await dbStore.fetchEntries(entryDatabaseId.value)
-  }
+  await dbStore.fetchEntry(entryDatabaseId.value, props.blockId)
 })
+
+/**
+ * Re-fetch the entry while its properties are shown and the backend reports
+ * a value change in its database, for instance a bilateral relation written
+ * on this entry from elsewhere.
+ */
+function _onWsEvent(e: Event): void {
+  const { event_type, block_id } = (e as CustomEvent<BlockEventPayload>).detail
+  const databaseId = entryDatabaseId.value
+  if (
+    event_type === 'database_entries_updated' &&
+    databaseId && block_id === databaseId &&
+    showProperties.value && props.blockId
+  ) {
+    dbStore.fetchEntry(databaseId, props.blockId).catch(() => undefined)
+  }
+}
+
+onMounted(() => window.addEventListener(WS_BLOCK_EVENT, _onWsEvent))
+onUnmounted(() => window.removeEventListener(WS_BLOCK_EVENT, _onWsEvent))
 
 /** Whether BlockCommentSection is currently expanded. Local state only. */
 const showComments = ref(false)
@@ -269,11 +295,11 @@ async function onFullSizeUpdate(val: boolean): Promise<void> {
 
 /* ── Entry property section width ────────────────────────────────────────── */
 /*
- * #17: In the full-page entry view the property section (.bps) had no
- * max-width and always spanned the full width, so toggling full-size produced
- * no visible change. Constrain it to the same content column width as the
- * title / content (and the toggle buttons) here; the full-size override below
- * lifts the cap so the section expands together with the rest of the page.
+ * In the full-page entry view the property section (.bps) would otherwise
+ * span the full width, so toggling full-size would produce no visible change.
+ * Constrain it to the same content column width as the title / content (and
+ * the toggle buttons) here; the full-size override below lifts the cap so the
+ * section expands together with the rest of the page.
  */
 .main-view :deep(.bps) {
   max-width: 720px;

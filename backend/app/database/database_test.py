@@ -1,78 +1,132 @@
-import importlib
-
 import pytest
-from sqlalchemy import create_engine, inspect, text
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
+import app.database.database as db_module
+from app.blocks.models import Block
 from app.database.database import (
-    Base,
-    SessionLocal,
     _DATABASE_URL,
+    _int_from_env,
+    _require_database_url,
     engine,
     normalize_database_url,
 )
 
 
-def test_database_url_has_default():
+def test_database_url_is_configured():
     assert _DATABASE_URL != ""
 
 
-def test_database_url_uses_env_var(monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", "sqlite:///./test_override.db")
-    import app.database.database as db_module
-    importlib.reload(db_module)
-    assert db_module._DATABASE_URL == "sqlite:///./test_override.db"
-    # Clean up: restore the module to its original state.
-    importlib.reload(db_module)
-
-
-def test_engine_is_created():
-    assert engine is not None
+def test_engine_targets_postgresql():
+    assert engine.dialect.name == "postgresql"
+    assert engine.dialect.driver == "psycopg"
 
 
 def test_session_local_returns_session():
-    with SessionLocal() as session:
+    with db_module.SessionLocal() as session:
         assert isinstance(session, Session)
 
 
 def test_session_can_execute_query():
-    with SessionLocal() as session:
+    with db_module.SessionLocal() as session:
         result = session.execute(text("SELECT 1"))
         row = result.fetchone()
         assert row[0] == 1
 
 
 def test_base_has_metadata():
-    assert Base.metadata is not None
+    assert db_module.Base.metadata is not None
 
 
-def test_connect_args_match_dialect():
-    # SQLite needs check_same_thread disabled so the tests can run across
-    # threads. PostgreSQL does not require it.
-    if _DATABASE_URL.startswith("sqlite"):
-        assert engine.dialect.name == "sqlite"
-    else:
-        assert engine.dialect.name == "postgresql"
+# ─── DATABASE_URL is mandatory ───────────────────────────────────────────────
 
 
-def test_tables_can_be_created_and_dropped():
+def test_require_database_url_returns_the_normalized_value(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pw@db:5432/example_db")
+    assert _require_database_url() == "postgresql+psycopg://user:pw@db:5432/example_db"
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_require_database_url_refuses_an_empty_value(monkeypatch, value):
+    monkeypatch.setenv("DATABASE_URL", value)
+    with pytest.raises(RuntimeError, match="DATABASE_URL is not set"):
+        _require_database_url()
+
+
+def test_require_database_url_refuses_a_missing_value(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with pytest.raises(RuntimeError, match="DATABASE_URL is not set"):
+        _require_database_url()
+
+
+# ─── Pool settings ───────────────────────────────────────────────────────────
+
+
+def test_pool_is_sized_for_the_worker_threads():
     """
-    Verify that Base.metadata DDL works correctly, using an isolated
-    in-memory SQLite engine so the production database is never touched.
+    Defaults match AnyIO's 40 worker threads: 10 kept open, 30 on demand.
+    The test environment sets neither variable, so the defaults apply.
     """
-    isolated_engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(isolated_engine)
-    table_names = inspect(isolated_engine).get_table_names()
-    assert "sessions" in table_names
-    Base.metadata.drop_all(isolated_engine)
-    table_names_after = inspect(isolated_engine).get_table_names()
-    assert "sessions" not in table_names_after
-    isolated_engine.dispose()
+    assert engine.pool.size() == 10
+    assert engine.pool._max_overflow == 30
+
+
+def test_pool_capacity_counts_kept_and_overflow_connections():
+    from app.database.database import POOL_CAPACITY
+
+    assert POOL_CAPACITY == engine.pool.size() + engine.pool._max_overflow
+
+
+def test_pool_checks_connections_before_use():
+    assert engine.pool._pre_ping is True
+
+
+def test_int_from_env_uses_the_default_when_unset(monkeypatch):
+    monkeypatch.delenv("EXAMPLE_SETTING", raising=False)
+    assert _int_from_env("EXAMPLE_SETTING", default=7, minimum=0) == 7
+
+
+def test_int_from_env_uses_the_default_when_blank(monkeypatch):
+    monkeypatch.setenv("EXAMPLE_SETTING", "  ")
+    assert _int_from_env("EXAMPLE_SETTING", default=7, minimum=0) == 7
+
+
+def test_int_from_env_reads_a_value(monkeypatch):
+    monkeypatch.setenv("EXAMPLE_SETTING", "25")
+    assert _int_from_env("EXAMPLE_SETTING", default=7, minimum=0) == 25
+
+
+def test_int_from_env_rejects_a_non_integer(monkeypatch):
+    monkeypatch.setenv("EXAMPLE_SETTING", "many")
+    with pytest.raises(RuntimeError, match="must be an integer"):
+        _int_from_env("EXAMPLE_SETTING", default=7, minimum=0)
+
+
+def test_int_from_env_rejects_a_value_below_the_minimum(monkeypatch):
+    monkeypatch.setenv("EXAMPLE_SETTING", "0")
+    with pytest.raises(RuntimeError, match="at least 1"):
+        _int_from_env("EXAMPLE_SETTING", default=7, minimum=1)
+
+
+# ─── Models and migrations agree ─────────────────────────────────────────────
+
+
+def test_models_match_the_migrated_schema(test_engine):
+    """
+    The models must describe exactly the schema the migrations build.
+
+    ``alembic revision --autogenerate`` compares the two. Any difference here
+    would turn into a migration that rebuilds production tables towards the
+    models, for example converting JSONB columns back to JSON or dropping
+    indexes that only the migrations declare. A failure lists the differences
+    to resolve, either in the models or with a new migration.
+    """
+    with test_engine.connect() as connection:
+        context = MigrationContext.configure(connection)
+        differences = compare_metadata(context, Block.metadata)
+    assert differences == []
 
 
 # ─── normalize_database_url ──────────────────────────────────────────────────
@@ -135,4 +189,3 @@ def test_normalized_postgres_url_resolves_to_an_installed_driver():
         assert pg_engine.dialect.driver == "psycopg"
     finally:
         pg_engine.dispose()
-

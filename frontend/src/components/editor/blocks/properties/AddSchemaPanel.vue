@@ -28,6 +28,12 @@ import { PROPERTY_TYPES } from '@/stores/propertyTypes'
 
 const props = defineProps<{
   databaseId: string
+  /**
+   * The view the property is added from. The new property is visible there
+   * and hidden in every other view of the database; without a view it starts
+   * hidden everywhere.
+   */
+  visibleInViewId?: string
 }>()
 
 const emit = defineEmits<{
@@ -159,6 +165,7 @@ async function confirm() {
       name: trimmed,
       type: actualType,
       ...(config !== undefined ? { config } : {}),
+      ...(props.visibleInViewId ? { visible_in_view_id: props.visibleInViewId } : {}),
       group: 'Standard',
     })
     emit('close', schema.id)

@@ -129,3 +129,47 @@ def test_ws_rejected_connection_is_not_registered(isolated_db):
             with client.websocket_connect("/ws") as ws:
                 ws.receive_text()
     assert manager.active_count == 0
+
+
+# ─── End to end: mutation to event ────────────────────────────────────────────
+
+
+def test_mutation_event_reaches_the_socket(isolated_db):
+    """
+    Request handlers are synchronous and run in a worker thread; the socket
+    lives on the event loop. The event has to cross over into the
+    connection's outbox and be sent from there.
+
+    Uses a real account and a real session token, so the handshake also
+    exercises the token lookup the router runs in a worker thread.
+    """
+    from datetime import datetime, timezone
+
+    import app.session.session as s
+    from app.blocks.models import WORKSPACE_ROOT_ID, Block
+    from app.users.model import User
+
+    user_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    with s.SessionLocal() as db:
+        db.add(User(id=user_id, username="socket-owner", password_hash="x", role="admin"))
+        db.add(Block(
+            id=WORKSPACE_ROOT_ID, type="workspace", position=0.0, state="active",
+            content={"title": "Workspace"}, created_at=now, updated_at=now,
+        ))
+        db.commit()
+    token = s.create_token(user_id)
+
+    with TestClient(app) as client:
+        client.cookies.set("session", token)
+        with client.websocket_connect("/ws") as ws:
+            response = client.post(
+                "/api/blocks",
+                json={"type": "page", "parent_id": str(WORKSPACE_ROOT_ID)},
+            )
+            assert response.status_code == 201
+            message = json.loads(ws.receive_text())
+
+    assert message["type"] == "block.event"
+    assert message["payload"]["event_type"] == "created"
+    assert message["payload"]["block_id"] == response.json()["id"]

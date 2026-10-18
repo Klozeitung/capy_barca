@@ -68,22 +68,25 @@ const block = computed<Block | null>(() =>
   blockStore.blocks[props.entryId] ?? null,
 )
 
-const entry = computed<DatabaseEntry | null>(() => {
-  const entries = dbStore.getEntries(props.databaseId)
-  return entries.find((e) => e.id === props.entryId) ?? null
-})
+const entry = computed<DatabaseEntry | null>(() =>
+  dbStore.getEntry(props.databaseId, props.entryId),
+)
 
+/**
+ * Load the entry block, its content, and the entry with its values and
+ * resolved relations. Only this one entry is fetched, never its database.
+ * The schemas come first because the relations are filed by them.
+ */
 async function loadEntry(): Promise<void> {
   loading.value = true
   error.value = false
   try {
-    await blockStore.fetchBlock(props.entryId)
-    await blockStore.fetchChildren(props.entryId)
-    // Ensure schemas and entries are loaded for the property section.
-    await dbStore.fetchSchemas(props.databaseId)
-    if (!entry.value) {
-      await dbStore.fetchEntries(props.databaseId)
-    }
+    await Promise.all([
+      blockStore.fetchBlock(props.entryId),
+      blockStore.fetchTree(props.entryId),
+      dbStore.fetchSchemas(props.databaseId)
+        .then(() => dbStore.fetchEntry(props.databaseId, props.entryId)),
+    ])
   } catch {
     error.value = true
   } finally {
@@ -98,7 +101,7 @@ watch(() => props.entryId, () => loadEntry())
 // ── WebSocket sync ────────────────────────────────────────────────────────────
 
 /**
- * Re-fetch this entry's data whenever the backend broadcasts an update for the
+ * Re-fetch this entry whenever the backend broadcasts an update for the
  * owning database. Value mutations broadcast database_entries_updated with
  * block_id = databaseId; this covers, in particular, a bilateral relation whose
  * mirror value was written on this entry server-side (from this or another
@@ -111,7 +114,7 @@ watch(() => props.entryId, () => loadEntry())
 function _onWsEvent(e: Event): void {
   const { event_type, block_id } = (e as CustomEvent<BlockEventPayload>).detail
   if (event_type === 'database_entries_updated' && block_id === props.databaseId) {
-    dbStore.fetchEntries(props.databaseId)
+    dbStore.fetchEntry(props.databaseId, props.entryId).catch(() => undefined)
   }
 }
 

@@ -1,11 +1,13 @@
 """
-Tests for the shared conftest.py fixture.
+Tests for the shared conftest.py fixtures.
 
-The isolated_db fixture is autouse, so every test in this file already
-runs inside an isolated in-memory SQLite database. The tests here verify
-that the fixture does what it promises: correct engine dialect, table
-presence, and full isolation between test invocations.
+The isolated_db fixture is autouse, so every test in this file already runs
+against an emptied PostgreSQL test database. The tests here verify that the
+fixtures do what they promise: the right database, a migrated schema, and
+full isolation between test invocations.
 """
+import os
+
 from sqlalchemy import inspect, text
 
 import app.session.session as s
@@ -13,15 +15,40 @@ from app.blocks.models import WORKSPACE_ROOT_ID
 from app.session.session import SessionRecord
 
 
-def test_session_local_uses_sqlite_in_tests():
-    """The patched SessionLocal must connect to SQLite, not PostgreSQL."""
+def test_session_local_uses_postgresql_in_tests():
+    """The patched SessionLocal must connect to PostgreSQL."""
     with s.SessionLocal() as db:
         dialect = db.bind.dialect.name
-    assert dialect == "sqlite"
+    assert dialect == "postgresql"
+
+
+def test_session_local_targets_the_test_database():
+    """Every session reaches the database named by TEST_DATABASE_URL."""
+    with s.SessionLocal() as db:
+        name = db.execute(text("SELECT current_database()")).scalar_one()
+    assert name.endswith("_test")
+
+
+def test_database_url_is_redirected_to_the_test_database():
+    """
+    Application code that reads DATABASE_URL directly must see the test
+    database too, so nothing can reach another database by bypassing the
+    patched session factories.
+    """
+    assert os.environ["DATABASE_URL"] == os.environ["TEST_DATABASE_URL"]
+
+
+def test_schema_is_built_by_the_migrations():
+    """The schema comes from Alembic, so the version table is present."""
+    with s.SessionLocal() as db:
+        table_names = inspect(db.bind).get_table_names()
+        version = db.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+    assert "alembic_version" in table_names
+    assert version
 
 
 def test_sessions_table_exists():
-    """The SessionRecord table must be created by the fixture before each test."""
+    """The SessionRecord table must exist before each test."""
     with s.SessionLocal() as db:
         table_names = inspect(db.bind).get_table_names()
     assert SessionRecord.__tablename__ in table_names
@@ -32,6 +59,18 @@ def test_database_is_empty_at_test_start():
     with s.SessionLocal() as db:
         count = db.query(SessionRecord).count()
     assert count == 0
+
+
+def test_seeded_rows_are_cleared_as_well():
+    """
+    Migration 0002 seeds the workspace root block. The isolation fixture
+    removes it with every other row, so tests start from the same empty state
+    regardless of what the migrations insert.
+    """
+    from app.blocks.models import Block
+
+    with s.SessionLocal() as db:
+        assert db.get(Block, WORKSPACE_ROOT_ID) is None
 
 
 def test_tokens_written_in_test_are_visible_within_same_test():
@@ -73,21 +112,27 @@ def test_deps_get_db_uses_the_isolated_session():
     its own. The fixture therefore has to redirect that module's SessionLocal,
     and this test fails if that patch is ever dropped.
     """
+    import asyncio
+
     from app.session.deps import get_db
 
-    generator = get_db()
-    db = next(generator)
-    try:
-        assert db.bind.dialect.name == "sqlite"
-    finally:
-        generator.close()
+    async def _run():
+        generator = get_db()
+        db = await generator.__anext__()
+        try:
+            assert db.bind.dialect.name == "postgresql"
+            name = db.execute(text("SELECT current_database()")).scalar_one()
+            assert name.endswith("_test")
+        finally:
+            await generator.aclose()
+
+    asyncio.run(_run())
 
 
 def test_media_files_table_exists():
     """
-    Every model has to be imported by conftest before create_all runs, or its
-    table simply is not there and the tests that need it fail somewhere far
-    from the cause.
+    The media table is created by its own migration. If it is missing, the
+    tests that need it fail somewhere far from the cause.
     """
     from app.media.model import MediaFile
 
@@ -107,3 +152,22 @@ def test_http_client_authenticates_the_block_router(http_client):
     """
     response = http_client.get(f"/api/blocks/{WORKSPACE_ROOT_ID}")
     assert response.status_code == 200
+
+
+# ─── Query counter ────────────────────────────────────────────────────────────
+
+
+def test_count_queries_counts_statements_inside_the_block(count_queries):
+    with count_queries() as counter:
+        with s.SessionLocal() as db:
+            db.execute(text("SELECT 1"))
+            db.execute(text("SELECT 2"))
+    assert counter.count == 2
+
+
+def test_count_queries_stops_counting_after_the_block(count_queries):
+    with count_queries() as counter:
+        pass
+    with s.SessionLocal() as db:
+        db.execute(text("SELECT 1"))
+    assert counter.count == 0

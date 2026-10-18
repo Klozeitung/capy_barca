@@ -21,7 +21,14 @@
  * - vFocus                  – Vue directive: focus an element when it mounts
  */
 import type { Directive } from 'vue'
-import type { DatabaseEntry, PropertySchema } from '@/stores/database'
+import {
+  normalizeSelectOption,
+  optionLabel,
+  schemaOptions,
+  type DatabaseEntry,
+  type PropertySchema,
+  type SelectOption,
+} from '@/stores/database'
 import { useAuthStore } from '@/stores/auth'
 
 // ── v-focus directive ─────────────────────────────────────────────────────────
@@ -100,7 +107,8 @@ export type NuanceOrientation = 'prepended' | 'appended'
 
 export interface NuanceConfig {
   enabled: boolean
-  options: Array<{ label: string; color?: string }>
+  /** Shared by both sides of a bilateral relation; values store the ids. */
+  options: SelectOption[]
   affix1: string
   affix2: string
   orientation: NuanceOrientation
@@ -119,7 +127,7 @@ export function getNuanceConfig(schema: PropertySchema): NuanceConfig | null {
     raw.orientation === 'appended' ? 'appended' : 'prepended'
   return {
     enabled: true,
-    options: (raw.options as Array<{ label: string; color?: string }> | undefined) ?? [],
+    options: Array.isArray(raw.options) ? raw.options.map(normalizeSelectOption) : [],
     affix1: typeof raw.affix1 === 'string' ? raw.affix1 : '',
     affix2: typeof raw.affix2 === 'string' ? raw.affix2 : '',
     orientation,
@@ -127,17 +135,31 @@ export function getNuanceConfig(schema: PropertySchema): NuanceConfig | null {
 }
 
 /**
- * Read the nuance label stored for a single linked entry within a resolved
- * value or timeline slot.  Returns ``''`` when none is present.
+ * Read the nuance option id stored for a single linked entry within a
+ * resolved value or timeline slot.  Returns ``''`` when none is present.
  */
-export function nuanceLabelFor(
+export function nuanceIdFor(
   slotOrValue: Record<string, unknown> | null,
   relatedId: string,
 ): string {
   if (!slotOrValue) return ''
   const map = slotOrValue.nuances as Record<string, string> | undefined
-  const label = map?.[relatedId]
-  return typeof label === 'string' ? label : ''
+  const id = map?.[relatedId]
+  return typeof id === 'string' ? id : ''
+}
+
+/**
+ * Read the nuance label of a single linked entry within a resolved value or
+ * timeline slot: the label of the stored option id. Returns ``''`` when none
+ * is stored or the option no longer exists.
+ */
+export function nuanceLabelFor(
+  slotOrValue: Record<string, unknown> | null,
+  relatedId: string,
+  nuance: NuanceConfig | null,
+): string {
+  if (!nuance) return ''
+  return optionLabel(nuance.options, nuanceIdFor(slotOrValue, relatedId))
 }
 
 /**
@@ -206,12 +228,9 @@ export function getKeyingConfig(schema: PropertySchema): KeyingConfig | null {
   }
 }
 
-/** Labels of a select property's options, in their configured order. */
-function selectOptionLabels(keySchema: PropertySchema): string[] {
-  const raw = (keySchema.config?.options as unknown[] | undefined) ?? []
-  return raw.map(o =>
-    typeof o === 'string' ? o : String((o as Record<string, unknown>)?.label ?? ''),
-  )
+/** Ids of a select property's options, in their configured order. */
+function selectOptionIds(keySchema: PropertySchema): string[] {
+  return schemaOptions(keySchema).map(o => o.id)
 }
 
 /**
@@ -223,7 +242,7 @@ function selectOptionLabels(keySchema: PropertySchema): string[] {
  *   number – the numeric value
  *   select – the index of the option in its configured order, so sorting
  *            follows the option order rather than the alphabet. A multi-select
- *            sorts by its earliest option; a label that is no longer among the
+ *            sorts by its earliest option; an id that is no longer among the
  *            options counts as empty.
  *   text   – the trimmed text
  */
@@ -247,14 +266,14 @@ export function keyComparable(
       return null
     }
     case 'select': {
-      const labels = selectOptionLabels(keySchema)
+      const ids = selectOptionIds(keySchema)
       const mode = (keySchema.config?.mode as string | undefined) ?? 'single'
       const selected =
         mode === 'multiple'
           ? ((value.options as string[] | undefined) ?? [])
           : [(value.option as string | undefined) ?? '']
       const indices = selected
-        .map(label => labels.indexOf(label))
+        .map(id => ids.indexOf(id))
         .filter(i => i >= 0)
       return indices.length > 0 ? Math.min(...indices) : null
     }
@@ -510,6 +529,22 @@ export function formatDateRangeResult(value: DateRangeResult, format: string): s
 
 const euroFormatter = new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' })
 
+/**
+ * The labels of a stored select value, joined for display or export. Values
+ * store option ids; an id the property no longer offers is left out.
+ */
+export function formatSelectValue(value: Record<string, unknown>, schema: PropertySchema): string {
+  const options = schemaOptions(schema)
+  const mode = (schema.config?.mode as string | undefined) ?? 'single'
+  const ids = mode === 'multiple'
+    ? ((value.options as string[] | undefined) ?? [])
+    : [value.option]
+  return ids
+    .map(id => optionLabel(options, id))
+    .filter(Boolean)
+    .join(', ')
+}
+
 export function formatSlotScalar(slotVal: Record<string, unknown>, schema: PropertySchema): string {
   switch (schema.type) {
     case 'text':
@@ -523,11 +558,8 @@ export function formatSlotScalar(slotVal: Record<string, unknown>, schema: Prope
     }
     case 'checkbox':
       return slotVal.checked ? '☑' : '☐'
-    case 'select': {
-      const m = (schema.config?.mode as string | undefined) ?? 'single'
-      if (m === 'multiple') return ((slotVal.options as string[] | undefined) ?? []).join(', ')
-      return (slotVal.option as string | undefined) ?? ''
-    }
+    case 'select':
+      return formatSelectValue(slotVal, schema)
     case 'date': {
       const start  = (slotVal.start as string | undefined) ?? ''
       const end    = (slotVal.end   as string | undefined) ?? ''
@@ -711,7 +743,7 @@ export function displayValue(
           .map(id => {
             const base = exportRelationTitle(id, resolveEntryTitle)
             if (base === null) return ''
-            return formatNuancedRelation(base, nuanceLabelFor(slot, id), nuanceCfg)
+            return formatNuancedRelation(base, nuanceLabelFor(slot, id, nuanceCfg), nuanceCfg)
           })
           .filter(Boolean)
           .join(', ')
@@ -752,13 +784,8 @@ export function displayValue(
         : String(val.number)
     }
 
-    case 'select': {
-      const selectMode = (schema.config?.mode as string | undefined) ?? 'single'
-      if (selectMode === 'multiple') {
-        return ((val.options as string[] | undefined) ?? []).join(', ')
-      }
-      return (val.option as string | undefined) ?? ''
-    }
+    case 'select':
+      return formatSelectValue(val, schema)
 
     case 'date': {
       const start       = (val.start       as string  | undefined) ?? ''
@@ -847,7 +874,7 @@ export function displayValue(
       }
 
       return ids
-        .map(id => formatNuancedRelation(titleOf(id), nuanceLabelFor(val, id), nuanceCfg))
+        .map(id => formatNuancedRelation(titleOf(id), nuanceLabelFor(val, id, nuanceCfg), nuanceCfg))
         .join(', ')
     }
 

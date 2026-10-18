@@ -7,11 +7,22 @@
  *
  * Picker position is computed at open time from the cell's bounding rect so
  * it never overflows the viewport.
+ *
+ * The value stores option ids, { options: [id, ...] }, so renaming an option
+ * never touches it. Chips show the labels the property's config gives them.
  */
 import { ref, computed, nextTick, watch, onUnmounted } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
-import { useDatabaseStore, type DatabaseEntry, type PropertySchema, normalizeSelectOption, optionColorStyle } from '@/stores/database'
+import {
+  useDatabaseStore,
+  type DatabaseEntry,
+  type PropertySchema,
+  type SelectOption,
+  newOptionId,
+  optionColorStyle,
+  schemaOptions,
+} from '@/stores/database'
 import { useEscapeKey } from '@/composables/useEscapeStack'
 import { getCellValue, getTimelineDisplayMode } from './cellUtils'
 import TimelineEditor from './TimelineEditor.vue'
@@ -96,13 +107,22 @@ async function openPicker(e: MouseEvent) {
 
 // ── Value helpers ─────────────────────────────────────────────────────────────
 
+/** Ids of the selected options, in the order they were chosen. */
 function selectedValues(): string[] {
   const val = getCellValue(props.entry, props.schema.id, props.schema)
   return (val?.options as string[] | undefined) ?? []
 }
 
-function availableOptions() {
-  return ((props.schema.config?.options as (string | object)[] | undefined) ?? []).map(normalizeSelectOption)
+function availableOptions(): SelectOption[] {
+  return schemaOptions(props.schema)
+}
+
+/** The selected options that the property offers, in the order chosen. */
+function selectedOptions(): SelectOption[] {
+  const byId = new Map(availableOptions().map((o) => [o.id, o]))
+  return selectedValues()
+    .map((id) => byId.get(id))
+    .filter((o): o is SelectOption => o !== undefined)
 }
 
 const filteredOptions = computed(() => {
@@ -144,16 +164,11 @@ function scrollActiveIntoView() {
   })
 }
 
-function chipStyle(label: string): Record<string, string> {
-  const opt = availableOptions().find(o => o.label === label)
-  return optionColorStyle(opt?.color)
-}
-
-async function toggleOption(label: string) {
+async function toggleOption(id: string) {
   const current = selectedValues()
-  const idx = current.indexOf(label)
+  const idx = current.indexOf(id)
   const updated = idx === -1
-    ? [...current, label]
+    ? [...current, id]
     : current.filter((_, i) => i !== idx)
   await dbStore.upsertValue(
     props.databaseId,
@@ -163,9 +178,9 @@ async function toggleOption(label: string) {
   )
 }
 
-async function removeOption(label: string, event: MouseEvent) {
+async function removeOption(id: string, event: MouseEvent) {
   event.stopPropagation()
-  const updated = selectedValues().filter(v => v !== label)
+  const updated = selectedValues().filter(v => v !== id)
   await dbStore.upsertValue(
     props.databaseId,
     props.entry.id,
@@ -179,18 +194,18 @@ async function createAndToggle() {
   if (!label || isCreating.value) return
   isCreating.value = true
   try {
-    const existing = (props.schema.config?.options as (string | object)[] | undefined) ?? []
-    const normalized = existing.map(normalizeSelectOption)
-    const updated = [...normalized, { label }]
+    // The id is chosen here so the new option can be selected right away;
+    // the backend keeps ids it is given.
+    const created = { id: newOptionId(), label }
     await dbStore.updateSchema(props.databaseId, props.schema.id, {
-      config: { ...(props.schema.config ?? {}), options: updated },
+      config: { ...(props.schema.config ?? {}), options: [...availableOptions(), created] },
     })
     const current = selectedValues()
     await dbStore.upsertValue(
       props.databaseId,
       props.entry.id,
       props.schema.id,
-      { options: [...current, label] },
+      { options: [...current, created.id] },
     )
     searchQuery.value = ''
     await nextTick()
@@ -216,17 +231,17 @@ async function createAndToggle() {
   <div v-else class="db__ms-wrap" ref="cellEl" @click.stop="openPicker">
     <div class="db__ms-tags">
       <span
-        v-for="label in selectedValues()"
-        :key="label"
+        v-for="opt in selectedOptions()"
+        :key="opt.id"
         class="db__ms-tag"
-        :style="chipStyle(label)"
+        :style="optionColorStyle(opt.color)"
       >
-        <span class="db__ms-tag-text">{{ label }}</span>
+        <span class="db__ms-tag-text">{{ opt.label }}</span>
         <button
           v-if="!hasTimeline()"
           class="db__ms-tag-remove"
           :aria-label="t('actions.remove')"
-          @click="removeOption(label, $event)"
+          @click="removeOption(opt.id, $event)"
         >
           <Icon icon="mdi:close" width="9" height="9" />
         </button>
@@ -256,13 +271,13 @@ async function createAndToggle() {
           ref="searchInputEl"
           v-model="searchQuery"
           class="db__ms-search"
-          placeholder="Search..."
+          :placeholder="t('db.select.searchPlaceholder')"
           @keydown.up.prevent="onKeyNav"
           @keydown.down.prevent="onKeyNav"
           @keydown.enter.prevent="
             activeIndex >= 0
               ? (activeIndex < filteredOptions.length
-                  ? toggleOption(filteredOptions[activeIndex].label)
+                  ? toggleOption(filteredOptions[activeIndex].id)
                   : createAndToggle())
               : showCreate
                 ? createAndToggle()
@@ -274,7 +289,7 @@ async function createAndToggle() {
 
       <label
         v-for="(opt, i) in filteredOptions"
-        :key="opt.label"
+        :key="opt.id"
         class="db__ms-option"
         :class="{ 'db__ms-option--focused': activeIndex === i }"
         :data-nav-active="activeIndex === i || undefined"
@@ -282,8 +297,8 @@ async function createAndToggle() {
       >
         <input
           type="checkbox"
-          :checked="selectedValues().includes(opt.label)"
-          @change="toggleOption(opt.label)"
+          :checked="selectedValues().includes(opt.id)"
+          @change="toggleOption(opt.id)"
         />
         <span class="db__ms-option-chip" :style="optionColorStyle(opt.color)">{{ opt.label }}</span>
       </label>
@@ -303,7 +318,7 @@ async function createAndToggle() {
         @mouseenter="activeIndex = filteredOptions.length"
       >
         <Icon icon="mdi:plus-circle-outline" width="13" height="13" />
-        Create "{{ searchQuery.trim() }}"
+        {{ t('db.select.create', { query: searchQuery.trim() }) }}
       </button>
 
       <button class="db__ms-close" @click="emit('deactivate')">

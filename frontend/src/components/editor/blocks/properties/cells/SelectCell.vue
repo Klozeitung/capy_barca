@@ -4,7 +4,7 @@
  *
  * Single-select dropdown cell. When isActive a floating custom picker
  * (Teleported to <body>) is shown; otherwise the selected option is
- * displayed as a coloured chip (#27).
+ * displayed as a coloured chip.
  *
  * The picker includes:
  * - A search input that filters available options in real time.
@@ -12,12 +12,21 @@
  *   option. Selecting it appends the new option to the schema config and
  *   immediately selects it for this cell.
  *
- * Options stored in config.options as SelectOption[] (or legacy string[]).
- * Value stored in DB as { option: 'label-string' } — unchanged.
+ * Options are stored in config.options as SelectOption[]. The value stores
+ * the option's id, { option: id }, so renaming an option never touches it.
  */
 import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 import { Icon } from '@iconify/vue'
-import { useDatabaseStore, type DatabaseEntry, type PropertySchema, normalizeSelectOption, optionColorStyle } from '@/stores/database'
+import { useI18n } from 'vue-i18n'
+import {
+  useDatabaseStore,
+  type DatabaseEntry,
+  type PropertySchema,
+  findOption,
+  newOptionId,
+  optionColorStyle,
+  schemaOptions,
+} from '@/stores/database'
 import { useEscapeKey } from '@/composables/useEscapeStack'
 import { getCellValue, getTimelineDisplayMode } from './cellUtils'
 import TimelineEditor from './TimelineEditor.vue'
@@ -35,6 +44,7 @@ const emit = defineEmits<{
   deactivate: []
 }>()
 
+const { t } = useI18n()
 const dbStore = useDatabaseStore()
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
@@ -105,19 +115,26 @@ watch(() => props.isActive, async (active) => {
 
 // ── Value helpers ─────────────────────────────────────────────────────────────
 
-function currentLabel(): string {
+function currentId(): string {
   return (getCellValue(props.entry, props.schema.id, props.schema)?.option as string | undefined) ?? ''
 }
 
+/** The selected option; undefined when nothing is selected. */
+function currentOption() {
+  return findOption(allOptions(), currentId())
+}
+
+function currentLabel(): string {
+  return currentOption()?.label ?? ''
+}
+
 function currentChipStyle(): Record<string, string> {
-  const label = currentLabel()
-  if (!label) return {}
-  const opt = allOptions().find(o => o.label === label)
-  return optionColorStyle(opt?.color)
+  const opt = currentOption()
+  return opt ? optionColorStyle(opt.color) : {}
 }
 
 function allOptions() {
-  return ((props.schema.config?.options as (string | object)[] | undefined) ?? []).map(normalizeSelectOption)
+  return schemaOptions(props.schema)
 }
 
 const filteredOptions = computed(() => {
@@ -163,12 +180,12 @@ function scrollActiveIntoView() {
 
 // ── Mutations ─────────────────────────────────────────────────────────────────
 
-async function selectOption(label: string) {
+async function selectOption(id: string) {
   await dbStore.upsertValue(
     props.databaseId,
     props.entry.id,
     props.schema.id,
-    label ? { option: label } : null,
+    id ? { option: id } : null,
   )
   emit('deactivate')
 }
@@ -183,17 +200,17 @@ async function createAndSelect() {
   if (!label || isCreating.value) return
   isCreating.value = true
   try {
-    const existing = (props.schema.config?.options as (string | object)[] | undefined) ?? []
-    const normalized = existing.map(normalizeSelectOption)
-    const updated = [...normalized, { label }]
+    // The id is chosen here so the new option can be selected right away;
+    // the backend keeps ids it is given.
+    const created = { id: newOptionId(), label }
     await dbStore.updateSchema(props.databaseId, props.schema.id, {
-      config: { ...(props.schema.config ?? {}), options: updated },
+      config: { ...(props.schema.config ?? {}), options: [...allOptions(), created] },
     })
     await dbStore.upsertValue(
       props.databaseId,
       props.entry.id,
       props.schema.id,
-      { option: label },
+      { option: created.id },
     )
     emit('deactivate')
   } finally {
@@ -250,17 +267,17 @@ async function createAndSelect() {
           ref="searchInputEl"
           v-model="searchQuery"
           class="db__sc-search"
-          placeholder="Search..."
+          :placeholder="t('db.select.searchPlaceholder')"
           @keydown.up.prevent="onKeyNav"
           @keydown.down.prevent="onKeyNav"
           @keydown.enter.prevent="
             activeIndex >= 0
               ? (activeIndex < filteredOptions.length
-                  ? selectOption(filteredOptions[activeIndex].label)
+                  ? selectOption(filteredOptions[activeIndex].id)
                   : createAndSelect())
               : showCreate
                 ? createAndSelect()
-                : (filteredOptions[0] && selectOption(filteredOptions[0].label))
+                : (filteredOptions[0] && selectOption(filteredOptions[0].id))
           "
           @click.stop
         />
@@ -268,30 +285,30 @@ async function createAndSelect() {
 
       <!-- Clear selection -->
       <button
-        v-if="currentLabel()"
+        v-if="currentId()"
         class="db__sc-item db__sc-item--clear"
         @click="clearOption"
       >
         <Icon icon="mdi:close-circle-outline" width="13" height="13" />
-        Clear
+        {{ t('db.select.clear') }}
       </button>
 
       <!-- Filtered options -->
       <button
         v-for="(opt, i) in filteredOptions"
-        :key="opt.label"
+        :key="opt.id"
         class="db__sc-item"
         :class="{
-          'db__sc-item--selected': opt.label === currentLabel(),
+          'db__sc-item--selected': opt.id === currentId(),
           'db__sc-item--focused': activeIndex === i,
         }"
         :data-nav-active="activeIndex === i || undefined"
-        @click="selectOption(opt.label)"
+        @click="selectOption(opt.id)"
         @mouseenter="activeIndex = i"
       >
         <span class="db__sc-chip" :style="optionColorStyle(opt.color)">{{ opt.label }}</span>
         <Icon
-          v-if="opt.label === currentLabel()"
+          v-if="opt.id === currentId()"
           icon="mdi:check"
           width="13"
           height="13"
@@ -304,7 +321,7 @@ async function createAndSelect() {
         v-if="allOptions().length === 0 && !showCreate"
         class="db__sc-empty"
       >
-        No options configured
+        {{ t('db.settings.selectOptionsEmpty') }}
       </div>
 
       <!-- No match — create new option -->
@@ -318,7 +335,7 @@ async function createAndSelect() {
         @mouseenter="activeIndex = filteredOptions.length"
       >
         <Icon icon="mdi:plus-circle-outline" width="13" height="13" />
-        Create "{{ searchQuery.trim() }}"
+        {{ t('db.select.create', { query: searchQuery.trim() }) }}
       </button>
     </div>
   </Teleport>

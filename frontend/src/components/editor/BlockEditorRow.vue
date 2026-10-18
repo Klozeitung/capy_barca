@@ -447,21 +447,32 @@ async function loadContentFromStorage(storageText: string): Promise<void> {
 
 // ── Save helpers ──────────────────────────────────────────────────────────────
 
+/**
+ * Save the editor's text unless it equals what the block already stores.
+ *
+ * Leaving an editor without typing, or an input event that changed nothing,
+ * would otherwise write the same text again: a request and a history entry
+ * for every such block.
+ */
+async function saveText(): Promise<void> {
+  const text = serializeToStorage()
+  if (text === readBlockText(props.block)) return
+  await blockStore.updateBlock(props.block.id, {
+    content: { ...(props.block.content ?? {}), text },
+  })
+}
+
 function scheduleSave(): void {
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
     saveTimer = null
-    blockStore.updateBlock(props.block.id, {
-      content: { ...(props.block.content ?? {}), text: serializeToStorage() },
-    })
+    saveText()
   }, 500)
 }
 
 async function flushSave(): Promise<void> {
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
-  await blockStore.updateBlock(props.block.id, {
-    content: { ...(props.block.content ?? {}), text: serializeToStorage() },
-  })
+  await saveText()
 }
 
 onBeforeUnmount(() => {

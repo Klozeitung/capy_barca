@@ -4,7 +4,7 @@ import { useBlockStore } from '@/stores/blocks'
 import { useUiStore } from '@/stores/ui'
 import { useDrag } from '@/composables/useDrag'
 import { WS_BLOCK_EVENT, useWsStore } from '@/stores/ws'
-import { useDatabaseStore } from '@/stores/database'
+import { useDatabaseStore, type PropertySchema } from '@/stores/database'
 import type { Block } from '@/stores/blocks'
 import type { BlockEventPayload } from '@/stores/ws'
 
@@ -81,6 +81,100 @@ describe('useBlockStore', () => {
 
     await store.fetchChildren('parent-id', true)
 
+    expect(apiClient.get).toHaveBeenCalledOnce()
+  })
+
+  it('shares one request between concurrent fetchChildren calls', async () => {
+    let resolve: (value: unknown) => void = () => {}
+    vi.mocked(apiClient.get).mockReturnValueOnce(new Promise((r) => { resolve = r }))
+    const store = useBlockStore()
+
+    const first = store.fetchChildren('parent-id')
+    const second = store.fetchChildren('parent-id')
+    resolve([{ id: 'c1', parent_id: 'parent-id', type: 'paragraph', position: 1.0, state: 'active' }])
+    await Promise.all([first, second])
+
+    expect(apiClient.get).toHaveBeenCalledOnce()
+    expect(store.childrenMap['parent-id']).toEqual(['c1'])
+    expect(store.loadingChildren['parent-id']).toBe(false)
+  })
+
+  it('lets only the latest children request write the cache', async () => {
+    let resolveOld: (value: unknown) => void = () => {}
+    vi.mocked(apiClient.get)
+      .mockReturnValueOnce(new Promise((r) => { resolveOld = r }))
+      .mockResolvedValueOnce([{ id: 'new', parent_id: 'parent-id', type: 'paragraph', position: 1.0, state: 'active' }])
+    const store = useBlockStore()
+
+    const older = store.fetchChildren('parent-id')
+    await store.fetchChildren('parent-id', true)
+    resolveOld([{ id: 'old', parent_id: 'parent-id', type: 'paragraph', position: 1.0, state: 'active' }])
+    await older
+
+    expect(store.childrenMap['parent-id']).toEqual(['new'])
+  })
+
+  it('fetchTree caches every loaded parent and the mentioned blocks', async () => {
+    const block = (id: string, parent: string, type = 'paragraph', position = 1.0) => ({
+      id, parent_id: parent, type, position, state: 'active',
+      reference_id: null, content: null, icon: null, cover: null,
+    })
+    vi.mocked(apiClient.get).mockResolvedValueOnce({
+      blocks: [
+        block('layout', 'page', 'layout', 1.0),
+        block('text', 'page', 'paragraph', 2.0),
+        block('col-a', 'layout', 'column', 1.0),
+        block('col-b', 'layout', 'column', 2.0),
+        block('inner', 'col-a'),
+      ],
+      loaded: ['page', 'layout', 'col-a', 'col-b'],
+      mentioned: [block('other', 'root', 'page')],
+    })
+    const store = useBlockStore()
+
+    const children = await store.fetchTree('page')
+
+    expect(apiClient.get).toHaveBeenCalledWith('/api/blocks/page/tree')
+    expect(children.map((b) => b.id)).toEqual(['layout', 'text'])
+    expect(store.childrenMap['layout']).toEqual(['col-a', 'col-b'])
+    expect(store.childrenMap['col-a']).toEqual(['inner'])
+    expect(store.childrenMap['col-b']).toEqual([])
+    expect(store.hasLoadedChildren('inner')).toBe(false)
+    expect(store.blocks['other']).toBeDefined()
+    expect(store.loadingChildren['page']).toBe(false)
+  })
+
+  it('fetchChildren waits for a running tree load instead of asking itself', async () => {
+    let resolve: (value: unknown) => void = () => {}
+    vi.mocked(apiClient.get).mockReturnValueOnce(new Promise((r) => { resolve = r }))
+    const store = useBlockStore()
+
+    const tree = store.fetchTree('page')
+    const sameTree = store.fetchTree('page')
+    const children = store.fetchChildren('layout')
+    resolve({
+      blocks: [
+        { id: 'layout', parent_id: 'page', type: 'layout', position: 1.0, state: 'active' },
+        { id: 'col', parent_id: 'layout', type: 'column', position: 1.0, state: 'active' },
+      ],
+      loaded: ['page', 'layout', 'col'],
+      mentioned: [],
+    })
+    await Promise.all([tree, sameTree])
+
+    expect((await children).map((b) => b.id)).toEqual(['col'])
+    expect(apiClient.get).toHaveBeenCalledOnce()
+  })
+
+  it('fetchTree uses the cache unless forced', async () => {
+    const store = useBlockStore()
+    store.childrenMap['page'] = []
+
+    await store.fetchTree('page')
+    expect(apiClient.get).not.toHaveBeenCalled()
+
+    vi.mocked(apiClient.get).mockResolvedValueOnce({ blocks: [], loaded: ['page'], mentioned: [] })
+    await store.fetchTree('page', true)
     expect(apiClient.get).toHaveBeenCalledOnce()
   })
 
@@ -775,17 +869,27 @@ describe('useDatabaseStore', () => {
 
   // ── createEntry ─────────────────────────────────────────────────────────────
 
-  it('createEntry posts to correct endpoint and re-fetches', async () => {
+  it('createEntry posts to correct endpoint without loading the database', async () => {
     const created = makeEntry({ id: 'entry-new', values: {} })
     vi.mocked(apiClient.post).mockResolvedValueOnce(created)
-    vi.mocked(apiClient.get).mockResolvedValueOnce([created])
 
     const store = useDatabaseStore()
     const result = await store.createEntry('db-1')
 
     expect(apiClient.post).toHaveBeenCalledWith('/api/databases/db-1/entries')
     expect(result.id).toBe('entry-new')
-    expect(store.getEntries('db-1')).toHaveLength(1)
+    expect(apiClient.get).not.toHaveBeenCalled()
+  })
+
+  it('duplicateEntry posts to correct endpoint without loading the database', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce(makeEntry({ id: 'copy' }))
+
+    const store = useDatabaseStore()
+    const result = await store.duplicateEntry('db-1', 'entry-1')
+
+    expect(apiClient.post).toHaveBeenCalledWith('/api/databases/db-1/entries/entry-1/duplicate')
+    expect(result.id).toBe('copy')
+    expect(apiClient.get).not.toHaveBeenCalled()
   })
 
   // ── upsertValue ─────────────────────────────────────────────────────────────
@@ -1182,55 +1286,98 @@ describe('useDatabaseStore', () => {
 
 // ── Database Store: view results, search, live updates ───────────────────────
 
-describe('useDatabaseStore view query results', () => {
+function page(entries: ReturnType<typeof makeEntry>[], total = entries.length, extra = {}) {
+  return { entries, total, offset: 0, relations: {}, key_values: {}, ...extra }
+}
+
+const FIRST_PAGE = { offset: 0, limit: 100, search: '' }
+
+describe('useDatabaseStore view pages', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
   })
 
-  it('queryEntries does not write the full entry cache', async () => {
-    vi.mocked(apiClient.post).mockResolvedValueOnce({ entries: [makeEntry()], total: 500 })
+  it('loadViewPage asks the view endpoint for the requested range', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce(page([makeEntry()]))
 
     const store = useDatabaseStore()
-    await store.queryEntries('db-1', { filter_groups: [], sorts: [], limit: 100 })
+    await store.loadViewPage('db-1', 'view-1', { offset: 100, limit: 50, search: 'abc' }, 'k')
+
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/api/databases/db-1/views/view-1/entries',
+      { offset: 100, limit: 50, search: 'abc' },
+    )
+  })
+
+  it('loadViewPage does not write the full entry cache', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce(page([makeEntry()], 500))
+
+    const store = useDatabaseStore()
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
 
     // A page of a database must never stand in for the whole of it.
     expect(store.entries['db-1']).toBeUndefined()
   })
 
-  it('queryEntries keeps a keyed result and returns that stored list', async () => {
-    vi.mocked(apiClient.post).mockResolvedValueOnce({ entries: [makeEntry()], total: 1 })
+  it('loadViewPage keeps the result under its key and returns that stored list', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce(page([makeEntry()], 1))
 
     const store = useDatabaseStore()
-    const result = await store.queryEntries(
-      'db-1', { filter_groups: [], sorts: [] }, 'view-a',
-    )
+    const result = await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
 
     expect(store.queryResults['view-a'].databaseId).toBe('db-1')
     expect(result.entries).toBe(store.queryResults['view-a'].entries)
     expect(result.total).toBe(1)
   })
 
-  it('a late response to an older query does not replace a newer result', async () => {
+  it('appending adds the next batch below and skips entries already shown', async () => {
+    vi.mocked(apiClient.post)
+      .mockResolvedValueOnce(page([makeEntry({ id: 'a' }), makeEntry({ id: 'b' })], 4))
+      .mockResolvedValueOnce(page([makeEntry({ id: 'b' }), makeEntry({ id: 'c' })], 4))
+
+    const store = useDatabaseStore()
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
+    const result = await store.loadViewPage(
+      'db-1', 'view-1', { offset: 2, limit: 2, search: '' }, 'view-a', true,
+    )
+
+    expect(result.entries.map((e) => e.id)).toEqual(['a', 'b', 'c'])
+    expect(result.total).toBe(4)
+  })
+
+  it('without append the loaded range is replaced', async () => {
+    vi.mocked(apiClient.post)
+      .mockResolvedValueOnce(page([makeEntry({ id: 'a' })]))
+      .mockResolvedValueOnce(page([makeEntry({ id: 'z' })]))
+
+    const store = useDatabaseStore()
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
+
+    expect(store.queryResults['view-a'].entries.map((e) => e.id)).toEqual(['z'])
+  })
+
+  it('a late response to an older request does not replace a newer result', async () => {
     let resolveOld: (v: unknown) => void = () => {}
     vi.mocked(apiClient.post)
       .mockImplementationOnce(() => new Promise((r) => { resolveOld = r }))
-      .mockResolvedValueOnce({ entries: [makeEntry({ id: 'new' })], total: 1 })
+      .mockResolvedValueOnce(page([makeEntry({ id: 'new' })]))
 
     const store = useDatabaseStore()
-    const older = store.queryEntries('db-1', { filter_groups: [], sorts: [] }, 'view-a')
-    await store.queryEntries('db-1', { filter_groups: [], sorts: [] }, 'view-a')
-    resolveOld({ entries: [makeEntry({ id: 'old' })], total: 1 })
+    const older = store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
+    resolveOld(page([makeEntry({ id: 'old' })]))
     await older
 
     expect(store.queryResults['view-a'].entries.map((e) => e.id)).toEqual(['new'])
   })
 
   it('releaseQueryResult drops the keyed result', async () => {
-    vi.mocked(apiClient.post).mockResolvedValueOnce({ entries: [makeEntry()], total: 1 })
+    vi.mocked(apiClient.post).mockResolvedValueOnce(page([makeEntry()]))
 
     const store = useDatabaseStore()
-    await store.queryEntries('db-1', { filter_groups: [], sorts: [] }, 'view-a')
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
     store.releaseQueryResult('view-a')
 
     expect(store.queryResults['view-a']).toBeUndefined()
@@ -1238,25 +1385,25 @@ describe('useDatabaseStore view query results', () => {
 
   it('getEntries falls back to the rows open views have loaded', async () => {
     vi.mocked(apiClient.post)
-      .mockResolvedValueOnce({ entries: [makeEntry({ id: 'a' }), makeEntry({ id: 'b' })], total: 2 })
-      .mockResolvedValueOnce({ entries: [makeEntry({ id: 'b' }), makeEntry({ id: 'c' })], total: 2 })
+      .mockResolvedValueOnce(page([makeEntry({ id: 'a' }), makeEntry({ id: 'b' })]))
+      .mockResolvedValueOnce(page([makeEntry({ id: 'b' }), makeEntry({ id: 'c' })]))
 
     const store = useDatabaseStore()
-    await store.queryEntries('db-1', { filter_groups: [], sorts: [] }, 'view-a')
-    await store.queryEntries('db-1', { filter_groups: [], sorts: [] }, 'view-b')
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
+    await store.loadViewPage('db-1', 'view-2', FIRST_PAGE, 'view-b')
 
     expect(store.getEntries('db-1').map((e) => e.id)).toEqual(['a', 'b', 'c'])
     expect(store.getEntries('db-2')).toEqual([])
   })
 
   it('getEntries prefers the full list once it is loaded', async () => {
-    vi.mocked(apiClient.post).mockResolvedValueOnce({ entries: [makeEntry({ id: 'a' })], total: 1 })
+    vi.mocked(apiClient.post).mockResolvedValueOnce(page([makeEntry({ id: 'a' })]))
     vi.mocked(apiClient.get).mockResolvedValueOnce([
       makeEntry({ id: 'a' }), makeEntry({ id: 'z' }),
     ])
 
     const store = useDatabaseStore()
-    await store.queryEntries('db-1', { filter_groups: [], sorts: [] }, 'view-a')
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
     await store.fetchEntries('db-1')
 
     expect(store.getEntries('db-1').map((e) => e.id)).toEqual(['a', 'z'])
@@ -1264,18 +1411,160 @@ describe('useDatabaseStore view query results', () => {
 
   it('upsertValue patches the rows of every view of that database', async () => {
     vi.mocked(apiClient.post)
-      .mockResolvedValueOnce({ entries: [makeEntry({ id: 'e1', values: {} })], total: 1 })
-      .mockResolvedValueOnce({ entries: [makeEntry({ id: 'e1', values: {} })], total: 1 })
+      .mockResolvedValueOnce(page([makeEntry({ id: 'e1', values: {} })]))
+      .mockResolvedValueOnce(page([makeEntry({ id: 'e1', values: {} })]))
     vi.mocked(apiClient.put).mockResolvedValueOnce(undefined)
 
     const store = useDatabaseStore()
-    await store.queryEntries('db-1', { filter_groups: [], sorts: [] }, 'view-a')
-    await store.queryEntries('db-2', { filter_groups: [], sorts: [] }, 'view-other-db')
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
+    await store.loadViewPage('db-2', 'view-2', FIRST_PAGE, 'view-other-db')
     await store.upsertValue('db-1', 'e1', 'schema-1', { text: 'Hi' })
 
     expect(store.queryResults['view-a'].entries[0].values['schema-1']).toEqual({ text: 'Hi' })
     // Same entry id in another database is a different entry.
     expect(store.queryResults['view-other-db'].entries[0].values['schema-1']).toBeUndefined()
+  })
+})
+
+describe('useDatabaseStore relation resolution from pages', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  function storeWithRelation(config: Record<string, unknown> = {}) {
+    const store = useDatabaseStore()
+    const schema = (id: string, type: string, cfg: Record<string, unknown>): PropertySchema => ({
+      id, database_id: 'db-1', name: id, type, config: cfg, position: 1, group: 'Standard',
+    })
+    store.schemas['db-1'] = [
+      schema('link', 'relation', { target_database_id: 'db-2', ...config }),
+      schema('text', 'text', {}),
+    ]
+    return store
+  }
+
+  it('resolved ids get their titles and count as resolved', async () => {
+    const store = storeWithRelation()
+    vi.mocked(apiClient.post).mockResolvedValueOnce(page(
+      [makeEntry({ id: 'e1', values: { link: { related_ids: ['t1'] } } })],
+      1,
+      { relations: { t1: { id: 't1', title: 'Entry A', database_id: 'db-2' } } },
+    ))
+
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'k')
+
+    expect(store.getRelationTitle('t1')).toBe('Entry A')
+    expect(store.isRelationResolved('t1')).toBe(true)
+  })
+
+  it('ids missing from the page resolution count as gone', async () => {
+    const store = storeWithRelation()
+    store.relationTitles['t2'] = { id: 't2', title: 'Old', database_id: 'db-2' }
+    vi.mocked(apiClient.post).mockResolvedValueOnce(page(
+      [makeEntry({ id: 'e1', values: { link: { related_ids: ['t2'] } } })],
+    ))
+
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'k')
+
+    expect(store.isRelationResolved('t2')).toBe(true)
+    expect(store.hasRelationEntry('t2')).toBe(false)
+  })
+
+  it('a relation cell finds everything resolved and does not ask again', async () => {
+    const store = storeWithRelation()
+    vi.mocked(apiClient.post).mockResolvedValueOnce(page(
+      [makeEntry({ id: 'e1', values: { link: { related_ids: ['t1'] } } })],
+      1,
+      { relations: { t1: { id: 't1', title: 'Entry A', database_id: 'db-2' } } },
+    ))
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'k')
+    vi.mocked(apiClient.post).mockClear()
+
+    await store.resolveEntryTitles('db-2', ['t1'])
+
+    expect(apiClient.post).not.toHaveBeenCalled()
+  })
+
+  it('timeline periods are all taken into account', async () => {
+    const store = storeWithRelation()
+    vi.mocked(apiClient.post).mockResolvedValueOnce(page(
+      [makeEntry({ id: 'e1', values: { link: { _timeline: {
+        '2000-01-01→2000-12-31': { related_ids: ['t1'] },
+        '2001-01-01→': { related_ids: ['t2'] },
+      } } } })],
+    ))
+
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'k')
+
+    expect(store.isRelationResolved('t1')).toBe(true)
+    expect(store.isRelationResolved('t2')).toBe(true)
+  })
+
+  it('keyed relations get their key values, null where none is stored', async () => {
+    const store = storeWithRelation({ keying: { enabled: true, key_property_id: 'when' } })
+    vi.mocked(apiClient.post).mockResolvedValueOnce(page(
+      [makeEntry({ id: 'e1', values: { link: { related_ids: ['t1', 't2'] } } })],
+      1,
+      {
+        relations: {
+          t1: { id: 't1', title: 'Entry A', database_id: 'db-2' },
+          t2: { id: 't2', title: 'Entry B', database_id: 'db-2' },
+        },
+        key_values: { when: { t1: { start: '2000-07-28' } } },
+      },
+    ))
+
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'k')
+    vi.mocked(apiClient.post).mockClear()
+    await store.resolveEntryKeyValues('db-2', ['t1', 't2'], 'when')
+
+    expect(store.getRelationKeyValue('when', 't1')).toEqual({ start: '2000-07-28' })
+    expect(store.getRelationKeyValue('when', 't2')).toBeNull()
+    expect(apiClient.post).not.toHaveBeenCalled()
+  })
+})
+
+describe('useDatabaseStore single entries', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('fetchEntry loads one entry and getEntry finds it', async () => {
+    vi.mocked(apiClient.get).mockResolvedValueOnce({
+      entry: makeEntry({ id: 'e1' }), relations: {}, key_values: {},
+    })
+
+    const store = useDatabaseStore()
+    const entry = await store.fetchEntry('db-1', 'e1')
+
+    expect(apiClient.get).toHaveBeenCalledWith('/api/databases/db-1/entries/e1')
+    expect(store.getEntry('db-1', 'e1')).toBe(entry)
+    expect(store.getEntry('db-2', 'e1')).toBeNull()
+    expect(store.entries['db-1']).toBeUndefined()
+  })
+
+  it('upsertValue reaches a single entry', async () => {
+    vi.mocked(apiClient.get).mockResolvedValueOnce({
+      entry: makeEntry({ id: 'e1', values: {} }), relations: {}, key_values: {},
+    })
+    vi.mocked(apiClient.put).mockResolvedValueOnce(undefined)
+
+    const store = useDatabaseStore()
+    await store.fetchEntry('db-1', 'e1')
+    await store.upsertValue('db-1', 'e1', 'schema-1', { text: 'Hi' })
+
+    expect(store.getEntry('db-1', 'e1')?.values['schema-1']).toEqual({ text: 'Hi' })
+  })
+
+  it('getEntry falls back to a view that shows the entry', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce(page([makeEntry({ id: 'e1' })]))
+
+    const store = useDatabaseStore()
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'k')
+
+    expect(store.getEntry('db-1', 'e1')?.id).toBe('e1')
   })
 })
 
@@ -1397,9 +1686,9 @@ describe('useDatabaseStore._applyEntryEvent', () => {
   })
 
   it('content_updated renames the row in views and in the full list', async () => {
-    vi.mocked(apiClient.post).mockResolvedValueOnce({ entries: [makeEntry({ id: 'e1' })], total: 1 })
+    vi.mocked(apiClient.post).mockResolvedValueOnce(page([makeEntry({ id: 'e1' })]))
     const store = useDatabaseStore()
-    await store.queryEntries('db-1', { filter_groups: [], sorts: [] }, 'view-a')
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
     store.entries['db-1'] = [makeEntry({ id: 'e1' })]
 
     store._applyEntryEvent(makePayload('content_updated', {
@@ -1505,5 +1794,64 @@ describe('useDatabaseStore.getNameLabel', () => {
     expect(store.getNameLabel('db-1')).toBeNull()
     expect(store.getNameLabel('db-2')).toBeNull()
     expect(store.getNameLabel('nope')).toBeNull()
+  })
+})
+
+// ── Option ids ───────────────────────────────────────────────────────────────
+
+import {
+  normalizeSelectOption,
+  schemaOptions,
+  nuanceOptions,
+  findOption,
+  optionLabel,
+} from '@/stores/database'
+
+describe('option helpers', () => {
+  const schema = {
+    config: {
+      options: [{ id: 'o1', label: 'Value A', color: 'red' }, { id: 'o2', label: 'Value B' }],
+      nuance: { enabled: true, options: [{ id: 'n1', label: 'Nuance A' }] },
+    },
+  }
+
+  it('normalizes stored options and keeps their ids', () => {
+    expect(normalizeSelectOption({ id: 'o1', label: 'Value A', color: 'red' }))
+      .toEqual({ id: 'o1', label: 'Value A', color: 'red' })
+    // A config the backend has not stored yet falls back to the label.
+    expect(normalizeSelectOption('Value A')).toEqual({ id: 'Value A', label: 'Value A' })
+    expect(normalizeSelectOption({ label: 'Value B' })).toEqual({ id: 'Value B', label: 'Value B' })
+  })
+
+  it('reads select and nuance options of a property', () => {
+    expect(schemaOptions(schema).map((o) => o.id)).toEqual(['o1', 'o2'])
+    expect(nuanceOptions(schema).map((o) => o.label)).toEqual(['Nuance A'])
+    expect(schemaOptions({ config: null })).toEqual([])
+    expect(nuanceOptions(null)).toEqual([])
+  })
+
+  it('resolves ids to options and labels', () => {
+    const options = schemaOptions(schema)
+    expect(findOption(options, 'o2')?.label).toBe('Value B')
+    expect(findOption(options, 'gone')).toBeUndefined()
+    expect(optionLabel(options, 'o1')).toBe('Value A')
+    expect(optionLabel(options, undefined)).toBe('')
+  })
+})
+
+describe('useDatabaseStore.optionUsage', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('asks the usage endpoint and returns the entry count', async () => {
+    vi.mocked(apiClient.get).mockResolvedValueOnce({ entries: 4 })
+    const store = useDatabaseStore()
+
+    await expect(store.optionUsage('db-1', 'schema-1', 'o1')).resolves.toBe(4)
+    expect(apiClient.get).toHaveBeenCalledWith(
+      '/api/databases/db-1/schemas/schema-1/options/o1/usage',
+    )
   })
 })

@@ -58,6 +58,11 @@ ARGS=(
     --host "${HOST}"
     --port "${PORT}"
     --log-level info
+    # Kept above nginx's upstream keepalive_timeout (60s, frontend/nginx.conf).
+    # nginx then always closes an idle connection first; if uvicorn closed it
+    # first, nginx could send the next request down a dying connection and
+    # answer the client with a 502.
+    --timeout-keep-alive 65
     --proxy-headers
     --forwarded-allow-ips "${FORWARDED_IPS}"
 )

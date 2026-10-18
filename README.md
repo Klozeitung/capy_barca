@@ -58,7 +58,7 @@ chmod +x setup.sh
 2. Walk through the configuration interactively (database credentials, ports, network)
 3. Obtain an SSL certificate via Tailscale
 4. Build and start all containers
-5. Run database migrations and the test suite
+5. Run database migrations and the test suite. The tests run against PostgreSQL in a separate database, `<POSTGRES_DB>_test`, which is created on the first run and never included in backups
 
 On first start you will be prompted to create an admin account in the browser.
 
@@ -134,6 +134,7 @@ Key variables:
 | `MAX_UPLOAD_MB` | Largest single upload, in megabytes (default: 100). Enforced by nginx on the request and by the backend on the file, from this one value, so the two cannot disagree. Also caps what Collabora may write back when saving a document |
 | `LOGIN_RATE_LIMIT` `SIGNUP_RATE_LIMIT` `PASSWORD_CHANGE_RATE_LIMIT` | Attempts per client for the three routes that hand out or verify credentials. Default `5/minute` each |
 | `BOOKMARK_RATE_LIMIT` | Bookmark previews per client (default: `10/minute`). The bookmark endpoint makes the server fetch a URL you choose, so it is throttled rather than left open |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | Database connections the backend keeps open, and how many more it may open under load (defaults: 10 and 30, matching its 40 worker threads). Optional; raise them only together with PostgreSQL's `max_connections` |
 | `WOPI_TOKEN_RATE_LIMIT` | Collabora editor tokens per client (default: `30/minute`). Applies to token issuance only; the file endpoints Collabora calls during an editing session are not throttled |
 
 ---

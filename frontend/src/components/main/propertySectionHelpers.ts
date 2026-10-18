@@ -2,15 +2,14 @@
  * propertySectionHelpers
  *
  * Pure, side-effect-free helpers extracted from BlockPropertySection so the
- * non-trivial group / view transformations can be unit-tested in isolation.
+ * non-trivial group transformations can be unit-tested in isolation.
  *
  * - schemaIdsInGroup       – collect schema IDs belonging to a group
  * - removeGroupFromOrder   – drop a group from the persisted custom-group order
  * - removeGroupFromFolded  – drop a group key from the fold-state map (immutable)
  * - reorderGroups          – move a custom group before a drop target (immutable)
- * - hideSchemaInAllViews   – add a schema ID to every view's hiddenColumns
  */
-import type { DatabaseView, PropertySchema } from '@/stores/database'
+import type { PropertySchema } from '@/stores/database'
 
 /**
  * Collect the IDs of all schemas that belong to `groupName`, treating an
@@ -72,26 +71,4 @@ export function reorderGroups(
   next.splice(fromIdx, 1)
   next.splice(toIdx, 0, sourceGroup)
   return next
-}
-
-/**
- * Add `schemaId` to the `hiddenColumns` of every view.
- *
- * Returns a new `views` array (copied immutably) together with a `changed`
- * flag indicating whether any view was actually modified. Views that already
- * hide the schema are left untouched, and when nothing changes the original
- * array reference is returned so callers can skip a redundant persist.
- */
-export function hideSchemaInAllViews(
-  views: DatabaseView[],
-  schemaId: string,
-): { views: DatabaseView[]; changed: boolean } {
-  let changed = false
-  const next = views.map((view) => {
-    const hidden = view.hiddenColumns ?? []
-    if (hidden.includes(schemaId)) return view
-    changed = true
-    return { ...view, hiddenColumns: [...hidden, schemaId] }
-  })
-  return { views: changed ? next : views, changed }
 }

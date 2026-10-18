@@ -7,20 +7,23 @@ registry and the filter mechanism — is tested in manager_test.py.
 
 Tests are synchronous functions driving coroutines through asyncio.run(), the
 same style as manager_test.py, so no pytest-asyncio marker is needed. The
-``isolated_db`` fixture is autouse and supplies the in-memory database the
-permission lookups run against.
+``isolated_db`` fixture is autouse and supplies the PostgreSQL test database
+the permission lookups run against.
 """
 import asyncio
 import json
+import time
 import uuid
 
+import anyio
+import anyio.to_thread
 import pytest
 
 import app.session.session as s
 from app.blocks.models import WORKSPACE_ROOT_ID, Block
 from app.permissions import repository as perm_repo
 from app.users.model import User
-from app.ws.broadcaster import broadcast_block_event
+from app.ws.broadcaster import _allowed_user_ids, broadcast_block_event, emit_block_event
 from app.ws.manager import manager
 
 
@@ -39,6 +42,9 @@ class MockWebSocket:
 
     async def send_text(self, message: str) -> None:
         self.sent.append(message)
+
+    async def close(self, code: int = 1000) -> None:
+        pass
 
     @property
     def events(self) -> list[dict]:
@@ -109,8 +115,15 @@ async def _attach(user: User) -> MockWebSocket:
     return websocket
 
 
+async def _broadcast(**kwargs) -> int:
+    """Broadcast and wait until the queued messages have been sent."""
+    queued = await broadcast_block_event(**kwargs)
+    await manager.flush()
+    return queued
+
+
 async def _emit(block_id, *, event_type: str = "content_updated") -> int:
-    return await broadcast_block_event(
+    return await _broadcast(
         event_type=event_type,
         block_id=str(block_id) if block_id is not None else None,
         before={"content": {"title": "secret"}},
@@ -318,7 +331,7 @@ def test_unparseable_block_id_reaches_admins_only():
         admin, member = _make_user(role="admin"), _make_user()
         ws_admin = await _attach(admin)
         ws_member = await _attach(member)
-        delivered = await broadcast_block_event(
+        delivered = await _broadcast(
             event_type="content_updated",
             block_id="not-a-uuid",
             before=None,
@@ -342,7 +355,7 @@ def test_purge_reaches_an_account_without_access():
         _seed_root()
         stranger = _make_user()
         websocket = await _attach(stranger)
-        delivered = await broadcast_block_event(
+        delivered = await _broadcast(
             event_type="purged",
             block_id=str(uuid.uuid4()),
             before=None,
@@ -361,7 +374,7 @@ def test_purge_does_not_reach_a_deactivated_account():
         _seed_root()
         user = _make_user(is_active=False)
         websocket = await _attach(user)
-        delivered = await broadcast_block_event(
+        delivered = await _broadcast(
             event_type="purged",
             block_id=str(uuid.uuid4()),
             before=None,
@@ -382,7 +395,7 @@ def test_soft_delete_is_still_scoped():
         stranger = _make_user()
         block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
         websocket = await _attach(stranger)
-        delivered = await broadcast_block_event(
+        delivered = await _broadcast(
             event_type="state_changed",
             block_id=str(block_id),
             before={"state": "active"},
@@ -391,3 +404,104 @@ def test_soft_delete_is_still_scoped():
         assert delivered == 0
         assert websocket.sent == []
     asyncio.run(_run())
+
+
+# ─── Recipient check cost ─────────────────────────────────────────────────────
+
+
+def test_recipient_check_cost_does_not_grow_with_connected_accounts(count_queries):
+    """
+    All accounts are loaded in one query and the block's permission is
+    resolved once, so ten connected accounts cost what two do.
+    """
+    _seed_root()
+    block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    few = [_make_user().id for _ in range(2)]
+    many = [_make_user().id for _ in range(10)]
+
+    with count_queries() as few_counter:
+        _allowed_user_ids(few, event_type="content_updated", block_id=str(block_id))
+    with count_queries() as many_counter:
+        _allowed_user_ids(many, event_type="content_updated", block_id=str(block_id))
+
+    assert many_counter.count == few_counter.count
+
+
+def test_recipient_check_uses_the_given_session(count_queries):
+    """A handler's own session is reused rather than a new one opened."""
+    _seed_root()
+    owner = _make_user()
+    block_id = _seed_block(owner_id=owner.id, mode="private")
+    with s.SessionLocal() as db:
+        allowed = _allowed_user_ids(
+            [owner.id], event_type="content_updated", block_id=str(block_id), db=db,
+        )
+    assert allowed == {owner.id}
+
+
+# ─── emit_block_event ─────────────────────────────────────────────────────────
+
+
+def test_emit_without_connections_returns_zero_without_queries(count_queries):
+    with count_queries() as counter:
+        delivered = emit_block_event(
+            event_type="content_updated",
+            block_id=str(uuid.uuid4()),
+            before=None,
+            after=None,
+        )
+    assert delivered == 0
+    assert counter.count == 0
+
+
+def test_emit_outside_a_worker_thread_drops_the_event(caplog):
+    """
+    Without an AnyIO worker thread there is no event loop to send on. The
+    changes are already committed by then, so the event is dropped with a
+    warning instead of raising into the caller.
+    """
+    _seed_root()
+    owner = _make_user()
+    block_id = _seed_block(owner_id=owner.id, mode="private")
+    websocket = asyncio.run(_attach(owner))
+
+    delivered = emit_block_event(
+        event_type="content_updated",
+        block_id=str(block_id),
+        before=None,
+        after=None,
+    )
+
+    assert delivered == 0
+    assert websocket.sent == []
+    assert "outside a worker thread" in caplog.text
+
+
+def test_emit_does_not_wait_for_a_client_that_stopped_reading():
+    """
+    A request handler holds a worker thread and a database connection while it
+    emits. A client that does not read must not keep them: the event is queued
+    and the handler moves on.
+    """
+    _seed_root()
+    owner = _make_user()
+    block_id = _seed_block(owner_id=owner.id, mode="private")
+
+    class Stalled(MockWebSocket):
+        async def send_text(self, message: str) -> None:
+            await asyncio.Event().wait()
+
+    async def _run():
+        await manager.connect(Stalled(), owner.id)
+        started = time.monotonic()
+        for _ in range(20):
+            queued = await anyio.to_thread.run_sync(lambda: emit_block_event(
+                event_type="content_updated",
+                block_id=str(block_id),
+                before=None,
+                after={"content": {"text": "x" * 10_000}},
+            ))
+            assert queued == 1
+        assert time.monotonic() - started < 5.0
+
+    anyio.run(_run)

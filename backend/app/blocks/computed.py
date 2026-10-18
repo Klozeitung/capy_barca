@@ -44,6 +44,7 @@ from typing import Any, Callable, Optional
 
 from sqlalchemy.orm import Session
 
+from app.blocks import options as opts
 from app.blocks import repository as repo
 from app.blocks.formula_engine import FormulaError, evaluate, extract_prop_names
 
@@ -320,12 +321,13 @@ def _extract_scalar(schema_type: str, value: Optional[dict], config: Optional[di
     if schema_type == "checkbox":
         return value.get("checked")
     if schema_type == "select":
-        # Single-select (frontend): {"option": "label"}.
-        # Multi-select (frontend):  {"options": ["label", …]}.
-        # Legacy paths: {"selected": "label"} or {"selected": ["a", "b"]}.
+        # Single-select: {"option": id}. Multi-select: {"options": [id, …]}.
+        # Legacy path: {"selected": …}. Ids are turned into the labels the
+        # property's config gives them, since formulas and rollups work with
+        # what the user sees; an id the config does not know is passed through.
         #
         # For multi-valued shapes the first label is returned so that scalar
-        # comparisons such as prop('Typ') == "Geburt" work for the common
+        # comparisons such as prop('Kind') == "Value A" work for the common
         # single-value case; format()/contains() can be used over the full set
         # via the relation-style list handling elsewhere.
         if "option" in value:
@@ -335,7 +337,9 @@ def _extract_scalar(schema_type: str, value: Optional[dict], config: Optional[di
         else:
             raw = value.get("selected")
         if isinstance(raw, list):
-            return raw[0] if raw else None
+            raw = raw[0] if raw else None
+        if isinstance(raw, str):
+            return opts.label_map(opts.option_list("select", config)).get(raw, raw)
         return raw
     if schema_type == "date":
         # Return the full dict so formulas can access both start and end via
@@ -1157,3 +1161,44 @@ def compute_same_db_rollup_dependents(
         compute_all_for_entry(db, database_id, entry_id)
         recomputed = True
     return recomputed
+
+
+def recompute_database_and_readers(
+    db: Session,
+    database_id: uuid.UUID,
+) -> list[uuid.UUID]:
+    """
+    Re-evaluate every entry of *database_id* and of every other database whose
+    computed properties read it.
+
+    Used after a change that alters what a property of *database_id* reads as
+    without touching any value, such as renaming or deleting an option: the
+    labels stored in formula and rollup results are stale everywhere at once.
+    Databases without computed properties are skipped.
+
+    Returns the IDs of the databases whose entries were recomputed. The caller
+    commits and broadcasts.
+    """
+    affected: list[uuid.UUID] = []
+
+    def _recompute_all(target_id: uuid.UUID) -> None:
+        entries = repo.list_children(
+            db, target_id, state="active",
+            exclude_types=frozenset({"entry_template"}),
+        )
+        for entry in entries:
+            compute_all_for_entry(db, target_id, entry.id)
+        affected.append(target_id)
+
+    own = repo.list_schemas(db, database_id)
+    if any(s.type in ("formula", "rollup") for s in own):
+        _recompute_all(database_id)
+
+    for database in repo.list_databases(db):
+        if database.id == database_id:
+            continue
+        schemas = repo.list_schemas(db, database.id)
+        if _relations_read_by_computed(db, schemas, database_id):
+            _recompute_all(database.id)
+
+    return affected

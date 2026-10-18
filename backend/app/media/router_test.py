@@ -13,7 +13,7 @@ rather than a router-local token check, so the tests override
 ``get_current_user`` instead of patching a module-level ``validate_token``.
 That override is also what makes object-level authorization testable: the
 identity the router sees is a real ``User`` with a role and an id, and the
-permission layer resolves against blocks seeded into the in-memory database.
+permission layer resolves against blocks seeded into the test database.
 """
 import io
 import uuid
