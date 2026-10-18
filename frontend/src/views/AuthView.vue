@@ -17,6 +17,8 @@ const allowNewUsers = ref(false)
 const username = ref('')
 const password = ref('')
 const passwordConfirm = ref('')
+// Printed by setup.sh; the server asks for it before the first account exists.
+const setupToken = ref('')
 const error = ref('')
 const loading = ref(false)
 
@@ -76,9 +78,11 @@ async function handleSubmit(): Promise<void> {
         : '/api/signup'
 
   try {
+    const body: Record<string, string> = { username: username.value, password: password.value }
+    if (mode.value === 'register') body.setup_token = setupToken.value
     const data = await apiClient.post<{ success: boolean; username: string; role: string }>(
       endpoint,
-      { username: username.value, password: password.value },
+      body,
     )
     auth.login(data.username, data.role)
     router.push('/')
@@ -89,7 +93,11 @@ async function handleSubmit(): Promise<void> {
       } else if (e.status === 409) {
         error.value = t('auth.usernameTaken')
       } else if (e.status === 403) {
-        error.value = t('auth.signupDisabled')
+        // During the initial setup a refusal means the setup token was wrong
+        // (or another account was created meanwhile); afterwards it is the
+        // disabled self-registration.
+        error.value =
+          mode.value === 'register' ? t('auth.setupTokenInvalid') : t('auth.signupDisabled')
       } else if (e.status === 429) {
         error.value = t('auth.tooManyAttempts')
       } else if (e.status === 422) {
@@ -166,6 +174,18 @@ function submitLabel(): string {
             required
           />
         </div>
+        <div v-if="mode === 'register'" class="field">
+          <label for="setup-token">{{ t('auth.setupToken') }}</label>
+          <input
+            id="setup-token"
+            v-model="setupToken"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            required
+          />
+          <span class="field-hint">{{ t('auth.setupTokenHint') }}</span>
+        </div>
         <button type="submit" :disabled="loading">{{ submitLabel() }}</button>
       </form>
 
@@ -219,6 +239,8 @@ form { display: flex; flex-direction: column; gap: 1rem; width: 100%; }
 .field { display: flex; flex-direction: column; gap: 0.25rem; }
 
 label { font-size: 0.875rem; }
+
+.field-hint { font-size: 0.75rem; opacity: 0.7; }
 
 input {
   padding: 0.5rem 0.625rem;

@@ -157,7 +157,10 @@
     "signupHint": "Create a new account now.",
     "registerLink": "Don't have an account? Sign up",
     "loginLink": "Already have an account? Sign in",
-    "signupDisabled": "Registration is disabled."
+    "signupDisabled": "Registration is disabled.",
+    "setupToken": "Setup token",
+    "setupTokenHint": "Printed by setup.sh at the end of the installation and stored in .env as SETUP_TOKEN.",
+    "setupTokenInvalid": "The setup token is not correct."
   },
   "profile": {
     "title": "Profile",
@@ -673,7 +676,8 @@
     "deleteColumnKeyedTitle": "Reset keyed relations?",
     "deleteColumnKeyedBody": "Deleting this property resets the following relations to their unsorted state:",
     "deleteColumnKeyedItem": "{property} in {database}",
-    "changeIcon": "Change icon"
+    "changeIcon": "Change icon",
+    "formulaCellError": "Error"
   },
   "propertySection": {
     "title": "Properties",

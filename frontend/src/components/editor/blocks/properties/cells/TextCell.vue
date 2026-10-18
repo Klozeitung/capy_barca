@@ -214,7 +214,7 @@ function cancel() {
     :class="{ 'db__cell-value--has-timeline': hasTimeline() }"
     @click.stop="onDisplayClick($event)"
   >
-    {{ displayValue(entry, schema) }}
+    <span class="db__cell-text">{{ displayValue(entry, schema) }}</span>
     <Icon
       v-if="hasTimeline()"
       icon="mdi:clock-outline"

@@ -1,3 +1,4 @@
+import hmac
 import os
 from pathlib import Path
 from typing import Optional
@@ -22,6 +23,12 @@ setup_router = APIRouter()
 # ``create_admin`` so that only one of them can succeed.
 _SIGNUP_RATE_LIMIT = os.getenv("SIGNUP_RATE_LIMIT", "5/minute")
 
+# The initial registration is throttled as well. The setup token makes guessing
+# hopeless, but nothing that checks a secret should answer at unlimited speed.
+_REGISTER_RATE_LIMIT = os.getenv("REGISTER_RATE_LIMIT", _SIGNUP_RATE_LIMIT)
+
+_INVALID_SETUP_TOKEN = "Invalid setup token"
+
 # Path to the backup script template served via GET /api/backup/script.
 # Defined at module level so tests can monkeypatch it.
 _BACKUP_SCRIPT_PATH: Path = (
@@ -33,6 +40,26 @@ def _is_configured() -> bool:
     """Return True if at least one user exists in the database."""
     with SessionLocal() as db:
         return db.query(User).count() > 0
+
+
+def _setup_token_matches(supplied: str) -> bool:
+    """
+    Return True if *supplied* equals the SETUP_TOKEN of this installation.
+
+    Until the first account exists, whoever reaches the setup page becomes the
+    administrator. The token closes that window: setup.sh generates it, keeps
+    it in .env and prints it to whoever runs the installation, so only someone
+    with access to the server can create the first account.
+
+    Read from the environment on every call, like ALLOW_NEW_USERS. Without a
+    configured token nothing matches, so an installation that was not set up
+    through setup.sh refuses registration instead of falling back to the open
+    behaviour. The comparison takes constant time.
+    """
+    expected = os.getenv("SETUP_TOKEN", "").strip()
+    if not expected:
+        return False
+    return hmac.compare_digest(supplied.strip().encode(), expected.encode())
 
 
 def _allow_new_users() -> bool:
@@ -52,6 +79,8 @@ class RegisterRequest(BaseModel):
     # created with a one-character password, which is exactly the account
     # worth protecting most.
     password: NewPassword
+    # Printed by setup.sh; see _setup_token_matches.
+    setup_token: str = Field(min_length=1, max_length=256)
 
 
 class SignupRequest(BaseModel):
@@ -75,10 +104,12 @@ def setup_status():
 
 
 @setup_router.post("/api/register")
-def register(payload: RegisterRequest, response: Response):
+@limiter.limit(_REGISTER_RATE_LIMIT)
+def register(request: Request, payload: RegisterRequest, response: Response):
     """
     Register the initial admin user.
 
+    Requires the setup token of the installation (returns 403 otherwise).
     Blocked once any user exists in the database (returns 403). The early
     check answers the common case cheaply; ``create_admin`` repeats it under a
     lock, which is what refuses the loser of two simultaneous requests. On
@@ -87,6 +118,9 @@ def register(payload: RegisterRequest, response: Response):
     """
     if _is_configured():
         raise HTTPException(status_code=403, detail="Already configured")
+
+    if not _setup_token_matches(payload.setup_token):
+        raise HTTPException(status_code=403, detail=_INVALID_SETUP_TOKEN)
 
     try:
         user = create_admin(payload.username, payload.password)

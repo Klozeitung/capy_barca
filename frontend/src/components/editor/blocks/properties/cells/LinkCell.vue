@@ -160,12 +160,12 @@ function cancel() {
       :href="`${hrefPrefix()}${displayValue(entry, schema)}`"
       :target="linkTarget()"
       :rel="linkRel()"
-      class="db__cell-link"
+      class="db__cell-link db__cell-text"
       @click.stop
     >
       {{ displayValue(entry, schema) }}
     </a>
-    <template v-else>{{ displayValue(entry, schema) }}</template>
+    <span v-else class="db__cell-text">{{ displayValue(entry, schema) }}</span>
     <Icon
       v-if="hasTimeline()"
       icon="mdi:clock-outline"

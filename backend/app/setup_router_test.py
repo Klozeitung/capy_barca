@@ -17,6 +17,9 @@ client = TestClient(app, base_url=_BASE_URL)
 # Long enough for the minimum the initial administrator now has to meet.
 VALID_PASSWORD = "secret-1234"
 
+# The token setup.sh writes into .env; every registration has to present it.
+SETUP_TOKEN = "setup-token-for-tests"
+
 
 # isolated_db (autouse) from conftest.py handles per-test DB isolation.
 # No .env patching is needed – configured state is derived from the users table.
@@ -32,6 +35,12 @@ def cookie_attributes(response) -> set:
     """
     header = response.headers["set-cookie"]
     return {part.strip().split("=")[0].lower() for part in header.split(";")[1:]}
+
+
+@pytest.fixture(autouse=True)
+def setup_token(monkeypatch):
+    """Configure the setup token the registration tests present."""
+    monkeypatch.setenv("SETUP_TOKEN", SETUP_TOKEN)
 
 
 @pytest.fixture(autouse=True)
@@ -71,12 +80,12 @@ def test_setup_status_returns_configured():
 
 
 def test_register_returns_200():
-    response = client.post("/api/register", json={"username": "capybarca", "password": VALID_PASSWORD})
+    response = client.post("/api/register", json={"setup_token": SETUP_TOKEN, "username": "capybarca", "password": VALID_PASSWORD})
     assert response.status_code == 200
 
 
 def test_register_response_body():
-    response = client.post("/api/register", json={"username": "capybarca", "password": VALID_PASSWORD})
+    response = client.post("/api/register", json={"setup_token": SETUP_TOKEN, "username": "capybarca", "password": VALID_PASSWORD})
     data = response.json()
     assert data["success"] is True
     assert data["username"] == "capybarca"
@@ -84,7 +93,7 @@ def test_register_response_body():
 
 
 def test_register_sets_session_cookie():
-    response = client.post("/api/register", json={"username": "capybarca", "password": VALID_PASSWORD})
+    response = client.post("/api/register", json={"setup_token": SETUP_TOKEN, "username": "capybarca", "password": VALID_PASSWORD})
     assert "session" in response.cookies
 
 
@@ -96,7 +105,7 @@ def test_register_cookie_has_secure_flag_outside_debug(monkeypatch):
     helper is actually reached from this call site.
     """
     monkeypatch.delenv("DEBUG", raising=False)
-    response = client.post("/api/register", json={"username": "capybarca", "password": VALID_PASSWORD})
+    response = client.post("/api/register", json={"setup_token": SETUP_TOKEN, "username": "capybarca", "password": VALID_PASSWORD})
     attributes = cookie_attributes(response)
     assert "secure" in attributes
     assert "httponly" in attributes
@@ -104,12 +113,12 @@ def test_register_cookie_has_secure_flag_outside_debug(monkeypatch):
 
 def test_register_cookie_omits_secure_flag_in_debug_mode(monkeypatch):
     monkeypatch.setenv("DEBUG", "true")
-    response = client.post("/api/register", json={"username": "capybarca", "password": VALID_PASSWORD})
+    response = client.post("/api/register", json={"setup_token": SETUP_TOKEN, "username": "capybarca", "password": VALID_PASSWORD})
     assert "secure" not in cookie_attributes(response)
 
 
 def test_register_session_cookie_is_valid():
-    client.post("/api/register", json={"username": "capybarca", "password": VALID_PASSWORD})
+    client.post("/api/register", json={"setup_token": SETUP_TOKEN, "username": "capybarca", "password": VALID_PASSWORD})
     verify_resp = client.get("/api/verify")
     assert verify_resp.status_code == 200
 
@@ -118,7 +127,7 @@ def test_register_blocked_when_already_configured():
     with s.SessionLocal() as db:
         create_user(db, "capybarca", "secret", role="admin")
         db.commit()
-    response = client.post("/api/register", json={"username": "other", "password": VALID_PASSWORD})
+    response = client.post("/api/register", json={"setup_token": SETUP_TOKEN, "username": "other", "password": VALID_PASSWORD})
     assert response.status_code == 403
 
 
@@ -134,18 +143,104 @@ def test_register_refuses_the_loser_of_a_simultaneous_registration(monkeypatch):
         raise AlreadyConfigured("An account already exists")
 
     monkeypatch.setattr(sr, "create_admin", _lost_the_race)
-    response = client.post("/api/register", json={"username": "other", "password": VALID_PASSWORD})
+    response = client.post("/api/register", json={"setup_token": SETUP_TOKEN, "username": "other", "password": VALID_PASSWORD})
     assert response.status_code == 403
     assert "session" not in response.cookies
 
 
+# ─── Setup token ──────────────────────────────────────────────────────────────
+
+
+def test_register_refuses_a_wrong_setup_token():
+    response = client.post(
+        "/api/register",
+        json={"setup_token": "not-the-token", "username": "capybarca", "password": VALID_PASSWORD},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Invalid setup token"
+    assert "session" not in response.cookies
+    assert client.get("/api/setup-status").json()["configured"] is False
+
+
+def test_register_requires_a_setup_token():
+    response = client.post(
+        "/api/register", json={"username": "capybarca", "password": VALID_PASSWORD},
+    )
+    assert response.status_code == 422
+
+
+def test_register_tolerates_surrounding_whitespace_in_the_token():
+    """A token copied out of a terminal often carries a trailing newline."""
+    response = client.post(
+        "/api/register",
+        json={"setup_token": f"  {SETUP_TOKEN}\n", "username": "capybarca", "password": VALID_PASSWORD},
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("configured", ["", "   "])
+def test_register_is_closed_without_a_configured_token(monkeypatch, configured):
+    """
+    An installation that never ran setup.sh has no token. It refuses the
+    registration rather than handing the administrator account to whoever
+    arrives first.
+    """
+    monkeypatch.setenv("SETUP_TOKEN", configured)
+    response = client.post(
+        "/api/register",
+        json={"setup_token": configured or "anything", "username": "capybarca", "password": VALID_PASSWORD},
+    )
+    assert response.status_code == 403
+    assert client.get("/api/setup-status").json()["configured"] is False
+
+
+def test_register_is_closed_when_the_token_is_unset(monkeypatch):
+    monkeypatch.delenv("SETUP_TOKEN", raising=False)
+    response = client.post(
+        "/api/register",
+        json={"setup_token": SETUP_TOKEN, "username": "capybarca", "password": VALID_PASSWORD},
+    )
+    assert response.status_code == 403
+
+
+def test_register_rate_limit_blocks_after_threshold():
+    import app.setup_router as sr
+
+    threshold = int(sr._REGISTER_RATE_LIMIT.split("/")[0])
+    for _ in range(threshold):
+        client.post(
+            "/api/register",
+            json={"setup_token": "wrong", "username": "capybarca", "password": VALID_PASSWORD},
+        )
+    resp = client.post(
+        "/api/register",
+        json={"setup_token": SETUP_TOKEN, "username": "capybarca", "password": VALID_PASSWORD},
+    )
+    assert resp.status_code == 429
+
+
+def test_setup_token_check_uses_a_constant_time_comparison(monkeypatch):
+    import app.setup_router as sr
+
+    calls = []
+    original = sr.hmac.compare_digest
+
+    def _recording(a, b):
+        calls.append((a, b))
+        return original(a, b)
+
+    monkeypatch.setattr(sr.hmac, "compare_digest", _recording)
+    assert sr._setup_token_matches(SETUP_TOKEN) is True
+    assert calls == [(SETUP_TOKEN.encode(), SETUP_TOKEN.encode())]
+
+
 def test_register_returns_422_on_empty_username():
-    response = client.post("/api/register", json={"username": "", "password": VALID_PASSWORD})
+    response = client.post("/api/register", json={"setup_token": SETUP_TOKEN, "username": "", "password": VALID_PASSWORD})
     assert response.status_code == 422
 
 
 def test_register_returns_422_on_empty_password():
-    response = client.post("/api/register", json={"username": "capybarca", "password": ""})
+    response = client.post("/api/register", json={"setup_token": SETUP_TOKEN, "username": "capybarca", "password": ""})
     assert response.status_code == 422
 
 
@@ -159,13 +254,13 @@ def test_register_rejects_a_password_below_the_minimum(password):
     single character, while every other route already required eight.
     """
     resp = client.post(
-        "/api/register", json={"username": "capybarca", "password": password}
+        "/api/register", json={"setup_token": SETUP_TOKEN, "username": "capybarca", "password": password}
     )
     assert resp.status_code == 422
 
 
 def test_register_accepts_a_password_at_the_minimum():
-    resp = client.post("/api/register", json={"username": "capybarca", "password": "12345678"})
+    resp = client.post("/api/register", json={"setup_token": SETUP_TOKEN, "username": "capybarca", "password": "12345678"})
     assert resp.status_code == 200
 
 
@@ -183,13 +278,13 @@ def test_register_rejects_a_password_bcrypt_would_refuse(password):
     mismatch, and the caller gets a 500 out of an ordinary registration.
     """
     resp = client.post(
-        "/api/register", json={"username": "capybarca", "password": password}
+        "/api/register", json={"setup_token": SETUP_TOKEN, "username": "capybarca", "password": password}
     )
     assert resp.status_code == 422
 
 
 def test_register_accepts_a_password_at_the_byte_ceiling():
-    resp = client.post("/api/register", json={"username": "capybarca", "password": "a" * 72})
+    resp = client.post("/api/register", json={"setup_token": SETUP_TOKEN, "username": "capybarca", "password": "a" * 72})
     assert resp.status_code == 200
 
 

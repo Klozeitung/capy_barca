@@ -46,6 +46,7 @@
  * (title attribute) so users can hover to diagnose configuration issues.
  */
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Icon } from '@iconify/vue'
 import type { DatabaseEntry, PropertySchema } from '@/stores/database'
 import { useAuthStore } from '@/stores/auth'
@@ -58,14 +59,15 @@ const props = defineProps<{
 }>()
 
 const auth = useAuthStore()
+const { t } = useI18n()
 
 // ── ISO datetime detection ────────────────────────────────────────────────────
 //
 // Detection regexes and the canonical-date formatter are shared via cellUtils
-// so formula dates render in the user's preferred format (#10), consistent
+// so formula dates render in the user's preferred format, consistent
 // with date and rollup cells. Time is shown only when present and non-midnight.
 
-// ── Relation chip support (#20) ───────────────────────────────────────────────
+// ── Relation chip support ─────────────────────────────────────────────────────
 //
 // When the backend resolves a formula result to a list of related entry
 // descriptors it sets ``relation: true`` on the stored value, mirroring the
@@ -216,10 +218,10 @@ const formulaInlineStyle = computed<Record<string, string>>(() => {
     <!-- Error state -->
     <template v-if="hasError">
       <Icon icon="mdi:alert-circle-outline" width="13" height="13" class="formula-cell__error-icon" />
-      <span class="formula-cell__error-text" :title="errorMessage">Error</span>
+      <span class="formula-cell__error-text" :title="errorMessage">{{ t('db.formulaCellError') }}</span>
     </template>
 
-    <!-- Relation chips (#20) — same visual treatment as RollupCell relation chips -->
+    <!-- Relation chips — same visual treatment as RollupCell relation chips -->
     <template v-else-if="resultKind === 'relation'">
       <span
         v-for="chip in relationEntries"
@@ -244,12 +246,12 @@ const formulaInlineStyle = computed<Record<string, string>>(() => {
     <!-- Datetime / date / date-range: calendar icon + formatted string -->
     <template v-else-if="resultKind === 'datetime' || resultKind === 'date' || resultKind === 'dateRange'">
       <Icon icon="mdi:calendar-outline" width="13" height="13" class="formula-cell__date-icon" />
-      {{ displayText }}
+      <span class="db__cell-text">{{ displayText }}</span>
     </template>
 
     <!-- Number / string: plain text -->
     <template v-else>
-      {{ displayText }}
+      <span class="db__cell-text">{{ displayText }}</span>
     </template>
   </span>
 
@@ -302,7 +304,7 @@ const formulaInlineStyle = computed<Record<string, string>>(() => {
 .formula-cell--true  { color: #3dba76; }
 .formula-cell--false { color: var(--color-text-muted); opacity: 0.5; }
 
-/* Relation chip rendering (#20) — mirrors RollupCell __rel-chip */
+/* Relation chip rendering — mirrors RollupCell __rel-chip */
 .formula-cell--relation {
   flex-wrap: wrap;
   gap: 3px;

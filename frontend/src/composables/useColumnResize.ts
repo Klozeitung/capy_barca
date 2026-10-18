@@ -11,6 +11,17 @@
 import { ref, type Ref } from 'vue'
 import type { DatabaseView } from '@/stores/database'
 
+/**
+ * Width of a column the view stores no width for. The table uses the fixed
+ * layout, so this is the width the column actually takes; its content is
+ * shortened with an ellipsis rather than widening it. Matches the minimum
+ * width of the name column.
+ */
+export const DEFAULT_COLUMN_WIDTH = 160
+
+/** Narrowest width a column can be dragged to. */
+export const MIN_COLUMN_WIDTH = 80
+
 export function useColumnResize(options: {
   views: Readonly<Ref<DatabaseView[]>>
   activeViewId: Readonly<Ref<string>>
@@ -40,7 +51,7 @@ export function useColumnResize(options: {
     _resizeState = {
       key,
       startX: e.clientX,
-      startW: colWidths.value[key] ?? (thEl?.offsetWidth ?? 140),
+      startW: colWidths.value[key] ?? (thEl?.offsetWidth ?? DEFAULT_COLUMN_WIDTH),
     }
     resizingKey.value = key
     const el = e.currentTarget as HTMLElement
@@ -54,7 +65,7 @@ export function useColumnResize(options: {
   function _onMove(e: PointerEvent): void {
     if (!_resizeState) return
     const delta = e.clientX - _resizeState.startX
-    colWidths.value[_resizeState.key] = Math.max(80, _resizeState.startW + delta)
+    colWidths.value[_resizeState.key] = Math.max(MIN_COLUMN_WIDTH, _resizeState.startW + delta)
   }
 
   async function _onStop(): Promise<void> {
@@ -74,7 +85,7 @@ export function useColumnResize(options: {
   /** Returns inline style object for a column. */
   function colStyle(key: string): Record<string, string> {
     const w  = colWidths.value[key]
-    const px = w ? `${w}px` : '60px'
+    const px = `${w || DEFAULT_COLUMN_WIDTH}px`
     return { width: px, minWidth: px }
   }
 

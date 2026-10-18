@@ -157,7 +157,10 @@
     "signupHint": "Erstelle jetzt einen neuen Account.",
     "registerLink": "Noch kein Account? Registrieren",
     "loginLink": "Bereits einen Account? Anmelden",
-    "signupDisabled": "Registrierung ist deaktiviert."
+    "signupDisabled": "Registrierung ist deaktiviert.",
+    "setupToken": "Setup-Token",
+    "setupTokenHint": "Wird von setup.sh am Ende der Installation ausgegeben und in .env als SETUP_TOKEN gespeichert.",
+    "setupTokenInvalid": "Das Setup-Token ist nicht korrekt."
   },
   "profile": {
     "title": "Profil",
@@ -673,7 +676,8 @@
     "deleteColumnKeyedTitle": "Gekeyte Relationen zurücksetzen?",
     "deleteColumnKeyedBody": "Das Löschen dieser Eigenschaft setzt die folgenden Relationen in den unsortierten Zustand zurück:",
     "deleteColumnKeyedItem": "{property} in {database}",
-    "changeIcon": "Symbol ändern"
+    "changeIcon": "Symbol ändern",
+    "formulaCellError": "Fehler"
   },
   "propertySection": {
     "title": "Eigenschaften",
