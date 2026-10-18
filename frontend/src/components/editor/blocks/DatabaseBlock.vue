@@ -2779,6 +2779,20 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
   background: color-mix(in srgb, var(--color-accent) 6%, transparent);
 }
 
+/*
+ * Frozen cells cover the row background with their opaque canvas, so the
+ * drop tint is layered onto them (see the frozen-cell rules in
+ * DatabaseBlock.css).
+ */
+.db__row--drop-onto > td.db__td--frozen {
+  background:
+    linear-gradient(
+      color-mix(in srgb, var(--color-accent) 6%, transparent),
+      color-mix(in srgb, var(--color-accent) 6%, transparent)
+    ),
+    var(--color-bg);
+}
+
 /* ── Sub-item depth indent ───────────────────────────────────────────────── */
 .db__sub-indent {
   display: inline-block;
@@ -2829,6 +2843,41 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
 
 .db__row--sub-item:hover > td {
   background: var(--color-hover);
+}
+
+/*
+ * Both tints above are translucent. On a frozen cell they are layered over
+ * the opaque canvas instead (see the frozen-cell rules in DatabaseBlock.css),
+ * together with whatever the row itself paints behind a scrolling cell: the
+ * drop tint, or the hover tint, which a hovered sub-item row shows twice.
+ */
+.db__row--sub-item > td.db__td--frozen {
+  background:
+    linear-gradient(
+      color-mix(in srgb, var(--color-surface) 40%, var(--color-hover) 60%),
+      color-mix(in srgb, var(--color-surface) 40%, var(--color-hover) 60%)
+    ),
+    var(--color-bg);
+}
+
+.db__row--sub-item.db__row--drop-onto > td.db__td--frozen {
+  background:
+    linear-gradient(
+      color-mix(in srgb, var(--color-surface) 40%, var(--color-hover) 60%),
+      color-mix(in srgb, var(--color-surface) 40%, var(--color-hover) 60%)
+    ),
+    linear-gradient(
+      color-mix(in srgb, var(--color-accent) 6%, transparent),
+      color-mix(in srgb, var(--color-accent) 6%, transparent)
+    ),
+    var(--color-bg);
+}
+
+.db__row--sub-item:hover > td.db__td--frozen {
+  background:
+    linear-gradient(var(--color-hover), var(--color-hover)),
+    linear-gradient(var(--color-hover), var(--color-hover)),
+    var(--color-bg);
 }
 
 /* ── Lead prefix (row controls while the name column is hidden) ──────────── */

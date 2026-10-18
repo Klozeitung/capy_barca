@@ -976,7 +976,7 @@ describe('useDatabaseStore', () => {
 
   it('resolveEntryTitles posts missing ids and caches descriptors', async () => {
     vi.mocked(apiClient.post).mockResolvedValueOnce([
-      { id: 'e1', title: 'Napoleon', database_id: 'db-1' },
+      { id: 'e1', title: 'Person A', database_id: 'db-1' },
       { id: 'e2', title: null, database_id: 'db-1' },
     ])
 
@@ -987,7 +987,7 @@ describe('useDatabaseStore', () => {
       '/api/databases/db-1/entries/resolve-titles',
       { ids: ['e1', 'e2'] },
     )
-    expect(store.getRelationTitle('e1')).toBe('Napoleon')
+    expect(store.getRelationTitle('e1')).toBe('Person A')
     expect(store.getRelationTitle('e2')).toBeNull() // resolved but untitled
     expect(store.hasRelationEntry('e1')).toBe(true)
     expect(store.hasRelationEntry('e2')).toBe(true)
@@ -1165,19 +1165,19 @@ describe('useDatabaseStore', () => {
   it('listKeyReferences returns the relations keyed on a property', async () => {
     const references = [
       {
-        schema_id: 'schema-plot',
-        schema_name: 'Plot',
-        database_id: 'db-characters',
-        database_title: 'Characters',
+        schema_id: 'schema-link',
+        schema_name: 'Property A',
+        database_id: 'db-2',
+        database_title: 'Database B',
       },
     ]
     vi.mocked(apiClient.get).mockResolvedValueOnce(references)
 
     const store = useDatabaseStore()
-    const result = await store.listKeyReferences('db-plotbeats', 'schema-date')
+    const result = await store.listKeyReferences('db-1', 'schema-date')
 
     expect(apiClient.get).toHaveBeenCalledWith(
-      '/api/databases/db-plotbeats/schemas/schema-date/key-references',
+      '/api/databases/db-1/schemas/schema-date/key-references',
     )
     expect(result).toEqual(references)
   })
@@ -1195,7 +1195,7 @@ describe('useDatabaseStore', () => {
 
   it('resolveEntryKeyValues posts the key property and caches the values', async () => {
     vi.mocked(apiClient.post).mockResolvedValueOnce([
-      { id: 'e1', title: 'Beat A', database_id: 'db-1', value: { start: '2136-08-14' } },
+      { id: 'e1', title: 'Entry A', database_id: 'db-1', value: { start: '2045-07-17' } },
     ])
 
     const store = useDatabaseStore()
@@ -1205,7 +1205,7 @@ describe('useDatabaseStore', () => {
       '/api/databases/db-1/entries/resolve-titles',
       { ids: ['e1'], value_schema_id: 'schema-date' },
     )
-    expect(store.getRelationKeyValue('schema-date', 'e1')).toEqual({ start: '2136-08-14' })
+    expect(store.getRelationKeyValue('schema-date', 'e1')).toEqual({ start: '2045-07-17' })
   })
 
   it('resolveEntryKeyValues is a no-op without ids or a key property', async () => {
@@ -1232,7 +1232,7 @@ describe('useDatabaseStore', () => {
     // must not be served the first one's value.
     vi.mocked(apiClient.post)
       .mockResolvedValueOnce([
-        { id: 'e1', title: 'A', database_id: 'db-1', value: { start: '2136-08-14' } },
+        { id: 'e1', title: 'A', database_id: 'db-1', value: { start: '2045-07-17' } },
       ])
       .mockResolvedValueOnce([
         { id: 'e1', title: 'A', database_id: 'db-1', value: { number: 3 } },
@@ -1243,7 +1243,7 @@ describe('useDatabaseStore', () => {
     await store.resolveEntryKeyValues('db-1', ['e1'], 'schema-rank')
 
     expect(apiClient.post).toHaveBeenCalledTimes(2)
-    expect(store.getRelationKeyValue('schema-date', 'e1')).toEqual({ start: '2136-08-14' })
+    expect(store.getRelationKeyValue('schema-date', 'e1')).toEqual({ start: '2045-07-17' })
     expect(store.getRelationKeyValue('schema-rank', 'e1')).toEqual({ number: 3 })
   })
 
@@ -1254,7 +1254,7 @@ describe('useDatabaseStore', () => {
     vi.mocked(apiClient.post)
       .mockResolvedValueOnce([{ id: 'e1', title: 'A', database_id: 'db-1' }])
       .mockResolvedValueOnce([
-        { id: 'e1', title: 'A', database_id: 'db-1', value: { start: '2136-08-14' } },
+        { id: 'e1', title: 'A', database_id: 'db-1', value: { start: '2045-07-17' } },
       ])
 
     const store = useDatabaseStore()
@@ -1262,7 +1262,7 @@ describe('useDatabaseStore', () => {
     await store.resolveEntryKeyValues('db-1', ['e1'], 'schema-date')
 
     expect(apiClient.post).toHaveBeenCalledTimes(2)
-    expect(store.getRelationKeyValue('schema-date', 'e1')).toEqual({ start: '2136-08-14' })
+    expect(store.getRelationKeyValue('schema-date', 'e1')).toEqual({ start: '2045-07-17' })
   })
 
   it('resolveEntryKeyValues records a null value for an entry the server omits', async () => {
@@ -1303,17 +1303,17 @@ describe('useDatabaseStore', () => {
   it('resolveEntryKeyValues refetches known ids when forced', async () => {
     vi.mocked(apiClient.post)
       .mockResolvedValueOnce([
-        { id: 'e1', title: 'A', database_id: 'db-1', value: { start: '2136-08-14' } },
+        { id: 'e1', title: 'A', database_id: 'db-1', value: { start: '2045-07-17' } },
       ])
       .mockResolvedValueOnce([
-        { id: 'e1', title: 'A', database_id: 'db-1', value: { start: '2199-12-31' } },
+        { id: 'e1', title: 'A', database_id: 'db-1', value: { start: '2046-01-01' } },
       ])
 
     const store = useDatabaseStore()
     await store.resolveEntryKeyValues('db-1', ['e1'], 'schema-date')
     await store.resolveEntryKeyValues('db-1', ['e1'], 'schema-date', true)
 
-    expect(store.getRelationKeyValue('schema-date', 'e1')).toEqual({ start: '2199-12-31' })
+    expect(store.getRelationKeyValue('schema-date', 'e1')).toEqual({ start: '2046-01-01' })
   })
 
   it('getRelationKeyValue returns null for an unknown pair', () => {
@@ -1616,14 +1616,14 @@ describe('useDatabaseStore.searchEntries', () => {
     vi.mocked(apiClient.post).mockResolvedValueOnce({ entries: [], total: 0 })
 
     const store = useDatabaseStore()
-    await store.searchEntries('db-1', '  nap ', 20)
+    await store.searchEntries('db-1', '  per ', 20)
 
     expect(apiClient.post).toHaveBeenCalledWith(
       '/api/databases/db-1/entries/query',
       expect.objectContaining({
         filter_groups: [{
           conjunction: 'and',
-          filters: [expect.objectContaining({ schema_id: '__name__', operator: 'contains', value: 'nap' })],
+          filters: [expect.objectContaining({ schema_id: '__name__', operator: 'contains', value: 'per' })],
         }],
         sorts: [{ schema_id: '__name__', direction: 'asc' }],
         limit: 20,
@@ -1644,12 +1644,12 @@ describe('useDatabaseStore.searchEntries', () => {
 
   it('answers exactMatch from the page when the page holds every match', async () => {
     vi.mocked(apiClient.post).mockResolvedValueOnce({
-      entries: [makeEntry({ content: { title: 'Napoleon' } })],
+      entries: [makeEntry({ content: { title: 'Person A' } })],
       total: 1,
     })
 
     const store = useDatabaseStore()
-    const result = await store.searchEntries('db-1', 'napoleon')
+    const result = await store.searchEntries('db-1', 'person a')
 
     expect(result.exactMatch).toBe(true)
     expect(apiClient.post).toHaveBeenCalledTimes(1)
@@ -1660,28 +1660,28 @@ describe('useDatabaseStore.searchEntries', () => {
     // the picker would offer to create a duplicate.
     vi.mocked(apiClient.post)
       .mockResolvedValueOnce({
-        entries: [makeEntry({ content: { title: 'Napoleon I' } })],
+        entries: [makeEntry({ content: { title: 'Person A Junior' } })],
         total: 120,
       })
       .mockResolvedValueOnce({ entries: [makeEntry()], total: 1 })
 
     const store = useDatabaseStore()
-    const result = await store.searchEntries('db-1', 'Napoleon', 1)
+    const result = await store.searchEntries('db-1', 'Person A', 1)
 
     expect(result.exactMatch).toBe(true)
     expect(vi.mocked(apiClient.post).mock.calls[1][1]).toMatchObject({
-      filter_groups: [{ filters: [expect.objectContaining({ operator: 'eq', value: 'Napoleon' })] }],
+      filter_groups: [{ filters: [expect.objectContaining({ operator: 'eq', value: 'Person A' })] }],
       limit: 1,
     })
   })
 
   it('reports no exact match when neither page nor server has one', async () => {
     vi.mocked(apiClient.post)
-      .mockResolvedValueOnce({ entries: [makeEntry({ content: { title: 'Napoleon I' } })], total: 120 })
+      .mockResolvedValueOnce({ entries: [makeEntry({ content: { title: 'Person A Junior' } })], total: 120 })
       .mockResolvedValueOnce({ entries: [], total: 0 })
 
     const store = useDatabaseStore()
-    const result = await store.searchEntries('db-1', 'Napoleon', 1)
+    const result = await store.searchEntries('db-1', 'Person A', 1)
 
     expect(result.exactMatch).toBe(false)
   })
@@ -1966,6 +1966,209 @@ describe('useDatabaseStore.refreshEntries', () => {
     await Promise.all([first, second])
 
     expect(apiClient.post).toHaveBeenCalledOnce()
+  })
+})
+
+// ── Local writes and server snapshots ─────────────────────────────────────────
+
+/** A promise together with the functions that settle it. */
+function deferred<T = unknown>() {
+  let resolve: (value: T) => void = () => {}
+  let reject: (reason: unknown) => void = () => {}
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
+}
+
+function batch(entries: ReturnType<typeof makeEntry>[], missing: string[] = []) {
+  return { entries, missing, relations: {}, key_values: {} }
+}
+
+describe('useDatabaseStore local writes and snapshots', () => {
+  const CHECKED = { checked: true }
+  const UNCHECKED = { checked: false }
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.resetAllMocks()
+  })
+
+  afterEach(() => {
+    useDatabaseStore().$dispose()
+  })
+
+  /** A store with view 'k' showing entries *ids*, all unchecked. */
+  async function storeWithView(ids: string[]) {
+    const store = useDatabaseStore()
+    vi.mocked(apiClient.post).mockResolvedValueOnce(
+      page(ids.map((id) => makeEntry({ id, values: { s1: UNCHECKED } }))),
+    )
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'k')
+    return store
+  }
+
+  function shown(store: ReturnType<typeof useDatabaseStore>, id: string) {
+    return store.queryResults['k'].entries.find((e) => e.id === id)?.values['s1']
+  }
+
+  it('a page read before a write was stored keeps the value being written', async () => {
+    const store = await storeWithView(['a', 'b'])
+    const put = deferred()
+    vi.mocked(apiClient.put).mockReturnValueOnce(put.promise)
+
+    const write = store.upsertValue('db-1', 'b', 's1', CHECKED)
+    // The echo of an earlier write arrives while this one is in flight.
+    vi.mocked(apiClient.post).mockResolvedValueOnce(page([
+      makeEntry({ id: 'a', values: { s1: CHECKED } }),
+      makeEntry({ id: 'b', values: { s1: UNCHECKED } }),
+    ]))
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'k')
+
+    expect(shown(store, 'a')).toEqual(CHECKED)
+    expect(shown(store, 'b')).toEqual(CHECKED)
+    put.resolve(undefined)
+    await write
+  })
+
+  it('a page started before the write was confirmed keeps it, a later one does not', async () => {
+    const store = await storeWithView(['a'])
+    const stale = deferred()
+    vi.mocked(apiClient.post).mockReturnValueOnce(stale.promise)
+    vi.mocked(apiClient.put).mockResolvedValueOnce(undefined)
+
+    const load = store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'k')
+    await store.upsertValue('db-1', 'a', 's1', CHECKED)
+    stale.resolve(page([makeEntry({ id: 'a', values: { s1: UNCHECKED } })]))
+    await load
+    expect(shown(store, 'a')).toEqual(CHECKED)
+
+    // Started after the confirmation, the page holds the write, or a later
+    // change by someone else, which then applies.
+    vi.mocked(apiClient.post).mockResolvedValueOnce(
+      page([makeEntry({ id: 'a', values: { s1: { checked: false } } })]),
+    )
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'k')
+    expect(shown(store, 'a')).toEqual(UNCHECKED)
+  })
+
+  it('a refresh of changed entries keeps the cells still being written', async () => {
+    const store = await storeWithView(['a', 'b'])
+    const put = deferred()
+    vi.mocked(apiClient.put)
+      .mockResolvedValueOnce(undefined)
+      .mockReturnValueOnce(put.promise)
+
+    await store.upsertValue('db-1', 'a', 's1', CHECKED)
+    const write = store.upsertValue('db-1', 'b', 's1', CHECKED)
+    vi.mocked(apiClient.post).mockResolvedValueOnce(batch([
+      makeEntry({ id: 'a', values: { s1: CHECKED } }),
+      makeEntry({ id: 'b', values: { s1: UNCHECKED } }),
+    ]))
+    await store.refreshEntries('db-1', ['a', 'b'])
+
+    expect(shown(store, 'a')).toEqual(CHECKED)
+    expect(shown(store, 'b')).toEqual(CHECKED)
+    put.resolve(undefined)
+    await write
+  })
+
+  it('a single entry loaded during a write keeps the value being written', async () => {
+    const store = useDatabaseStore()
+    const put = deferred()
+    vi.mocked(apiClient.put).mockReturnValueOnce(put.promise)
+    vi.mocked(apiClient.get).mockResolvedValueOnce({
+      entry: makeEntry({ id: 'e1', values: { s1: UNCHECKED } }), relations: {}, key_values: {},
+    })
+
+    const write = store.upsertValue('db-1', 'e1', 's1', CHECKED)
+    const entry = await store.fetchEntry('db-1', 'e1')
+
+    expect(entry.values['s1']).toEqual(CHECKED)
+    put.resolve(undefined)
+    await write
+  })
+
+  it('the full entry list loaded during a write keeps the value being written', async () => {
+    const store = useDatabaseStore()
+    const put = deferred()
+    vi.mocked(apiClient.put).mockReturnValueOnce(put.promise)
+    vi.mocked(apiClient.get).mockResolvedValueOnce([makeEntry({ id: 'e1', values: { s1: UNCHECKED } })])
+
+    const write = store.upsertValue('db-1', 'e1', 's1', CHECKED)
+    await store.fetchEntries('db-1')
+
+    expect(store.entries['db-1'][0].values['s1']).toEqual(CHECKED)
+    put.resolve(undefined)
+    await write
+  })
+
+  it('writes to one cell are sent one after another, in order', async () => {
+    const store = await storeWithView(['a'])
+    const first = deferred()
+    vi.mocked(apiClient.put)
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce(undefined)
+    const linkOne = { related_ids: ['t1'] }
+    const linkTwo = { related_ids: ['t1', 't2'] }
+
+    const one = store.upsertValue('db-1', 'a', 's1', linkOne)
+    const two = store.upsertValue('db-1', 'a', 's1', linkTwo)
+    await vi.waitFor(() => expect(apiClient.put).toHaveBeenCalledTimes(1))
+    await Promise.resolve()
+    expect(apiClient.put).toHaveBeenCalledTimes(1)
+
+    first.resolve(undefined)
+    await Promise.all([one, two])
+
+    expect(vi.mocked(apiClient.put).mock.calls.map((call) => call[1])).toEqual([
+      { value: linkOne },
+      { value: linkTwo },
+    ])
+    expect(shown(store, 'a')).toEqual(linkTwo)
+  })
+
+  it('writes to different cells do not wait for each other', async () => {
+    const store = await storeWithView(['a', 'b'])
+    const first = deferred()
+    vi.mocked(apiClient.put)
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce(undefined)
+
+    const one = store.upsertValue('db-1', 'a', 's1', CHECKED)
+    await store.upsertValue('db-1', 'b', 's1', CHECKED)
+
+    expect(apiClient.put).toHaveBeenCalledTimes(2)
+    first.resolve(undefined)
+    await one
+  })
+
+  it('a refused write loads the entry again and shows the stored value', async () => {
+    const store = await storeWithView(['a'])
+    vi.mocked(apiClient.put).mockRejectedValueOnce(new Error('refused'))
+    vi.mocked(apiClient.post).mockResolvedValueOnce(batch([makeEntry({ id: 'a', values: { s1: UNCHECKED } })]))
+
+    await expect(store.upsertValue('db-1', 'a', 's1', CHECKED)).rejects.toThrow('refused')
+
+    await vi.waitFor(() => expect(shown(store, 'a')).toEqual(UNCHECKED))
+    expect(apiClient.post).toHaveBeenLastCalledWith('/api/databases/db-1/entries/batch', { ids: ['a'] })
+  })
+
+  it('a refused write followed by another one leaves the cell to the later write', async () => {
+    const store = await storeWithView(['a'])
+    const first = deferred()
+    vi.mocked(apiClient.put)
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce(undefined)
+
+    const one = store.upsertValue('db-1', 'a', 's1', CHECKED)
+    const two = store.upsertValue('db-1', 'a', 's1', UNCHECKED)
+    first.reject(new Error('refused'))
+
+    await expect(one).rejects.toThrow('refused')
+    await two
+    expect(apiClient.put).toHaveBeenCalledTimes(2)
+    // No reload: the later write decided what the cell shows.
+    expect(apiClient.post).toHaveBeenCalledTimes(1)
+    expect(shown(store, 'a')).toEqual(UNCHECKED)
   })
 })
 
