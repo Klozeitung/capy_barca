@@ -39,21 +39,6 @@
  * The exceptions are cell values (``upsertValue``) and entry titles, which
  * arrive over the WebSocket: both are patched in place in every cached copy
  * of the entry, so views, side panels and relation chips agree immediately.
- *
- * Local writes and server snapshots
- * ---------------------------------
- * Every write announces itself over the WebSocket, and views answer by
- * loading entries again. While several cells are changed in quick succession,
- * such a load can be read on the server before the later writes are stored;
- * applied as it is, it would turn those cells back until their own
- * announcements arrive, and a click on a cell turned back would write the old
- * state for real. So the store keeps a log of its own writes per cell, and
- * every load of entries (a snapshot) notes when it started. A cell whose
- * write had not been confirmed when a snapshot started keeps its local value
- * when that snapshot is applied. Once no open snapshot predates the
- * confirmation, the cell leaves the log and the server's value applies again,
- * changes by others included. Writes to one cell are sent one after another,
- * in the order they were made, so the server ends up with the last of them.
  */
 import { ref, onScopeDispose } from 'vue'
 import { defineStore } from 'pinia'
@@ -672,20 +657,6 @@ interface EntryDetailSlot {
   entry: DatabaseEntry
 }
 
-/**
- * The latest value this client wrote to one cell; see "Local writes and
- * server snapshots" above.
- */
-interface LocalCellWrite {
-  entryId: string
-  schemaId: string
-  value: Record<string, unknown> | null
-  /** Tick at which the server confirmed this write; null while in flight. */
-  confirmedAt: number | null
-  /** Settles once this write and every earlier one to the cell are done. */
-  done: Promise<void>
-}
-
 // ── Store ─────────────────────────────────────────────────────────────────────
 
 export const useDatabaseStore = defineStore('database', () => {
@@ -732,67 +703,8 @@ export const useDatabaseStore = defineStore('database', () => {
    */
   const _editingCells = new Map<string, string>()
 
-  /**
-   * Batch refreshes in flight, keyed by database and the ids asked for. Each
-   * resolves to the ids that are no active entries any more, once the fresh
-   * entries are in every cache.
-   */
-  const _batchRequests = new Map<string, Promise<string[]>>()
-
-  // ── Local writes and server snapshots ─────────────────────────────────────
-
-  /**
-   * Logical clock shared by write confirmations and snapshot starts, so any
-   * two of them can be ordered.
-   */
-  let _clock = 0
-
-  /** This client's latest write per cell, keyed ``entryId:schemaId``. */
-  const _localWrites = new Map<string, LocalCellWrite>()
-
-  /** Start ticks of the entry loads still in flight. */
-  const _openSnapshots = new Set<number>()
-
-  /** Note the start of an entry load; returns its tick. */
-  function _beginSnapshot(): number {
-    const tick = ++_clock
-    _openSnapshots.add(tick)
-    return tick
-  }
-
-  /** Note the end of the entry load started at *tick*. */
-  function _endSnapshot(tick: number): void {
-    _openSnapshots.delete(tick)
-    _pruneLocalWrites()
-  }
-
-  /**
-   * Drop the confirmed writes that every snapshot still to be applied already
-   * contains: all open ones started after the confirmation, and so will every
-   * later one.
-   */
-  function _pruneLocalWrites(): void {
-    let oldest = Infinity
-    for (const tick of _openSnapshots) if (tick < oldest) oldest = tick
-    for (const [key, write] of _localWrites) {
-      if (write.confirmedAt !== null && write.confirmedAt < oldest) _localWrites.delete(key)
-    }
-  }
-
-  /**
-   * Put this client's writes back into *rows*, entries of a snapshot started
-   * at *since*, for every cell whose write the server had not confirmed by
-   * then. The snapshot may have been read before such a write was stored.
-   */
-  function _overlayLocalWrites(rows: DatabaseEntry[], since: number): void {
-    if (_localWrites.size === 0 || rows.length === 0) return
-    const byId = new Map(rows.map((row) => [row.id, row]))
-    for (const write of _localWrites.values()) {
-      if (write.confirmedAt !== null && write.confirmedAt < since) continue
-      const row = byId.get(write.entryId)
-      if (row) row.values[write.schemaId] = write.value
-    }
-  }
+  /** Batch requests in flight, keyed by database and the ids asked for. */
+  const _batchRequests = new Map<string, Promise<EntryBatchResponse>>()
 
   /**
    * Resolved relation-target descriptors keyed by entry id.
@@ -989,17 +901,11 @@ export const useDatabaseStore = defineStore('database', () => {
   // ── Entries ───────────────────────────────────────────────────────────────
 
   async function fetchEntries(databaseId: string): Promise<DatabaseEntry[]> {
-    const snapshot = _beginSnapshot()
-    try {
-      const result = await apiClient.get<DatabaseEntry[]>(
-        `/api/databases/${databaseId}/entries`,
-      )
-      _overlayLocalWrites(result, snapshot)
-      entries.value[databaseId] = result
-      return result
-    } finally {
-      _endSnapshot(snapshot)
-    }
+    const result = await apiClient.get<DatabaseEntry[]>(
+      `/api/databases/${databaseId}/entries`,
+    )
+    entries.value[databaseId] = result
+    return result
   }
 
   /** POST /entries/query with the request serialised to the API's snake_case. */
@@ -1050,8 +956,6 @@ export const useDatabaseStore = defineStore('database', () => {
    *
    * The resolved relations of the page go into the chip caches before the
    * entries are stored, so relation cells render without asking for them.
-   * Cells this client is still writing keep their local values (see "Local
-   * writes and server snapshots" above).
    */
   async function loadViewPage(
     databaseId: string,
@@ -1065,32 +969,23 @@ export const useDatabaseStore = defineStore('database', () => {
     // would put stale rows back.
     const generation = (_pageGenerations.get(resultKey) ?? 0) + 1
     _pageGenerations.set(resultKey, generation)
-    const snapshot = _beginSnapshot()
-    try {
-      const page = await apiClient.post<ViewPageResponse>(
-        `/api/databases/${databaseId}/views/${viewId}/entries`,
-        { offset: request.offset, limit: request.limit, search: request.search },
-      )
-      const current = queryResults.value[resultKey]
-      if (_pageGenerations.get(resultKey) !== generation) {
-        return { entries: current?.entries ?? [], total: page.total }
-      }
-      // The chips are resolved from what the server holds; a value put back
-      // below may link entries the page did not resolve, and the relation
-      // cell resolves those itself.
-      ingestResolution(databaseId, page.entries, page)
-      _overlayLocalWrites(page.entries, snapshot)
-      if (append && current && current.databaseId === databaseId) {
-        // Entries may have moved between two batches; never show one twice.
-        const known = new Set(current.entries.map((e) => e.id))
-        current.entries.push(...page.entries.filter((e) => !known.has(e.id)))
-      } else {
-        queryResults.value[resultKey] = { databaseId, entries: page.entries }
-      }
-      return { entries: queryResults.value[resultKey].entries, total: page.total }
-    } finally {
-      _endSnapshot(snapshot)
+    const page = await apiClient.post<ViewPageResponse>(
+      `/api/databases/${databaseId}/views/${viewId}/entries`,
+      { offset: request.offset, limit: request.limit, search: request.search },
+    )
+    const current = queryResults.value[resultKey]
+    if (_pageGenerations.get(resultKey) !== generation) {
+      return { entries: current?.entries ?? [], total: page.total }
     }
+    ingestResolution(databaseId, page.entries, page)
+    if (append && current && current.databaseId === databaseId) {
+      // Entries may have moved between two batches; never show one twice.
+      const known = new Set(current.entries.map((e) => e.id))
+      current.entries.push(...page.entries.filter((e) => !known.has(e.id)))
+    } else {
+      queryResults.value[resultKey] = { databaseId, entries: page.entries }
+    }
+    return { entries: queryResults.value[resultKey].entries, total: page.total }
   }
 
   /** Drop the view query result held under *resultKey*. */
@@ -1105,18 +1000,12 @@ export const useDatabaseStore = defineStore('database', () => {
    * entry.
    */
   async function fetchEntry(databaseId: string, entryId: string): Promise<DatabaseEntry> {
-    const snapshot = _beginSnapshot()
-    try {
-      const detail = await apiClient.get<EntryDetailResponse>(
-        `/api/databases/${databaseId}/entries/${entryId}`,
-      )
-      ingestResolution(databaseId, [detail.entry], detail)
-      _overlayLocalWrites([detail.entry], snapshot)
-      entryDetails.value[entryId] = { databaseId, entry: detail.entry }
-      return entryDetails.value[entryId].entry
-    } finally {
-      _endSnapshot(snapshot)
-    }
+    const detail = await apiClient.get<EntryDetailResponse>(
+      `/api/databases/${databaseId}/entries/${entryId}`,
+    )
+    ingestResolution(databaseId, [detail.entry], detail)
+    entryDetails.value[entryId] = { databaseId, entry: detail.entry }
+    return entryDetails.value[entryId].entry
   }
 
   /**
@@ -1334,14 +1223,6 @@ export const useDatabaseStore = defineStore('database', () => {
    * immediately without waiting for a round-trip re-fetch. For relation
    * properties with bilateral sync the mirror update is handled server-side;
    * no client-side coordination is required.
-   *
-   * The write enters the log of local writes, so entry loads that may have
-   * been read before it was stored keep the value (see "Local writes and
-   * server snapshots" above). A write to a cell that is still being written
-   * is sent once the earlier one is done, so the server stores the writes in
-   * the order they were made. When the server refuses the latest write to a
-   * cell, the entry is loaded again so the cell shows the stored value; the
-   * returned promise rejects either way.
    */
   async function upsertValue(
     databaseId: string,
@@ -1369,45 +1250,10 @@ export const useDatabaseStore = defineStore('database', () => {
       }
     }
 
-    const key = `${entryId}:${schemaId}`
-    // A later write to the cell replaces this record; the record's identity
-    // tells each write whether it is still the latest.
-    const previous = _localWrites.get(key)
-    const write: LocalCellWrite = {
-      entryId,
-      schemaId,
-      value,
-      confirmedAt: null,
-      done: Promise.resolve(),
-    }
-    _localWrites.set(key, write)
-
-    const send = async (): Promise<void> => {
-      try {
-        await apiClient.put(
-          `/api/databases/${databaseId}/entries/${entryId}/values/${schemaId}`,
-          { value },
-        )
-      } catch (error) {
-        // A later write to the cell is queued behind this one and decides
-        // what the cell shows; otherwise the stored value is loaded again.
-        if (_localWrites.get(key) === write) {
-          _localWrites.delete(key)
-          refreshEntries(databaseId, [entryId]).catch(() => {})
-        }
-        throw error
-      }
-      if (_localWrites.get(key) === write) {
-        write.confirmedAt = ++_clock
-        _pruneLocalWrites()
-      }
-    }
-
-    // The earlier write's outcome is its caller's concern; this one is sent
-    // once it has settled either way.
-    const earlier = previous ? previous.done.catch(() => {}) : Promise.resolve()
-    write.done = earlier.then(send)
-    await write.done
+    await apiClient.put(
+      `/api/databases/${databaseId}/entries/${entryId}/values/${schemaId}`,
+      { value },
+    )
   }
 
   // ── In-place entry updates ────────────────────────────────────────────────
@@ -1512,10 +1358,8 @@ export const useDatabaseStore = defineStore('database', () => {
    * One request per call, split only above ``ENTRY_BATCH_LIMIT`` ids. Views
    * of the same database that ask for the same entries at the same time
    * share the request. Values, title, icon and state are replaced; the
-   * relations the entries hold are resolved along with them. Cells this
-   * client is still writing keep their local values (see "Local writes and
-   * server snapshots" above). Returns the ids that are no active entries any
-   * more.
+   * relations the entries hold are resolved along with them. Returns the
+   * ids that are no active entries any more.
    */
   async function refreshEntries(databaseId: string, ids: string[]): Promise<string[]> {
     const unique = [...new Set(ids)]
@@ -1525,28 +1369,13 @@ export const useDatabaseStore = defineStore('database', () => {
       const key = `${databaseId}|${[...chunk].sort().join(',')}`
       let request = _batchRequests.get(key)
       if (!request) {
-        request = _refreshBatch(databaseId, chunk).finally(() => _batchRequests.delete(key))
+        request = apiClient
+          .post<EntryBatchResponse>(`/api/databases/${databaseId}/entries/batch`, { ids: chunk })
+          .finally(() => _batchRequests.delete(key))
         _batchRequests.set(key, request)
       }
-      missing.push(...(await request))
-    }
-    return missing
-  }
-
-  /**
-   * Load one batch of entries and put it into every cache. Runs once per
-   * shared request, so the snapshot is applied while it is still open.
-   * Returns the requested ids that are no active entries.
-   */
-  async function _refreshBatch(databaseId: string, ids: string[]): Promise<string[]> {
-    const snapshot = _beginSnapshot()
-    try {
-      const result = await apiClient.post<EntryBatchResponse>(
-        `/api/databases/${databaseId}/entries/batch`,
-        { ids },
-      )
+      const result = await request
       ingestResolution(databaseId, result.entries, result)
-      _overlayLocalWrites(result.entries, snapshot)
       for (const fresh of result.entries) {
         _forEachCachedEntry(fresh.id, databaseId, (row) => {
           row.values = { ...fresh.values }
@@ -1556,10 +1385,9 @@ export const useDatabaseStore = defineStore('database', () => {
           row.position = fresh.position
         })
       }
-      return result.missing
-    } finally {
-      _endSnapshot(snapshot)
+      missing.push(...result.missing)
     }
+    return missing
   }
 
   /** Record which cell the view *owner* edits; null for both means none. */

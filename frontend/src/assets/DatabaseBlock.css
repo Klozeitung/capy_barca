@@ -542,14 +542,6 @@
 /*
  * Frozen body / aggregation cells pin horizontally. An opaque background
  * (matching the table canvas) keeps scrolled content from bleeding through.
- *
- * Row tints (--color-hover and friends) are translucent. A frozen cell must
- * never take one as its whole background, or the cells scrolled beneath it
- * show through. It paints the tint as a gradient layer over the opaque canvas
- * instead, which looks the same as the tint on a scrolling cell, where the
- * canvas lies behind the row. Further row states that tint frozen cells
- * (sub-item rows, drop targets) live in DatabaseBlock.vue and follow the same
- * rule.
  */
 .db__td--frozen,
 .db__aggregation-cell--frozen {
@@ -560,9 +552,7 @@
 
 /* Preserve the row-hover feedback on pinned cells. */
 .db__row:hover .db__td--frozen {
-  background:
-    linear-gradient(var(--color-hover), var(--color-hover)),
-    var(--color-bg);
+  background: var(--color-hover);
 }
 
 /* ── Header ──────────────────────────────────────────────────────────────── */
