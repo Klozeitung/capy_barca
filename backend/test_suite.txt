@@ -18,6 +18,7 @@ app/database/database_test.py
 app/database/view_preferences_migration_test.py
 app/database/option_ids_migration_test.py
 app/database/permission_levels_migration_test.py
+app/database/sibling_positions_migration_test.py
 app/database/migration_lock_test.py
 
 app/session/user_registration_test.py

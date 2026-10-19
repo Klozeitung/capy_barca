@@ -103,6 +103,30 @@ def test_list_children_ordered_by_position(db, workspace):
     assert positions == sorted(positions)
 
 
+def test_list_children_orders_equal_positions_by_creation_then_id(db, page):
+    """Siblings at the same position are listed the same way on every read."""
+    from datetime import datetime, timedelta, timezone
+
+    start = datetime(2000, 7, 28, tzinfo=timezone.utc)
+    later = repo.create_block(db, type="column", position=1.0, parent_id=page.id)
+    earlier = repo.create_block(db, type="column", position=1.0, parent_id=page.id)
+    same_time = [
+        repo.create_block(db, type="column", position=1.0, parent_id=page.id)
+        for _ in range(2)
+    ]
+    later.created_at = start + timedelta(minutes=2)
+    earlier.created_at = start + timedelta(minutes=1)
+    for block in same_time:
+        block.created_at = start + timedelta(minutes=3)
+    db.commit()
+
+    children = repo.list_children(db, page.id)
+
+    assert [c.id for c in children] == [
+        earlier.id, later.id, *sorted(b.id for b in same_time),
+    ]
+
+
 def test_list_children_excludes_trash_by_default(db, workspace):
     trashed = repo.create_block(
         db, type="page", position=5.0, parent_id=workspace.id, state="trash"

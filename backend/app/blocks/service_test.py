@@ -90,6 +90,52 @@ def test_create_block_raises_for_unknown_type(db, workspace):
         service.create_block(db, type="not_a_real_type", parent_id=workspace.id)
 
 
+def test_create_layout_comes_with_its_columns(db, page):
+    owner = uuid.uuid4()
+    layout = service.create_block(db, type="layout", parent_id=page.id, owner_id=owner)
+    db.commit()
+
+    columns = repo.list_children(db, layout.id, state="active")
+    assert [c.type for c in columns] == ["column"] * service.LAYOUT_INITIAL_COLUMNS
+    assert [c.position for c in columns] == [1.0, 2.0]
+    assert all(c.owner_id == owner for c in columns)
+
+
+def test_create_block_of_another_type_has_no_children(db, page):
+    toggle = service.create_block(db, type="toggle", parent_id=page.id)
+    db.commit()
+    assert repo.list_children(db, toggle.id, state="active") == []
+
+
+def test_create_block_at_a_taken_position_rebalances_the_siblings(db, page):
+    """A position computed from an outdated list must not create a tie."""
+    first = repo.create_block(db, type="paragraph", position=1.0, parent_id=page.id)
+    second = repo.create_block(db, type="paragraph", position=2.0, parent_id=page.id)
+    db.commit()
+
+    new = service.create_block(db, type="paragraph", parent_id=page.id, position=2.0)
+    db.commit()
+
+    children = repo.list_children(db, page.id, state="active")
+    assert [c.id for c in children] == [first.id, second.id, new.id]
+    assert [c.position for c in children] == [1.0, 2.0, 3.0]
+    assert new.position == 3.0
+
+
+def test_create_block_at_a_free_position_leaves_the_siblings(db, page):
+    first = repo.create_block(db, type="paragraph", position=1.0, parent_id=page.id)
+    second = repo.create_block(db, type="paragraph", position=2.0, parent_id=page.id)
+    db.commit()
+
+    new = service.create_block(db, type="paragraph", parent_id=page.id, position=1.5)
+    db.commit()
+
+    assert [c.position for c in repo.list_children(db, page.id, state="active")] == [
+        1.0, 1.5, 2.0,
+    ]
+    assert [first.position, new.position, second.position] == [1.0, 1.5, 2.0]
+
+
 # ─── position helpers ─────────────────────────────────────────────────────────
 
 
@@ -1550,6 +1596,52 @@ def test_deep_duplicate_original_is_unchanged(db, workspace, page):
     original_children = repo.list_children(db, page.id, state="active")
     assert len(original_children) == 1
     assert original_children[0].id == child.id
+
+
+def test_deep_duplicate_numbers_the_children_of_the_copy(db, workspace, page):
+    for position, text in ((0.25, "first"), (0.5, "second"), (7.0, "third")):
+        repo.create_block(
+            db, type="paragraph", position=position, parent_id=page.id,
+            content={"text": text},
+        )
+    db.commit()
+
+    dup = service.deep_duplicate(db, page.id, parent_id=workspace.id, position=5.0)
+    db.commit()
+
+    dup_children = repo.list_children(db, dup.id, state="active")
+    assert [c.content["text"] for c in dup_children] == ["first", "second", "third"]
+    assert [c.position for c in dup_children] == [1.0, 2.0, 3.0]
+
+
+def test_deep_duplicate_of_a_layout_with_tied_columns_has_none(db, page):
+    """A copy keeps the order the original lists its columns in, without ties."""
+    layout = repo.create_block(db, type="layout", position=1.0, parent_id=page.id)
+    db.commit()
+    for text in ("column A", "column B", "column C"):
+        repo.create_block(
+            db, type="column", position=1.0, parent_id=layout.id, content={"text": text},
+        )
+        db.commit()
+
+    dup = service.deep_duplicate(db, layout.id, parent_id=page.id, position=2.0)
+    db.commit()
+
+    original = [c.content["text"] for c in repo.list_children(db, layout.id, state="active")]
+    copied = repo.list_children(db, dup.id, state="active")
+    assert [c.content["text"] for c in copied] == original
+    assert [c.position for c in copied] == [1.0, 2.0, 3.0]
+
+
+def test_deep_duplicate_of_a_layout_keeps_exactly_its_columns(db, page):
+    layout = service.create_block(db, type="layout", parent_id=page.id)
+    service.create_block(db, type="column", parent_id=layout.id)
+    db.commit()
+
+    dup = service.deep_duplicate(db, layout.id, parent_id=page.id, position=2.0)
+    db.commit()
+
+    assert len(repo.list_children(db, dup.id, state="active")) == 3
 
 
 # ─── deep_duplicate: synched_origin / synched_mirror ─────────────────────────

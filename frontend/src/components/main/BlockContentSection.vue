@@ -293,8 +293,8 @@ async function onCreateAfter(afterBlockId: string, type: string): Promise<void> 
 
   // Only text blocks start with an empty text content; media/meta blocks start
   // with no content so their upload zone is shown immediately.
-  // Layout blocks start with a widths array; column bootstrapping is handled
-  // by LayoutBlock.onMounted. Synched origin starts with an empty content object.
+  // Layout blocks start with a widths array; the backend creates their
+  // columns along with them. Synched origin starts with an empty content object.
   const initialContent: Record<string, unknown> | undefined =
     type === 'layout'
       ? { widths: [0.5, 0.5] }
@@ -722,18 +722,13 @@ async function contextMenuAddColumn(): Promise<void> {
   const block = children.value.find((b) => b.id === id)
   if (!block || block.type !== 'layout') return
 
-  const cols = blockStore
-    .getChildren(id)
-    .filter((b) => b.state === 'active' && b.type === 'column')
-    .sort((a, b) => a.position - b.position)
+  if (layoutColumnCount(id) >= LAYOUT_MAX_COLUMNS) return
 
-  if (cols.length >= LAYOUT_MAX_COLUMNS) return
-
-  const pos = (cols[cols.length - 1]?.position ?? 0) + 1
+  // No position: the backend appends the column after the existing ones, so
+  // the order does not depend on what this client has cached.
   await blockStore.createBlock({
     type: 'column',
     parent_id: id,
-    position: pos,
     content: {},
   })
   await blockStore.fetchChildren(id, true)

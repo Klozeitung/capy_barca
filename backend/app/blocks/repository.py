@@ -839,6 +839,11 @@ def query_entries(
 
 # ─── Block ────────────────────────────────────────────────────────────────────
 
+# Order of siblings under one parent. Position decides; creation time and id
+# only break ties between equal positions, so every read lists such siblings
+# the same way. Used wherever children are listed, see list_children.
+SIBLING_ORDER = (Block.position, Block.created_at, Block.id)
+
 
 def get_block(db: Session, block_id: uuid.UUID) -> Optional[Block]:
     """Return the Block with *block_id*, or ``None`` if not found."""
@@ -894,7 +899,10 @@ def list_children(
     exclude_types: Optional[frozenset[str]] = None,
 ) -> list[Block]:
     """
-    Return the direct children of *parent_id*, ordered by position ascending.
+    Return the direct children of *parent_id* in their order: by position,
+    then by creation time and id. The last two only decide between siblings
+    at equal positions, which PostgreSQL would otherwise return in no fixed
+    order, so that the order of such siblings does not change between reads.
 
     Parameters
     ----------
@@ -912,7 +920,7 @@ def list_children(
     stmt = (
         select(Block)
         .where(Block.parent_id == parent_id)
-        .order_by(Block.position)
+        .order_by(*SIBLING_ORDER)
     )
     if state is not None:
         stmt = stmt.where(Block.state == state)

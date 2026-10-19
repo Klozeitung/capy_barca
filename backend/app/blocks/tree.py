@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.blocks.models import Block
+from app.blocks.repository import SIBLING_ORDER
 from app.permissions import repository as perm_repo
 from app.permissions.model import READ
 from app.users.model import User
@@ -63,7 +64,8 @@ class PageTree:
     """
     Result of :func:`load_tree`.
 
-    ``blocks`` holds the loaded blocks ordered by parent, then by position.
+    ``blocks`` holds the loaded blocks ordered by parent, then in sibling
+    order (``repository.SIBLING_ORDER``).
     ``loaded`` names every parent whose readable active children are all in
     ``blocks``; a parent listed there without children in ``blocks`` has none.
     ``mentioned`` holds the readable blocks that inline mentions refer to and
@@ -110,7 +112,7 @@ def load_tree(db: Session, root_id: uuid.UUID, user: User) -> PageTree:
         children = list(db.scalars(
             select(Block)
             .where(Block.parent_id.in_(frontier), Block.state == "active")
-            .order_by(Block.parent_id, Block.position)
+            .order_by(Block.parent_id, *SIBLING_ORDER)
         ))
         tree.loaded.extend(frontier)
         visible = _readable(db, children, user)

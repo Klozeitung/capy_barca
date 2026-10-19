@@ -122,6 +122,25 @@ def test_children_keep_their_position_order(db, admin):
     assert [b.id for b in tree.blocks] == [first.id, second.id, third.id]
 
 
+def test_children_at_equal_positions_keep_their_creation_order(db, admin):
+    """Equal positions are ordered like repository.list_children orders them."""
+    from datetime import timedelta
+
+    page = _page(db)
+    layout = _block(db, page, "layout")
+    start = datetime(2000, 7, 28, tzinfo=timezone.utc)
+    columns = [_block(db, layout, "column", position=1.0) for _ in range(3)]
+    for minutes, column in zip((3, 1, 2), columns):
+        column.created_at = start + timedelta(minutes=minutes)
+    db.commit()
+
+    tree = page_tree.load_tree(db, page.id, admin)
+
+    loaded = [b.id for b in tree.blocks if b.parent_id == layout.id]
+    assert loaded == [columns[1].id, columns[2].id, columns[0].id]
+    assert loaded == [c.id for c in repo.list_children(db, layout.id)]
+
+
 def test_trashed_blocks_are_left_out_with_their_content(db, admin):
     page = _page(db)
     toggle = _block(db, page, "toggle")

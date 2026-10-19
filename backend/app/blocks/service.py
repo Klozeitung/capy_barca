@@ -23,11 +23,17 @@ from app.blocks.models import Block, PropertySchema, WORKSPACE_ROOT_ID
 from app.blocks.types import validate_block_type
 
 # Minimum acceptable gap between adjacent sibling positions. When any gap
-# falls below this threshold after a move, the parent's sibling list is
+# falls below this threshold after a move or an insertion at a given
+# position, the parent's sibling list is
 # rebalanced to evenly spaced integers (1.0, 2.0, …). IEEE 754 double
 # precision has ~15–16 significant decimal digits; 1e-9 leaves ample room
 # before precision loss causes misordering.
 _REBALANCE_THRESHOLD: Final[float] = 1e-9
+
+# Columns a new layout block starts with. They are created together with the
+# layout, in the same transaction, so a layout never exists without them and
+# their positions never depend on what a client has cached.
+LAYOUT_INITIAL_COLUMNS: Final[int] = 2
 
 
 # ─── Exceptions ───────────────────────────────────────────────────────────────
@@ -397,8 +403,10 @@ def rebalance_positions(db: Session, parent_id: uuid.UUID) -> list[uuid.UUID]:
     Normalise the positions of all active children of *parent_id* to evenly
     spaced integers (1.0, 2.0, 3.0, …), preserving their current order.
 
-    This is called automatically by :func:`move` when the minimum gap between
-    adjacent siblings falls below :data:`_REBALANCE_THRESHOLD`. It can also
+    This is called automatically by :func:`move` and :func:`create_block`
+    when the minimum gap between adjacent siblings falls below
+    :data:`_REBALANCE_THRESHOLD`. Siblings at equal positions keep the order
+    :func:`repo.list_children` gives them, by creation time. It can also
     be triggered manually via the ``POST /api/blocks/{id}/rebalance-children``
     endpoint.
 
@@ -469,7 +477,14 @@ def create_block(
     Create a new block under *parent_id*.
 
     If *position* is omitted, the block is appended after all existing
-    active siblings.
+    active siblings. A given position that leaves less than
+    :data:`_REBALANCE_THRESHOLD` to a sibling, typically one equal to a
+    sibling's because the client computed it from an outdated list, makes
+    the siblings rebalanced as after :func:`move`. Siblings at the same
+    position would otherwise be listed in no fixed order.
+
+    A ``layout`` block is created with :data:`LAYOUT_INITIAL_COLUMNS`
+    ``column`` children at positions 1.0, 2.0, … in the same transaction.
 
     Parameters
     ----------
@@ -499,7 +514,8 @@ def create_block(
     """
     validate_block_type(type)
     _get_or_raise(db, parent_id)
-    if position is None:
+    appended = position is None
+    if appended:
         position = position_after_last(db, parent_id)
     block = repo.create_block(
         db,
@@ -515,6 +531,24 @@ def create_block(
         block.owner_id = owner_id
     _apply_first_level_permission(db, block.id, parent_id)
     ev.emit_created(db, block.id, _block_snapshot(block))
+
+    if not appended:
+        siblings = repo.list_children(db, parent_id, state="active")
+        if _min_sibling_gap(siblings) < _REBALANCE_THRESHOLD:
+            rebalance_positions(db, parent_id)
+            db.refresh(block)
+
+    if type == "layout":
+        for index in range(1, LAYOUT_INITIAL_COLUMNS + 1):
+            column = repo.create_block(
+                db,
+                type="column",
+                position=float(index),
+                parent_id=block.id,
+                content={},
+            )
+            column.owner_id = block.owner_id
+            ev.emit_created(db, column.id, _block_snapshot(column))
     return block
 
 
@@ -530,9 +564,12 @@ def deep_duplicate(
     Recursively duplicate *block_id* and its entire active subtree under
     *parent_id* at *position*.
 
-    The root copy is placed at the given *position*; each child is copied at
-    its original position value so the internal order is preserved exactly.
-    Only active children (``state='active'``) are included.
+    The root copy is placed at the given *position*. The children of every
+    copied block keep their order and are numbered 1.0, 2.0, … in it, so a
+    copy holds no siblings at equal positions even when the original does.
+    Only active children (``state='active'``) are included. A copied layout
+    keeps exactly the columns of the original; :func:`create_block` and its
+    initial columns are not involved.
 
     Parameters
     ----------
@@ -611,9 +648,13 @@ def deep_duplicate(
     _apply_first_level_permission(db, new_block.id, parent_id)
     ev.emit_created(db, new_block.id, _block_snapshot(new_block))
 
-    # Recursively copy all active children, preserving their relative positions.
-    for child in repo.list_children(db, block_id, state="active"):
-        deep_duplicate(db, child.id, parent_id=new_block.id, position=child.position, owner_id=new_block.owner_id)
+    # Recursively copy all active children in their order, renumbered 1.0,
+    # 2.0, … so that a copy never inherits siblings at equal positions.
+    for index, child in enumerate(repo.list_children(db, block_id, state="active"), start=1):
+        deep_duplicate(
+            db, child.id, parent_id=new_block.id, position=float(index),
+            owner_id=new_block.owner_id,
+        )
 
     return new_block
 

@@ -12,20 +12,17 @@
  * - Column removal via ColumnBlock emit (only available when > 2 columns).
  * - Column reordering via column-mode drag-and-drop: ColumnBlock initiates
  *   the drag; LayoutBlock handles dragover/drop, scoped to its own children.
- * - Bootstrap: when mounted with fewer than 2 columns (freshly created block),
- *   missing columns are created automatically.
+ * - Columns: the backend creates a layout together with its initial columns
+ *   and gives every column its position, so this component only loads them.
  * - Adding a column is available via the block-level drag handle context menu
  *   in BlockContentSection (visible when column count < 4).
+ * - The resize divider is invisible by default and only becomes visible
+ *   (accent colour) on hover or during an active resize; its 8 px drag
+ *   target area is always present.
  *
  * Content model:
  *   layout.content = { widths: number[] }   // proportional, sum ≈ 1.0
  *   column.content = {}                     // children managed separately
- *
- * Changes:
- * - Resize divider is now invisible by default; it only becomes visible
- *   (accent colour) on hover or during an active resize. The drag target
- *   area (8 px) is unchanged so the divider remains fully draggable.
- * - Add column affordance moved to the block-level drag handle context menu.
  */
 import { computed, onMounted, ref, nextTick } from 'vue'
 import { useBlockStore, type Block } from '@/stores/blocks'
@@ -90,32 +87,13 @@ async function persistWidths(widths: number[]): Promise<void> {
   })
 }
 
-// ── Bootstrap ─────────────────────────────────────────────────────────────────
+// ── Loading ───────────────────────────────────────────────────────────────────
 
 onMounted(async () => {
   if (!blockStore.hasLoadedChildren(props.block.id)) {
     await blockStore.fetchChildren(props.block.id)
   }
-  if (columns.value.length < MIN_COLUMNS) {
-    await bootstrapColumns()
-  }
 })
-
-async function bootstrapColumns(): Promise<void> {
-  const needed = MIN_COLUMNS - columns.value.length
-  for (let i = 0; i < needed; i++) {
-    const pos = (columns.value[columns.value.length - 1]?.position ?? 0) + 1
-    await blockStore.createBlock({
-      type: 'column',
-      parent_id: props.block.id,
-      position: pos,
-      content: {},
-    })
-  }
-  await blockStore.fetchChildren(props.block.id, true)
-  await nextTick()
-  await persistWidths(Array(columns.value.length).fill(1 / columns.value.length))
-}
 
 // ── Remove column ─────────────────────────────────────────────────────────────
 
