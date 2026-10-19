@@ -59,7 +59,7 @@ def _upsert_value(http_client, database_id, entry_id, schema_id, value):
         f"/api/databases/{database_id}/entries/{entry_id}/values/{schema_id}",
         json={"value": value},
     )
-    assert resp.status_code == 204
+    assert resp.status_code == 200
     return resp
 
 
@@ -552,7 +552,7 @@ def test_duplicate_entry_entry_from_different_database_returns_404(http_client):
 # ─── PUT /api/databases/{id}/entries/{entry_id}/values/{schema_id} ───────────
 
 
-def test_upsert_value_returns_204(http_client):
+def test_upsert_value_returns_the_stored_value(http_client):
     db_id = _create_database(http_client)
     schema = _create_schema(http_client, db_id)
     entry = _create_entry(http_client, db_id)
@@ -560,7 +560,33 @@ def test_upsert_value_returns_204(http_client):
         f"/api/databases/{db_id}/entries/{entry['id']}/values/{schema['id']}",
         json={"value": {"text": "Hello"}},
     )
-    assert response.status_code == 204
+    assert response.status_code == 200
+    assert response.json() == {"value": {"text": "Hello"}}
+
+
+def test_upsert_value_null_returns_null(http_client):
+    db_id = _create_database(http_client)
+    schema = _create_schema(http_client, db_id)
+    entry = _create_entry(http_client, db_id)
+    _upsert_value(http_client, db_id, entry["id"], schema["id"], {"text": "X"})
+    response = _upsert_value(http_client, db_id, entry["id"], schema["id"], None)
+    assert response.json() == {"value": None}
+
+
+def test_upsert_relation_returns_the_value_without_dropped_input(http_client):
+    """Nuances for entries that are not linked are not stored, so not returned."""
+    db_id = _create_database(http_client)
+    schema = _create_relation_schema(http_client, db_id, db_id, name="Links")
+    entry_a = _create_entry(http_client, db_id)
+    entry_b = _create_entry(http_client, db_id)
+    response = _upsert_value(http_client, db_id, entry_a["id"], schema["id"], {
+        "related_ids": [entry_b["id"]],
+        "nuances": {entry_b["id"]: "label-a", str(uuid.uuid4()): "label-b"},
+    })
+    assert response.json() == {"value": {
+        "related_ids": [entry_b["id"]],
+        "nuances": {entry_b["id"]: "label-a"},
+    }}
 
 
 def test_upsert_value_appears_in_entries_list(http_client):
@@ -1273,7 +1299,7 @@ def test_can_write_sub_item_directly(http_client):
         f"/api/databases/{db_id}/entries/{entry['id']}/values/{si['id']}",
         json={"value": {"related_ids": []}},
     )
-    assert resp.status_code == 204
+    assert resp.status_code == 200
 
 
 def test_multiple_children_appear_in_sub_item(http_client):
@@ -2177,7 +2203,7 @@ def test_upsert_timeline_value_valid(http_client):
             "2024-01-01T00:00:00→": {"text": "Value B"},
         }}},
     )
-    assert resp.status_code == 204
+    assert resp.status_code == 200
 
 
 def test_upsert_timeline_value_overlapping_rejected(http_client):
@@ -2215,13 +2241,60 @@ def test_upsert_relation_timeline_pool_write(http_client):
         f"/api/databases/{db_id}/entries/{entry_a['id']}/values/{schema['id']}",
         json={"value": {"relationPool": pool}},
     )
-    assert resp.status_code == 204
+    assert resp.status_code == 200
     entries = http_client.get(f"/api/databases/{db_id}/entries").json()
     row_a = next(e for e in entries if e["id"] == entry_a["id"])
     val = row_a["values"].get(schema["id"])
     assert val is not None
     assert "_timeline" in val
     assert "relationPool" in val
+
+
+def test_upsert_relation_timeline_returns_the_value_a_read_returns(http_client):
+    """
+    The client sends only the pool; the answer carries the derived _timeline
+    and equals what the entry, batch and list endpoints return afterwards,
+    so the cell can show it without loading the entry again.
+    """
+    db_id = _create_database(http_client)
+    schema = _create_relation_schema(
+        http_client, db_id, db_id, name="Links", direction="bilateral_self",
+    )
+    http_client.patch(
+        f"/api/databases/{db_id}/schemas/{schema['id']}",
+        json={"config": {**schema["config"], "hasTimeline": True}},
+    )
+    entry_a = _create_entry(http_client, db_id)
+    entry_b = _create_entry(http_client, db_id)
+    entry_c = _create_entry(http_client, db_id)
+
+    resp = _upsert_value(http_client, db_id, entry_a["id"], schema["id"], {
+        "relationPool": {
+            entry_b["id"]: [""],
+            entry_c["id"]: ["2045-07-17T00:00:00→"],
+        },
+        "nuancePool": {entry_b["id"]: {"": "label-a"}},
+    })
+    returned = resp.json()["value"]
+
+    assert returned["_timeline"] == {
+        "→2045-07-16T23:59:59": {
+            "related_ids": [entry_b["id"]], "nuances": {entry_b["id"]: "label-a"},
+        },
+        "2045-07-17T00:00:00→": {
+            "related_ids": [entry_b["id"], entry_c["id"]],
+            "nuances": {entry_b["id"]: "label-a"},
+        },
+    }
+    detail = http_client.get(f"/api/databases/{db_id}/entries/{entry_a['id']}").json()
+    assert returned == detail["entry"]["values"][schema["id"]]
+    batch = http_client.post(
+        f"/api/databases/{db_id}/entries/batch", json={"ids": [entry_a["id"]]},
+    ).json()
+    assert returned == batch["entries"][0]["values"][schema["id"]]
+    entries = http_client.get(f"/api/databases/{db_id}/entries").json()
+    row_a = next(e for e in entries if e["id"] == entry_a["id"])
+    assert returned == row_a["values"][schema["id"]]
 
 
 def test_upsert_relation_timeline_direct_timeline_write_rejected(http_client):
@@ -2894,7 +2967,7 @@ def test_nuance_pool_round_trip(http_client):
             "nuancePool": {entry_b["id"]: {"": "label-a"}},
         }},
     )
-    assert resp.status_code == 204
+    assert resp.status_code == 200
 
     entries = http_client.get(f"/api/databases/{db_id}/entries").json()
     row = next(e for e in entries if e["id"] == entry_a["id"])
@@ -3039,7 +3112,7 @@ def test_pool_to_timeline_empty_range_round_trip(http_client):
         f"/api/databases/{db_id}/entries/{entry_a['id']}/values/{schema['id']}",
         json={"value": {"relationPool": {entry_b["id"]: [""]}}},
     )
-    assert resp.status_code == 204
+    assert resp.status_code == 200
 
     # Fetch back and verify _timeline has the "" slot
     entries = http_client.get(f"/api/databases/{db_id}/entries").json()
@@ -3087,7 +3160,7 @@ def test_upsert_pings_automation_engine(http_client, monkeypatch):
 def test_upsert_engine_failure_does_not_break_response(http_client, monkeypatch):
     """
     If the automation engine raises an exception it must be swallowed and
-    the HTTP response must still be 204.
+    the HTTP response must still carry the stored value.
     """
     import app.blocks.database_router as dr
 
@@ -3103,7 +3176,8 @@ def test_upsert_engine_failure_does_not_break_response(http_client, monkeypatch)
         f"/api/databases/{db_id}/entries/{entry['id']}/values/{schema['id']}",
         json={"value": {"option": "Done"}},
     )
-    assert resp.status_code == 204
+    assert resp.status_code == 200
+    assert resp.json() == {"value": {"option": "Done"}}
 
 
 # ─── Entry-template endpoints ─────────────────────────────────────────────────
@@ -3315,7 +3389,7 @@ def test_parent_item_cycle_indirect_returns_422(http_client):
         f"/api/databases/{db_id}/entries/{entry_a['id']}/values/{pi['id']}",
         json={"value": {"related_ids": [entry_b["id"]]}},
     )
-    assert resp.status_code == 204
+    assert resp.status_code == 200
 
     # B's parent = A — would create A → B → A cycle
     resp = http_client.put(
@@ -3354,7 +3428,7 @@ def test_sub_item_direct_write_accepted(http_client):
         f"/api/databases/{db_id}/entries/{parent['id']}/values/{si['id']}",
         json={"value": {"related_ids": [child["id"]]}},
     )
-    assert resp.status_code == 204
+    assert resp.status_code == 200
 
 
 def test_sub_item_direct_write_syncs_parent_item(http_client):
@@ -4733,7 +4807,7 @@ def test_concurrent_links_to_one_target_keep_both_back_references(http_client):
         other.commit()
     writer.join(timeout=10)
 
-    assert responses[0].status_code == 204
+    assert responses[0].status_code == 200
     assert set(_mirror_ids(http_client, db_b, target["id"], "Link Back")) == {
         first["id"], second["id"], third["id"],
     }

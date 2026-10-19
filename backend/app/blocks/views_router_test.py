@@ -51,7 +51,7 @@ def _value(client, database_id, entry_id, schema_id, value) -> None:
         f"/api/databases/{database_id}/entries/{entry_id}/values/{schema_id}",
         json={"value": value},
     )
-    assert resp.status_code == 204, resp.text
+    assert resp.status_code == 200, resp.text
 
 
 def _views(client, database_id, placement_id=None) -> dict:

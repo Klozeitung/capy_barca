@@ -12,6 +12,7 @@ import {
   type PropertySchema,
 } from '@/stores/database'
 import { useAuthStore } from '@/stores/auth'
+import { useDatabaseTemplatesStore } from '@/stores/databaseTemplates'
 import { useNoticesStore } from '@/stores/notices'
 import type { Block } from '@/stores/blocks'
 import type { BlockEventPayload } from '@/stores/ws'
@@ -933,7 +934,7 @@ describe('useDatabaseStore', () => {
   // ── upsertValue ─────────────────────────────────────────────────────────────
 
   it('upsertValue calls correct endpoint', async () => {
-    vi.mocked(apiClient.put).mockResolvedValueOnce(undefined)
+    vi.mocked(apiClient.put).mockResolvedValueOnce({ value: { text: 'Hello' } })
 
     const store = useDatabaseStore()
     await store.upsertValue('db-1', 'entry-1', 'schema-1', { text: 'Hello' })
@@ -945,7 +946,7 @@ describe('useDatabaseStore', () => {
   })
 
   it('upsertValue optimistically patches local entry', async () => {
-    vi.mocked(apiClient.put).mockResolvedValueOnce(undefined)
+    vi.mocked(apiClient.put).mockResolvedValueOnce({ value: { text: 'World' } })
 
     const store = useDatabaseStore()
     store.entries['db-1'] = [makeEntry({ id: 'entry-1', values: {} })]
@@ -957,7 +958,7 @@ describe('useDatabaseStore', () => {
   })
 
   it('upsertValue accepts null to clear a cell', async () => {
-    vi.mocked(apiClient.put).mockResolvedValueOnce(undefined)
+    vi.mocked(apiClient.put).mockResolvedValueOnce({ value: null })
 
     const store = useDatabaseStore()
     store.entries['db-1'] = [makeEntry({ id: 'entry-1', values: { 'schema-1': { text: 'X' } } })]
@@ -1451,7 +1452,7 @@ describe('useDatabaseStore view pages', () => {
     vi.mocked(apiClient.post)
       .mockResolvedValueOnce(page([makeEntry({ id: 'e1', values: {} })]))
       .mockResolvedValueOnce(page([makeEntry({ id: 'e1', values: {} })]))
-    vi.mocked(apiClient.put).mockResolvedValueOnce(undefined)
+    vi.mocked(apiClient.put).mockResolvedValueOnce({ value: { text: 'Hi' } })
 
     const store = useDatabaseStore()
     await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
@@ -1587,7 +1588,7 @@ describe('useDatabaseStore single entries', () => {
     vi.mocked(apiClient.get).mockResolvedValueOnce({
       entry: makeEntry({ id: 'e1', values: {} }), relations: {}, key_values: {},
     })
-    vi.mocked(apiClient.put).mockResolvedValueOnce(undefined)
+    vi.mocked(apiClient.put).mockResolvedValueOnce({ value: { text: 'Hi' } })
 
     const store = useDatabaseStore()
     await store.fetchEntry('db-1', 'e1')
@@ -1978,7 +1979,7 @@ describe('notice when someone else overwrites a value', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     vi.useFakeTimers()
-    vi.mocked(apiClient.put).mockResolvedValue(undefined)
+    vi.mocked(apiClient.put).mockResolvedValue({ value: { text: 'Value A' } })
     useAuthStore().login('person-a', 'member')
     const store = useDatabaseStore()
     store.schemas['db-1'] = [schema]
@@ -2081,7 +2082,7 @@ describe('useDatabaseStore pending writes', () => {
     expect(store.isCellPending('e1', 's2')).toBe(false)
     expect(store.hasPendingWrites).toBe(true)
 
-    put.resolve(undefined)
+    put.resolve({ value: { text: 'New' } })
     await write
     expect(store.isCellPending('e1', 's1')).toBe(false)
     expect(store.hasPendingWrites).toBe(false)
@@ -2090,7 +2091,7 @@ describe('useDatabaseStore pending writes', () => {
   it('a second write to the same cell is sent only after the first was answered', async () => {
     const store = await storeWithRow()
     const first = deferred()
-    vi.mocked(apiClient.put).mockReturnValueOnce(first.promise).mockResolvedValueOnce(undefined)
+    vi.mocked(apiClient.put).mockReturnValueOnce(first.promise).mockResolvedValueOnce({ value: { text: 'Two' } })
 
     const a = store.upsertValue('db-1', 'e1', 's1', { text: 'One' })
     const b = store.upsertValue('db-1', 'e1', 's1', { text: 'Two' })
@@ -2098,7 +2099,7 @@ describe('useDatabaseStore pending writes', () => {
     await new Promise((r) => setTimeout(r, 0))
     expect(apiClient.put).toHaveBeenCalledTimes(1)
 
-    first.resolve(undefined)
+    first.resolve({ value: { text: 'One' } })
     await Promise.all([a, b])
     expect(vi.mocked(apiClient.put).mock.calls.map((c) => c[1])).toEqual([
       { value: { text: 'One' } },
@@ -2111,7 +2112,7 @@ describe('useDatabaseStore pending writes', () => {
   it('writes to different cells do not wait for each other', async () => {
     const store = await storeWithRow()
     const first = deferred()
-    vi.mocked(apiClient.put).mockReturnValueOnce(first.promise).mockResolvedValueOnce(undefined)
+    vi.mocked(apiClient.put).mockReturnValueOnce(first.promise).mockResolvedValueOnce({ value: { text: 'Two' } })
 
     store.upsertValue('db-1', 'e1', 's1', { text: 'One' })
     await store.upsertValue('db-1', 'e1', 's2', { text: 'Two' })
@@ -2119,7 +2120,7 @@ describe('useDatabaseStore pending writes', () => {
     expect(apiClient.put).toHaveBeenCalledTimes(2)
     expect(store.isCellPending('e1', 's1')).toBe(true)
     expect(store.isCellPending('e1', 's2')).toBe(false)
-    first.resolve(undefined)
+    first.resolve({ value: { text: 'One' } })
   })
 
   it('a page loaded while the cell is pending keeps the new value', async () => {
@@ -2136,7 +2137,7 @@ describe('useDatabaseStore pending writes', () => {
     expect(row(store).values['s1']).toEqual({ text: 'New' })
     // Cells this client did not write take what the server sent.
     expect(row(store).values['s2']).toEqual({ text: 'Server' })
-    put.resolve(undefined)
+    put.resolve({ value: { text: 'New' } })
     await write
   })
 
@@ -2149,7 +2150,7 @@ describe('useDatabaseStore pending writes', () => {
 
     const write = store.upsertValue('db-1', 'e1', 's1', { text: 'New' })
     const reload = store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
-    put.resolve(undefined)
+    put.resolve({ value: { text: 'New' } })
     await write
     // The server read this page before the write was committed.
     load.resolve(page([makeEntry({ id: 'e1', values: { s1: { text: 'Old' } } })]))
@@ -2160,7 +2161,7 @@ describe('useDatabaseStore pending writes', () => {
 
   it('a page that started after the confirmation shows what the server holds', async () => {
     const store = await storeWithRow()
-    vi.mocked(apiClient.put).mockResolvedValueOnce(undefined)
+    vi.mocked(apiClient.put).mockResolvedValueOnce({ value: { text: 'New' } })
     await store.upsertValue('db-1', 'e1', 's1', { text: 'New' })
 
     // Someone else changed the value after this client's write.
@@ -2185,7 +2186,7 @@ describe('useDatabaseStore pending writes', () => {
     await store.refreshEntries('db-1', ['e1'])
 
     expect(row(store).values).toEqual({ s1: { text: 'New' }, s2: { text: 'Server' } })
-    put.resolve(undefined)
+    put.resolve({ value: { text: 'New' } })
     await write
   })
 
@@ -2201,7 +2202,7 @@ describe('useDatabaseStore pending writes', () => {
     const entry = await store.fetchEntry('db-1', 'e1')
 
     expect(entry.values['s1']).toEqual({ text: 'New' })
-    put.resolve(undefined)
+    put.resolve({ value: { text: 'New' } })
     await write
   })
 
@@ -2215,7 +2216,7 @@ describe('useDatabaseStore pending writes', () => {
     await store.fetchEntries('db-1')
 
     expect(store.entries['db-1'][0].values['s1']).toEqual({ text: 'New' })
-    put.resolve(undefined)
+    put.resolve({ value: { text: 'New' } })
     await write
   })
 
@@ -2237,7 +2238,7 @@ describe('useDatabaseStore pending writes', () => {
   it('a failed write does not stop the next write to the same cell', async () => {
     const store = await storeWithRow()
     const first = deferred()
-    vi.mocked(apiClient.put).mockReturnValueOnce(first.promise).mockResolvedValueOnce(undefined)
+    vi.mocked(apiClient.put).mockReturnValueOnce(first.promise).mockResolvedValueOnce({ value: { text: 'Two' } })
     vi.mocked(apiClient.post).mockResolvedValue({
       entries: [], missing: [], relations: {}, key_values: {},
     })
@@ -2254,6 +2255,79 @@ describe('useDatabaseStore pending writes', () => {
     expect(store.isCellPending('e1', 's1')).toBe(false)
   })
 
+  // ── Stored value from the answer ─────────────────────────────────────────
+
+  // A timeline relation is sent as its pool; the server adds the _timeline
+  // the cell renders from.
+  const POOL = { relationPool: { t1: [''] } }
+  const STORED_POOL = { ...POOL, _timeline: { '': { related_ids: ['t1'] } } }
+
+  it('the stored value replaces the value sent in every cached copy', async () => {
+    const store = await storeWithRow()
+    store.entries['db-1'] = [makeEntry({ id: 'e1', values: {} })]
+    store.entryDetails['e1'] = { databaseId: 'db-1', entry: makeEntry({ id: 'e1', values: {} }) }
+    vi.mocked(apiClient.put).mockResolvedValueOnce({ value: STORED_POOL })
+
+    await store.upsertValue('db-1', 'e1', 's1', POOL)
+
+    expect(row(store).values['s1']).toEqual(STORED_POOL)
+    expect(store.entries['db-1'][0].values['s1']).toEqual(STORED_POOL)
+    expect(store.getEntry('db-1', 'e1')?.values['s1']).toEqual(STORED_POOL)
+  })
+
+  it('a page that started before the confirmation shows the stored value', async () => {
+    // The change event arrives before the answer to the write, so the reload
+    // it causes is still running when the write is confirmed.
+    const store = await storeWithRow()
+    const put = deferred()
+    const load = deferred()
+    vi.mocked(apiClient.put).mockReturnValueOnce(put.promise)
+    vi.mocked(apiClient.post).mockReturnValueOnce(load.promise)
+
+    const write = store.upsertValue('db-1', 'e1', 's1', POOL)
+    const reload = store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
+    put.resolve({ value: STORED_POOL })
+    await write
+    load.resolve(page([makeEntry({ id: 'e1', values: { s1: { text: 'Old' } } })]))
+    await reload
+
+    expect(row(store).values['s1']).toEqual(STORED_POOL)
+  })
+
+  it('only the answer to the last write to a cell replaces its value', async () => {
+    const store = await storeWithRow()
+    const first = deferred()
+    const second = deferred()
+    vi.mocked(apiClient.put).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+
+    const a = store.upsertValue('db-1', 'e1', 's1', { text: 'One' })
+    const b = store.upsertValue('db-1', 'e1', 's1', { text: 'Two' })
+    first.resolve({ value: { text: 'One (stored)' } })
+    await a
+    await vi.waitFor(() => expect(apiClient.put).toHaveBeenCalledTimes(2))
+
+    // The later input stays while its own write is still on the way.
+    expect(row(store).values['s1']).toEqual({ text: 'Two' })
+    expect(store.isCellPending('e1', 's1')).toBe(true)
+
+    second.resolve({ value: { text: 'Two (stored)' } })
+    await b
+    expect(row(store).values['s1']).toEqual({ text: 'Two (stored)' })
+    expect(store.isCellPending('e1', 's1')).toBe(false)
+  })
+
+  it('the stored value reaches the entry template of that id', async () => {
+    const templates = useDatabaseTemplatesStore()
+    templates.templates['db-1'] = [{ id: 'tmpl-1', position: 1, content: null, icon: null, values: {} }]
+    vi.mocked(apiClient.put).mockResolvedValueOnce({ value: STORED_POOL })
+
+    const write = useDatabaseStore().upsertValue('db-1', 'tmpl-1', 's1', POOL)
+    expect(templates.templates['db-1'][0].values['s1']).toEqual(POOL)
+    await write
+
+    expect(templates.templates['db-1'][0].values['s1']).toEqual(STORED_POOL)
+  })
+
   it('leaving the page asks first while a write is pending', async () => {
     const store = useDatabaseStore()
     const idle = new Event('beforeunload', { cancelable: true })
@@ -2267,7 +2341,7 @@ describe('useDatabaseStore pending writes', () => {
     window.dispatchEvent(busy)
     expect(busy.defaultPrevented).toBe(true)
 
-    put.resolve(undefined)
+    put.resolve({ value: { text: 'New' } })
     await write
   })
 })

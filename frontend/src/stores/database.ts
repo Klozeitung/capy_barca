@@ -47,6 +47,13 @@
  * answer is in. Writes to one cell that still arrive meanwhile, from places
  * without that lock, are sent one after another in the order they were made.
  *
+ * The server answers a write with the value as it stored it, in the shape a
+ * read returns. That can differ from the value sent: the backend derives the
+ * ``_timeline`` of a timeline relation from its ``relationPool`` and drops
+ * input it does not keep. When the last write to a cell is confirmed, the
+ * stored value replaces the one sent, in every cached copy of the entry and
+ * as the cell's local value.
+ *
  * Loads that started before the server confirmed a write may carry the value
  * from before it. Every load that replaces cached values (view pages, single
  * entries, entry batches, full lists) therefore keeps the local value of
@@ -671,8 +678,17 @@ interface EntryDetailSlot {
   entry: DatabaseEntry
 }
 
-/** The latest value this client wrote to one cell; see ``upsertValue``. */
+/** Response of PUT /entries/{id}/values/{schema_id}: the value as stored. */
+export interface ValueResponse {
+  value: Record<string, unknown> | null
+}
+
+/**
+ * The latest value this client wrote to one cell; see ``upsertValue``. Once
+ * the last write is confirmed, ``value`` is the value the server stored.
+ */
 interface LocalWrite {
+  databaseId: string
   entryId: string
   schemaId: string
   value: Record<string, unknown> | null
@@ -813,16 +829,33 @@ export const useDatabaseStore = defineStore('database', () => {
     }
   }
 
-  /** Book the answer to one write of *cell*. */
-  function _settleWrite(cell: string, request: Promise<unknown>, ok: boolean): void {
+  /**
+   * Book the answer to one write of *cell*: *stored* is the value the server
+   * stored when the write succeeded, ``undefined`` when it failed.
+   *
+   * Writes to one cell are sent one after another, so the answer that leaves
+   * none in flight belongs to the last write. Only that one puts the stored
+   * value into the cache; an earlier answer would replace a value the user
+   * entered after it.
+   */
+  function _settleWrite(
+    cell: string,
+    request: Promise<unknown>,
+    stored: ValueResponse | undefined,
+  ): void {
     if (_cellChains.get(cell) === request) _cellChains.delete(cell)
     const write = _localWrites.get(cell)
     if (!write) return
     write.inFlight -= 1
     if (write.inFlight > 0) return
+    if (stored) {
+      write.value = stored.value
+      _writeCell(write.databaseId, write.entryId, write.schemaId, stored.value)
+      write.confirmedAt = ++_clock
+    } else {
+      _localWrites.delete(cell)
+    }
     pendingCells.value.delete(cell)
-    if (ok) write.confirmedAt = ++_clock
-    else _localWrites.delete(cell)
     _pruneLocalWrites()
   }
 
@@ -1380,7 +1413,9 @@ export const useDatabaseStore = defineStore('database', () => {
    *
    * The cell is pending until the server answers. A further write to the
    * same cell is sent only after the previous one was answered, so the
-   * server applies them in the order they were made. When the write fails,
+   * server applies them in the order they were made. The answer to the last
+   * of them carries the value as stored, which then replaces the one sent
+   * (see the module documentation on pending writes). When the write fails,
    * the entry is loaded again and the error is passed on.
    */
   async function upsertValue(
@@ -1392,16 +1427,12 @@ export const useDatabaseStore = defineStore('database', () => {
     const cell = cellKey(entryId, schemaId)
 
     // Optimistic local update so the cell does not flicker back on blur.
-    // Reaches the full entry list as well as every view result of this
-    // database, and entry_template blocks below.
-    _forEachCachedEntry(entryId, databaseId, (row) => {
-      row.values[schemaId] = value
-    })
+    _writeCell(databaseId, entryId, schemaId, value)
 
     _recentWrites.set(cell, Date.now())
 
     const write = _localWrites.get(cell) ?? {
-      entryId, schemaId, value, inFlight: 0, confirmedAt: null,
+      databaseId, entryId, schemaId, value, inFlight: 0, confirmedAt: null,
     }
     write.value = value
     write.inFlight += 1
@@ -1409,35 +1440,44 @@ export const useDatabaseStore = defineStore('database', () => {
     _localWrites.set(cell, write)
     pendingCells.value.add(cell)
 
-    // Also update the template store optimistically so the property picker
-    // in DatabaseTemplateEditor reflects changes immediately.
-    const templateStore = useDatabaseTemplatesStore()
-    const tmplList = templateStore.templates[databaseId]
-    if (tmplList) {
-      const tmpl = tmplList.find((t) => t.id === entryId)
-      if (tmpl) {
-        tmpl.values[schemaId] = value
-      }
-    }
-
     const previous = _cellChains.get(cell) ?? Promise.resolve()
     const request = previous
       .catch(() => undefined)
-      .then(() => apiClient.put(
+      .then(() => apiClient.put<ValueResponse>(
         `/api/databases/${databaseId}/entries/${entryId}/values/${schemaId}`,
         { value },
       ))
     _cellChains.set(cell, request)
 
+    let stored: ValueResponse
     try {
-      await request
+      stored = await request
     } catch (err) {
-      _settleWrite(cell, request, false)
+      _settleWrite(cell, request, undefined)
       // Show what the server holds instead of a value it never stored.
       refreshEntries(databaseId, [entryId]).catch(() => undefined)
       throw err
     }
-    _settleWrite(cell, request, true)
+    _settleWrite(cell, request, stored)
+  }
+
+  /**
+   * Put *value* into the cell of *entryId* wherever this client holds it: the
+   * full entry list, every view result and single entry of *databaseId*, and
+   * the entry template of that id, so the property picker in
+   * DatabaseTemplateEditor shows it as well.
+   */
+  function _writeCell(
+    databaseId: string,
+    entryId: string,
+    schemaId: string,
+    value: Record<string, unknown> | null,
+  ): void {
+    _forEachCachedEntry(entryId, databaseId, (row) => {
+      row.values[schemaId] = value
+    })
+    const tmpl = useDatabaseTemplatesStore().templates[databaseId]?.find((t) => t.id === entryId)
+    if (tmpl) tmpl.values[schemaId] = value
   }
 
   // ── In-place entry updates ────────────────────────────────────────────────

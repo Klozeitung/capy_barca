@@ -281,6 +281,19 @@ class ValueUpsert(BaseModel):
     value: Optional[dict] = None
 
 
+class ValueResponse(BaseModel):
+    """
+    The value of one cell as stored after a write.
+
+    Serialised by ``views.entry_payloads``, the same function the entry, batch
+    and view endpoints read values with, so it has the shape a later read
+    returns: derived parts such as the ``_timeline`` of a timeline relation are
+    included, and client input the backend dropped is not. ``None`` when the
+    cell holds no value.
+    """
+    value: Optional[dict] = None
+
+
 class FormulaValidateRequest(BaseModel):
     expression: str
 
@@ -3232,7 +3245,7 @@ def seed_readonly_schemas(
 
 @database_router.put(
     "/{database_id}/entries/{entry_id}/values/{schema_id}",
-    status_code=204,
+    response_model=ValueResponse,
 )
 def upsert_value(
     database_id: uuid.UUID,
@@ -3245,8 +3258,13 @@ def upsert_value(
     """
     Create or update the property value for a specific entry / schema pair.
 
-    Returns 204 No Content on success. The ``value`` field may be ``null``
-    to explicitly clear the cell.
+    The ``value`` field may be ``null`` to explicitly clear the cell.
+
+    Returns 200 with the value as stored (see ``ValueResponse``), read after
+    the commit in the same shape the read endpoints use. The backend derives
+    parts of some values and sanitises others, for instance the ``_timeline``
+    of a timeline relation computed from its ``relationPool``, so the client
+    replaces the value it sent with this one.
 
     For ``relation`` schemas with ``config.direction == "bilateral"``, the
     mirror side of the relation is automatically kept in sync within the same
@@ -3504,6 +3522,10 @@ def upsert_value(
         ))
 
         db.commit()
+
+        # The committed value, serialised by the read path itself so the
+        # answer cannot drift from what a later read returns.
+        stored = views.entry_payloads(db, [entry])[0]["values"].get(str(schema_id))
     except HTTPException:
         db.rollback()
         raise
@@ -3567,6 +3589,8 @@ def upsert_value(
             exc,
             exc_info=True,
         )
+
+    return ValueResponse(value=stored)
 
 
 # ─── Entry-template endpoints ─────────────────────────────────────────────────

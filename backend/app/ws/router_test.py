@@ -212,7 +212,7 @@ def test_value_change_event_names_the_entry_property_and_actor(isolated_db):
                 f"/api/databases/{database_id}/entries/{entry_id}/values/{schema_id}",
                 json={"value": {"text": "Value A"}},
             )
-            assert response.status_code == 204
+            assert response.status_code == 200
             while True:
                 message = json.loads(ws.receive_text())
                 if message["payload"]["event_type"] == "database_entries_updated":

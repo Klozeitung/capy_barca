@@ -125,7 +125,7 @@ def private_scene(http_client) -> Scene:
     db_id = _create_database(http_client, title="Private X")
     schema = _create_schema(http_client, db_id, "Field A", "text")
     entry = _create_entry(http_client, db_id)
-    assert _put_value(http_client, db_id, entry, schema["id"], {"text": "Value A"}).status_code == 204
+    assert _put_value(http_client, db_id, entry, schema["id"], {"text": "Value A"}).status_code == 200
     template = _create_template(http_client, db_id)
     _set_mode(http_client, db_id, "private")
     return Scene(db=db_id, schema=schema["id"], entry=entry, template=template)
@@ -555,7 +555,7 @@ def test_member_cannot_clear_a_link_into_a_private_database(
     assert _put_value(
         http_client, relation_scene.open_db, entry, relation_scene.relation,
         {"related_ids": [relation_scene.private_entry]},
-    ).status_code == 204
+    ).status_code == 200
 
     login_as(member_user)
     resp = _put_value(http_client, relation_scene.open_db, entry, relation_scene.relation, None)
@@ -569,7 +569,7 @@ def test_member_cannot_duplicate_an_entry_linked_into_a_private_database(
     assert _put_value(
         http_client, relation_scene.open_db, entry, relation_scene.relation,
         {"related_ids": [relation_scene.private_entry]},
-    ).status_code == 204
+    ).status_code == 200
 
     login_as(member_user)
     resp = http_client.post(f"{_PREFIX}/{relation_scene.open_db}/entries/{entry}/duplicate")
@@ -596,7 +596,7 @@ def test_member_cannot_apply_a_template_linked_into_a_private_database(
     assert _put_value(
         http_client, relation_scene.open_db, template, relation_scene.relation,
         {"related_ids": [relation_scene.private_entry]},
-    ).status_code == 204
+    ).status_code == 200
     entry = _create_entry(http_client, relation_scene.open_db)
 
     login_as(member_user)
@@ -617,7 +617,7 @@ def test_member_may_link_once_granted_the_target(
         http_client, relation_scene.open_db, entry, relation_scene.relation,
         {"related_ids": [relation_scene.private_entry]},
     )
-    assert resp.status_code == 204
+    assert resp.status_code == 200
 
 
 def test_reading_the_target_is_not_enough_to_link_into_it(
