@@ -204,7 +204,7 @@ async function createAndSelect() {
     // the backend keeps ids it is given.
     const created = { id: newOptionId(), label }
     await dbStore.updateSchema(props.databaseId, props.schema.id, {
-      config: { ...(props.schema.config ?? {}), options: [...allOptions(), created] },
+      config: { ...props.schema.config, options: [...allOptions(), created] },
     })
     await dbStore.upsertValue(
       props.databaseId,

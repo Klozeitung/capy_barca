@@ -95,11 +95,13 @@ function resolveSpanCaretOffset(event: MouseEvent): number | null {
   let clickedNode: Node | null = null
   let clickedOffset = 0
 
-  if ('caretPositionFromPoint' in document) {
-    const pos = (document as any).caretPositionFromPoint(event.clientX, event.clientY)
+  // Both methods are typed by the DOM library, but browsers implement only one
+  // of them, so presence is checked at runtime before each call.
+  if (typeof document.caretPositionFromPoint === 'function') {
+    const pos = document.caretPositionFromPoint(event.clientX, event.clientY)
     if (pos) { clickedNode = pos.offsetNode; clickedOffset = pos.offset }
-  } else if ('caretRangeFromPoint' in document) {
-    const range = (document as any).caretRangeFromPoint(event.clientX, event.clientY)
+  } else if (typeof document.caretRangeFromPoint === 'function') {
+    const range = document.caretRangeFromPoint(event.clientX, event.clientY)
     if (range) { clickedNode = range.startContainer; clickedOffset = range.startOffset }
   }
 

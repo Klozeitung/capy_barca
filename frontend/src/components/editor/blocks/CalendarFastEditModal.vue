@@ -21,16 +21,15 @@
  * update-view    – chip color changed; parent must persist the updated view
  * refresh        – entry data was mutated; parent must re-query entries
  *
- * Changes
- * -------
- * #50  Date and time are separate inputs. The date field is the shared
- *      DatePicker component (custom picker, 1..9999 year range); a time field
- *      (type="time") appears next to it when the all-day toggle is OFF,
- *      defaulting to 00:00 so the user can leave it empty and still get a valid
- *      timed entry (backend receives T00:00). Toggling all-day on/off no longer
- *      needs to reformat the stored string; it merely shows/hides the time
- *      field. The backend always stores start/end as full ISO strings (or
- *      date-only when all-day).
+ * Date and time inputs
+ * --------------------
+ * Date and time are separate inputs. The date field is the shared DatePicker
+ * component (custom picker, 1..9999 year range); a time field (type="time")
+ * appears next to it when the all-day toggle is off, defaulting to 00:00 so
+ * the user can leave it empty and still get a valid timed entry (backend
+ * receives T00:00). Toggling all-day only shows or hides the time field and
+ * never reformats the stored string. The backend stores start/end as full ISO
+ * strings, or date-only when all-day.
  */
 import { ref, computed } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -96,7 +95,7 @@ function setColor(key: string): void {
   emit('update-view', {
     ...props.view,
     calendarChipColors: {
-      ...(props.view.calendarChipColors ?? {}),
+      ...props.view.calendarChipColors,
       [props.entry.id]: key,
     },
   })
@@ -122,7 +121,7 @@ const rawRepeat        = (getRawDateValue().repeat         as string | undefined
 const rawRepeatUntil   = (getRawDateValue().repeatUntil    as string | undefined) ?? ''
 const rawRepeatInterval = (getRawDateValue().repeatInterval as number | undefined) ?? 1
 
-// #50: Split stored ISO strings into separate date and time parts so the user
+// Split stored ISO strings into separate date and time parts so the user
 // can edit them independently.  A stored value of '2024-03-15T09:30' becomes
 // date='2024-03-15', time='09:30'.  A date-only value ('2024-03-15') has an
 // empty time part.
@@ -139,9 +138,8 @@ function splitIso(s: string): { date: string; time: string } {
 const splitStart = splitIso(rawStart)
 const splitEnd   = splitIso(rawEnd)
 
-// #75: Repeat / recurrence preference stored in the date value object.
-// The frontend stores the intent; expansion of recurring events requires
-// backend support and is handled server-side when this field is set.
+// Repeat / recurrence preference stored in the date value object. The views
+// expand recurring entries into occurrences client-side (recurrenceUtils).
 const localRepeat      = ref<string>(rawRepeat)
 /** Interval: "every N [units]". Always ≥ 1. */
 const localRepeatInterval = ref<number>(Math.max(1, rawRepeatInterval))
@@ -225,7 +223,7 @@ async function save(): Promise<void> {
     const oldName = ((props.entry.content?.title as string | undefined) ?? '').trim()
     if (newName !== oldName) {
       await blockStore.updateBlock(props.entry.id, {
-        content: { ...(props.entry.content ?? {}), title: newName },
+        content: { ...props.entry.content, title: newName },
       })
     }
 
@@ -236,7 +234,7 @@ async function save(): Promise<void> {
       const buildIso = (date: string, time: string) =>
         localAllDay.value ? date : `${date}T${time || '00:00'}`
 
-      let startIso = buildIso(localStartDate.value, localStartTime.value)
+      const startIso = buildIso(localStartDate.value, localStartTime.value)
       let endIso   = localEndDate.value
         ? buildIso(localEndDate.value, localEndTime.value)
         : startIso
@@ -341,7 +339,7 @@ async function save(): Promise<void> {
             </button>
           </div>
 
-          <!-- Start (#50: separate date + optional time field) -->
+          <!-- Start: date + optional time field -->
           <div class="cfem__date-row">
             <span class="cfem__date-label">{{ t('db.calendar.start') }}</span>
             <DatePicker
@@ -357,7 +355,7 @@ async function save(): Promise<void> {
             />
           </div>
 
-          <!-- End (#50: separate date + optional time field) -->
+          <!-- End: date + optional time field -->
           <div class="cfem__date-row">
             <span class="cfem__date-label">{{ t('db.calendar.end') }}</span>
             <DatePicker
@@ -383,7 +381,7 @@ async function save(): Promise<void> {
           {{ t('db.calendar.noDateProperty') }}
         </div>
 
-        <!-- ── Repeat (#75) ──────────────────────────────────────────────────── -->
+        <!-- ── Repeat ───────────────────────────────────────────────────────── -->
         <div v-if="dateSchema" class="cfem__section">
           <span class="cfem__label">{{ t('db.calendar.repeat') }}</span>
           <select
@@ -398,7 +396,7 @@ async function save(): Promise<void> {
             <option value="yearly">{{ t('db.calendar.repeatYearly') }}</option>
           </select>
 
-          <!-- Until date: only visible when a repeat mode is active -->
+          <!-- Interval: only visible when a repeat mode is active -->
           <div v-if="showRepeatUntil" class="cfem__date-row">
             <span class="cfem__date-label cfem__date-label--until">
               {{ t('db.calendar.repeatEvery') }}
@@ -648,7 +646,7 @@ async function save(): Promise<void> {
   transform: translateX(12px);
 }
 
-/* #50: date row now contains up to two inputs (date + time) side by side */
+/* Date row holds up to two inputs (date + time) side by side */
 .cfem__date-row {
   display: flex;
   align-items: center;
@@ -673,7 +671,7 @@ async function save(): Promise<void> {
   min-width: 0;
 }
 
-/* #50: time field is narrower so both fit on one row */
+/* Time field is narrower so both fit on one row */
 .cfem__time-input {
   flex: 0 0 auto;
   width: 88px;
@@ -705,7 +703,7 @@ async function save(): Promise<void> {
   font-style: italic;
 }
 
-/* ── Repeat select (#75) ─────────────────────────────────────────────────── */
+/* ── Repeat select ───────────────────────────────────────────────────────── */
 .cfem__select {
   width: 100%;
   background: var(--color-bg);

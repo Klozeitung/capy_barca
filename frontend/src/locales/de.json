@@ -109,6 +109,12 @@
       "databaseDesc": "Strukturierte Tabelle mit Eigenschaften anlegen",
       "linkedDatabaseDesc": "Ansicht einer vorhandenen Datenbank einbetten"
     },
+    "row": {
+      "check": "Abhaken",
+      "uncheck": "Haken entfernen",
+      "toggle": "Auf- oder zuklappen",
+      "changeIcon": "Symbol ändern"
+    },
     "mention": {
       "noResults": "Keine passenden Seiten",
       "lockedTooltip": "Kein Zugriff auf diesen Block",
@@ -132,6 +138,7 @@
     "cancel": "Abbrechen",
     "delete": "Löschen",
     "duplicate": "Duplizieren",
+    "edit": "Bearbeiten",
     "restore": "Wiederherstellen",
     "rename": "Umbenennen",
     "remove": "Entfernen"
@@ -633,7 +640,8 @@
       "recurThis": "Nur dieser Termin",
       "recurFollowing": "Dieser und alle folgenden",
       "recurAll": "Alle Termine",
-      "recurIndicator": "Wiederholend"
+      "recurIndicator": "Wiederholend",
+      "importedEventTitle": "Importiertes Ereignis"
     },
     "groupBy": {
       "ungrouped": "Kein Wert"
@@ -678,6 +686,7 @@
     "deleteColumnKeyedItem": "{property} in {database}",
     "changeIcon": "Symbol ändern",
     "formulaCellError": "Fehler",
+    "rollupCellError": "Fehler",
     "cellSaving": "Wird gespeichert…"
   },
   "propertySection": {

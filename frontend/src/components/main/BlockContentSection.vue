@@ -636,7 +636,7 @@ async function setBlockColor(key: string): Promise<void> {
   const block = children.value.find((b) => b.id === id)
   if (!block) return
   await blockStore.updateBlock(id, {
-    content: { ...(block.content ?? {}), color: key === 'default' ? undefined : key },
+    content: { ...block.content, color: key === 'default' ? undefined : key },
   })
 }
 
@@ -647,7 +647,7 @@ async function setBlockBgColor(key: string): Promise<void> {
   const block = children.value.find((b) => b.id === id)
   if (!block) return
   await blockStore.updateBlock(id, {
-    content: { ...(block.content ?? {}), bgColor: key === 'default' ? undefined : key },
+    content: { ...block.content, bgColor: key === 'default' ? undefined : key },
   })
 }
 
@@ -738,7 +738,7 @@ async function contextMenuAddColumn(): Promise<void> {
     .filter((b) => b.state === 'active' && b.type === 'column')
     .length
   await blockStore.updateBlock(id, {
-    content: { ...(block.content ?? {}), widths: Array(n).fill(1 / n) },
+    content: { ...block.content, widths: Array(n).fill(1 / n) },
   })
 }
 
@@ -757,7 +757,7 @@ async function contextMenuToggleMirrorLock(): Promise<void> {
   if (!block || block.type !== 'synched_mirror') return
   const currentlyLocked = (block.content?.locked as boolean | undefined) ?? false
   await blockStore.updateBlock(id, {
-    content: { ...(block.content ?? {}), locked: !currentlyLocked },
+    content: { ...block.content, locked: !currentlyLocked },
   })
 }
 

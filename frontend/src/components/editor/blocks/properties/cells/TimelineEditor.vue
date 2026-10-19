@@ -9,7 +9,7 @@
  * Displays the ``_timeline`` object as an editable table with one row per
  * slot.  Each row has start / end datetime fields and a type-specific inline
  * value editor.  On save the rows are serialised back to a ``_timeline`` dict
- * and upsersted via the store.
+ * and upserted via the store.
  *
  * Relation types
  * --------------
@@ -70,7 +70,7 @@ const displayMode = ref<TimelineDisplayMode>(getTimelineDisplayMode(props.schema
 async function saveDisplayMode(newMode: TimelineDisplayMode) {
   displayMode.value = newMode
   await dbStore.updateSchema(props.databaseId, props.schema.id, {
-    config: { ...(props.schema.config ?? {}), timelineDisplayMode: newMode },
+    config: { ...props.schema.config, timelineDisplayMode: newMode },
   })
 }
 

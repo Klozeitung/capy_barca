@@ -146,7 +146,7 @@ const showLinkedDbPicker = ref(false)
  */
 const editorEmpty = ref(false)
 
-// ── Color (#26) ───────────────────────────────────────────────────────────────
+// ── Color ─────────────────────────────────────────────────────────────────────
 
 const editorRowStyle = computed<Record<string, string>>(() => {
   const hex = resolveColor(props.block.content?.color as string | undefined)
@@ -248,13 +248,6 @@ function buildIconSvg(iconName: string, size = 14): SVGElement | null {
 }
 
 /**
- * Construct a mention chip DOM node.
- *
- * The element carries contentEditable="false" so the browser treats it as an
- * atomic unit — the caret cannot enter it and it is skipped as a whole by
- * arrow-key navigation.
- */
-/**
  * Build a locked mention chip for a block the current user cannot access.
  *
  * The chip is non-interactive (no click handler) and displays a lock icon
@@ -293,6 +286,13 @@ function buildLockedChipElement(blockId: string): HTMLElement {
   return chip
 }
 
+/**
+ * Construct a mention chip DOM node.
+ *
+ * The element carries contentEditable="false" so the browser treats it as an
+ * atomic unit — the caret cannot enter it and it is skipped as a whole by
+ * arrow-key navigation.
+ */
 function buildChipElement(blockId: string, block: Block | null): HTMLElement {
   // If the block is known to be inaccessible, render the locked variant.
   if (block === null && inaccessibleMentions.has(blockId)) {
@@ -458,7 +458,7 @@ async function saveText(): Promise<void> {
   const text = serializeToStorage()
   if (text === readBlockText(props.block)) return
   await blockStore.updateBlock(props.block.id, {
-    content: { ...(props.block.content ?? {}), text },
+    content: { ...props.block.content, text },
   })
 }
 
@@ -631,7 +631,7 @@ async function checkMarkdownTrigger(): Promise<boolean> {
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
     await blockStore.updateBlock(props.block.id, {
       type: resolvedType,
-      content: { ...(props.block.content ?? {}), text: remaining },
+      content: { ...props.block.content, text: remaining },
     })
 
     await nextTick()
@@ -643,7 +643,7 @@ async function checkMarkdownTrigger(): Promise<boolean> {
       // Cursor to position 0 (immediately after the stripped prefix).
       const r = document.createRange()
       const fc = el.firstChild
-      fc ? r.setStart(fc, 0) : r.setStart(el, 0)
+      r.setStart(fc ?? el, 0)
       r.collapse(true)
       const s = window.getSelection()
       if (s) { s.removeAllRanges(); s.addRange(r) }
@@ -653,7 +653,7 @@ async function checkMarkdownTrigger(): Promise<boolean> {
   return false
 }
 
-async function onInput(_e: Event): Promise<void> {
+async function onInput(): Promise<void> {
   const el = editorEl.value
   if (!el) return
 
@@ -862,14 +862,14 @@ async function onKeydown(e: KeyboardEvent): Promise<void> {
           const currentText = serializeToStorage()
           await blockStore.updateBlock(props.block.id, {
             type: newType,
-            content: { ...(props.block.content ?? {}), text: currentText },
+            content: { ...props.block.content, text: currentText },
           })
           await nextTick()
           if (editorEl.value) {
             autoResize(editorEl.value)
             const r = document.createRange()
             const fc = editorEl.value.firstChild
-            fc ? r.setStart(fc, 0) : r.setStart(editorEl.value, 0)
+            r.setStart(fc ?? editorEl.value, 0)
             r.collapse(true)
             const s = window.getSelection()
             if (s) { s.removeAllRanges(); s.addRange(r) }
@@ -882,14 +882,14 @@ async function onKeydown(e: KeyboardEvent): Promise<void> {
           const currentText = serializeToStorage()
           await blockStore.updateBlock(props.block.id, {
             type: 'paragraph',
-            content: { ...(props.block.content ?? {}), text: currentText },
+            content: { ...props.block.content, text: currentText },
           })
           await nextTick()
           if (editorEl.value) {
             autoResize(editorEl.value)
             const r = document.createRange()
             const fc = editorEl.value.firstChild
-            fc ? r.setStart(fc, 0) : r.setStart(editorEl.value, 0)
+            r.setStart(fc ?? editorEl.value, 0)
             r.collapse(true)
             const s = window.getSelection()
             if (s) { s.removeAllRanges(); s.addRange(r) }
@@ -957,7 +957,7 @@ async function onKeydown(e: KeyboardEvent): Promise<void> {
 function onToggleChecked(): void {
   blockStore.updateBlock(props.block.id, {
     content: {
-      ...(props.block.content ?? {}),
+      ...props.block.content,
       checked: !(props.block.content?.checked ?? false),
     },
   })
@@ -990,7 +990,7 @@ async function onCalloutIconUpdate(newIcon: string | null): Promise<void> {
   showCalloutIconPicker.value = false
   await blockStore.updateBlock(props.block.id, {
     content: {
-      ...(props.block.content ?? {}),
+      ...props.block.content,
       icon: newIcon ?? DEFAULT_CALLOUT_ICON,
     },
   })
@@ -1107,7 +1107,7 @@ async function applySlashSelection(type: string): Promise<void> {
   const cleanText = serializeToStorage()
   await blockStore.updateBlock(props.block.id, {
     type,
-    content: { ...(props.block.content ?? {}), text: cleanText },
+    content: { ...props.block.content, text: cleanText },
   })
 }
 </script>
@@ -1132,7 +1132,7 @@ async function applySlashSelection(type: string): Promise<void> {
     <button
       v-else-if="block.type === 'to_do'"
       class="editor-row__checkbox"
-      :aria-label="block.content?.checked ? 'Uncheck' : 'Check'"
+      :aria-label="block.content?.checked ? t('editor.row.uncheck') : t('editor.row.check')"
       tabindex="-1"
       @mousedown.prevent="onToggleChecked"
     >
@@ -1147,7 +1147,7 @@ async function applySlashSelection(type: string): Promise<void> {
     <button
       v-else-if="block.type === 'toggle' || block.type === 'text_toggle' || isToggleHeadingType(block.type)"
       class="editor-row__toggle-chevron"
-      aria-label="Toggle"
+      :aria-label="t('editor.row.toggle')"
       tabindex="-1"
       @mousedown.prevent="emit('toggle-open', block.id)"
     >
@@ -1165,7 +1165,7 @@ async function applySlashSelection(type: string): Promise<void> {
     >
       <button
         class="editor-row__callout-icon-btn"
-        title="Change icon"
+        :title="t('editor.row.changeIcon')"
         tabindex="-1"
         @click.stop="onCalloutIconBtnClick"
       >

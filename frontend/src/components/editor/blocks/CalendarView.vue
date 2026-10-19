@@ -16,46 +16,48 @@
  * - Delete button on each chip and bar with 2-step confirmation (3 s auto-reset)
  * - Scrollable cells on hover (no truncation)
  * - Empty state when no date property is configured
+ * - Granularity switcher: month (default), week and day, stored in the view
+ * - Month, weekday and period labels in the UI language (calendarLabels)
  *
- * Changes
- * -------
- * #51  Chips have flex-shrink: 0 so they are never miniaturised.  The
- *      max-height + overflow-y on .cal-view__chips already clips the container;
- *      chips now keep a fixed height and the area scrolls when full.
- * #54  Multi-day bars now carry the same icon-picker / fast-edit / delete
- *      actions as single-day chips.  overflow: hidden is moved from the bar
- *      container to the name span so action buttons are never clipped.
- * #52  Drag-and-drop: chips and bars are draggable.  Dropping onto a day cell
- *      sets only the date; the time component of start (and the full duration
- *      for multi-day entries) is preserved.  The hovered drop-target cell is
- *      highlighted.  Dropping onto the entry's own current date is a no-op.
- * #57  ICS import: a hidden file input in the calendar header lets the user
- *      pick a .ics file.  All VEVENT blocks are parsed client-side; for each
- *      event a new database entry is created and its date value is written.
- *      The parent is notified via emit('refresh') when done.
- * #rec Client-side recurrence expansion.  Entries with repeat != 'none' are
- *      expanded into virtual occurrences for the visible window.  Editing or
- *      deleting a recurring entry shows a RecurrenceActionDialog so the user
- *      can choose to affect just this occurrence, this and following, or all.
- * #92  Fix month-view overflow clipping.  .cal-view__weeks no longer uses
- *      overflow: hidden — the container grows to its natural height and the
- *      page scroll handles the rest.  Cell height changed from a fixed 128px
- *      to min-height: 150px so rows with multi-day bars have room to breathe.
- *      The chip max-height is raised proportionally (72px → 90px).
- * #bar Multi-week bars render their label and actions in every week row.
- *      Previously the icon / name / edit / delete were gated behind a
- *      showLabel flag that was only true in the week where the event visually
- *      started; continuation weeks rendered an empty bar that collapsed to its
- *      padding and looked compressed.  The gate (and the now-unused showLabel
- *      field) is removed, so each week segment of a multi-week event carries
- *      the full content.  .cal-view__bar also gets a min-height floor so every
- *      segment keeps a uniform height even in edge cases.
+ * Behaviour notes
+ * ---------------
+ * Chips    Chips have flex-shrink: 0 so they are never miniaturised. The
+ *          max-height + overflow-y on .cal-view__chips clips the container;
+ *          chips keep a fixed height and the area scrolls when full.
+ * Bars     Multi-day bars carry the same icon-picker / fast-edit / delete
+ *          actions as single-day chips. overflow: hidden sits on the name span
+ *          rather than the bar container, so action buttons are never clipped.
+ *          Multi-week bars render their label and actions in every week row,
+ *          and .cal-view__bar has a min-height floor so every segment keeps a
+ *          uniform height.
+ * Drag     Chips and bars are draggable. Dropping onto a day cell sets only
+ *          the date; the time component of start (and the full duration for
+ *          multi-day entries) is preserved. The hovered drop-target cell is
+ *          highlighted. Dropping onto the entry's own current date is a no-op.
+ * ICS      A button in the calendar header opens a file dialog for a .ics
+ *          file. All VEVENT blocks are parsed client-side; for each event a
+ *          new database entry is created and its date value is written. The
+ *          parent is notified via emit('refresh') when done.
+ * Repeat   Entries with repeat != 'none' are expanded client-side into virtual
+ *          occurrences for the visible window. Editing or deleting a recurring
+ *          entry shows a RecurrenceActionDialog so the user can choose to
+ *          affect just this occurrence, this and following, or all.
+ * Height   .cal-view__weeks does not clip: the container grows to its natural
+ *          height and the page scroll handles the rest. Cells use
+ *          min-height: 150px so rows with multi-day bars have room, and the
+ *          chip list is capped at 90px.
  */
 import { ref, computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useBlockStore } from '@/stores/blocks'
 import { useDatabaseStore, type DatabaseEntry, type DatabaseView, type PropertySchema } from '@/stores/database'
+import {
+  fullDayLabel,
+  mondayFirstWeekdayLabels,
+  monthYearLabel,
+  weekRangeLabel,
+} from '@/composables/calendarLabels'
 import IconPicker from '@/components/IconPicker.vue'
 import CalendarFastEditModal from './CalendarFastEditModal.vue'
 import RecurrenceActionDialog from './RecurrenceActionDialog.vue'
@@ -83,11 +85,9 @@ const emit = defineEmits<{
   (e: 'refresh'): void
 }>()
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const blockStore = useBlockStore()
 const dbStore    = useDatabaseStore()
-
-// ── Month navigation ──────────────────────────────────────────────────────────
 
 // ── Navigation state ──────────────────────────────────────────────────────────
 
@@ -97,7 +97,7 @@ const viewMonth = ref(now.getMonth() + 1)
 /** Used for week/day navigation. Always kept in sync when navigating. */
 const viewDay   = ref(now.getDate())
 
-// ── Granularity (#81) ─────────────────────────────────────────────────────────
+// ── Granularity ───────────────────────────────────────────────────────────────
 
 /** Active granularity: month (default) | week | day. Persisted in the view object. */
 const granularity = computed<'month' | 'week' | 'day'>(() =>
@@ -144,11 +144,8 @@ function goToday(): void {
   viewDay.value   = now.getDate()
 }
 
-const WEEKDAYS    = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']
-const MONTH_NAMES = ['January','February','March','April','May','June',
-                     'July','August','September','October','November','December']
-const SHORT_MONTHS  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-const FULL_WEEKDAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
+/** Short weekday names for the column headers, Monday first. */
+const weekdayLabels = computed<string[]>(() => mondayFirstWeekdayLabels(locale.value))
 
 // ── Week cells (used for week view and the weeks computed) ────────────────────
 
@@ -189,19 +186,15 @@ const dayCell = computed<CalCell>(() => {
 
 const periodLabel = computed<string>(() => {
   const g = granularity.value
-  if (g === 'month') return `${MONTH_NAMES[viewMonth.value - 1]} ${viewYear.value}`
+  if (g === 'month') return monthYearLabel(locale.value, viewYear.value, viewMonth.value)
   if (g === 'week') {
     const cells = weekCells.value
-    const [, sm, sd] = cells[0].dateStr.split('-').map(Number)
+    const [sy, sm, sd] = cells[0].dateStr.split('-').map(Number)
     const [ey, em, ed] = cells[6].dateStr.split('-').map(Number)
-    const tail = (sm !== em)
-      ? ` \u2013 ${SHORT_MONTHS[em - 1]} ${ed}, ${ey}`
-      : ` \u2013 ${ed}, ${ey}`
-    return `${SHORT_MONTHS[sm - 1]} ${sd}${tail}`
+    return weekRangeLabel(locale.value, new Date(sy, sm - 1, sd), new Date(ey, em - 1, ed))
   }
   // Day view
-  const d = new Date(viewYear.value, viewMonth.value - 1, viewDay.value)
-  return `${FULL_WEEKDAYS[d.getDay()]}, ${MONTH_NAMES[viewMonth.value - 1]} ${viewDay.value}, ${viewYear.value}`
+  return fullDayLabel(locale.value, new Date(viewYear.value, viewMonth.value - 1, viewDay.value))
 })
 
 // ── Nav aria-labels (adapt to granularity) ────────────────────────────────────
@@ -294,7 +287,7 @@ function entryTime(entry: DatabaseEntry): string {
   const start = (val.start as string | undefined) ?? ''
   if (!start.includes('T')) return ''
   const time = start.slice(11, 16)
-  // Do not show 00:00 – treat as all-day for display purposes (#50)
+  // Do not show 00:00 – treat as all-day for display purposes
   return time === '00:00' ? '' : time
 }
 
@@ -318,7 +311,7 @@ const visibleDateRange = computed<[string, string]>(() => {
   return [grid.value[0].dateStr, grid.value[41].dateStr]
 })
 
-// ── Recurrence expansion (#rec) ───────────────────────────────────────────────
+// ── Recurrence expansion ──────────────────────────────────────────────────────
 
 /**
  * All expanded occurrences for every entry in the current display window.
@@ -454,7 +447,7 @@ async function onChipIconUpdate(newIcon: string | null): Promise<void> {
 
 const editingEntry = ref<DatabaseEntry | null>(null)
 
-// ── Recurrence action dialog (#rec) ──────────────────────────────────────────
+// ── Recurrence action dialog ─────────────────────────────────────────────────
 
 const recurDialogOcc  = ref<RecurOccurrence | null>(null)
 const recurDialogMode = ref<'edit' | 'delete'>('edit')
@@ -526,7 +519,7 @@ async function onRecurThis(): Promise<void> {
 
   const newEntry = await dbStore.createEntry(props.databaseId)
   await blockStore.updateBlock(newEntry.id, {
-    content: { ...(occ.entry.content ?? {}) },
+    content: { ...occ.entry.content },
   })
   if (occ.entry.icon) {
     await blockStore.updateAppearance(newEntry.id, { icon: occ.entry.icon })
@@ -591,7 +584,7 @@ async function onRecurFollowing(): Promise<void> {
 
   const newEntry = await dbStore.createEntry(props.databaseId)
   await blockStore.updateBlock(newEntry.id, {
-    content: { ...(occ.entry.content ?? {}) },
+    content: { ...occ.entry.content },
   })
   if (occ.entry.icon) {
     await blockStore.updateAppearance(newEntry.id, { icon: occ.entry.icon })
@@ -636,7 +629,7 @@ async function doDeleteEntry(entryId: string): Promise<void> {
   emit('refresh')
 }
 
-// ── ICS import (#57) ──────────────────────────────────────────────────────────
+// ── ICS import ────────────────────────────────────────────────────────────────
 
 const isImporting   = ref(false)
 
@@ -696,7 +689,7 @@ function parseICS(text: string): IcsEvent[] {
       inEvent = false
       if (cur.start) {
         events.push({
-          summary: cur.summary || 'Imported event',
+          summary: cur.summary || t('db.calendar.importedEventTitle'),
           start:   cur.start,
           // DTEND is optional; fall back to DTSTART for all-day events.
           end:     cur.end ?? cur.start,
@@ -720,7 +713,7 @@ function parseICS(text: string): IcsEvent[] {
 }
 
 /**
- * #57: Open a file dialog without relying on a hidden DOM input ref.
+ * Open a file dialog without relying on a hidden DOM input ref.
  * Creating the element dynamically is the most reliable cross-browser approach,
  * especially in Firefox where calling .click() on display:none inputs can be
  * silently ignored.
@@ -758,7 +751,7 @@ async function onIcsFileSelected(e: Event): Promise<void> {
     for (const event of events) {
       const entry = await dbStore.createEntry(props.databaseId)
       await blockStore.updateBlock(entry.id, {
-        content: { ...(entry.content ?? {}), title: event.summary },
+        content: { ...entry.content, title: event.summary },
       })
       if (schema) {
         await dbStore.upsertValue(props.databaseId, entry.id, schema.id, {
@@ -773,7 +766,7 @@ async function onIcsFileSelected(e: Event): Promise<void> {
   }
 }
 
-// ── Drag-and-drop (#52) ───────────────────────────────────────────────────────
+// ── Drag-and-drop ─────────────────────────────────────────────────────────────
 
 /**
  * The entry currently being dragged, or null when not dragging.
@@ -873,7 +866,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
         </button>
         <button class="cal-view__today-btn" @click="goToday">{{ t('db.calendar.today') }}</button>
 
-        <!-- #81: Granularity switcher (Day / Week / Month) -->
+        <!-- Granularity switcher (Day / Week / Month) -->
         <div class="cal-view__granularity">
           <button
             class="cal-view__granularity-btn"
@@ -892,7 +885,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
           >{{ t('db.calendar.granularityMonth') }}</button>
         </div>
 
-        <!-- #57: ICS import -->
+        <!-- ICS import -->
         <button
           class="cal-view__import-btn"
           :disabled="isImporting"
@@ -908,7 +901,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
         </button>
       </div>
 
-      <!-- ── Month / Week grid (#81) ────────────────────────────────────────── -->
+      <!-- ── Month / Week grid ──────────────────────────────────────────────── -->
       <template v-if="granularity !== 'day'">
 
         <!-- Weekday header: plain labels for month, date-numbered for week -->
@@ -923,7 +916,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
               class="cal-view__weekday cal-view__weekday--dated"
               :class="{ 'cal-view__weekday--today': cell.isToday }"
             >
-              <span>{{ WEEKDAYS[i] }}</span>
+              <span>{{ weekdayLabels[i] }}</span>
               <span
                 class="cal-view__weekday-date"
                 :class="{ 'cal-view__weekday-date--today': cell.isToday }"
@@ -931,7 +924,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
             </div>
           </template>
           <template v-else>
-            <div v-for="wd in WEEKDAYS" :key="wd" class="cal-view__weekday">{{ wd }}</div>
+            <div v-for="wd in weekdayLabels" :key="wd" class="cal-view__weekday">{{ wd }}</div>
           </template>
         </div>
 
@@ -959,7 +952,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
                      the name and actions are reachable from any row and no
                      continuation segment collapses to an empty bar. -->
 
-                <!-- Recurrence indicator (#rec) -->
+                <!-- Recurrence indicator -->
                 <Icon
                   v-if="isRecurringEntry(bar.occ.entry, dateSchema)"
                   icon="mdi:repeat"
@@ -968,22 +961,22 @@ async function onCellDrop(cell: CalCell): Promise<void> {
                   :title="t('db.calendar.recurIndicator')"
                 />
 
-                <!-- Page icon → icon picker (#54) -->
+                <!-- Page icon → icon picker -->
                 <button class="cal-view__chip-icon-btn" @click.stop="openChipIconPicker(bar.occ.entry, $event)">
                   <Icon :icon="bar.occ.entry.icon ?? 'mdi:file-outline'" width="9" height="9" />
                 </button>
 
-                <!-- Name → navigate (#54) -->
+                <!-- Name → navigate -->
                 <span class="cal-view__bar-name" @click.stop="emit('open-entry', bar.occ.entry)">
                   {{ entryTitle(bar.occ.entry) }}
                 </span>
 
-                <!-- Edit (#54) -->
+                <!-- Edit -->
                 <button class="cal-view__chip-action" :title="t('db.calendar.fastEdit')" @click.stop="requestEdit(bar.occ)">
                   <Icon icon="mdi:pencil-outline" width="9" height="9" />
                 </button>
 
-                <!-- Delete (#54) -->
+                <!-- Delete -->
                 <button
                   class="cal-view__chip-action"
                   :class="{ 'cal-view__chip-action--danger': confirmDeleteId === occKey(bar.occ) }"
@@ -1034,7 +1027,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
                     @dragstart="!occ.isVirtual && onEntryDragStart(occ.entry, $event)"
                     @dragend="onEntryDragEnd"
                   >
-                    <!-- Recurrence indicator (#rec) -->
+                    <!-- Recurrence indicator -->
                     <Icon
                       v-if="isRecurringEntry(occ.entry, dateSchema)"
                       icon="mdi:repeat"
@@ -1078,7 +1071,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
         </div>
       </template>
 
-      <!-- ── Day view (#81) ─────────────────────────────────────────────────── -->
+      <!-- ── Day view ───────────────────────────────────────────────────────── -->
       <template v-else>
         <div class="cal-view__day-view">
           <!-- Day header -->
@@ -1112,7 +1105,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
               :style="{ background: entryChipStyle(occ.entry).background }"
             />
 
-            <!-- Recurrence indicator (#rec) -->
+            <!-- Recurrence indicator -->
             <Icon
               v-if="isRecurringEntry(occ.entry, dateSchema)"
               icon="mdi:repeat"
@@ -1193,7 +1186,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
       @refresh="emit('refresh')"
     />
 
-    <!-- ── Recurrence scope dialog (#rec) ────────────────────────────────────── -->
+    <!-- ── Recurrence scope dialog ───────────────────────────────────────────── -->
     <RecurrenceActionDialog
       v-if="recurDialogOcc"
       :mode="recurDialogMode"
@@ -1258,7 +1251,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
 }
 .cal-view__today-btn:hover { background: var(--color-hover); color: var(--color-text); }
 
-/* ── Granularity switcher (#81) ──────────────────────────────────────────── */
+/* ── Granularity switcher ────────────────────────────────────────────────── */
 .cal-view__granularity {
   display: flex; border: 1px solid var(--color-border); border-radius: 5px; overflow: hidden;
   flex-shrink: 0;
@@ -1275,7 +1268,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
   background: var(--color-hover); color: var(--color-text);
 }
 
-/* ── Import button (#57) ─────────────────────────────────────────────────── */
+/* ── Import button ───────────────────────────────────────────────────────── */
 .cal-view__import-btn {
   display: flex; align-items: center; gap: 4px; font-size: 0.75rem;
   color: var(--color-text-muted); background: none; border: 1px solid var(--color-border);
@@ -1315,11 +1308,11 @@ async function onCellDrop(cell: CalCell): Promise<void> {
 }
 
 /* ── Weeks + bars ────────────────────────────────────────────────────────── */
-/* #92: flex: 1 and overflow removed — .db now has flex-shrink: 0 so the
-        entire database block grows to content height and .main-view scrolls.
-        The weeks container must size to its cells naturally; flex: 1 inside
-        an unconstrained parent collapses height, and overflow-y: auto would
-        create an unwanted inner scroll area. */
+/* No flex: 1 and no overflow: .db has flex-shrink: 0, so the entire
+   database block grows to content height and .main-view scrolls. The weeks
+   container must size to its cells naturally; flex: 1 inside an
+   unconstrained parent collapses height, and overflow-y: auto would create
+   an unwanted inner scroll area. */
 .cal-view__weeks {
   display: flex; flex-direction: column;
 }
@@ -1339,7 +1332,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
   display: flex; align-items: center; gap: 3px;
   transition: opacity 0.1s; min-width: 0; min-height: 18px;
   /* background + color set via :style */
-  /* #bar: min-height floor so every segment keeps a uniform bar height,
+  /* min-height floor so every segment keeps a uniform bar height,
      including edge cases such as a title-less entry where only the icons
      would otherwise set the height. */
 }
@@ -1361,8 +1354,8 @@ async function onCellDrop(cell: CalCell): Promise<void> {
 }
 
 /* ── Day cell ─────────────────────────────────────────────────────────────── */
-/* #92: min-height instead of fixed height — cells with many chips or multi-day
-        bars can grow rather than clip their content at the border. */
+/* min-height instead of a fixed height: cells with many chips or multi-day
+   bars grow rather than clip their content at the border. */
 .cal-view__cell {
   background: var(--color-bg);
   min-height: 150px; overflow: hidden;
@@ -1398,7 +1391,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
 .cal-view__add-btn:hover { background: color-mix(in srgb, var(--color-accent-subtle) 80%, transparent); color: var(--color-accent); }
 
 /* ── Chips: scrollable on cell hover ─────────────────────────────────────── */
-/* #92: max-height raised from 72px → 90px to match the taller cell. */
+/* max-height matched to the cell's min-height. */
 .cal-view__chips {
   display: flex; flex-direction: column; gap: 2px;
   overflow-y: hidden; max-height: 90px;
@@ -1447,7 +1440,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
   opacity: 1 !important; background: rgba(255,255,255,0.25); border-radius: 2px;
 }
 
-/* #81: Week view — taller cells, chips not clipped by max-height ────────── */
+/* ── Week view: taller cells, chips not clipped by max-height ────────────── */
 .cal-view__weeks--week .cal-view__cell {
   height: auto; min-height: 300px;
 }
@@ -1456,7 +1449,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
 }
 .cal-view__weeks--week .cal-view__cell:hover .cal-view__chips { overflow-y: auto; }
 
-/* ── Day view (#81) ──────────────────────────────────────────────────────── */
+/* ── Day view ────────────────────────────────────────────────────────────── */
 .cal-view__day-view {
   flex: 1; overflow-y: auto; display: flex; flex-direction: column;
 }

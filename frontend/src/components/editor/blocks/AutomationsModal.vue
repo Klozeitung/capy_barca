@@ -42,6 +42,7 @@ import { useI18n } from 'vue-i18n'
 import {
   useAutomationsStore,
   getTriggers,
+  type Automation,
   type AutomationTrigger,
   type AutomationAction,
 } from '@/stores/automations'
@@ -436,8 +437,8 @@ function _singleTriggerSummary(trigger: AutomationTrigger): string {
   return t('automations.trigger.specificProperty', { name })
 }
 
-function triggerSummary(auto: { trigger: AutomationTrigger | AutomationTrigger[] }): string {
-  const triggers = getTriggers(auto as any)
+function triggerSummary(auto: Pick<Automation, 'trigger'>): string {
+  const triggers = getTriggers(auto)
   if (triggers.length === 1) return _singleTriggerSummary(triggers[0])
   return t('automations.trigger.multipleSummary', { n: triggers.length })
 }

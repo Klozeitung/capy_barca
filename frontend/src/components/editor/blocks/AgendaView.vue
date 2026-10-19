@@ -11,17 +11,18 @@
  * Props / emits mirror CalendarView so DatabaseBlock can swap between
  * the two renderers without changes to its own logic.
  *
- * Changes
- * -------
- * #rec  Client-side recurrence expansion.  Recurring entries are expanded
- *       into one occurrence per visible date.  Editing a recurring occurrence
- *       shows RecurrenceActionDialog to choose the affected scope.
+ * Recurring entries are expanded client-side into one occurrence per visible
+ * date. Editing a recurring occurrence shows RecurrenceActionDialog to choose
+ * the affected scope.
+ *
+ * Month and day labels follow the UI language (calendarLabels).
  */
 import { ref, computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useBlockStore } from '@/stores/blocks'
 import { useDatabaseStore, type DatabaseEntry, type DatabaseView, type PropertySchema } from '@/stores/database'
+import { agendaDayLabel, monthYearLabel } from '@/composables/calendarLabels'
 import CalendarFastEditModal from './CalendarFastEditModal.vue'
 import RecurrenceActionDialog from './RecurrenceActionDialog.vue'
 import { chipStyle } from '@/composables/calendarColors'
@@ -50,7 +51,7 @@ const emit = defineEmits<{
 
 // ── i18n ──────────────────────────────────────────────────────────────────────
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const blockStore = useBlockStore()
 const dbStore    = useDatabaseStore()
 
@@ -59,11 +60,6 @@ const dbStore    = useDatabaseStore()
 const now = new Date()
 const viewYear  = ref(now.getFullYear())
 const viewMonth = ref(now.getMonth() + 1)
-
-const MONTH_NAMES = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
-]
 
 function prevMonth(): void {
   if (viewMonth.value === 1) { viewMonth.value = 12; viewYear.value-- }
@@ -80,7 +76,7 @@ function goToday(): void {
   viewMonth.value = now.getMonth() + 1
 }
 
-const monthLabel = computed(() => `${MONTH_NAMES[viewMonth.value - 1]} ${viewYear.value}`)
+const monthLabel = computed(() => monthYearLabel(locale.value, viewYear.value, viewMonth.value))
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 
@@ -152,7 +148,7 @@ function chipColorStyle(entry: DatabaseEntry) {
   return chipStyle(colorKey)
 }
 
-// ── Recurrence expansion (#rec) ───────────────────────────────────────────────
+// ── Recurrence expansion ──────────────────────────────────────────────────────
 
 const expandedOccurrences = computed<RecurOccurrence[]>(() => {
   const schema = dateSchema.value
@@ -194,10 +190,7 @@ const activeDates = computed<string[]>(() =>
 
 function dayLabel(dateStr: string): string {
   const [y, m, d] = dateStr.split('-').map(Number)
-  const date = new Date(y, m - 1, d)
-  const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-  const months   = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-  return `${weekdays[date.getDay()]}, ${months[m - 1]} ${d}`
+  return agendaDayLabel(locale.value, new Date(y, m - 1, d))
 }
 
 function isToday(dateStr: string): boolean { return dateStr === todayStr }
@@ -206,7 +199,7 @@ function isToday(dateStr: string): boolean { return dateStr === todayStr }
 
 const editingEntry = ref<DatabaseEntry | null>(null)
 
-// ── Recurrence action dialog (#rec) ──────────────────────────────────────────
+// ── Recurrence action dialog ─────────────────────────────────────────────────
 
 const recurDialogOcc  = ref<RecurOccurrence | null>(null)
 const recurDialogMode = ref<'edit' | 'delete'>('edit')
@@ -259,7 +252,7 @@ async function onRecurThis(): Promise<void> {
 
   const newEntry = await dbStore.createEntry(props.databaseId)
   await blockStore.updateBlock(newEntry.id, {
-    content: { ...(occ.entry.content ?? {}) },
+    content: { ...occ.entry.content },
   })
   if (occ.entry.icon) {
     await blockStore.updateAppearance(newEntry.id, { icon: occ.entry.icon })
@@ -312,7 +305,7 @@ async function onRecurFollowing(): Promise<void> {
 
   const newEntry = await dbStore.createEntry(props.databaseId)
   await blockStore.updateBlock(newEntry.id, {
-    content: { ...(occ.entry.content ?? {}) },
+    content: { ...occ.entry.content },
   })
   if (occ.entry.icon) {
     await blockStore.updateAppearance(newEntry.id, { icon: occ.entry.icon })
@@ -395,7 +388,7 @@ async function onRecurFollowing(): Promise<void> {
                 :style="{ background: chipColorStyle(occ.entry).background }"
               />
 
-              <!-- Recurrence indicator (#rec) -->
+              <!-- Recurrence indicator -->
               <Icon
                 v-if="isRecurringEntry(occ.entry, dateSchema)"
                 icon="mdi:repeat"
@@ -452,7 +445,7 @@ async function onRecurFollowing(): Promise<void> {
       @refresh="emit('refresh')"
     />
 
-    <!-- ── Recurrence scope dialog (#rec) ────────────────────────────────────── -->
+    <!-- ── Recurrence scope dialog ───────────────────────────────────────────── -->
     <RecurrenceActionDialog
       v-if="recurDialogOcc"
       :mode="recurDialogMode"

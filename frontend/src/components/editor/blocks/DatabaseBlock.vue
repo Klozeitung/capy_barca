@@ -44,7 +44,6 @@ import {
   isStickyHeaderEnabled,
   type PropertySchema,
   type DatabaseEntry,
-  type DatabaseView,
   type AggregationType,
   type ViewFilter,
   type FilterOperator,

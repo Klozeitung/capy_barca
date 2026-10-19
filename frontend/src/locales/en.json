@@ -109,6 +109,12 @@
       "databaseDesc": "Create a structured table with properties",
       "linkedDatabaseDesc": "Embed a view of an existing database"
     },
+    "row": {
+      "check": "Check",
+      "uncheck": "Uncheck",
+      "toggle": "Expand or collapse",
+      "changeIcon": "Change icon"
+    },
     "mention": {
       "noResults": "No matching pages",
       "lockedTooltip": "You do not have access to this block",
@@ -132,6 +138,7 @@
     "cancel": "Cancel",
     "delete": "Delete",
     "duplicate": "Duplicate",
+    "edit": "Edit",
     "restore": "Restore",
     "rename": "Rename",
     "remove": "Remove"
@@ -633,7 +640,8 @@
       "recurThis": "This occurrence",
       "recurFollowing": "This and all following",
       "recurAll": "All occurrences",
-      "recurIndicator": "Repeating"
+      "recurIndicator": "Repeating",
+      "importedEventTitle": "Imported event"
     },
     "groupBy": {
       "ungrouped": "No value"
@@ -678,6 +686,7 @@
     "deleteColumnKeyedItem": "{property} in {database}",
     "changeIcon": "Change icon",
     "formulaCellError": "Error",
+    "rollupCellError": "Error",
     "cellSaving": "Saving…"
   },
   "propertySection": {

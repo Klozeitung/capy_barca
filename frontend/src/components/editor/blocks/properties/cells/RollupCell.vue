@@ -19,6 +19,7 @@
  * Layout: [function badge] [value / chips]
  */
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Icon } from '@iconify/vue'
 import type { DatabaseEntry, PropertySchema } from '@/stores/database'
 import { useAuthStore } from '@/stores/auth'
@@ -31,6 +32,7 @@ const props = defineProps<{
 }>()
 
 const auth = useAuthStore()
+const { t } = useI18n()
 
 // ── Badges ────────────────────────────────────────────────────────────────────
 
@@ -80,11 +82,11 @@ const badge = computed(() =>
 )
 
 // The function-type badge (ERL / LAT / SUM …) is opt-in per rollup property,
-// off by default (#10). Set via the property settings modal.
+// off by default. Set via the property settings modal.
 const showTypeBadge = computed<boolean>(() => props.schema.config?.show_type_badge === true)
 
 // Chip wrapping (show_original / percent_per_option) is opt-in per rollup
-// property (#12). Off by default: chips stay on one line and clip; on: wrap.
+// property. Off by default: chips stay on one line and clip; on: wrap.
 const wrapContent = computed<boolean>(() => props.schema.config?.wrapContent === true)
 
 const hasError = computed(() => !!cellData.value?.error)
@@ -92,7 +94,7 @@ const errorMessage = computed(() => cellData.value?.error ?? '')
 
 // Relation rollups (show_original / first_value / last_value over a relation
 // target) carry resolved entry descriptors and a `relation: true` flag so the
-// cell can render clickable chips that open the entry (#11).
+// cell can render clickable chips that open the entry.
 interface RelationChip { id: string; title: string; database_id: string | null }
 
 const isRelation = computed<boolean>(() => cellData.value?.relation === true)
@@ -149,13 +151,12 @@ const scalarDisplay = computed<string>(() => {
   }
   if (typeof r === 'boolean') return r ? 'true' : 'false'
   // Date aggregations (earliest_date / latest_date / date_range) arrive as
-  // canonical ISO strings; render them in the user's preferred format (#10).
+  // canonical ISO strings; render them in the user's preferred format.
   return maybeFormatRollupDate(String(r), auth.dateFormat)
 })
 
 // ── List display (show_original) ──────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const listItems = computed<string[]>(() => {
   const r = cellData.value?.result
   if (!Array.isArray(r)) return []
@@ -194,12 +195,12 @@ const optionEntries = computed<{ label: string; pct: string }[]>(() => {
     }"
     :title="hasError ? errorMessage : undefined"
   >
-    <!-- Function-type badge (opt-in, #10) -->
+    <!-- Function-type badge (opt-in) -->
     <span v-if="badge && showTypeBadge" class="rollup-cell__badge">{{ badge }}</span>
 
     <!-- Error state -->
     <template v-if="hasError">
-      <span class="rollup-cell__error-text">Error</span>
+      <span class="rollup-cell__error-text">{{ t('db.rollupCellError') }}</span>
     </template>
 
     <!-- Empty -->
@@ -274,7 +275,7 @@ const optionEntries = computed<{ label: string; pct: string }[]>(() => {
 }
 
 /* List/option-map layout. Default: chips flow and wrap within the column.
- * wrapContent on (rollup-cell--wrap): one chip per line (#12). */
+ * wrapContent on (rollup-cell--wrap): one chip per line. */
 .rollup-cell--list {
   white-space: normal;
   flex-wrap: wrap;

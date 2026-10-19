@@ -42,7 +42,7 @@ export function useColumnResize(options: {
 
   /** Call whenever the active view changes to load its persisted widths. */
   function syncColWidthsFromView(activeView: DatabaseView | null): void {
-    colWidths.value = { ...(activeView?.colWidths ?? {}) }
+    colWidths.value = { ...activeView?.colWidths }
   }
 
   function startResize(e: PointerEvent, key: string, thEl: HTMLElement | null): void {

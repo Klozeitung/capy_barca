@@ -199,7 +199,7 @@ async function requestRemoveOption(kind: OptionKind, index: number): Promise<voi
     dropOption(kind, option.id)
     return
   }
-  let count: number | null = null
+  let count: number | null
   try {
     count = await dbStore.optionUsage(props.databaseId, props.schema.id, option.id)
   } catch {
@@ -556,7 +556,7 @@ const FORMULA_HELP: FormulaHelpEntry[] = [
     name: 'contains',
     signature: 'contains(text, substring)',
     description: 'Returns true if text contains the given substring. Case-sensitive.',
-    example: "contains(prop('Sollkonto'), 'Giro')",
+    example: "contains(prop('Account'), 'Main')",
     category: 'text',
     insert: "contains(, '')",
   },
@@ -588,7 +588,7 @@ const FORMULA_HELP: FormulaHelpEntry[] = [
     name: 'divide',
     signature: 'divide(a, b)',
     description: 'Divides a by b. Alias for the / operator (Notion compatibility).',
-    example: "divide(prop('Betrag'), 1.19)",
+    example: "divide(prop('Total'), 4)",
     category: 'math',
     insert: 'divide(, )',
   },
@@ -597,7 +597,7 @@ const FORMULA_HELP: FormulaHelpEntry[] = [
     name: 'at',
     signature: 'at(list, index)',
     description: 'Returns the element at the given index in a list (e.g. a show_original rollup). Supports negative indexing: -1 is the last element. Returns null when the index is out of range.',
-    example: "dateBetween(prop('Datum'), at(prop('Rollup Dates'), 0), 'years')",
+    example: "dateBetween(prop('Date'), at(prop('Dates'), 0), 'years')",
     category: 'list',
     insert: "at(, 0)",
   },
@@ -908,7 +908,7 @@ async function save() {
   }
   keyingError.value = ''
 
-  let config: Record<string, unknown> | null = props.schema.config
+  let config: Record<string, unknown> | null
 
   const savedSelectOptions = cleanedOptions(selectOptions.value)
   const savedNuanceOptions = cleanedOptions(nuanceOptions.value)
@@ -1012,7 +1012,7 @@ async function save() {
       break
     default:
       // text, checkbox, email, phone, url, file and other writable types
-      config = { ...(props.schema.config ?? {}), hasTimeline: hasTimeline.value }
+      config = { ...props.schema.config, hasTimeline: hasTimeline.value }
   }
 
   // Preserve a user-set column icon (config.icon). Several types above rebuild
@@ -1044,7 +1044,7 @@ async function save() {
   // type. An empty description is stripped so we never persist empty strings.
   const trimmedDescription = description.value.trim()
   if (trimmedDescription) {
-    config = { ...(config ?? {}), description: trimmedDescription }
+    config = { ...config, description: trimmedDescription }
   } else if (config && typeof config === 'object' && 'description' in config) {
     const { description: _omittedDescription, ...restConfig } = config as Record<string, unknown>
     config = restConfig

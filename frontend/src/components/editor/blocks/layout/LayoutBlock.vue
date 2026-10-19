@@ -83,7 +83,7 @@ const displayWidths = computed<number[]>(() =>
 
 async function persistWidths(widths: number[]): Promise<void> {
   await blockStore.updateBlock(props.block.id, {
-    content: { ...(props.block.content ?? {}), widths },
+    content: { ...props.block.content, widths },
   })
 }
 
