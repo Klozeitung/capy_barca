@@ -435,10 +435,11 @@ class KeyReferenceResponse(BaseModel):
 
     Returned by the key-references pre-flight so a delete confirmation can name
     the relations it is about to reset, rather than merely reporting that some
-    exist.
+    exist. ``schema_name`` and ``database_title`` are ``None`` for a relation
+    in a database the caller may not read.
     """
     schema_id: uuid.UUID
-    schema_name: str
+    schema_name: Optional[str]
     database_id: uuid.UUID
     database_title: Optional[str]
 
@@ -1016,14 +1017,17 @@ def _sync_sub_item(
     new_child_ids: list[str],
     old_child_ids: list[str],
     parent_item_schema,
-) -> set[uuid.UUID]:
+    sub_item_schema_id: uuid.UUID,
+) -> tuple[set[uuid.UUID], set[uuid.UUID]]:
     """
     Maintain the ``parent_item`` mirror whenever a ``sub_item`` value is written
     directly.
 
     When entry B's sub_item gains child A:
-    * A's ``parent_item`` is set to B (if A had a different parent, that parent
-      is cleared first — single-parent policy).
+    * A's ``parent_item`` is set to B.
+    * If A had a different parent C, A is removed from C's ``sub_item`` list
+      (single-parent policy), as :func:`_sync_parent_item` does when A is
+      reparented through its own ``parent_item``.
 
     When entry B's sub_item loses child A:
     * A's ``parent_item`` is cleared if it currently points to B.
@@ -1041,24 +1045,53 @@ def _sync_sub_item(
     parent_item_schema:
         The partner ``PropertySchema`` of type ``parent_item``.
         If ``None`` the sync is a no-op.
+    sub_item_schema_id:
+        The ``sub_item`` schema that was written. A child's previous parent
+        loses the child from its value of this schema.
 
-    Returns the IDs of the entries whose ``parent_item`` value was written.
+    Returns two sets of entry IDs: the children whose ``parent_item`` value
+    was written, and the previous parents whose ``sub_item`` value was
+    written.
     """
     written: set[uuid.UUID] = set()
+    previous_parents: set[uuid.UUID] = set()
     if parent_item_schema is None:
-        return written
+        return written, previous_parents
 
     entry_id_str = str(entry_id)
     added   = set(new_child_ids) - set(old_child_ids)
     removed = set(old_child_ids) - set(new_child_ids)
 
-    # For newly added children: set their parent_item to this entry,
-    # clearing any previous parent first (single-parent policy).
+    # For newly added children: set their parent_item to this entry, and
+    # take them off the sub_item list of their previous parent (single-parent
+    # policy).
     for cid_str in added:
         try:
             cid = uuid.UUID(cid_str)
         except ValueError:
             continue
+        previous = repo.get_value(db, cid, parent_item_schema.id)
+        previous_ids = ((previous.value or {}).get("related_ids") or []) if previous else []
+        for pid_str in previous_ids:
+            if pid_str == entry_id_str:
+                continue
+            try:
+                pid = uuid.UUID(pid_str)
+            except ValueError:
+                continue
+            previous_list = repo.get_value(db, pid, sub_item_schema_id)
+            if previous_list is None or not previous_list.value:
+                continue
+            remaining = [
+                i for i in (previous_list.value.get("related_ids") or []) if i != cid_str
+            ]
+            repo.upsert_value(
+                db,
+                page_id=pid,
+                schema_id=sub_item_schema_id,
+                value={"related_ids": remaining} if remaining else None,
+            )
+            previous_parents.add(pid)
         repo.upsert_value(
             db,
             page_id=cid,
@@ -1085,7 +1118,7 @@ def _sync_sub_item(
                 )
                 written.add(cid)
 
-    return written
+    return written, previous_parents
 
 
 def _ensure_bilateral_mirror(
@@ -2568,9 +2601,9 @@ def list_key_references(
     Returns an empty list for a property nothing keys on, which is the common
     case and leaves the existing two-step delete affordance untouched.
 
-    The title of a referring database the caller may not access is returned
-    as ``None``; the reference itself is still listed, since the delete resets
-    it regardless.
+    For a referring database the caller may not read, the relation's name and
+    the database's title are returned as ``None``; the reference itself is
+    still listed, since the delete resets it regardless.
     """
     _get_database_or_raise(db, database_id, current_user, _Access.READ)
     schema = repo.get_schema(db, schema_id)
@@ -2603,7 +2636,7 @@ def list_key_references(
     return [
         KeyReferenceResponse(
             schema_id=referrer.id,
-            schema_name=referrer.name,
+            schema_name=referrer.name if referrer.database_id in readable else None,
             database_id=referrer.database_id,
             database_title=titles.get(referrer.database_id),
         )
@@ -3497,11 +3530,13 @@ def upsert_value(
         # sync. Suppressed for entry_template blocks (same rationale as above).
         if is_sub_item and entry.type != "entry_template":
             new_child_ids = list((stored_value or {}).get("related_ids") or [])
-            written = _sync_sub_item(
-                db, entry_id, new_child_ids, old_child_ids, parent_item_schema_ref
+            written, previous_parents = _sync_sub_item(
+                db, entry_id, new_child_ids, old_child_ids, parent_item_schema_ref,
+                schema_id,
             )
             if parent_item_schema_ref is not None:
                 mirror_writes.append((parent_item_schema_ref, written))
+                mirror_writes.append((schema, previous_parents))
 
         _refresh_last_edited(db, database_id, entry_id, current_user.id)
 
@@ -3847,12 +3882,14 @@ def apply_entry_template(
                     mirror_writes.append((partner_schema, written))
             elif schema.type == "sub_item":
                 new_child_ids = list(_extract_related_ids_now(pv.value))
-                written = _sync_sub_item(
+                written, previous_parents = _sync_sub_item(
                     db, entry_id, new_child_ids,
                     list((old_value or {}).get("related_ids") or []), partner_schema,
+                    schema.id,
                 )
                 if partner_schema is not None:
                     mirror_writes.append((partner_schema, written))
+                    mirror_writes.append((schema, previous_parents))
 
         _refresh_last_edited(db, database_id, entry_id, current_user.id)
         # The same narrowed cascade as for a single value: readers of what

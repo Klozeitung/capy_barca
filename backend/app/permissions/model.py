@@ -12,10 +12,11 @@ BlockPermissionGrant
 
 Access levels
 -------------
-Access is either ``read`` or ``write``. The owner of a block and every admin
-always have write access. Everybody else gets the level stored with the
-permission that admits them: ``everyone_level`` for mode 'everyone', the
-grant's ``level`` for a whitelist entry.
+Access is either ``read`` or ``write``. Under a single row, the owner of the
+block carrying it always has write access; everybody else gets the level
+stored with the permission that admits them: ``everyone_level`` for mode
+'everyone', the grant's ``level`` for a whitelist entry. Across the chain the
+lowest of these levels applies. Admins have write access everywhere.
 """
 import uuid
 
@@ -43,9 +44,11 @@ class BlockPermission(Base):
                  ``block_permission_grants`` have access, each at the level
                  of its grant.
 
-    A missing row is semantically equivalent to mode='inherit': the
-    effective permission is resolved by walking up the parent chain until
-    a row is found.  The workspace root always has an explicit row
+    A missing row is semantically equivalent to mode='inherit'. Restrictions
+    accumulate: an account reaches a block only if every explicit row on the
+    chain from the block up to the workspace root admits it, at the lowest
+    level any of them grants. A row can therefore narrow access for its
+    subtree but never widen it. The workspace root always has an explicit row
     (mode='everyone') inserted by migration 0015 to anchor the walk.
     """
 

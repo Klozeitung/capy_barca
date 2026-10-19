@@ -7,8 +7,8 @@
  * Displays the current access mode for the block and allows the owner (or
  * any admin) to change it.  Available modes:
  *
- *   inherit   – no explicit setting; effective permission comes from the
- *               nearest ancestor that has an explicit row (default)
+ *   inherit   – no explicit setting; the block is governed by the explicit
+ *               settings of its ancestors (default)
  *   everyone  – all authenticated users get access at one shared level
  *   private   – only the owner may access this block
  *   whitelist – owner + explicitly listed users get access, each at their
@@ -16,6 +16,10 @@
  *
  * Access levels are 'read' (see and comment) and 'write' (also change). The
  * owner and admins always have write access.
+ *
+ * Restrictions accumulate down the tree: a setting here can narrow access but
+ * never grant more than every ancestor allows. When it would, the server sets
+ * warn_restricted_by_ancestors and the panel says so.
  *
  * When mode is 'everyone', a level selector applies to all users. When mode
  * is 'whitelist', a user selector lets the owner add / remove individual
@@ -55,7 +59,7 @@ interface PermissionData {
   effective_mode: string
   inherited_from_id: string | null
   can_edit: boolean
-  warn_accessibility: boolean
+  warn_restricted_by_ancestors: boolean
 }
 
 interface UserName {
@@ -261,21 +265,13 @@ const isDirty = computed(() => {
         {{ t('permissions.inheritedAs', { mode: t(`permissions.mode${data.effective_mode.charAt(0).toUpperCase() + data.effective_mode.slice(1)}`) }) }}
       </div>
 
-      <!-- Accessibility warning: block is more permissive than its ancestors -->
-      <div v-if="data.warn_accessibility" class="perm__warn">
+      <!-- Notice: the setting grants more than the ancestors allow -->
+      <div v-if="data.warn_restricted_by_ancestors" class="perm__warn">
         <div class="perm__warn-header">
           <Icon icon="mdi:alert-outline" width="14" height="14" class="perm__warn-icon" />
-          <span>{{ t('permissions.warnAccessibilityTitle') }}</span>
+          <span>{{ t('permissions.warnRestrictedTitle') }}</span>
         </div>
-        <p class="perm__warn-body">{{ t('permissions.warnAccessibilityBody') }}</p>
-        <button class="perm__copy-link-btn" @click="copyLink">
-          <Icon
-            :icon="linkCopied ? 'mdi:check' : 'mdi:link-variant'"
-            width="13"
-            height="13"
-          />
-          {{ linkCopied ? t('permissions.linkCopied') : t('permissions.copyLink') }}
-        </button>
+        <p class="perm__warn-body">{{ t('permissions.warnRestrictedBody') }}</p>
       </div>
 
       <!-- Mode selector -->
@@ -742,7 +738,7 @@ const isDirty = computed(() => {
   color: var(--color-text-muted);
   margin: 0;
 }
-/* ── Accessibility warning ───────────────────────────────────────────────── */
+/* ── Restricted-by-ancestors notice ───────────────────────────────────────── */
 .perm__warn {
   border: 1px solid var(--color-warning-border, #b45309);
   border-radius: 7px;

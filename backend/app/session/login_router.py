@@ -114,6 +114,10 @@ def logout(response: Response, session: Optional[str] = Cookie(default=None)):
     """
     Revoke the session token and clear the cookie.
 
+    The WOPI tokens issued in this session are removed together with it by
+    the database (see ``app.wopi.model``), which ends the editor sessions
+    opened here and no others.
+
     The clearing cookie repeats the attributes of the issued one so the two
     definitions cannot drift apart; browsers match on name, domain and path.
     """

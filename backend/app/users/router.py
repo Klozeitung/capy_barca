@@ -4,6 +4,10 @@ User management router.
 Password fields use the shared types from ``app.users.password_rules`` rather
 than plain strings, so that the minimum length and bcrypt's 72-byte ceiling are
 stated once for the whole application instead of per endpoint.
+
+A password change, own or by an admin, withdraws every WOPI token of the
+account (``app.wopi.registry``), so an open document editor stops reading and
+saving with the old credentials.
 """
 import os
 import uuid
@@ -18,6 +22,7 @@ from app.session.deps import get_current_user, get_db, require_admin, require_se
 from app.users import repository as user_repo
 from app.users.model import User
 from app.users.password_rules import ExistingPassword, NewPassword
+from app.wopi import registry as wopi_registry
 
 users_router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -132,10 +137,14 @@ def change_own_password(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Change own password. Requires the correct current password."""
+    """
+    Change own password. Requires the correct current password. Withdraws
+    the account's WOPI tokens in the same transaction.
+    """
     if not user_repo.verify_password(payload.current_password, current_user.password_hash):
         raise HTTPException(status_code=401, detail="The current password is incorrect")
     user_repo.update_password(db, current_user, payload.new_password)
+    wopi_registry.revoke_for_user(db, current_user.id)
     db.commit()
 
 
@@ -216,11 +225,15 @@ def admin_reset_password(
     _admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Admin force-reset another user's password (no current password required)."""
+    """
+    Admin force-reset another user's password (no current password required).
+    Withdraws that account's WOPI tokens in the same transaction.
+    """
     user = user_repo.get_by_id(db, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     user_repo.update_password(db, user, payload.new_password)
+    wopi_registry.revoke_for_user(db, user.id)
     db.commit()
 
 

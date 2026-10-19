@@ -1813,3 +1813,165 @@ def test_deep_duplicate_uses_explicit_owner_id(db, workspace):
     )
     db.commit()
     assert dup.owner_id == new_owner
+
+
+# ─── deep_duplicate: permissions ──────────────────────────────────────────────
+
+
+def _account(db, role: str = "member"):
+    from app.users.model import User
+
+    user = User(
+        id=uuid.uuid4(),
+        username=f"user_{uuid.uuid4().hex[:8]}",
+        password_hash="x",
+        role=role,
+        is_active=True,
+    )
+    db.add(user)
+    db.flush()
+    return user
+
+
+def test_deep_duplicate_copies_whitelist_grants_and_levels(db, workspace, page):
+    from app.permissions import repository as perm_repo
+    from app.permissions.model import READ, WRITE
+
+    reader, writer = _account(db), _account(db)
+    child = repo.create_block(db, type="page", position=1.0, parent_id=page.id)
+    perm_repo.set_permission(db, child.id, "whitelist", {reader.id: READ, writer.id: WRITE})
+    db.commit()
+
+    dup = service.deep_duplicate(db, page.id, parent_id=workspace.id, position=2.0)
+    db.commit()
+
+    dup_child = repo.list_children(db, dup.id, state="active")[0]
+    row = perm_repo.get_permission_row(db, dup_child.id)
+    assert row is not None
+    assert row.mode == "whitelist"
+    assert {g.user_id: g.level for g in row.grants} == {reader.id: READ, writer.id: WRITE}
+
+
+def test_deep_duplicate_copies_the_level_for_everyone(db, workspace, page):
+    from app.permissions import repository as perm_repo
+    from app.permissions.model import READ
+
+    perm_repo.set_permission(db, page.id, "everyone", [], everyone_level=READ)
+    db.commit()
+
+    dup = service.deep_duplicate(db, page.id, parent_id=workspace.id, position=2.0)
+    db.commit()
+
+    row = perm_repo.get_permission_row(db, dup.id)
+    assert (row.mode, row.everyone_level) == ("everyone", READ)
+
+
+def test_deep_duplicate_leaves_inheriting_descendants_without_a_row(db, workspace, page):
+    from app.permissions import repository as perm_repo
+
+    repo.create_block(db, type="paragraph", position=1.0, parent_id=page.id)
+    db.commit()
+
+    dup = service.deep_duplicate(db, page.id, parent_id=workspace.id, position=2.0)
+    db.commit()
+
+    dup_child = repo.list_children(db, dup.id, state="active")[0]
+    assert perm_repo.get_permission_row(db, dup_child.id) is None
+
+
+def test_deep_duplicate_of_a_first_level_block_without_a_row_becomes_private(db, workspace, page):
+    from app.permissions import repository as perm_repo
+
+    dup = service.deep_duplicate(db, page.id, parent_id=workspace.id, position=2.0)
+    db.commit()
+
+    assert perm_repo.get_permission_row(db, dup.id).mode == "private"
+
+
+def _page_with_a_hidden_child(db, page):
+    """
+    Return (viewer, visible, hidden): *page* is private to the viewer, one
+    child inherits from it, the other is private to another account.
+    """
+    from app.permissions import repository as perm_repo
+
+    viewer, other = _account(db), _account(db)
+    page.owner_id = viewer.id
+    perm_repo.set_permission(db, page.id, "private", [])
+    visible = repo.create_block(
+        db, type="paragraph", position=1.0, parent_id=page.id, content={"text": "visible"},
+    )
+    hidden = repo.create_block(
+        db, type="page", position=2.0, parent_id=page.id, content={"text": "hidden"},
+    )
+    hidden.owner_id = other.id
+    perm_repo.set_permission(db, hidden.id, "private", [])
+    db.commit()
+    return viewer, visible, hidden
+
+
+def test_deep_duplicate_skips_descendants_the_viewer_cannot_read(db, workspace, page):
+    viewer, _, _ = _page_with_a_hidden_child(db, page)
+
+    dup = service.deep_duplicate(
+        db, page.id, parent_id=workspace.id, position=2.0, owner_id=viewer.id, viewer=viewer,
+    )
+    db.commit()
+
+    copied = repo.list_children(db, dup.id, state="active")
+    assert [c.content["text"] for c in copied] == ["visible"]
+    assert copied[0].position == 1.0
+
+
+def test_deep_duplicate_without_a_viewer_copies_every_descendant(db, workspace, page):
+    _page_with_a_hidden_child(db, page)
+
+    dup = service.deep_duplicate(db, page.id, parent_id=workspace.id, position=2.0)
+    db.commit()
+
+    copied = repo.list_children(db, dup.id, state="active")
+    assert [c.content["text"] for c in copied] == ["visible", "hidden"]
+
+
+def test_deep_duplicate_by_an_admin_copies_every_descendant(db, workspace, page):
+    _page_with_a_hidden_child(db, page)
+    admin = _account(db, role="admin")
+
+    dup = service.deep_duplicate(
+        db, page.id, parent_id=workspace.id, position=2.0, viewer=admin,
+    )
+    db.commit()
+
+    assert len(repo.list_children(db, dup.id, state="active")) == 2
+
+
+def test_deep_duplicate_synched_mirror_copies_the_permission_row(db, workspace, page):
+    from app.permissions import repository as perm_repo
+    from app.permissions.model import READ
+
+    member = _account(db)
+    origin = repo.create_block(db, type="synched_origin", position=1.0, parent_id=page.id)
+    mirror = repo.create_block(db, type="synched_mirror", position=2.0, parent_id=page.id,
+                               reference_id=origin.id, content={})
+    perm_repo.set_permission(db, mirror.id, "whitelist", {member.id: READ})
+    db.commit()
+
+    dup_mirror = service.deep_duplicate(db, mirror.id, parent_id=page.id, position=3.0)
+    db.commit()
+
+    row = perm_repo.get_permission_row(db, dup_mirror.id)
+    assert row.mode == "whitelist"
+    assert {g.user_id: g.level for g in row.grants} == {member.id: READ}
+
+
+def test_deep_duplicate_synched_origin_copies_its_row_to_the_mirror(db, workspace, page):
+    from app.permissions import repository as perm_repo
+
+    origin = repo.create_block(db, type="synched_origin", position=1.0, parent_id=page.id)
+    perm_repo.set_permission(db, origin.id, "private", [])
+    db.commit()
+
+    mirror = service.deep_duplicate(db, origin.id, parent_id=page.id, position=2.0)
+    db.commit()
+
+    assert perm_repo.get_permission_row(db, mirror.id).mode == "private"

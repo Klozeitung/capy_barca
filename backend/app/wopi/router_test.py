@@ -11,11 +11,13 @@ The identity the router sees is therefore a real ``User`` with a role and an
 id, which is what makes the block permission checks testable at all.
 
 The file endpoints carry no session — Collabora has none — so they are driven
-with a plain client and a token, exactly as Collabora would.
+with a plain client and a token, exactly as Collabora would. A token is only
+accepted while it is registered, so the tests that reach a file endpoint mint
+theirs with ``_registered_token``.
 """
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -177,9 +179,10 @@ def _token(secret: str, block, user, ttl: int = 3600, **overrides) -> str:
     """
     Mint a token the way the endpoint would, with room to bend a claim.
 
-    The positional parameters are named ``block`` and ``user`` rather than
-    after the claims they fill, so that ``overrides`` can address every claim
-    by its real name without colliding with the signature.
+    The token is not registered; see ``_registered_token``. The positional
+    parameters are named ``block`` and ``user`` rather than after the claims
+    they fill, so that ``overrides`` can address every claim by its real name
+    without colliding with the signature.
     """
     now = int(time.time())
     claims = {
@@ -189,6 +192,7 @@ def _token(secret: str, block, user, ttl: int = 3600, **overrides) -> str:
         "mime": MIME,
         "user_id": str(user),
         "username": "member",
+        "jti": str(uuid.uuid4()),
         "iat": now,
         "exp": now + ttl,
     }
@@ -199,6 +203,39 @@ def _token(secret: str, block, user, ttl: int = 3600, **overrides) -> str:
     token = wopi_module._encode_token(claims)
     wopi_module.SECRET_KEY = old_key
     return token
+
+
+def _register(jti, block, user, *, ttl: int = 3600, file_uuid: str = FILE_UUID) -> None:
+    """Store a registry row as the token endpoint does."""
+    import app.database.database as db_module
+    from app.wopi import registry
+
+    now = datetime.now(timezone.utc)
+    with db_module.SessionLocal() as db:
+        registry.register(
+            db,
+            jti=uuid.UUID(str(jti)),
+            user_id=uuid.UUID(str(user)),
+            block_id=uuid.UUID(str(block)),
+            file_uuid=uuid.UUID(file_uuid),
+            issued_at=now,
+            expires_at=now + timedelta(seconds=ttl),
+        )
+        db.commit()
+
+
+def _registered_token(secret: str, block, user, ttl: int = 3600) -> str:
+    """Mint a token and register it, as the token endpoint would."""
+    jti = uuid.uuid4()
+    _register(jti, block, user, ttl=ttl)
+    return _token(secret, block, user, ttl=ttl, jti=str(jti))
+
+
+def _access_token(editor_url: str) -> str:
+    """Extract the access token from an editor URL."""
+    from urllib.parse import parse_qs, urlparse
+
+    return parse_qs(urlparse(editor_url).query)["access_token"][0]
 
 
 def _issue(client, block_id, file_uuid: str = FILE_UUID):
@@ -339,7 +376,7 @@ def test_decode_rejects_a_token_signed_with_another_secret(test_secret):
         wopi_module._decode_token(foreign)
 
 
-@pytest.mark.parametrize("field", ["file_uuid", "block_id", "user_id"])
+@pytest.mark.parametrize("field", ["file_uuid", "block_id", "user_id", "jti"])
 def test_decode_rejects_a_non_uuid_claim(test_secret, field):
     """
     A valid signature says the claims were not altered in transit. It says
@@ -399,7 +436,7 @@ def prepared(tmp_drive_dir, test_secret, member_user):
     return {
         "block_id": block_id,
         "path": path,
-        "token": _token(test_secret, block_id, member_user.id),
+        "token": _registered_token(test_secret, block_id, member_user.id),
     }
 
 
@@ -431,7 +468,7 @@ def test_check_file_info_missing_file_returns_404(
     wopi_client, tmp_drive_dir, test_secret, member_user
 ):
     block_id = _seed_block(owner_id=member_user.id, mode="private")
-    token = _token(test_secret, block_id, member_user.id)
+    token = _registered_token(test_secret, block_id, member_user.id)
     assert wopi_client.get(f"/api/wopi/files/{token}").status_code == 404
 
 
@@ -448,7 +485,7 @@ def test_file_endpoint_refuses_a_token_whose_user_lost_access(
     """
     block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
     _seed_file(tmp_drive_dir, block_id)
-    token = _token(test_secret, block_id, member_user.id)
+    token = _registered_token(test_secret, block_id, member_user.id)
     assert wopi_client.get(f"/api/wopi/files/{token}").status_code == 403
 
 
@@ -459,7 +496,7 @@ def test_file_endpoint_refuses_a_token_of_a_deactivated_account(
 
     block_id = _seed_block(owner_id=member_user.id, mode="private")
     _seed_file(tmp_drive_dir, block_id)
-    token = _token(test_secret, block_id, member_user.id)
+    token = _registered_token(test_secret, block_id, member_user.id)
 
     with db_module.SessionLocal() as db:
         stored = db.get(User, member_user.id)
@@ -472,6 +509,7 @@ def test_file_endpoint_refuses_a_token_of_a_deactivated_account(
 def test_file_endpoint_refuses_a_token_of_an_unknown_account(
     wopi_client, tmp_drive_dir, test_secret
 ):
+    """No registry row can name an account that does not exist."""
     block_id = _seed_block()
     _seed_file(tmp_drive_dir, block_id)
     token = _token(test_secret, block_id, uuid.uuid4())
@@ -483,7 +521,7 @@ def test_file_endpoint_allows_an_admin_token_on_a_foreign_block(
 ):
     block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
     _seed_file(tmp_drive_dir, block_id)
-    token = _token(test_secret, block_id, admin_user.id)
+    token = _registered_token(test_secret, block_id, admin_user.id)
     assert wopi_client.get(f"/api/wopi/files/{token}").status_code == 200
 
 
@@ -509,7 +547,7 @@ def test_get_file_refuses_a_token_whose_user_lost_access(
 ):
     block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
     _seed_file(tmp_drive_dir, block_id)
-    token = _token(test_secret, block_id, member_user.id)
+    token = _registered_token(test_secret, block_id, member_user.id)
     assert wopi_client.get(f"/api/wopi/files/{token}/contents").status_code == 403
 
 
@@ -576,7 +614,7 @@ def test_put_file_refuses_a_token_whose_user_lost_access(
     """Write is the one that matters most here: the document is overwritten."""
     block_id = _seed_block(owner_id=uuid.uuid4(), mode="private")
     path = _seed_file(tmp_drive_dir, block_id)
-    token = _token(test_secret, block_id, member_user.id)
+    token = _registered_token(test_secret, block_id, member_user.id)
 
     resp = wopi_client.post(f"/api/wopi/files/{token}/contents", content=b"overwritten")
     assert resp.status_code == 403
@@ -596,7 +634,7 @@ def read_only(tmp_drive_dir, test_secret, member_user):
     return {
         "block_id": block_id,
         "path": path,
-        "token": _token(test_secret, block_id, member_user.id),
+        "token": _registered_token(test_secret, block_id, member_user.id),
     }
 
 
@@ -671,3 +709,201 @@ def test_find_file_ignores_a_stale_temporary_file(prepared):
     stale.write_bytes(b"garbage from a crashed save")
     found = wopi_module._find_file(FILE_UUID, str(prepared["block_id"]))
     assert found == prepared["path"]
+
+
+# ─── Editor language ──────────────────────────────────────────────────────────
+
+
+def test_editor_language_defaults_to_german(http_client, test_secret):
+    resp = _issue(http_client, _seed_block())
+    assert resp.json()["editor_url"].endswith("&lang=de")
+
+
+def test_editor_language_follows_the_request(http_client, test_secret):
+    resp = http_client.post("/api/wopi/token", json={
+        "file_uuid": FILE_UUID, "block_id": str(_seed_block()),
+        "filename": FILENAME, "mime": MIME, "lang": "en",
+    })
+    assert resp.status_code == 200
+    assert resp.json()["editor_url"].endswith("&lang=en")
+
+
+@pytest.mark.parametrize("lang", ["fr", "", "de&x=1"])
+def test_editor_language_outside_the_frontend_languages_returns_422(
+    http_client, test_secret, lang,
+):
+    """The value lands in a URL, so only the known languages pass."""
+    resp = http_client.post("/api/wopi/token", json={
+        "file_uuid": FILE_UUID, "block_id": str(_seed_block()),
+        "filename": FILENAME, "mime": MIME, "lang": lang,
+    })
+    assert resp.status_code == 422
+
+
+# ─── Token registry ───────────────────────────────────────────────────────────
+
+
+def test_token_for_a_missing_block_returns_404(http_client, test_secret):
+    assert _issue(http_client, uuid.uuid4()).status_code == 404
+
+
+def test_issued_token_opens_the_file(
+    client_factory, wopi_client, member_user, tmp_drive_dir, test_secret
+):
+    block_id = _seed_block(owner_id=member_user.id, mode="private")
+    _seed_file(tmp_drive_dir, block_id)
+    resp = _issue(client_factory(member_user), block_id)
+    token = _access_token(resp.json()["editor_url"])
+
+    assert wopi_client.get(f"/api/wopi/files/{token}").status_code == 200
+
+
+def test_issued_token_carries_its_registry_id(
+    client_factory, member_user, test_secret
+):
+    import app.database.database as db_module
+    from app.wopi.model import WopiToken
+
+    block_id = _seed_block(owner_id=member_user.id, mode="private")
+    token = _access_token(_issue(client_factory(member_user), block_id).json()["editor_url"])
+    claims = wopi_module._decode_token(token)
+
+    with db_module.SessionLocal() as db:
+        row = db.get(WopiToken, uuid.UUID(claims["jti"]))
+    assert row is not None
+    assert (row.user_id, row.block_id, str(row.file_uuid)) == (
+        member_user.id, block_id, FILE_UUID,
+    )
+
+
+def test_a_correctly_signed_token_that_was_never_issued_is_refused(
+    wopi_client, prepared, test_secret, member_user
+):
+    """The signing key alone no longer opens a file."""
+    forged = _token(test_secret, prepared["block_id"], member_user.id)
+    assert wopi_client.get(f"/api/wopi/files/{forged}").status_code == 401
+    assert wopi_client.get(f"/api/wopi/files/{forged}/contents").status_code == 401
+    resp = wopi_client.post(f"/api/wopi/files/{forged}/contents", content=b"overwritten")
+    assert resp.status_code == 401
+    assert prepared["path"].read_bytes() == FILE_CONTENT
+
+
+def test_a_registered_id_does_not_cover_another_block(
+    wopi_client, tmp_drive_dir, test_secret, member_user
+):
+    own = _seed_block(owner_id=member_user.id, mode="private")
+    other = _seed_block(owner_id=member_user.id, mode="private")
+    _seed_file(tmp_drive_dir, other)
+    jti = uuid.uuid4()
+    _register(jti, own, member_user.id)
+    moved = _token(test_secret, other, member_user.id, jti=str(jti))
+    assert wopi_client.get(f"/api/wopi/files/{moved}").status_code == 401
+
+
+def test_a_registered_id_does_not_cover_another_file(
+    wopi_client, tmp_drive_dir, test_secret, member_user
+):
+    block_id = _seed_block(owner_id=member_user.id, mode="private")
+    _seed_file(tmp_drive_dir, block_id)
+    jti = uuid.uuid4()
+    _register(jti, block_id, member_user.id, file_uuid=str(uuid.uuid4()))
+    token = _token(test_secret, block_id, member_user.id, jti=str(jti))
+    assert wopi_client.get(f"/api/wopi/files/{token}").status_code == 401
+
+
+def test_a_token_whose_registry_row_expired_is_refused(
+    wopi_client, tmp_drive_dir, test_secret, member_user
+):
+    block_id = _seed_block(owner_id=member_user.id, mode="private")
+    _seed_file(tmp_drive_dir, block_id)
+    jti = uuid.uuid4()
+    _register(jti, block_id, member_user.id, ttl=-60)
+    token = _token(test_secret, block_id, member_user.id, jti=str(jti))
+    assert wopi_client.get(f"/api/wopi/files/{token}").status_code == 401
+
+
+def test_a_revoked_token_is_refused(wopi_client, prepared, member_user):
+    import app.database.database as db_module
+    from app.wopi import registry
+
+    assert wopi_client.get(f"/api/wopi/files/{prepared['token']}").status_code == 200
+    with db_module.SessionLocal() as db:
+        assert registry.revoke_for_user(db, member_user.id) == 1
+        db.commit()
+
+    assert wopi_client.get(f"/api/wopi/files/{prepared['token']}").status_code == 401
+
+
+def test_issuance_removes_expired_registry_rows(
+    client_factory, member_user, test_secret
+):
+    import app.database.database as db_module
+    from app.wopi.model import WopiToken
+
+    block_id = _seed_block(owner_id=member_user.id, mode="private")
+    expired, live = uuid.uuid4(), uuid.uuid4()
+    _register(expired, block_id, member_user.id, ttl=-60)
+    _register(live, block_id, member_user.id)
+
+    _issue(client_factory(member_user), block_id)
+
+    with db_module.SessionLocal() as db:
+        assert db.get(WopiToken, expired) is None
+        assert db.get(WopiToken, live) is not None
+        assert db.query(WopiToken).count() == 2
+
+
+def test_revoke_for_user_leaves_other_accounts_alone(member_user, admin_user):
+    import app.database.database as db_module
+    from app.wopi import registry
+    from app.wopi.model import WopiToken
+
+    block_id = _seed_block()
+    _register(uuid.uuid4(), block_id, member_user.id)
+    _register(uuid.uuid4(), block_id, member_user.id)
+    kept = uuid.uuid4()
+    _register(kept, block_id, admin_user.id)
+
+    with db_module.SessionLocal() as db:
+        assert registry.revoke_for_user(db, member_user.id) == 2
+        db.commit()
+        assert [row.jti for row in db.query(WopiToken)] == [kept]
+
+
+def test_purging_a_block_removes_its_tokens(member_user):
+    import app.database.database as db_module
+    from app.blocks.models import Block
+    from app.wopi.model import WopiToken
+
+    block_id = _seed_block()
+    jti = uuid.uuid4()
+    _register(jti, block_id, member_user.id)
+
+    with db_module.SessionLocal() as db:
+        db.delete(db.get(Block, block_id))
+        db.commit()
+        assert db.get(WopiToken, jti) is None
+
+
+def test_issued_token_is_tied_to_the_session_of_the_request(member_user, test_secret):
+    """Logging out of that session removes the token (see the migration tests)."""
+    import app.database.database as db_module
+    import app.session.session as session_module
+    from app.wopi.model import WopiToken
+
+    block_id = _seed_block(owner_id=member_user.id, mode="private")
+    cookie = session_module.create_token(member_user.id)
+    app.dependency_overrides[get_current_user] = lambda: member_user
+    try:
+        client = TestClient(app, cookies={"session": cookie})
+        token = _access_token(_issue(client, block_id).json()["editor_url"])
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+    jti = uuid.UUID(wopi_module._decode_token(token)["jti"])
+    with db_module.SessionLocal() as db:
+        assert db.get(WopiToken, jti).session_key == session_module.record_key(cookie, db)
+
+    session_module.revoke_token(cookie)
+    with db_module.SessionLocal() as db:
+        assert db.get(WopiToken, jti) is None

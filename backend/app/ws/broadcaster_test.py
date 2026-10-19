@@ -23,7 +23,7 @@ import app.session.session as s
 from app.blocks.models import WORKSPACE_ROOT_ID, Block
 from app.permissions import repository as perm_repo
 from app.users.model import User
-from app.ws.broadcaster import _allowed_user_ids, broadcast_block_event, emit_block_event
+from app.ws.broadcaster import _recipients, broadcast_block_event, emit_block_event
 from app.ws.manager import manager
 
 
@@ -423,6 +423,158 @@ def test_soft_delete_is_still_scoped():
     asyncio.run(_run())
 
 
+# ─── Write access per recipient ───────────────────────────────────────────────
+
+
+def _snapshot(block_id) -> dict:
+    """A block snapshot as the block router serialises it."""
+    return {"id": str(block_id), "type": "page", "content": {"title": "Title A"}}
+
+
+async def _emit_snapshot(block_id, *, event_type: str = "content_updated") -> int:
+    return await _broadcast(
+        event_type=event_type,
+        block_id=str(block_id),
+        before=None,
+        after=_snapshot(block_id),
+    )
+
+
+def test_block_snapshot_carries_write_access_per_recipient():
+    async def _run():
+        _seed_root()
+        writer, reader = _make_user(), _make_user()
+        block_id = _seed_block(
+            owner_id=uuid.uuid4(), mode="whitelist",
+            grants={writer.id: "write", reader.id: "read"},
+        )
+        ws_writer = await _attach(writer)
+        ws_reader = await _attach(reader)
+        assert await _emit_snapshot(block_id) == 2
+        assert ws_writer.events[0]["after"]["can_write"] is True
+        assert ws_reader.events[0]["after"]["can_write"] is False
+        assert ws_reader.events[0]["after"]["content"] == {"title": "Title A"}
+    asyncio.run(_run())
+
+
+def test_both_variants_share_one_timestamp():
+    async def _run():
+        _seed_root()
+        writer, reader = _make_user(), _make_user()
+        block_id = _seed_block(
+            owner_id=uuid.uuid4(), mode="whitelist",
+            grants={writer.id: "write", reader.id: "read"},
+        )
+        ws_writer = await _attach(writer)
+        ws_reader = await _attach(reader)
+        await _emit_snapshot(block_id)
+        assert ws_writer.events[0]["created_at"] == ws_reader.events[0]["created_at"]
+    asyncio.run(_run())
+
+
+def test_owner_and_admin_get_write_access_in_the_snapshot():
+    async def _run():
+        _seed_root()
+        owner, admin = _make_user(), _make_user(role="admin")
+        block_id = _seed_block(owner_id=owner.id, mode="private")
+        ws_owner = await _attach(owner)
+        ws_admin = await _attach(admin)
+        assert await _emit_snapshot(block_id, event_type="moved") == 2
+        assert ws_owner.events[0]["after"]["can_write"] is True
+        assert ws_admin.events[0]["after"]["can_write"] is True
+    asyncio.run(_run())
+
+
+def test_reader_limited_by_an_ancestor_gets_read_only_snapshot():
+    """The flag follows the accumulated permission, not the block's own row."""
+    async def _run():
+        _seed_root()
+        member = _make_user()
+        parent_id = _seed_block(
+            owner_id=uuid.uuid4(), mode="whitelist", grants={member.id: "read"},
+        )
+        child_id = uuid.uuid4()
+        with s.SessionLocal() as db:
+            db.add(Block(id=child_id, parent_id=parent_id, type="page", position=1.0,
+                         state="active", owner_id=uuid.uuid4()))
+            db.flush()
+            perm_repo.set_permission(db, child_id, "whitelist", {member.id: "write"})
+            db.commit()
+        websocket = await _attach(member)
+        assert await _emit_snapshot(child_id) == 1
+        assert websocket.events[0]["after"]["can_write"] is False
+    asyncio.run(_run())
+
+
+def test_payload_that_is_not_a_snapshot_is_left_unchanged():
+    async def _run():
+        _seed_root()
+        owner = _make_user()
+        block_id = _seed_block(owner_id=owner.id)
+        websocket = await _attach(owner)
+        await _broadcast(
+            event_type="state_changed",
+            block_id=str(block_id),
+            before={"state": "active"},
+            after={"state": "trash"},
+        )
+        assert websocket.events[0]["after"] == {"state": "trash"}
+    asyncio.run(_run())
+
+
+def test_snapshot_of_another_block_is_left_unchanged():
+    """Only the block the event names is stamped."""
+    async def _run():
+        _seed_root()
+        owner = _make_user()
+        block_id = _seed_block(owner_id=owner.id)
+        websocket = await _attach(owner)
+        other = _snapshot(uuid.uuid4())
+        await _broadcast(
+            event_type="content_updated", block_id=str(block_id), before=None, after=other,
+        )
+        assert "can_write" not in websocket.events[0]["after"]
+    asyncio.run(_run())
+
+
+def test_emit_stamps_write_access_from_a_worker_thread():
+    _seed_root()
+    writer, reader = _make_user(), _make_user()
+    block_id = _seed_block(
+        owner_id=uuid.uuid4(), mode="whitelist",
+        grants={writer.id: "write", reader.id: "read"},
+    )
+
+    async def _run():
+        ws_writer = await _attach(writer)
+        ws_reader = await _attach(reader)
+        queued = await anyio.to_thread.run_sync(lambda: emit_block_event(
+            event_type="created",
+            block_id=str(block_id),
+            before=None,
+            after=_snapshot(block_id),
+        ))
+        await manager.flush()
+        assert queued == 2
+        assert ws_writer.events[0]["after"]["can_write"] is True
+        assert ws_reader.events[0]["after"]["can_write"] is False
+
+    anyio.run(_run)
+
+
+def test_recipients_map_each_account_to_its_write_access():
+    _seed_root()
+    writer, reader, stranger = _make_user(), _make_user(), _make_user()
+    block_id = _seed_block(
+        owner_id=uuid.uuid4(), mode="whitelist",
+        grants={writer.id: "write", reader.id: "read"},
+    )
+    recipients = _recipients(
+        [writer.id, reader.id, stranger.id], event_type="moved", block_id=str(block_id),
+    )
+    assert recipients == {writer.id: True, reader.id: False}
+
+
 # ─── Recipient check cost ─────────────────────────────────────────────────────
 
 
@@ -437,9 +589,9 @@ def test_recipient_check_cost_does_not_grow_with_connected_accounts(count_querie
     many = [_make_user().id for _ in range(10)]
 
     with count_queries() as few_counter:
-        _allowed_user_ids(few, event_type="content_updated", block_id=str(block_id))
+        _recipients(few, event_type="content_updated", block_id=str(block_id))
     with count_queries() as many_counter:
-        _allowed_user_ids(many, event_type="content_updated", block_id=str(block_id))
+        _recipients(many, event_type="content_updated", block_id=str(block_id))
 
     assert many_counter.count == few_counter.count
 
@@ -450,10 +602,10 @@ def test_recipient_check_uses_the_given_session(count_queries):
     owner = _make_user()
     block_id = _seed_block(owner_id=owner.id, mode="private")
     with s.SessionLocal() as db:
-        allowed = _allowed_user_ids(
+        recipients = _recipients(
             [owner.id], event_type="content_updated", block_id=str(block_id), db=db,
         )
-    assert allowed == {owner.id}
+    assert recipients == {owner.id: True}
 
 
 # ─── emit_block_event ─────────────────────────────────────────────────────────

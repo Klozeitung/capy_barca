@@ -7,6 +7,9 @@
  * the pre-flight is to say *which* relations lose their sort order rather than
  * to warn that some do.
  *
+ * A relation in a database the user may not read arrives without names and is
+ * listed as such, so the user still learns that one is affected.
+ *
  * It appears only when references exist. The ordinary two-step delete
  * affordance stays untouched for the common case, so nothing slows down the
  * path a user takes every day.
@@ -36,6 +39,7 @@ const { t } = useI18n()
 useEscapeKey(() => emit('cancel'))
 
 function describe(reference: KeyReference): string {
+  if (reference.schema_name === null) return t('db.deleteColumnKeyedHidden')
   return t('db.deleteColumnKeyedItem', {
     property: reference.schema_name,
     database: reference.database_title || t('main.untitled'),

@@ -213,7 +213,8 @@ class BlockResponse(BaseModel):
     cover: Optional[str]
     owner_id: Optional[uuid.UUID] = None
     # Whether the caller may change this block. Filled by the endpoints that
-    # return blocks (see _mark_write_access); absent in WebSocket events.
+    # return blocks (see _mark_write_access). Block snapshots in WebSocket
+    # events carry it per recipient (see app.ws.broadcaster).
     can_write: Optional[bool] = None
 
     model_config = {"from_attributes": True}
@@ -781,12 +782,14 @@ def duplicate_block(
     Deep-duplicate a block and its entire active subtree.
 
     Creates a copy of *block_id* immediately after the original in its
-    parent's child list, recursively copying all active descendants. The
-    new root block is returned; children are fetched lazily by the client.
+    parent's child list, recursively copying the active descendants the
+    caller may read. The new root block is returned; children are fetched
+    lazily by the client.
 
     Copying needs read access to the block; placing the copy needs write
     access to the parent it lands in (to the block itself for a block
-    without a parent).
+    without a parent). Each copy takes over the explicit permission row of
+    its original, so the copy reaches no account the original did not.
 
     Raises 404 if the block does not exist.
     """
@@ -817,6 +820,7 @@ def duplicate_block(
             parent_id=parent_id,
             position=position,
             owner_id=current_user.id,
+            viewer=current_user,
         )
         db.commit()
         emit_block_event(

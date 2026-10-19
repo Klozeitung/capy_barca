@@ -9,7 +9,7 @@ client = TestClient(app)
 
 def test_app_is_initialized():
     assert app.title == "CapyBarca API"
-    assert app.version == "0.16.2.0"
+    assert app.version == "0.16.3.0"
 
 
 @pytest.mark.parametrize("secret", ["", "   ", "changeme"])
@@ -32,6 +32,38 @@ def test_startup_accepts_a_configured_signing_secret(monkeypatch):
     monkeypatch.setattr(wopi_module, "SECRET_KEY", "a-configured-secret-value")
     with TestClient(app) as started:
         assert started.get("/health").status_code == 200
+
+
+def test_startup_removes_expired_wopi_tokens():
+    """Tokens that expired while nothing was issued do not outlive a restart."""
+    from datetime import datetime, timedelta, timezone
+
+    import app.database.database as db_module
+    from app.blocks.models import Block
+    from app.users.model import User
+    from app.wopi.model import WopiToken
+
+    now = datetime.now(timezone.utc)
+    user_id, block_id = uuid.uuid4(), uuid.uuid4()
+    expired, live = uuid.uuid4(), uuid.uuid4()
+    with db_module.SessionLocal() as db:
+        db.add(User(id=user_id, username="user-a", password_hash="x", role="member",
+                    is_active=True))
+        db.add(Block(id=block_id, type="page", position=1.0, state="active"))
+        db.flush()
+        for jti, expires_at in ((expired, now - timedelta(minutes=1)),
+                                (live, now + timedelta(hours=1))):
+            db.add(WopiToken(jti=jti, user_id=user_id, block_id=block_id,
+                             file_uuid=uuid.uuid4(), issued_at=now - timedelta(hours=2),
+                             expires_at=expires_at))
+        db.commit()
+
+    with TestClient(app):
+        pass
+
+    with db_module.SessionLocal() as db:
+        assert db.get(WopiToken, expired) is None
+        assert db.get(WopiToken, live) is not None
 
 
 def test_startup_sizes_the_worker_threads_above_the_request_gate():

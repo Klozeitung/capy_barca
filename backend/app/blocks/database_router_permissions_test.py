@@ -640,9 +640,10 @@ def test_reading_the_target_is_not_enough_to_link_into_it(
 # ─── Key references ──────────────────────────────────────────────────────────
 
 
-def test_key_references_hide_the_title_of_an_inaccessible_database(
+def test_key_references_hide_the_names_of_an_inaccessible_database(
     http_client, login_as, member_user,
 ):
+    """Neither the relation's name nor the database's title is disclosed."""
     keyed_db = _create_database(http_client, title="Open X")
     private_db = _create_database(http_client, title="Private X")
     key_field = _create_schema(http_client, keyed_db, "Date A", "date")
@@ -657,9 +658,12 @@ def test_key_references_hide_the_title_of_an_inaccessible_database(
     _set_mode(http_client, private_db, "private")
 
     url = f"{_PREFIX}/{keyed_db}/schemas/{key_field['id']}/key-references"
-    assert http_client.get(url).json()[0]["database_title"] == "Private X"
+    as_admin = http_client.get(url).json()[0]
+    assert (as_admin["schema_name"], as_admin["database_title"]) == ("Link A", "Private X")
 
     login_as(member_user)
     references = http_client.get(url).json()
     assert len(references) == 1
+    assert references[0]["schema_name"] is None
     assert references[0]["database_title"] is None
+    assert references[0]["database_id"] == private_db

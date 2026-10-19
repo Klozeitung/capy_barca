@@ -1,10 +1,10 @@
 """
 Tests for the permission repository's resolution logic.
 
-The focus is the batched resolver: it must give exactly the answers the
-per-block walk gave, and it must do so with a number of queries that depends
-on the depth of the tree, not on how many blocks are resolved at once. The
-access decisions are checked per level ('read' and 'write').
+The focus is the batched resolver: restrictions accumulate along the parent
+chain, and the resolver must answer for many blocks at once with a number of
+queries that depends on the depth of the tree, not on how many blocks are
+resolved. The access decisions are checked per level ('read' and 'write').
 """
 import uuid
 from datetime import datetime, timezone
@@ -114,7 +114,7 @@ def test_owner_is_taken_from_the_block_that_carries_the_row(db):
     assert resolved[child.id].owner_id == page_owner.id
 
 
-def test_explicit_row_on_the_block_itself_wins(db):
+def test_explicit_row_on_the_block_itself_is_reported_as_its_mode(db):
     owner = _user(db)
     page = _block(db, WORKSPACE_ROOT_ID, owner.id)
     _permission(db, page.id, "private")
@@ -124,6 +124,107 @@ def test_explicit_row_on_the_block_itself_wins(db):
     resolved = perm_repo.resolve_effective_permissions(db, [child.id])
 
     assert resolved[child.id].mode == "everyone"
+
+
+def test_a_row_below_cannot_widen_what_an_ancestor_restricts(db):
+    """A child shared with everyone under a private page stays private."""
+    owner = _user(db)
+    stranger = _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, page.id, "private")
+    child = _block(db, page.id, owner.id)
+    _permission(db, child.id, "everyone")
+    grandchild = _block(db, child.id, owner.id)
+
+    resolved = perm_repo.resolve_effective_permissions(db, [child.id, grandchild.id])
+
+    for block_id in (child.id, grandchild.id):
+        assert resolved[block_id].admits(owner, WRITE)
+        assert not resolved[block_id].admits(stranger, READ)
+
+
+def test_a_row_below_narrows_what_an_ancestor_allows(db):
+    owner = _user(db)
+    member = _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, page.id, "everyone")
+    child = _block(db, page.id, owner.id)
+    _permission(db, child.id, "private")
+
+    effective = perm_repo.resolve_effective_permissions(db, [child.id])[child.id]
+
+    assert not effective.admits(member, READ)
+    assert effective.admits(owner, WRITE)
+
+
+def test_whitelists_on_the_chain_admit_only_accounts_on_both(db):
+    owner = _user(db)
+    on_both = _user(db)
+    only_above = _user(db)
+    only_below = _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, page.id, "whitelist", grants=[on_both.id, only_above.id])
+    child = _block(db, page.id, owner.id)
+    _permission(db, child.id, "whitelist", grants=[on_both.id, only_below.id])
+
+    effective = perm_repo.resolve_effective_permissions(db, [child.id])[child.id]
+
+    assert effective.admits(on_both, WRITE)
+    assert not effective.admits(only_above, READ)
+    assert not effective.admits(only_below, READ)
+
+
+def test_the_lowest_level_on_the_chain_applies(db):
+    owner = _user(db)
+    member = _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, page.id, "everyone", everyone_level=READ)
+    child = _block(db, page.id, owner.id)
+    _permission(db, child.id, "everyone", everyone_level=WRITE)
+
+    effective = perm_repo.resolve_effective_permissions(db, [child.id])[child.id]
+
+    assert effective.level_for(member) == READ
+
+
+def test_owning_a_block_does_not_reach_past_a_restricting_ancestor(db):
+    """The owner rule of a row applies to that row only, not to the chain above."""
+    page_owner = _user(db)
+    child_owner = _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, page_owner.id)
+    _permission(db, page.id, "private")
+    child = _block(db, page.id, child_owner.id)
+    _permission(db, child.id, "private")
+
+    effective = perm_repo.resolve_effective_permissions(db, [child.id])[child.id]
+
+    assert effective.level_for(child_owner) is None
+    assert effective.level_for(page_owner) is None
+
+
+def test_admin_is_admitted_whatever_the_chain_says(db):
+    owner = _user(db)
+    admin = _user(db, role="admin")
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, page.id, "private")
+    child = _block(db, page.id, owner.id)
+    _permission(db, child.id, "whitelist", grants={})
+
+    effective = perm_repo.resolve_effective_permissions(db, [child.id])[child.id]
+
+    assert effective.level_for(admin) == WRITE
+
+
+def test_outer_rows_are_listed_nearest_first(db):
+    owner = _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, page.id, "private")
+    child = _block(db, page.id, owner.id)
+    _permission(db, child.id, "everyone")
+
+    effective = perm_repo.resolve_effective_permissions(db, [child.id])[child.id]
+
+    assert [rule.mode for rule in effective.outer] == ["private", "everyone"]
 
 
 def test_grants_are_carried_in_stored_order(db):
@@ -424,11 +525,87 @@ def test_query_count_does_not_grow_with_the_number_of_siblings(db, count_queries
 
 
 def test_query_count_follows_the_depth_of_the_tree(db, count_queries):
-    """Children sit two levels below the explicit row: at most three levels walked."""
+    """
+    Children sit two levels below the page and three below the workspace root:
+    every row up to the root takes part, so four levels are walked.
+    """
     children = _page_with_children(db, 10)
 
     with count_queries() as counter:
         perm_repo.resolve_effective_permissions(db, children)
 
-    # Two queries per level, one more for the grants of the row found.
-    assert counter.count <= 3 * 2 + 1
+    # Two queries per level, plus one for the grants on each level that
+    # carries a row (the page and the workspace root).
+    assert counter.count <= 4 * 2 + 2
+
+
+# ─── Restriction by ancestors ────────────────────────────────────────────────
+
+
+def test_restricted_by_ancestors_when_a_wider_row_sits_under_a_private_one(db):
+    owner = _user(db)
+    _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, page.id, "private")
+    section = _block(db, page.id, owner.id)
+    leaf = _block(db, section.id, owner.id)
+    _permission(db, leaf.id, "everyone")
+
+    assert perm_repo.is_restricted_by_ancestors(db, leaf.id)
+
+
+def test_restricted_by_ancestors_when_a_level_is_cut_back(db):
+    owner = _user(db)
+    _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, page.id, "everyone", everyone_level=READ)
+    child = _block(db, page.id, owner.id)
+    _permission(db, child.id, "everyone", everyone_level=WRITE)
+
+    assert perm_repo.is_restricted_by_ancestors(db, child.id)
+
+
+def test_restricted_by_ancestors_for_a_grant_missing_above(db):
+    owner = _user(db)
+    member_a = _user(db)
+    member_b = _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, page.id, "whitelist", grants=[member_a.id])
+    child = _block(db, page.id, owner.id)
+    _permission(db, child.id, "whitelist", grants=[member_b.id])
+
+    assert perm_repo.is_restricted_by_ancestors(db, child.id)
+
+
+def test_not_restricted_when_the_row_only_narrows(db):
+    owner = _user(db)
+    member = _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, page.id, "everyone")
+    child = _block(db, page.id, owner.id)
+    _permission(db, child.id, "whitelist", grants={member.id: READ})
+
+    assert not perm_repo.is_restricted_by_ancestors(db, child.id)
+
+
+def test_not_restricted_without_a_row_of_its_own(db):
+    owner = _user(db)
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, page.id, "private")
+    child = _block(db, page.id, owner.id)
+
+    assert not perm_repo.is_restricted_by_ancestors(db, child.id)
+
+
+def test_not_restricted_by_accounts_that_are_inactive_or_admin(db):
+    owner = _user(db)
+    admin = _user(db, role="admin")
+    inactive = _user(db)
+    inactive.is_active = False
+    page = _block(db, WORKSPACE_ROOT_ID, owner.id)
+    _permission(db, page.id, "private")
+    child = _block(db, page.id, owner.id)
+    _permission(db, child.id, "whitelist", grants=[admin.id, inactive.id])
+    db.flush()
+
+    assert not perm_repo.is_restricted_by_ancestors(db, child.id)

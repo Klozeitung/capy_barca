@@ -56,12 +56,21 @@ def satisfies(granted: Optional[str], required: str) -> bool:
 @dataclass(frozen=True)
 class EffectivePermission:
     """
-    The permission that governs a block, after inheritance is resolved.
+    The permissions that govern a block, after inheritance is resolved.
 
-    ``owner_id`` is the owner of the block that carries the explicit row, which
-    is not necessarily the block the question was asked about. ``grants`` keeps
-    the order of the stored grant rows; ``grant_levels`` maps each of them to
-    its access level. ``everyone_level`` applies while the mode is 'everyone'.
+    Restrictions accumulate down the tree: an account reaches a block only if
+    every explicit permission row on the way from the block up to the
+    workspace root admits it, and its level is the lowest any of those rows
+    grants. A row further down can narrow access but never widen it.
+
+    The fields describe the nearest explicit row, the one that is shown as the
+    block's effective setting. ``owner_id`` is the owner of the block that
+    carries that row, which is not necessarily the block the question was
+    asked about. ``grants`` keeps the order of the stored grant rows;
+    ``grant_levels`` maps each of them to its access level.
+    ``everyone_level`` applies while the mode is 'everyone'. ``outer`` holds
+    the explicit rows further up the chain, nearest first, each as an
+    instance without an ``outer`` of its own.
 
     The value does not depend on who asks, so one instance answers the access
     question for any number of users (see :meth:`level_for`).
@@ -72,16 +81,16 @@ class EffectivePermission:
     grants: tuple[uuid.UUID, ...]
     everyone_level: str = WRITE
     grant_levels: Mapping[uuid.UUID, str] = field(default_factory=dict)
+    outer: tuple["EffectivePermission", ...] = ()
 
-    def level_for(self, user: User) -> Optional[str]:
+    def rule_level(self, user: User) -> Optional[str]:
         """
-        Return the access level *user* has to a block governed by this
-        permission: ``"write"``, ``"read"`` or ``None`` for no access.
+        Return the access level the nearest row alone grants *user*, without
+        the rows above it: ``"write"``, ``"read"`` or ``None``.
 
-        Admins and the owner always have write access.
+        The owner of the block carrying the row always has write access under
+        it. Admins are not special-cased here; :meth:`level_for` handles them.
         """
-        if user.role == "admin":
-            return WRITE
         if self.owner_id is not None and user.id == self.owner_id:
             return WRITE
         if self.mode == "everyone":
@@ -96,9 +105,34 @@ class EffectivePermission:
         # root row always anchors the walk with mode='everyone').
         return WRITE
 
+    def level_for(self, user: User) -> Optional[str]:
+        """
+        Return the access level *user* has to a block governed by these
+        permissions: ``"write"``, ``"read"`` or ``None`` for no access.
+
+        Admins always have write access. Everyone else gets the lowest level
+        among the rows on the chain, so a single row that denies access
+        denies it for the whole subtree below.
+        """
+        if user.role == "admin":
+            return WRITE
+        level = self.rule_level(user)
+        for rule in self.outer:
+            if level is None:
+                break
+            level = _lower(level, rule.rule_level(user))
+        return level
+
     def admits(self, user: User, level: str) -> bool:
         """Return True if *user* has at least *level* access ("read" or "write")."""
         return satisfies(self.level_for(user), level)
+
+
+def _lower(a: Optional[str], b: Optional[str]) -> Optional[str]:
+    """Return the lower of two access levels; ``None`` (no access) is lowest."""
+    if a is None or b is None:
+        return None
+    return a if LEVELS.index(a) <= LEVELS.index(b) else b
 
 
 # Returned when no explicit row is found before the chain ends or the depth
@@ -111,14 +145,16 @@ def resolve_effective_permissions(
     block_ids: Iterable[uuid.UUID],
 ) -> dict[uuid.UUID, EffectivePermission]:
     """
-    Resolve the effective permission of many blocks at once.
+    Resolve the effective permissions of many blocks at once.
 
     The parent chains of all requested blocks are walked together, one level
-    at a time. Each level costs two queries (the blocks themselves and their
-    permission rows) plus one for the grants of the rows found, however many
-    blocks share that level. Siblings converge on their common parent after
-    the first level, so listing the children of a page costs the depth of the
-    tree in queries, not the number of children times that depth.
+    at a time, up to the workspace root, collecting every explicit row on the
+    way (see :class:`EffectivePermission` for how they combine). Each level
+    costs two queries (the blocks themselves and their permission rows) plus
+    one for the grants of the rows found, however many blocks share that
+    level. Siblings converge on their common parent after the first level, so
+    listing the children of a page costs the depth of the tree in queries,
+    not the number of children times that depth.
 
     Every requested id is present in the result. A block that does not exist
     and carries no permission row resolves to ``everyone``, as a missing chain
@@ -161,33 +197,47 @@ def resolve_effective_permissions(
         ):
             explicit[perm.block_id] = perm
 
-        # Only blocks without an explicit row inherit, so only their parents
-        # need to be examined on the next level.
+        # Every row up to the root takes part, so the walk continues past
+        # blocks that carry one.
         frontier = {
             parent_of[block_id]
             for block_id in frontier
-            if block_id not in explicit and parent_of.get(block_id) is not None
+            if parent_of.get(block_id) is not None
         }
 
+    def _rule(block_id: uuid.UUID) -> EffectivePermission:
+        perm = explicit[block_id]
+        return EffectivePermission(
+            mode=perm.mode,
+            owner_id=owner_of.get(block_id),
+            grants=tuple(g.user_id for g in perm.grants),
+            everyone_level=perm.everyone_level,
+            grant_levels={g.user_id: g.level for g in perm.grants},
+        )
+
     def _resolve(start: uuid.UUID) -> EffectivePermission:
+        rules: list[EffectivePermission] = []
         current: Optional[uuid.UUID] = start
         visited: set[uuid.UUID] = set()
         while current is not None and len(visited) < _MAX_DEPTH and current not in visited:
             visited.add(current)
-            perm = explicit.get(current)
-            if perm is not None:
-                return EffectivePermission(
-                    mode=perm.mode,
-                    owner_id=owner_of.get(current),
-                    grants=tuple(g.user_id for g in perm.grants),
-                    everyone_level=perm.everyone_level,
-                    grant_levels={g.user_id: g.level for g in perm.grants},
-                )
+            if current in explicit:
+                rules.append(_rule(current))
             if current not in parent_of:
                 # The block does not exist; its chain ends here.
                 break
             current = parent_of[current]
-        return _UNRESTRICTED
+        if not rules:
+            return _UNRESTRICTED
+        nearest = rules[0]
+        return EffectivePermission(
+            mode=nearest.mode,
+            owner_id=nearest.owner_id,
+            grants=nearest.grants,
+            everyone_level=nearest.everyone_level,
+            grant_levels=nearest.grant_levels,
+            outer=tuple(rules[1:]),
+        )
 
     return {block_id: _resolve(block_id) for block_id in requested}
 
@@ -304,56 +354,52 @@ def filter_accessible(
     }
 
 
-# ─── Accessibility warning ────────────────────────────────────────────────────
+# ─── Restriction by ancestors ─────────────────────────────────────────────────
 
 
-_PERMISSIVENESS: dict[str, int] = {"everyone": 2, "whitelist": 1, "private": 0}
-
-
-def is_more_permissive_than_parent_chain(
-    db: "Session",
-    block_id: "uuid.UUID",
-    own_mode: str,
-) -> bool:
+def is_restricted_by_ancestors(db: Session, block_id: uuid.UUID) -> bool:
     """
-    Return True when the block's *own* explicit mode is more permissive than
-    the nearest ancestor that has an explicit (non-inherit) permission row.
+    Return True when the block's own explicit row grants some active account
+    more than it effectively receives, because a row further up the chain
+    admits it at a lower level or not at all.
 
-    Used to warn the user that their block can only be reached via direct link
-    because a less permissive ancestor prevents navigation through the tree.
+    Restrictions accumulate (see :class:`EffectivePermission`), so a grant on
+    a block cannot reach past what its ancestors allow. This reports such a
+    grant, so the permission dialog can say that part of it has no effect.
+    A block without a row of its own grants nothing and returns False, as
+    does a block with no explicit row above it.
+
+    Admins are left out: they have write access everywhere, so nothing on the
+    chain limits them.
 
     Examples
     --------
     First-level block: private
-      └── Sub-block: inherit   (effective: private)
-            └── Leaf: everyone  → warn_accessibility = True
+      └── Sub-block: inherit
+            └── Leaf: everyone        → True  (only the owner gets through)
 
-    First-level block: everyone
-      └── Sub-block: everyone  → warn_accessibility = False  (not more permissive)
+    First-level block: everyone, read
+      └── Sub-block: everyone, write  → True  (everyone is limited to read)
+
+    First-level block: everyone, write
+      └── Sub-block: whitelist        → False (narrowing is always effective)
     """
-    from app.blocks.models import Block  # local import — avoids circular
-
-    own_level = _PERMISSIVENESS.get(own_mode, -1)
-    if own_level < 1:
-        # 'private' and 'inherit' can never be more permissive than an ancestor.
+    if get_permission_row(db, block_id) is None:
+        return False
+    effective = resolve_effective_permissions(db, [block_id])[block_id]
+    if not effective.outer:
         return False
 
-    blk = db.get(Block, block_id)
-    if blk is None:
-        return False
-
-    current_id: Optional[uuid.UUID] = blk.parent_id
-    depth = 0
-    while current_id is not None and depth < _MAX_DEPTH:
-        perm = get_permission_row(db, current_id)
-        if perm is not None:
-            ancestor_level = _PERMISSIVENESS.get(perm.mode, -1)
-            return own_level > ancestor_level
-        anc = db.get(Block, current_id)
-        if anc is None:
-            break
-        current_id = anc.parent_id
-        depth += 1
+    users = db.scalars(select(User).where(User.is_active.is_(True))).all()
+    for user in users:
+        if user.role == "admin":
+            continue
+        own = effective.rule_level(user)
+        if own is None:
+            continue
+        actual = effective.level_for(user)
+        if actual is None or LEVELS.index(actual) < LEVELS.index(own):
+            return True
     return False
 
 

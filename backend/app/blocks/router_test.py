@@ -1640,28 +1640,56 @@ def test_get_block_reports_write_access(workspace_root, client_factory):
 
 
 def test_children_report_write_access_per_child(workspace_root, client_factory):
-    """A child with its own row can be writable below a read-only parent."""
+    """Below a writable parent, a child's own row can lower the level to read."""
     member = _make_user()
-    parent = _seed_block(owner_id=uuid.uuid4(), mode="whitelist", grants={member.id: "read"})
-    inherited = _seed_block(owner_id=uuid.uuid4(), mode="whitelist",
+    parent = _seed_block(owner_id=uuid.uuid4(), mode="whitelist", grants={member.id: "write"})
+    read_only = _seed_block(owner_id=uuid.uuid4(), mode="whitelist",
                             grants={member.id: "read"}, parent_id=parent)
     own = _seed_block(owner_id=member.id, mode="private", parent_id=parent)
     client = client_factory(member)
 
     children = {c["id"]: c["can_write"] for c in client.get(f"/api/blocks/{parent}/children").json()}
 
-    assert children == {inherited: False, own: True}
+    assert children == {read_only: False, own: True}
+
+
+def test_child_row_cannot_lift_a_read_only_parent(workspace_root, client_factory):
+    """Restrictions accumulate: owning a child below a read-only parent gives read only."""
+    member = _make_user()
+    parent = _seed_block(owner_id=uuid.uuid4(), mode="whitelist", grants={member.id: "read"})
+    own = _seed_block(owner_id=member.id, mode="private", parent_id=parent)
+    widened = _seed_block(owner_id=uuid.uuid4(), mode="everyone", parent_id=parent)
+    client = client_factory(member)
+
+    children = {c["id"]: c["can_write"] for c in client.get(f"/api/blocks/{parent}/children").json()}
+
+    assert children == {own: False, widened: False}
+
+
+def test_child_shared_with_everyone_under_a_private_page_stays_hidden(
+    workspace_root, client_factory,
+):
+    stranger = _make_user()
+    page = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    child = _seed_block(owner_id=uuid.uuid4(), mode="everyone", parent_id=page)
+    client = client_factory(stranger)
+
+    assert client.get(f"/api/blocks/{child}").status_code == 404
 
 
 def test_tree_reports_write_access(workspace_root, client_factory):
     member = _make_user()
-    page = _seed_block(owner_id=uuid.uuid4(), mode="whitelist", grants={member.id: "read"})
-    child = _seed_block(owner_id=uuid.uuid4(), mode="everyone", parent_id=page)
+    page = _seed_block(owner_id=uuid.uuid4(), mode="whitelist", grants={member.id: "write"})
+    writable = _seed_block(owner_id=uuid.uuid4(), mode="everyone", parent_id=page)
+    read_only = _seed_block(owner_id=uuid.uuid4(), mode="everyone",
+                            everyone_level="read", parent_id=page)
     client = client_factory(member)
 
     body = client.get(f"/api/blocks/{page}/tree").json()
 
-    assert {b["id"]: b["can_write"] for b in body["blocks"]} == {child: True}
+    assert {b["id"]: b["can_write"] for b in body["blocks"]} == {
+        writable: True, read_only: False,
+    }
 
 
 def test_change_response_reports_write_access(workspace_root, client_factory):
@@ -1715,3 +1743,67 @@ def test_reader_may_duplicate_into_a_writable_parent(workspace_root, client_fact
     assert resp.status_code == 201
     assert resp.json()["owner_id"] == str(reader.id)
     assert resp.json()["can_write"] is True
+
+
+def _children_of(block_id):
+    """Return (id, owner_id) of the active children of *block_id*."""
+    from app.blocks import repository as block_repo
+
+    with s.SessionLocal() as db:
+        return [
+            (str(child.id), child.owner_id)
+            for child in block_repo.list_children(db, uuid.UUID(block_id), state="active")
+        ]
+
+
+def test_duplicate_leaves_out_descendants_the_caller_cannot_read(workspace_root, client_factory):
+    member = _make_user()
+    parent = _seed_block(owner_id=uuid.uuid4(), mode="everyone")
+    page = _seed_block(owner_id=member.id, mode="private", parent_id=parent)
+    _seed_block(owner_id=member.id, mode="private", parent_id=page)
+    _seed_block(owner_id=uuid.uuid4(), mode="private", parent_id=page)
+    client = client_factory(member)
+
+    resp = _duplicate(client, page)
+
+    assert resp.status_code == 201
+    copied = _children_of(resp.json()["id"])
+    assert len(copied) == 1
+    assert copied[0][1] == member.id
+
+
+def test_duplicate_keeps_the_permission_rows_of_the_copied_descendants(
+    workspace_root, client_factory,
+):
+    member, colleague = _make_user(), _make_user()
+    parent = _seed_block(owner_id=uuid.uuid4(), mode="everyone")
+    page = _seed_block(owner_id=member.id, mode="everyone", parent_id=parent)
+    _seed_block(
+        owner_id=uuid.uuid4(), mode="whitelist",
+        grants={member.id: "read", colleague.id: "write"}, parent_id=page,
+    )
+    client = client_factory(member)
+
+    resp = _duplicate(client, page)
+
+    assert resp.status_code == 201
+    [(copy_id, _)] = _children_of(resp.json()["id"])
+    with s.SessionLocal() as db:
+        row = perm_repo.get_permission_row(db, uuid.UUID(copy_id))
+        assert row.mode == "whitelist"
+        assert {g.user_id: g.level for g in row.grants} == {
+            member.id: "read", colleague.id: "write",
+        }
+
+
+def test_admin_duplicate_copies_every_descendant(workspace_root, client_factory):
+    admin = _make_user(role="admin")
+    page = _seed_block(owner_id=uuid.uuid4(), mode="private")
+    _seed_block(owner_id=uuid.uuid4(), mode="private", parent_id=page)
+    _seed_block(owner_id=uuid.uuid4(), mode="private", parent_id=page)
+    client = client_factory(admin)
+
+    resp = _duplicate(client, page)
+
+    assert resp.status_code == 201
+    assert len(_children_of(resp.json()["id"])) == 2

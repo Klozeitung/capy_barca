@@ -115,6 +115,28 @@ def test_multiple_tokens_are_independent():
     assert s.validate_token(t2) is not None
 
 
+# ─── Record key ──────────────────────────────────────────────────────────────
+
+def test_record_key_names_the_stored_row():
+    token = s.create_token(TEST_USER_ID)
+    with s.SessionLocal() as db:
+        key = s.record_key(token, db)
+        assert key is not None
+        assert db.get(SessionRecord, key).user_id == TEST_USER_ID
+
+
+def test_record_key_is_none_for_an_unknown_token():
+    with s.SessionLocal() as db:
+        assert s.record_key("not-present", db) is None
+
+
+def test_record_key_is_none_after_revocation():
+    token = s.create_token(TEST_USER_ID)
+    s.revoke_token(token)
+    with s.SessionLocal() as db:
+        assert s.record_key(token, db) is None
+
+
 # ─── Uniqueness ──────────────────────────────────────────────────────────────
 
 def test_tokens_are_unique():

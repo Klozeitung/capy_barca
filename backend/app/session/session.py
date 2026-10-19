@@ -126,9 +126,25 @@ def _validate_in(db: Session, token: str) -> uuid.UUID | None:
     return record.user_id
 
 
+def record_key(token: str, db: Session) -> str | None:
+    """
+    Return the key under which *token* is stored, or None if no session
+    with that token exists.
+
+    The key is what other tables reference to tie a row to one session, so
+    the row is removed together with the session (logout, expiry, deletion
+    of the account).
+    """
+    key = _hash_token(token)
+    return key if db.get(SessionRecord, key) is not None else None
+
+
 def revoke_token(token: str) -> None:
     """
     Delete *token* from the database, invalidating the session immediately.
+
+    Rows that reference the session by its key go with it (for example the
+    WOPI tokens issued in it, see ``app.wopi.model``).
 
     Parameters
     ----------

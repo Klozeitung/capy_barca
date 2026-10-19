@@ -14,6 +14,8 @@ An access token is a compact HMAC-signed token that encodes:
   mime       – MIME type of the file
   user_id    – UUID of the user the token was issued to
   username   – display name of that user
+  jti        – UUID of the token's row in the registry (see below)
+  iat        – issuance timestamp (Unix)
   exp        – expiry timestamp (Unix, 24 h from issuance)
 
 The token appears both as the WOPI file identifier (URL path segment) and as
@@ -37,16 +39,23 @@ token alone is not what grants access, however:
 * Opening a document needs read access; saving it (PutFile) needs write
   access. CheckFileInfo reports the current level as ``UserCanWrite``, so
   Collabora opens a document read-only for a reader.
+* The server remembers every token it issues (``app.wopi.registry``). A file
+  endpoint accepts a token only while its ``jti`` names a registered row for
+  the same account, block and file. Claims signed by someone else, even with
+  the right key, name no such row. Logging out deletes the rows issued in
+  that session, and changing the password deletes all rows of the account,
+  which ends the editor sessions they belong to.
 
 An empty or placeholder ``SECRET_KEY`` is refused at startup (see
-``require_signing_secret``), so tokens are never signed with a known key.
+``require_signing_secret``), so tokens are never signed with a known key. The
+signing key is derived rather than used directly, so a WOPI token cannot be
+replayed against anything else that happens to be keyed with the same secret.
 
-What this does not solve is a leaked ``SECRET_KEY``: whoever holds it can sign
-claims naming any account. Closing that needs the server to remember which
-tokens it issued, which is a schema change and is recorded as a follow-up
-rather than smuggled in here. The signing key is at least derived rather than
-used directly, so a WOPI token cannot be replayed against anything else that
-happens to be keyed with the same secret.
+Editor language
+---------------
+The token request names the interface language Collabora starts in
+(``lang``). Only the languages of the frontend are accepted; the default is
+German.
 """
 import base64
 import hashlib
@@ -57,8 +66,9 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -68,6 +78,7 @@ from app.security.limiter import limiter
 from app.permissions.model import READ, WRITE
 from app.session.deps import get_current_user, get_db, require_block_access
 from app.users.model import User
+from app.wopi import registry
 
 SECRET_KEY: str = os.environ.get("SECRET_KEY", "")
 
@@ -170,7 +181,7 @@ def _decode_token(token: str) -> dict:
     if claims.get("exp", 0) < time.time():
         raise HTTPException(status_code=401, detail="Token expired")
 
-    for field in ("file_uuid", "block_id", "user_id"):
+    for field in ("file_uuid", "block_id", "user_id", "jti"):
         try:
             uuid.UUID(str(claims.get(field)))
         except (ValueError, TypeError, AttributeError):
@@ -184,8 +195,8 @@ def _decode_token(token: str) -> dict:
 
 def _authorize_claims(db: Session, claims: dict, level: str = READ) -> User:
     """
-    Resolve the account a token was issued to and confirm it still has *level*
-    access to the block.
+    Confirm the token is registered, resolve the account it was issued to and
+    confirm that account still has *level* access to the block.
 
     This is what keeps the token from being the sole control. Without it a
     token stays usable for its entire lifetime no matter what happens to the
@@ -194,11 +205,21 @@ def _authorize_claims(db: Session, claims: dict, level: str = READ) -> User:
     Raises
     ------
     HTTPException(401)
-        The account no longer exists or has been deactivated.
+        The token is not registered (never issued, withdrawn or expired), or
+        the account no longer exists or has been deactivated.
     HTTPException(403)
         The account exists but may no longer reach the block, or lacks *level*.
     """
     from app.users import repository as user_repo
+
+    if not registry.is_registered(
+        db,
+        jti=uuid.UUID(str(claims["jti"])),
+        user_id=uuid.UUID(str(claims["user_id"])),
+        block_id=uuid.UUID(str(claims["block_id"])),
+        file_uuid=uuid.UUID(str(claims["file_uuid"])),
+    ):
+        raise HTTPException(status_code=401, detail=_INVALID_TOKEN)
 
     user = user_repo.get_by_id(db, uuid.UUID(str(claims["user_id"])))
     if user is None or not user.is_active:
@@ -243,6 +264,9 @@ def _find_file(file_uuid: str, block_id: str) -> Path:
 
 # ─── Token endpoint ───────────────────────────────────────────────────────────
 
+# Interface languages Collabora may be started in: those of the frontend.
+EditorLanguage = Literal["de", "en"]
+
 
 class TokenRequest(BaseModel):
     # Typed as UUID rather than str: both values are written into a filesystem
@@ -253,6 +277,7 @@ class TokenRequest(BaseModel):
     block_id: uuid.UUID
     filename: str
     mime: str
+    lang: EditorLanguage = "de"
 
 
 class TokenResponse(BaseModel):
@@ -266,6 +291,7 @@ def create_wopi_token(
     payload: TokenRequest,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
+    session: Optional[str] = Cookie(default=None),
 ) -> TokenResponse:
     """
     Generate a WOPI access token for a Drive file and return the full
@@ -279,12 +305,25 @@ def create_wopi_token(
     mint an editing token for any drive file by naming its ids. The block
     permission check closes that. Read access is enough to open a document;
     whether it may be saved is decided per request (see PutFile).
+
+    The token is registered before it is returned, tied to the caller's
+    session (see the module docstring); expired tokens are removed in the
+    same transaction. ``lang`` selects the
+    editor's interface language. Answers 404 for a block that does not exist.
     """
     from urllib.parse import quote
 
+    from app.blocks import repository as block_repo
+    from app.session.session import record_key
+
     require_block_access(db, payload.block_id, user, level=READ)
+    if block_repo.get_block(db, payload.block_id) is None:
+        # The permission layer admits a block that does not exist; there is
+        # no file to edit in it, and the registry row needs the block.
+        raise HTTPException(status_code=404, detail="Block not found")
 
     now = int(time.time())
+    jti = uuid.uuid4()
     claims = {
         "file_uuid": str(payload.file_uuid),
         "block_id": str(payload.block_id),
@@ -292,10 +331,22 @@ def create_wopi_token(
         "mime": payload.mime,
         "user_id": str(user.id),
         "username": user.username,
+        "jti": str(jti),
         "iat": now,
         "exp": now + _TOKEN_TTL,
     }
     token = _encode_token(claims)
+    registry.register(
+        db,
+        jti=jti,
+        user_id=user.id,
+        block_id=payload.block_id,
+        file_uuid=payload.file_uuid,
+        issued_at=datetime.fromtimestamp(now, tz=timezone.utc),
+        expires_at=datetime.fromtimestamp(now + _TOKEN_TTL, tz=timezone.utc),
+        session_key=record_key(session, db) if session else None,
+    )
+    db.commit()
 
     wopi_src = f"https://frontend:{_PORT_FRONTEND}/api/wopi/files/{token}"
     editor_url = (
@@ -303,7 +354,7 @@ def create_wopi_token(
         f"?WOPISrc={quote(wopi_src, safe='')}"
         f"&access_token={token}"
         f"&access_token_ttl=0"
-        f"&lang=de"
+        f"&lang={payload.lang}"
     )
     return TokenResponse(editor_url=editor_url)
 

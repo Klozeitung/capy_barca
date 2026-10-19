@@ -376,3 +376,45 @@ def test_permissions_route_is_registered():
     client = TestClient(app)
     resp = client.get(f"/api/blocks/{uuid.uuid4()}/permissions")
     assert resp.status_code == 401
+
+
+# ─── Restriction by ancestors ─────────────────────────────────────────────────
+
+
+def _create_child(http_client, parent_id: str) -> str:
+    resp = http_client.post(
+        "/api/blocks", json={"type": "page", "parent_id": parent_id},
+    )
+    assert resp.status_code == 201
+    return resp.json()["id"]
+
+
+def test_wider_row_below_a_private_page_is_flagged(http_client, member_user):
+    page_id = _create_page(http_client)
+    child_id = _create_child(http_client, page_id)
+    resp = http_client.put(
+        f"/api/blocks/{child_id}/permissions", json={"mode": "everyone"},
+    )
+    assert resp.json()["warn_restricted_by_ancestors"] is True
+    data = http_client.get(f"/api/blocks/{child_id}/permissions").json()
+    assert data["warn_restricted_by_ancestors"] is True
+
+
+def test_narrowing_row_is_not_flagged(http_client, member_user):
+    page_id = _create_page(http_client)
+    http_client.put(f"/api/blocks/{page_id}/permissions", json={"mode": "everyone"})
+    child_id = _create_child(http_client, page_id)
+    resp = http_client.put(
+        f"/api/blocks/{child_id}/permissions",
+        json={"mode": "whitelist", "grants": [_grant(str(member_user.id), "read")]},
+    )
+    assert resp.json()["warn_restricted_by_ancestors"] is False
+
+
+def test_inherit_is_never_flagged(http_client):
+    page_id = _create_page(http_client)
+    child_id = _create_child(http_client, page_id)
+    resp = http_client.put(
+        f"/api/blocks/{child_id}/permissions", json={"mode": "inherit"},
+    )
+    assert resp.json()["warn_restricted_by_ancestors"] is False

@@ -38,7 +38,7 @@ function permission(overrides: Record<string, unknown> = {}) {
     effective_mode: 'whitelist',
     inherited_from_id: null,
     can_edit: true,
-    warn_accessibility: false,
+    warn_restricted_by_ancestors: false,
     ...overrides,
   }
 }
@@ -136,6 +136,17 @@ describe('PermissionsSection', () => {
     await flush()
 
     expect(put.mock.calls[0][1]).toMatchObject({ mode: 'everyone', everyone_level: 'read' })
+  })
+
+  it('says when the ancestors limit the setting', async () => {
+    const root = await mount(permission({ warn_restricted_by_ancestors: true }))
+    expect(root.querySelector('.perm__warn')?.textContent).toContain('permissions.warnRestrictedTitle')
+    expect(root.querySelector('.perm__warn')?.textContent).toContain('permissions.warnRestrictedBody')
+  })
+
+  it('shows no notice when the setting takes full effect', async () => {
+    const root = await mount()
+    expect(root.querySelector('.perm__warn')).toBeNull()
   })
 
   it('keeps the levels read-only for someone who may not change permissions', async () => {

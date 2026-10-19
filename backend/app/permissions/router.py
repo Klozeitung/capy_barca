@@ -21,6 +21,10 @@ Access levels
 change the block. The owner and every admin always have write access. The
 level for everyone only applies while the mode is 'everyone'; grants only
 apply while the mode is 'whitelist'.
+
+Restrictions accumulate down the tree: a block's row can narrow what its
+ancestors allow but never widen it (see ``EffectivePermission``). The
+response flags a row whose grants are partly cut back that way.
 """
 import uuid
 from typing import Literal, Optional
@@ -65,10 +69,10 @@ class PermissionResponse(BaseModel):
     # Whether the requesting user may modify this block's permissions.
     # Computed server-side so the frontend never needs to compare user IDs.
     can_edit: bool
-    # True when this block's explicit mode is more permissive than its nearest
-    # ancestor with an explicit row.  The block is then only reachable via a
-    # direct link because ancestor navigation is blocked.
-    warn_accessibility: bool
+    # True when this block's own row grants some account more than it
+    # effectively gets, because an ancestor admits it at a lower level or
+    # not at all. That part of the setting has no effect.
+    warn_restricted_by_ancestors: bool
 
 
 class PermissionUpdate(BaseModel):
@@ -129,9 +133,8 @@ def get_permission(
             db, block.parent_id
         )
 
-    warn_accessibility = (
-        mode != "inherit"
-        and perm_repo.is_more_permissive_than_parent_chain(db, block_id, mode)
+    warn_restricted_by_ancestors = (
+        mode != "inherit" and perm_repo.is_restricted_by_ancestors(db, block_id)
     )
 
     return PermissionResponse(
@@ -143,7 +146,7 @@ def get_permission(
         effective_mode=effective_mode,
         inherited_from_id=inherited_from_id,
         can_edit=_may_edit(block, current_user),
-        warn_accessibility=warn_accessibility,
+        warn_restricted_by_ancestors=warn_restricted_by_ancestors,
     )
 
 
@@ -202,7 +205,7 @@ def set_permission(
             effective_mode=effective_mode,
             inherited_from_id=inherited_from_id,
             can_edit=_may_edit(block, current_user),
-            warn_accessibility=False,  # inherit is never more permissive
+            warn_restricted_by_ancestors=False,  # inherit grants nothing of its own
         )
 
     perm_row = perm_repo.set_permission(
@@ -216,7 +219,7 @@ def set_permission(
     db.refresh(perm_row)
 
     effective_mode, _, _ = perm_repo.resolve_effective_permission(db, block_id)
-    _warn = perm_repo.is_more_permissive_than_parent_chain(db, block_id, perm_row.mode)
+    _warn = perm_repo.is_restricted_by_ancestors(db, block_id)
     return PermissionResponse(
         block_id=block_id,
         mode=perm_row.mode,
@@ -226,5 +229,5 @@ def set_permission(
         effective_mode=effective_mode,
         inherited_from_id=None,
         can_edit=_may_edit(block, current_user),
-        warn_accessibility=_warn,
+        warn_restricted_by_ancestors=_warn,
     )

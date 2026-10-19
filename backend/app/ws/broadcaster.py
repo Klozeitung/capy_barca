@@ -39,6 +39,15 @@ Three rules, in order:
 An account that has been deleted or deactivated mid-session receives nothing in
 any of the three cases.
 
+Write access per recipient
+--------------------------
+A block snapshot in ``after`` (a dict whose ``id`` is the event's block) is
+what a client stores in place of the block it holds, so it carries
+``can_write`` like the REST responses do. The value depends on the recipient:
+the event is serialised once for the recipients that may change the block and
+once for those that may only read it, and each variant goes to its own group.
+Other payloads go out unchanged in a single variant.
+
 Wire format (server → client):
     {
         "type": "block.event",
@@ -51,13 +60,15 @@ Wire format (server → client):
             "created_at": "<ISO-8601>"
         }
     }
+
+``after.can_write`` is present only on block snapshots (see above).
 """
 import functools
 import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Iterable, Optional, Set
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import anyio
 import anyio.from_thread
@@ -90,15 +101,19 @@ def _coerce_block_id(block_id: Optional[str]) -> Optional[uuid.UUID]:
         return None
 
 
-def _allowed_user_ids(
+def _recipients(
     user_ids: Iterable[uuid.UUID],
     *,
     event_type: str,
     block_id: Optional[str],
     db: Optional["Session"] = None,
-) -> Set[uuid.UUID]:
+) -> Dict[uuid.UUID, bool]:
     """
-    Return the subset of *user_ids* permitted to receive this event.
+    Return the accounts among *user_ids* permitted to receive this event,
+    each mapped to whether it may change the block.
+
+    The write flag is only meaningful for an event about an existing block;
+    for a purge and for workspace-level events it is False except for admins.
 
     Any account that cannot be resolved to an active user is dropped: a
     session may outlive the account it was issued to, and a WebSocket held
@@ -113,7 +128,7 @@ def _allowed_user_ids(
     short-lived session is opened.
     """
     if db is not None:
-        return _allowed_in(db, user_ids, event_type=event_type, block_id=block_id)
+        return _recipients_in(db, user_ids, event_type=event_type, block_id=block_id)
 
     # Imported inside the call so the module attribute is read at call time.
     # The test fixture redirects SessionLocal on the module, which a name bound
@@ -121,24 +136,24 @@ def _allowed_user_ids(
     import app.database.database as db_module
 
     with db_module.SessionLocal() as own_db:
-        return _allowed_in(own_db, user_ids, event_type=event_type, block_id=block_id)
+        return _recipients_in(own_db, user_ids, event_type=event_type, block_id=block_id)
 
 
-def _allowed_in(
+def _recipients_in(
     db: "Session",
     user_ids: Iterable[uuid.UUID],
     *,
     event_type: str,
     block_id: Optional[str],
-) -> Set[uuid.UUID]:
+) -> Dict[uuid.UUID, bool]:
     """Evaluate the three scoping rules for *user_ids* inside *db*."""
     from sqlalchemy import select
 
     from app.permissions import repository as perm_repo
-    from app.permissions.model import READ
+    from app.permissions.model import READ, WRITE
     from app.users.model import User
 
-    candidates: Set[uuid.UUID] = set()
+    candidates: set[uuid.UUID] = set()
     for user_id in user_ids:
         try:
             candidates.add(uuid.UUID(str(user_id)))
@@ -146,7 +161,7 @@ def _allowed_in(
             # A malformed identifier cannot name an account.
             continue
     if not candidates:
-        return set()
+        return {}
 
     active = [
         user
@@ -154,23 +169,86 @@ def _allowed_in(
         if user.is_active
     ]
     if not active:
-        return set()
+        return {}
 
     if event_type == PURGE_EVENT_TYPE:
-        return {user.id for user in active}
+        return {user.id: user.role == "admin" for user in active}
 
     target = _coerce_block_id(block_id)
     if target is None:
         # Workspace-level event, or a block_id that will not parse.
-        return {user.id for user in active if user.role == "admin"}
+        return {user.id: True for user in active if user.role == "admin"}
 
     if all(user.role == "admin" for user in active):
         # Admins pass every check; resolving the permission would be wasted.
-        return {user.id for user in active}
+        return {user.id: True for user in active}
 
     effective = perm_repo.resolve_effective_permissions(db, [target])[target]
     # Read access is enough to follow changes to a block.
-    return {user.id for user in active if effective.admits(user, READ)}
+    return {
+        user.id: effective.admits(user, WRITE)
+        for user in active
+        if effective.admits(user, READ)
+    }
+
+
+def _is_block_snapshot(after: Optional[Any], block_id: Optional[str]) -> bool:
+    """True when *after* is the serialised block the event is about."""
+    return (
+        isinstance(after, dict)
+        and block_id is not None
+        and after.get("id") == str(block_id)
+    )
+
+
+# One serialised message and the filter selecting the accounts it goes to.
+_Delivery = Tuple[str, Callable[[uuid.UUID], bool]]
+
+
+def _deliveries(
+    recipients: Dict[uuid.UUID, bool],
+    *,
+    event_type: str,
+    block_id: Optional[str],
+    before: Optional[Any],
+    after: Optional[Any],
+    event_id: Optional[str],
+    created_at: Optional[str],
+) -> List[_Delivery]:
+    """
+    Serialise the event for *recipients*: one variant per write flag for a
+    block snapshot, a single variant otherwise.
+    """
+    stamp = created_at or _iso_now()
+    if not _is_block_snapshot(after, block_id):
+        message = _envelope(
+            event_type=event_type, block_id=block_id, before=before, after=after,
+            event_id=event_id, created_at=stamp,
+        )
+        return [(message, lambda user_id: user_id in recipients)]
+
+    deliveries: List[_Delivery] = []
+    for can_write in (True, False):
+        group = {user_id for user_id, writes in recipients.items() if writes is can_write}
+        if not group:
+            continue
+        message = _envelope(
+            event_type=event_type, block_id=block_id, before=before,
+            after={**after, "can_write": can_write},
+            event_id=event_id, created_at=stamp,
+        )
+        deliveries.append((message, lambda user_id, group=group: user_id in group))
+    return deliveries
+
+
+def _send(deliveries: List[_Delivery]) -> int:
+    """Queue every delivery with the manager and return the connections reached."""
+    from app.ws.manager import manager
+
+    return sum(
+        manager.broadcast(message, recipient_filter=recipient_filter)
+        for message, recipient_filter in deliveries
+    )
 
 
 def _envelope(
@@ -242,31 +320,28 @@ async def broadcast_block_event(
         # Nobody is listening; do not open a database session to find that out.
         return 0
 
-    message = _envelope(
+    recipients = await anyio.to_thread.run_sync(
+        functools.partial(
+            _recipients,
+            manager.user_ids(),
+            event_type=event_type,
+            block_id=block_id,
+        )
+    )
+    if not recipients:
+        return 0
+
+    # A connection opened between the lookup above and the send below is only
+    # reached if its account was already admitted, so the race resolves closed.
+    return _send(_deliveries(
+        recipients,
         event_type=event_type,
         block_id=block_id,
         before=before,
         after=after,
         event_id=event_id,
         created_at=created_at,
-    )
-
-    allowed = await anyio.to_thread.run_sync(
-        functools.partial(
-            _allowed_user_ids,
-            manager.user_ids(),
-            event_type=event_type,
-            block_id=block_id,
-        )
-    )
-    if not allowed:
-        return 0
-
-    # A connection opened between the lookup above and the send below is only
-    # reached if its account was already admitted, so the race resolves closed.
-    return manager.broadcast(
-        message, recipient_filter=lambda user_id: user_id in allowed
-    )
+    ))
 
 
 def emit_block_event(
@@ -312,23 +387,21 @@ def emit_block_event(
 
         after = {**after, **entry_changes.describe(db, block_id)}
 
-    message = _envelope(
+    recipients = _recipients(
+        manager.user_ids(), event_type=event_type, block_id=block_id, db=db
+    )
+    if not recipients:
+        return 0
+
+    send = functools.partial(_send, _deliveries(
+        recipients,
         event_type=event_type,
         block_id=block_id,
         before=before,
         after=after,
         event_id=event_id,
         created_at=created_at,
-    )
-    allowed = _allowed_user_ids(
-        manager.user_ids(), event_type=event_type, block_id=block_id, db=db
-    )
-    if not allowed:
-        return 0
-
-    send = functools.partial(
-        manager.broadcast, message, recipient_filter=lambda user_id: user_id in allowed
-    )
+    ))
     try:
         return anyio.from_thread.run_sync(send)
     except RuntimeError:

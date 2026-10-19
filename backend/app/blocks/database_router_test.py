@@ -3467,6 +3467,78 @@ def test_sub_item_direct_remove_clears_parent_item(http_client):
     assert (parent_val.get("related_ids") or []) == []
 
 
+def test_sub_item_direct_write_takes_the_child_from_its_previous_parent(http_client):
+    """Adding A to C's sub_item while A sits under B removes A from B's sub_item."""
+    db_id = _create_database(http_client)
+    pi, si = _get_subitem_schemas(http_client, db_id)
+    child = _create_entry(http_client, db_id)
+    sibling = _create_entry(http_client, db_id)
+    old_parent = _create_entry(http_client, db_id)
+    new_parent = _create_entry(http_client, db_id)
+    _upsert_value(http_client, db_id, old_parent["id"], si["id"],
+                  {"related_ids": [child["id"], sibling["id"]]})
+
+    _upsert_value(http_client, db_id, new_parent["id"], si["id"],
+                  {"related_ids": [child["id"]]})
+
+    assert _stored(http_client, db_id, old_parent["id"], si["id"]) == {
+        "related_ids": [sibling["id"]],
+    }
+    assert _stored(http_client, db_id, new_parent["id"], si["id"]) == {
+        "related_ids": [child["id"]],
+    }
+    assert _stored(http_client, db_id, child["id"], pi["id"]) == {
+        "related_ids": [new_parent["id"]],
+    }
+
+
+def test_sub_item_direct_write_clears_the_previous_parent_list_it_empties(http_client):
+    db_id = _create_database(http_client)
+    _pi, si = _get_subitem_schemas(http_client, db_id)
+    child = _create_entry(http_client, db_id)
+    old_parent = _create_entry(http_client, db_id)
+    new_parent = _create_entry(http_client, db_id)
+    _upsert_value(http_client, db_id, old_parent["id"], si["id"], {"related_ids": [child["id"]]})
+
+    _upsert_value(http_client, db_id, new_parent["id"], si["id"], {"related_ids": [child["id"]]})
+
+    assert _stored(http_client, db_id, old_parent["id"], si["id"]) is None
+
+
+def test_sub_item_direct_write_updates_the_rollups_of_the_previous_parent(http_client):
+    db_id = _create_database(http_client)
+    _pi, si = _get_subitem_schemas(http_client, db_id)
+    note = _create_schema(http_client, db_id, name="Note", type_="text")
+    children = _create_rollup_schema(http_client, db_id, "Children", si["id"], note["id"], "count")
+    child = _create_entry(http_client, db_id)
+    old_parent = _create_entry(http_client, db_id)
+    new_parent = _create_entry(http_client, db_id)
+    _upsert_value(http_client, db_id, old_parent["id"], si["id"], {"related_ids": [child["id"]]})
+    assert _stored(http_client, db_id, old_parent["id"], children["id"])["result"] == 1
+
+    _upsert_value(http_client, db_id, new_parent["id"], si["id"], {"related_ids": [child["id"]]})
+
+    assert _stored(http_client, db_id, old_parent["id"], children["id"])["result"] == 0
+    assert _stored(http_client, db_id, new_parent["id"], children["id"])["result"] == 1
+
+
+def test_applying_a_template_sub_item_takes_the_child_from_its_previous_parent(http_client):
+    db_id = _create_database(http_client)
+    _pi, si = _get_subitem_schemas(http_client, db_id)
+    child = _create_entry(http_client, db_id)
+    old_parent = _create_entry(http_client, db_id)
+    target = _create_entry(http_client, db_id)
+    _upsert_value(http_client, db_id, old_parent["id"], si["id"], {"related_ids": [child["id"]]})
+    template = _create_entry_template(http_client, db_id)
+    # Stored on the template only; templates do not sync their relations.
+    _upsert_value(http_client, db_id, template["id"], si["id"], {"related_ids": [child["id"]]})
+
+    http_client.post(f"/api/databases/{db_id}/entry-templates/{template['id']}/apply/{target['id']}")
+
+    assert _stored(http_client, db_id, old_parent["id"], si["id"]) is None
+    assert _stored(http_client, db_id, target["id"], si["id"]) == {"related_ids": [child["id"]]}
+
+
 # ─── Permission enforcement ───────────────────────────────────────────────────
 
 

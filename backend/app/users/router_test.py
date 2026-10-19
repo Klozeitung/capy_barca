@@ -247,6 +247,74 @@ def test_change_password_rate_limit_blocks_after_threshold(admin_client):
     assert response.status_code == 429
 
 
+# ── WOPI tokens end with a password change ───────────────────────────────────
+
+
+def _wopi_token_for(username: str) -> uuid.UUID:
+    """Register a WOPI token for *username* and return its id."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.blocks.models import Block
+    from app.users.model import User
+    from app.wopi import registry
+
+    jti = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    with s.SessionLocal() as db:
+        user = db.query(User).filter(User.username == username).one()
+        block = Block(id=uuid.uuid4(), type="page", position=1.0, state="active")
+        db.add(block)
+        db.flush()
+        registry.register(
+            db, jti=jti, user_id=user.id, block_id=block.id, file_uuid=uuid.uuid4(),
+            issued_at=now, expires_at=now + timedelta(hours=1),
+        )
+        db.commit()
+    return jti
+
+
+def _wopi_token_exists(jti: uuid.UUID) -> bool:
+    from app.wopi.model import WopiToken
+
+    with s.SessionLocal() as db:
+        return db.get(WopiToken, jti) is not None
+
+
+def test_changing_the_own_password_withdraws_the_wopi_tokens(admin_client):
+    jti = _wopi_token_for("admin_user")
+    admin_client.patch(
+        "/api/users/me/password",
+        json={"current_password": "secret", "new_password": "new_pw_123"},
+    )
+    assert not _wopi_token_exists(jti)
+
+
+def test_a_refused_password_change_keeps_the_wopi_tokens(admin_client):
+    jti = _wopi_token_for("admin_user")
+    admin_client.patch(
+        "/api/users/me/password",
+        json={"current_password": "wrong", "new_password": "new_pw_123"},
+    )
+    assert _wopi_token_exists(jti)
+
+
+def test_admin_reset_withdraws_the_wopi_tokens_of_that_account_only(admin_client):
+    with s.SessionLocal() as db:
+        target = create_user(db, "reset_target", "secret", role="member")
+        db.commit()
+        target_id = target.id
+    target_token = _wopi_token_for("reset_target")
+    admin_token = _wopi_token_for("admin_user")
+
+    response = admin_client.patch(
+        f"/api/users/{target_id}/password", json={"new_password": "new_pw_123"}
+    )
+
+    assert response.status_code == 204
+    assert not _wopi_token_exists(target_token)
+    assert _wopi_token_exists(admin_token)
+
+
 # ── GET /api/users ────────────────────────────────────────────────────────────
 
 def test_list_users_returns_200_for_admin(admin_client):

@@ -552,6 +552,26 @@ def create_block(
     return block
 
 
+def _copy_permission(db: Session, source_id: uuid.UUID, target_id: uuid.UUID) -> None:
+    """
+    Give *target_id* the explicit permission row of *source_id*, if it has one:
+    the same mode, level for everyone and grants. A source without a row
+    leaves the target without one, so it inherits like the source does.
+    """
+    from app.permissions import repository as perm_repo
+
+    perm = perm_repo.get_permission_row(db, source_id)
+    if perm is None:
+        return
+    perm_repo.set_permission(
+        db,
+        target_id,
+        perm.mode,
+        {grant.user_id: grant.level for grant in perm.grants},
+        everyone_level=perm.everyone_level,
+    )
+
+
 def deep_duplicate(
     db: Session,
     block_id: uuid.UUID,
@@ -559,6 +579,7 @@ def deep_duplicate(
     parent_id: uuid.UUID,
     position: float,
     owner_id: Optional[uuid.UUID] = None,
+    viewer=None,
 ) -> Block:
     """
     Recursively duplicate *block_id* and its entire active subtree under
@@ -571,6 +592,12 @@ def deep_duplicate(
     keeps exactly the columns of the original; :func:`create_block` and its
     initial columns are not involved.
 
+    Every copy takes over the explicit permission row of its original, so a
+    copy is never visible to more accounts than the original. With *viewer*
+    given, descendants that account may not read are left out: copying them
+    would either hand the copier access through ownership of the copy, or
+    produce content no one can reach.
+
     Parameters
     ----------
     db:
@@ -581,6 +608,11 @@ def deep_duplicate(
         UUID of the parent block for the new root copy.
     position:
         Fractional index position for the new root copy among its siblings.
+    owner_id:
+        Owner of the copies. Defaults to the owner of each original.
+    viewer:
+        The account making the copy (a ``User``), or ``None`` to copy every
+        active descendant.
 
     Returns
     -------
@@ -609,6 +641,7 @@ def deep_duplicate(
             icon=original.icon,
             cover=original.cover,
         )
+        _copy_permission(db, original.id, mirror.id)
         ev.emit_created(db, mirror.id, _block_snapshot(mirror))
         return mirror
 
@@ -626,6 +659,7 @@ def deep_duplicate(
             icon=original.icon,
             cover=original.cover,
         )
+        _copy_permission(db, original.id, mirror.id)
         ev.emit_created(db, mirror.id, _block_snapshot(mirror))
         return mirror
 
@@ -640,20 +674,30 @@ def deep_duplicate(
         cover=original.cover,
     )
     # Carry the owner forward; default to the original owner when no explicit
-    # owner_id is supplied (e.g. when called recursively for child blocks).
+    # owner_id is supplied.
     new_block.owner_id = owner_id if owner_id is not None else original.owner_id
-    # Apply default first-level permission to the root copy.
-    # Child copies are placed under new_block (not workspace root) so the
-    # helper is a no-op for them — inheritance handles their visibility.
+    _copy_permission(db, original.id, new_block.id)
+    # A root copy without a row of its own that lands on the first level gets
+    # the default first-level permission; deeper copies inherit.
     _apply_first_level_permission(db, new_block.id, parent_id)
     ev.emit_created(db, new_block.id, _block_snapshot(new_block))
 
-    # Recursively copy all active children in their order, renumbered 1.0,
-    # 2.0, … so that a copy never inherits siblings at equal positions.
-    for index, child in enumerate(repo.list_children(db, block_id, state="active"), start=1):
+    children = repo.list_children(db, block_id, state="active")
+    if viewer is not None and children:
+        from app.permissions import repository as perm_repo
+        from app.permissions.model import READ
+
+        readable = perm_repo.filter_accessible(
+            db, (child.id for child in children), viewer, level=READ,
+        )
+        children = [child for child in children if child.id in readable]
+
+    # Recursively copy the children in their order, renumbered 1.0, 2.0, …
+    # so that a copy never inherits siblings at equal positions.
+    for index, child in enumerate(children, start=1):
         deep_duplicate(
             db, child.id, parent_id=new_block.id, position=float(index),
-            owner_id=new_block.owner_id,
+            owner_id=new_block.owner_id, viewer=viewer,
         )
 
     return new_block

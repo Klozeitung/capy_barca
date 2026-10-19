@@ -20,21 +20,23 @@
  *
  * Features
  * --------
- * Folders     (#new) – Create folders, navigate into them, back arrow + breadcrumb.
- *                      Folder names editable by double-click.
- * Block title  (#30) – Double-click on header title to edit. Stored in content.title.
- * Block icon   (#30) – Click icon button to open IconPicker.
- * File rename  (#29) – Double-click on filename for inline edit.
- * File reorder (#31) – Drag handle on each row.
- * Collabora          – Office documents open in WOPI modal iframe.
- * Download fix       – fetch→blob→objectURL to guarantee correct filename.
- * Breadcrumb DnD(#37)– Breadcrumb path segments are drop targets; dragging a file
- *                      onto a crumb moves it to that ancestor folder.
- * Search       (#38) – Search icon in header toggles a search input; results are
- *                      a flat filtered list across all nested folders.
+ * Folders       – Create folders, navigate into them, back arrow + breadcrumb.
+ *                 Folder names editable by double-click.
+ * Block title   – Double-click on header title to edit. Stored in content.title.
+ * Block icon    – Click icon button to open IconPicker.
+ * File rename   – Double-click on filename for inline edit.
+ * File reorder  – Drag handle on each row.
+ * Collabora     – Office documents open in WOPI modal iframe, in the interface
+ *                 language of the frontend.
+ * Download      – fetch→blob→objectURL to guarantee correct filename.
+ * Breadcrumb DnD– Breadcrumb path segments are drop targets; dragging a file
+ *                 onto a crumb moves it to that ancestor folder.
+ * Search        – Search icon in header toggles a search input; results are
+ *                 a flat filtered list across all nested folders.
  */
 import { computed, nextTick, ref, watch } from 'vue'
 import { Icon } from '@iconify/vue'
+import { useI18n } from 'vue-i18n'
 import IconPicker from '@/components/IconPicker.vue'
 import { useBlockStore, type Block } from '@/stores/blocks'
 import { useMediaUpload, type UploadedFile } from '@/composables/useMediaUpload'
@@ -64,6 +66,7 @@ const props = defineProps<{
 
 // ── Store / upload ────────────────────────────────────────────────────────────
 
+const { t, locale } = useI18n()
 const blockStore = useBlockStore()
 const upload = useMediaUpload('drive', props.block.id)
 const inputRef = ref<HTMLInputElement | null>(null)
@@ -160,10 +163,10 @@ function navigateTo(index: number): void {
   currentPath.value = currentPath.value.slice(0, index)
 }
 
-// ── Block title (#30) ─────────────────────────────────────────────────────────
+// ── Block title ───────────────────────────────────────────────────────────────
 
 const currentTitle = computed(() => (props.block.content?.title as string | undefined) ?? '')
-const displayTitle = computed(() => currentTitle.value || 'Drive')
+const displayTitle = computed(() => currentTitle.value || t('drive.defaultTitle'))
 
 const editingTitle = ref(false)
 const titleInput = ref(currentTitle.value)
@@ -195,7 +198,7 @@ function onTitleKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') { editingTitle.value = false }
 }
 
-// ── Block icon (#30) ──────────────────────────────────────────────────────────
+// ── Block icon ────────────────────────────────────────────────────────────────
 
 const displayIcon = computed(() => props.block.icon ?? 'mdi:folder-outline')
 const showIconPicker = ref(false)
@@ -281,7 +284,7 @@ async function removeFolder(folderId: string): Promise<void> {
   }))
 }
 
-// ── File rename (#29) ─────────────────────────────────────────────────────────
+// ── File rename ───────────────────────────────────────────────────────────────
 
 const renamingFileUuid = ref<string | null>(null)
 const renameValue = ref('')
@@ -311,7 +314,7 @@ function onRenameKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') { renamingFileUuid.value = null }
 }
 
-// ── File reorder + folder drop (#31) ─────────────────────────────────────────
+// ── File reorder + folder drop ───────────────────────────────────────────────
 
 const draggingFileUuid = ref<string | null>(null)
 const dropTargetUuid = ref<string | null>(null)   // target file uuid for reorder
@@ -417,7 +420,7 @@ function onFileDragEnd(): void {
   dropTargetCrumbIdx.value = null
 }
 
-// ── Breadcrumb drop targets (#37) ─────────────────────────────────────────────
+// ── Breadcrumb drop targets ───────────────────────────────────────────────────
 
 /**
  * Index into the `breadcrumb` array that the user is currently dragging over.
@@ -477,7 +480,7 @@ async function onCrumbDrop(crumbIdx: number, e: DragEvent): Promise<void> {
   })
 }
 
-// ── Search (#38) ──────────────────────────────────────────────────────────────
+// ── Search ────────────────────────────────────────────────────────────────────
 
 const searchActive = ref(false)
 const searchQuery = ref('')
@@ -549,14 +552,15 @@ async function openInCollabora(file: UploadedFile): Promise<void> {
         block_id: props.block.id,
         filename: file.filename,
         mime: file.mime,
+        lang: locale.value === 'en' ? 'en' : 'de',
       }),
     })
-    if (!res.ok) { collaboraError.value = 'Editor konnte nicht gestartet werden.'; return }
+    if (!res.ok) { collaboraError.value = t('drive.editorError'); return }
     const data = await res.json()
     collaboraFilename.value = file.filename
     collaboraUrl.value = data.editor_url
   } catch {
-    collaboraError.value = 'Editor konnte nicht gestartet werden.'
+    collaboraError.value = t('drive.editorError')
   }
 }
 
@@ -619,7 +623,8 @@ const movingFile = ref<UploadedFile | null>(null)
 /**
  * All Drive blocks in the store, excluding the current one.
  * Only blocks that have been loaded (visited pages) are available.
- * The block's display title comes from content.title with 'Drive' fallback.
+ * The block's display title comes from content.title, with the localized
+ * default as fallback.
  */
 const otherDriveBlocks = computed(() =>
   Object.values(blockStore.blocks).filter(
@@ -628,7 +633,7 @@ const otherDriveBlocks = computed(() =>
 )
 
 function driveBlockTitle(b: typeof otherDriveBlocks.value[number]): string {
-  return (b.content?.title as string | undefined) || 'Drive'
+  return (b.content?.title as string | undefined) || t('drive.defaultTitle')
 }
 
 function openMoveModal(file: UploadedFile): void {
@@ -713,17 +718,17 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
       <button
         v-if="currentPath.length > 0"
         class="drive-block__back-btn"
-        title="Zurück"
+        :title="t('drive.back')"
         @click="navigateBack"
       >
         <Icon icon="mdi:arrow-left" width="15" height="15" />
       </button>
 
-      <!-- Icon button (#30) – only at root level -->
+      <!-- Icon button – only at root level -->
       <div v-else class="drive-block__icon-anchor">
         <button
           class="drive-block__icon-btn"
-          title="Symbol ändern"
+          :title="t('drive.changeIcon')"
           @click.stop="showIconPicker = !showIconPicker"
         >
           <Icon :icon="displayIcon" width="15" height="15" />
@@ -736,19 +741,19 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
         />
       </div>
 
-      <!-- Search input (replaces breadcrumb when search is active) (#38) -->
+      <!-- Search input (replaces breadcrumb when search is active) -->
       <template v-if="searchActive">
         <input
           ref="searchInputRef"
           v-model="searchQuery"
           class="drive-block__search-input"
-          placeholder="Suchen…"
+          :placeholder="t('drive.searchPlaceholder')"
           @keydown="onSearchKeydown"
           @click.stop
         />
         <button
           class="drive-block__add-btn"
-          title="Suche schliessen"
+          :title="t('drive.closeSearch')"
           @click="deactivateSearch"
         >
           <Icon icon="mdi:close" width="14" height="14" />
@@ -772,7 +777,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
             <span
               v-else
               class="drive-block__title"
-              title="Doppelklick zum Umbenennen"
+              :title="t('drive.renameHint')"
               @dblclick.stop="startTitleEdit"
             >
               {{ displayTitle }}
@@ -780,7 +785,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
             </span>
           </template>
 
-          <!-- Nested path segments (#37: crumb buttons are drop targets) -->
+          <!-- Nested path segments (crumb buttons are drop targets) -->
           <template v-else>
             <button
               class="drive-block__crumb-btn"
@@ -797,7 +802,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
                 v-if="idx === breadcrumb.length - 2"
                 class="drive-block__crumb-current"
               >{{ crumb.name }}</span>
-              <!-- Intermediate crumbs are drop targets (#37) -->
+              <!-- Intermediate crumbs are drop targets -->
               <button
                 v-else
                 class="drive-block__crumb-btn"
@@ -811,10 +816,10 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
           </template>
         </span>
 
-        <!-- Search toggle button (#38) -->
+        <!-- Search toggle button -->
         <button
           class="drive-block__add-btn"
-          title="Suchen"
+          :title="t('drive.search')"
           @click="activateSearch"
         >
           <Icon icon="mdi:magnify" width="14" height="14" />
@@ -823,7 +828,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
         <!-- New folder button -->
         <button
           class="drive-block__add-btn"
-          title="Neuer Ordner"
+          :title="t('drive.newFolder')"
           @click="startCreateFolder"
         >
           <Icon icon="mdi:folder-plus-outline" width="14" height="14" />
@@ -832,12 +837,12 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
         <!-- Add file button -->
         <button
           class="drive-block__add-btn"
-          title="Datei hinzufügen"
+          :title="t('drive.addFile')"
           :disabled="upload.isUploading.value"
           @click="inputRef?.click()"
         >
           <Icon icon="mdi:plus" width="14" height="14" />
-          Add file
+          {{ t('drive.addFile') }}
         </button>
       </template>
 
@@ -853,16 +858,16 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
     <!-- Drop overlay -->
     <div v-if="isDropOver && !draggingFileUuid" class="drive-block__drop-overlay">
       <Icon icon="mdi:upload" width="24" height="24" />
-      <span>Drop files to add</span>
+      <span>{{ t('drive.dropToAdd') }}</span>
     </div>
 
-    <!-- ── Search results (#38) ────────────────────────────────────────────── -->
+    <!-- ── Search results ────────────────────────────────────────────── -->
     <template v-if="isSearching">
       <div v-if="searchResults.length > 0" class="drive-block__list">
         <div class="drive-block__list-head">
           <span class="drive-col drive-col--drag" />
-          <span class="drive-col drive-col--name">Name</span>
-          <span class="drive-col drive-col--size">Size</span>
+          <span class="drive-col drive-col--name">{{ t('drive.colName') }}</span>
+          <span class="drive-col drive-col--size">{{ t('drive.colSize') }}</span>
           <span class="drive-col drive-col--actions" />
         </div>
         <div
@@ -887,28 +892,28 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
             <button
               v-if="isEditable(result.file.mime)"
               class="drive-block__row-action"
-              title="In Collabora bearbeiten"
+              :title="t('drive.editInCollabora')"
               @click="openInCollabora(result.file)"
             >
               <Icon icon="mdi:pencil-outline" width="14" height="14" />
             </button>
             <button
               class="drive-block__row-action"
-              title="In anderen Drive verschieben"
+              :title="t('drive.moveToDrive')"
               @click.stop="openMoveModal(result.file)"
             >
               <Icon icon="mdi:folder-move-outline" width="14" height="14" />
             </button>
             <button
               class="drive-block__row-action"
-              title="Download"
+              :title="t('drive.download')"
               @click="downloadFile(result.file.url, result.file.filename)"
             >
               <Icon icon="mdi:download" width="14" height="14" />
             </button>
             <button
               class="drive-block__row-action"
-              title="Entfernen"
+              :title="t('actions.remove')"
               @click="handleRemove(result.file.file_uuid)"
             >
               <Icon icon="mdi:close" width="14" height="14" />
@@ -917,7 +922,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
         </div>
       </div>
       <div v-else class="drive-block__empty">
-        <span>Keine Dateien gefunden für <em>{{ searchQuery }}</em></span>
+        <span>{{ t('drive.noResults', { query: searchQuery }) }}</span>
       </div>
     </template>
 
@@ -928,8 +933,8 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
         <!-- Column headings -->
         <div class="drive-block__list-head">
           <span class="drive-col drive-col--drag" />
-          <span class="drive-col drive-col--name">Name</span>
-          <span class="drive-col drive-col--size">Size</span>
+          <span class="drive-col drive-col--name">{{ t('drive.colName') }}</span>
+          <span class="drive-col drive-col--size">{{ t('drive.colSize') }}</span>
           <span class="drive-col drive-col--actions" />
         </div>
 
@@ -942,7 +947,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
               ref="newFolderInputRef"
               v-model="newFolderName"
               class="drive-block__rename-input"
-              placeholder="Ordnername…"
+              :placeholder="t('drive.folderNamePlaceholder')"
               @blur="confirmCreateFolder"
               @keydown="onNewFolderKeydown"
               @click.stop
@@ -988,14 +993,14 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
           <span class="drive-col drive-col--actions" @click.stop>
             <button
               class="drive-block__row-action"
-              title="Umbenennen"
+              :title="t('actions.rename')"
               @click.stop="startFolderRename(folder)"
             >
               <Icon icon="mdi:pencil-outline" width="14" height="14" />
             </button>
             <button
               class="drive-block__row-action"
-              title="Ordner löschen"
+              :title="t('drive.deleteFolder')"
               @click.stop="removeFolder(folder.id)"
             >
               <Icon icon="mdi:close" width="14" height="14" />
@@ -1021,7 +1026,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
           <span
             class="drive-col drive-col--drag"
             draggable="true"
-            title="Verschieben"
+            :title="t('drive.dragHandle')"
             @dragstart="onFileDragStart(file, $event)"
             @dragend="onFileDragEnd"
           >
@@ -1043,7 +1048,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
             <span
               v-else
               class="drive-block__row-name"
-              title="Doppelklick zum Umbenennen"
+              :title="t('drive.renameHint')"
               @dblclick.stop="startRename(file)"
             >
               {{ file.filename }}
@@ -1058,28 +1063,28 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
             <button
               v-if="isEditable(file.mime)"
               class="drive-block__row-action"
-              title="In Collabora bearbeiten"
+              :title="t('drive.editInCollabora')"
               @click="openInCollabora(file)"
             >
               <Icon icon="mdi:pencil-outline" width="14" height="14" />
             </button>
             <button
               class="drive-block__row-action"
-              title="In anderen Drive verschieben"
+              :title="t('drive.moveToDrive')"
               @click.stop="openMoveModal(file)"
             >
               <Icon icon="mdi:folder-move-outline" width="14" height="14" />
             </button>
             <button
               class="drive-block__row-action"
-              title="Download"
+              :title="t('drive.download')"
               @click="downloadFile(file.url, file.filename)"
             >
               <Icon icon="mdi:download" width="14" height="14" />
             </button>
             <button
               class="drive-block__row-action"
-              title="Entfernen"
+              :title="t('actions.remove')"
               @click="handleRemove(file.file_uuid)"
             >
               <Icon icon="mdi:close" width="14" height="14" />
@@ -1091,13 +1096,13 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
 
     <!-- Empty state -->
     <div v-else class="drive-block__empty">
-      <span>Drop files here or click <em>Add file</em></span>
+      <span>{{ t('drive.emptyHint') }}</span>
     </div>
 
     <!-- Upload progress -->
     <div v-if="upload.isUploading.value" class="drive-block__uploading">
       <Icon icon="mdi:loading" width="14" height="14" class="drive-block__spinner" />
-      Uploading…
+      {{ t('drive.uploading') }}
     </div>
 
     <div v-if="upload.error.value" class="drive-block__error">{{ upload.error.value }}</div>
@@ -1111,7 +1116,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
         <div class="drive-editor-header">
           <Icon icon="mdi:file-edit-outline" width="16" height="16" class="drive-editor-header-icon" />
           <span class="drive-editor-title">{{ collaboraFilename }}</span>
-          <button class="drive-editor-close" title="Schliessen" @click="closeCollabora">
+          <button class="drive-editor-close" :title="t('drive.close')" @click="closeCollabora">
             <Icon icon="mdi:close" width="18" height="18" />
           </button>
         </div>
@@ -1132,9 +1137,9 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
         <div class="drive-move-modal__header">
           <Icon icon="mdi:folder-move-outline" width="16" height="16" class="drive-move-modal__icon" />
           <span class="drive-move-modal__title">
-            "{{ movingFile.filename }}" verschieben nach…
+            {{ t('drive.moveTitle', { name: movingFile.filename }) }}
           </span>
-          <button class="drive-move-modal__close" title="Abbrechen" @click="closeMoveModal">
+          <button class="drive-move-modal__close" :title="t('actions.cancel')" @click="closeMoveModal">
             <Icon icon="mdi:close" width="16" height="16" />
           </button>
         </div>
@@ -1150,8 +1155,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
             <Icon icon="mdi:chevron-right" width="14" height="14" class="drive-move-modal__item-arrow" />
           </div>
           <div v-if="otherDriveBlocks.length === 0" class="drive-move-modal__empty">
-            Keine anderen Drive-Blöcke gefunden.
-            Navigiere zu einer Seite mit einem Drive-Block, damit er hier erscheint.
+            {{ t('drive.noOtherDrives') }}
           </div>
         </div>
       </div>
@@ -1203,7 +1207,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
   color: var(--color-text);
 }
 
-/* Icon picker anchor (#30) */
+/* Icon picker anchor */
 .drive-block__icon-anchor {
   position: relative;
   flex-shrink: 0;
@@ -1293,7 +1297,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
   color: var(--color-text);
 }
 
-/* Drop-over highlight for breadcrumb ancestors (#37) */
+/* Drop-over highlight for breadcrumb ancestors */
 .drive-block__crumb-btn--drop-over {
   background: var(--color-accent-subtle, color-mix(in srgb, var(--color-accent) 12%, transparent));
   color: var(--color-accent);
@@ -1344,7 +1348,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
   display: none;
 }
 
-/* Search input (#38) */
+/* Search input */
 .drive-block__search-input {
   flex: 1;
   min-width: 0;
@@ -1556,7 +1560,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
   color: var(--color-text);
 }
 
-/* Search result path indicator (#38) */
+/* Search result path indicator */
 .drive-block__search-name-wrap {
   display: flex;
   flex-direction: column;

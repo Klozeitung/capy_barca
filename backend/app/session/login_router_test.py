@@ -211,3 +211,42 @@ def test_verify_returns_401_after_logout():
     client.post("/api/logout")
     response = client.get("/api/verify")
     assert response.status_code == 401
+
+
+def test_logout_withdraws_the_wopi_tokens_of_its_session_only():
+    """
+    A token is tied to the session it was issued in. Logging out ends the
+    editor sessions opened there and leaves those of another device alone.
+    """
+    import uuid
+    from datetime import datetime, timedelta, timezone
+
+    from app.blocks.models import Block
+    from app.users.model import User
+    from app.wopi import registry
+    from app.wopi.model import WopiToken
+
+    client.post("/api/login", json={"username": "capybarca", "password": "geheim"})
+    current = client.cookies.get("session")
+    with s.SessionLocal() as db:
+        user = db.query(User).filter(User.username == "capybarca").one()
+        other = s.create_token(user.id)
+        block = Block(id=uuid.uuid4(), type="page", position=1.0, state="active")
+        db.add(block)
+        db.flush()
+        now = datetime.now(timezone.utc)
+        ids = {}
+        for name, token in (("current", current), ("other", other)):
+            ids[name] = uuid.uuid4()
+            registry.register(
+                db, jti=ids[name], user_id=user.id, block_id=block.id,
+                file_uuid=uuid.uuid4(), issued_at=now, expires_at=now + timedelta(hours=1),
+                session_key=s.record_key(token, db),
+            )
+        db.commit()
+
+    client.post("/api/logout")
+
+    with s.SessionLocal() as db:
+        assert db.get(WopiToken, ids["current"]) is None
+        assert db.get(WopiToken, ids["other"]) is not None

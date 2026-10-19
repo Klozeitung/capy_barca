@@ -229,11 +229,13 @@ export interface RelationTitle {
  *
  * Returned by GET /schemas/{id}/key-references. Deleting or retyping that
  * property resets every relation listed here to vanilla, so the delete
- * confirmation can name them instead of warning in the abstract.
+ * confirmation can name them instead of warning in the abstract. For a
+ * relation in a database the caller may not read, ``schema_name`` and
+ * ``database_title`` are null; the reference is listed all the same.
  */
 export interface KeyReference {
   schema_id: string
-  schema_name: string
+  schema_name: string | null
   database_id: string
   database_title: string | null
 }
