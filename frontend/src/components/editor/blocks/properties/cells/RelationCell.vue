@@ -608,20 +608,6 @@ function openRelatedEntry(id: string): void {
 function closeSideView(): void {
   sideViewEntryId.value = null
 }
-
-/** Refresh chip titles and key values after the linked entry was edited. */
-async function onSideViewRefresh(): Promise<void> {
-  // Force-refresh resolved chip titles so an edited (or trashed) linked entry
-  // updates its chip immediately.
-  await dbStore.resolveEntryTitles(targetDatabaseId.value, relatedIds.value, true)
-  // The edit may have changed the key value, which also changes the row order.
-  const keyPropertyId = keyingCfg.value?.keyPropertyId
-  if (keyPropertyId) {
-    await dbStore.resolveEntryKeyValues(
-      targetDatabaseId.value, relatedIds.value, keyPropertyId, true,
-    )
-  }
-}
 </script>
 
 <template>
@@ -924,7 +910,6 @@ async function onSideViewRefresh(): Promise<void> {
       :database-id="targetDatabaseId"
       :entry-id="sideViewEntryId"
       @close="closeSideView"
-      @refresh="onSideViewRefresh"
     />
 
     <!-- Timeline editor for timeline relations -->

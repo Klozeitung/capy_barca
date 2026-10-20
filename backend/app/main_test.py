@@ -9,7 +9,7 @@ client = TestClient(app)
 
 def test_app_is_initialized():
     assert app.title == "CapyBarca API"
-    assert app.version == "0.16.6.0"
+    assert app.version == "0.16.7.0"
 
 
 @pytest.mark.parametrize("secret", ["", "   ", "changeme"])
@@ -94,6 +94,14 @@ def test_view_routes_are_registered():
     paths = set(app.openapi()["paths"])
     assert "/api/databases/{database_id}/views" in paths
     assert "/api/databases/{database_id}/views/{view_id}/entries" in paths
+
+
+def test_database_routes_are_registered():
+    """Both database routers serve under the same prefix."""
+    paths = set(app.openapi()["paths"])
+    assert "/api/databases/{database_id}/schemas" in paths
+    assert "/api/databases/{database_id}/entries/{entry_id}/values/{schema_id}" in paths
+    assert "/api/databases/{database_id}/entry-templates" in paths
 
 
 def test_login_route_is_registered():

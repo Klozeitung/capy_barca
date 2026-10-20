@@ -59,8 +59,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'close'): void
-  /** Emitted after a relation or other mutation that should refresh the table. */
-  (e: 'refresh'): void
 }>()
 
 // ── Dependencies ──────────────────────────────────────────────────────────────
@@ -180,12 +178,6 @@ function openAsPage(): void {
   emit('close')
   const query = showProperties.value ? '?showProperties=1' : ''
   router.push(`/blocks/${props.entryId}${query}`)
-}
-
-// ── Refresh passthrough ───────────────────────────────────────────────────────
-
-function onRefresh(): void {
-  emit('refresh')
 }
 
 // ── Property section visibility ───────────────────────────────────────────────
@@ -320,7 +312,6 @@ onUnmounted(() => {
           v-if="showProperties"
           :database-id="databaseId"
           :entry="entry"
-          @refresh="onRefresh"
         />
 
         <!-- Comment section toggle -->

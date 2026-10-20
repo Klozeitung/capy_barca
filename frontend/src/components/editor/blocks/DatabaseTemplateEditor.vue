@@ -13,8 +13,9 @@
  * Template values are loaded from the databaseTemplates store, which fetches
  * them from GET /{database_id}/entry-templates. Property mutations go through
  * dbStore.upsertValue (same endpoint as regular entries — the backend accepts
- * entry_template blocks identically). After every refresh the template list is
- * re-fetched so the values stay in sync.
+ * entry_template blocks identically). The change event of every write that
+ * touches the template re-fetches the template list, so the values stay in
+ * sync.
  *
  * Props
  * -----
@@ -74,8 +75,8 @@ const block = computed<Block | null>(() =>
  * - content / icon come from the reactive blockStore so that title and icon
  *   changes made via BlockTopSection are reflected immediately (the blockStore
  *   patches blocks[templateId] in-place on every WS event).
- * - values come from the templateStore, which is refreshed after every
- *   property mutation (onRefresh) and on every relevant WS event (_onWsEvent).
+ * - values come from the templateStore, which is refreshed on every relevant
+ *   WS event (_onWsEvent), the template's own property writes included.
  */
 const templateEntry = computed<DatabaseEntry | null>(() => {
   if (!block.value) return null
@@ -108,12 +109,6 @@ async function load(): Promise<void> {
 }
 
 onMounted(() => load())
-
-// After a property mutation BlockPropertySection emits 'refresh'.
-// Re-fetch templates so values stay in sync.
-async function onRefresh(): Promise<void> {
-  await templateStore.fetchTemplates(props.databaseId)
-}
 
 // ── Slide-in animation ────────────────────────────────────────────────────────
 
@@ -298,7 +293,6 @@ const showProperties = ref(true)
           v-if="showProperties"
           :database-id="databaseId"
           :entry="templateEntry"
-          @refresh="onRefresh"
         />
 
         <BlockContentSection

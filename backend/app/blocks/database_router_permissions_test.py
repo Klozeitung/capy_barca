@@ -1,7 +1,8 @@
 """
-Object-level permission tests for the database router.
+Object-level permission tests for the database routers (``database_router``
+and ``database_entries_router``).
 
-Every other test of the router runs as an admin, and admins pass every
+Every other test of the routers runs as an admin, and admins pass every
 permission check, so those tests cannot notice a handler that forgets to ask.
 The tests here set the scene as the admin, then switch the client to a member
 account (``login_as``) and repeat the requests against a database that member
@@ -17,14 +18,15 @@ Expected answers
 * A member with read access passes every read and is refused every change
   with 403 and the read-only detail.
 
-``test_every_route_has_a_refusal_case`` enumerates the router's routes, so a
-new endpoint fails the suite until a refusal case for it is added below.
+``test_every_route_has_a_refusal_case`` enumerates the routes of both routers,
+so a new endpoint fails the suite until a refusal case for it is added below.
 """
 import uuid
 from dataclasses import dataclass
 
 import pytest
 
+from app.blocks.database_entries_router import database_entries_router
 from app.blocks.database_router import database_router
 from app.blocks.models import WORKSPACE_ROOT_ID
 from app.session.deps import NO_ACCESS_DETAIL, READ_ONLY_DETAIL
@@ -201,10 +203,11 @@ def _send(client, case: Case, scene: Scene):
 
 
 def test_every_route_has_a_refusal_case():
-    """A route added to the router without a case here fails this test."""
+    """A route added to either router without a case here fails this test."""
     registered = {
         (method, route.path)
-        for route in database_router.routes
+        for router in (database_router, database_entries_router)
+        for route in router.routes
         for method in route.methods
     }
     covered = {(c.method, c.route) for c in _REFUSALS}

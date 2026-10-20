@@ -19,13 +19,20 @@
  *
  * Composables
  * -----------
- * useViewManager   – views CRUD, tab drag-reorder, sort management
- * useFilterPanel   – filter-group state + mutations
- * useColumnResize  – column width pointer events
- * useExport        – CSV / XLSX / PDF / ICS export
+ * useViewManager      – views CRUD, tab drag-reorder, sort management
+ * useFilterPanel      – filter-group state + mutations
+ * useColumnResize     – column width pointer events
+ * useExport           – CSV / XLSX / PDF / ICS export
+ * useDatabaseGrouping – group-by and column aggregations
+ * useSubItemTree      – sub-item hierarchy, fold state, rows in tree order
+ * useStickyColumns    – sticky header and frozen columns
+ * useRowDragDrop      – row reorder and sub-item drop
+ * useAddRow           – new entries with values derived from the filters
  *
  * Subcomponents
  * -------------
+ * DatabaseViewTabs – view tabs
+ * DatabaseToolbar  – toolbar with name search and export menu
  * FilterPanel      – filter UI (template + styles live in DatabaseBlock.css)
  * SortPanel        – sort UI
  * ViewDescription  – per-view description between toolbar and view content
@@ -46,18 +53,10 @@ import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useBlockStore } from '@/stores/blocks'
 import { WS_BLOCK_EVENT, WS_RESYNC_EVENT, type BlockEventPayload } from '@/stores/ws'
-import { useDrag } from '@/composables/useDrag'
 import {
   useDatabaseStore,
-  optionLabel,
-  schemaOptions,
-  clampFrozenColumns,
-  isStickyHeaderEnabled,
   type PropertySchema,
   type DatabaseEntry,
-  type AggregationType,
-  type ViewFilter,
-  type FilterOperator,
   type KeyReference,
   type EntriesEventDetails,
   NAME_COL_KEY,
@@ -68,12 +67,24 @@ import { provideEditable } from '@/composables/useEditable'
 
 // ── Composables ───────────────────────────────────────────────────────────────
 import { useDatabaseViewsStore } from '@/stores/databaseViews'
-import { useViewManager, viewTypeIcon, viewDisplayName } from '@/composables/useViewManager'
+import { useViewManager } from '@/composables/useViewManager'
 import { useFilterPanel } from '@/composables/useFilterPanel'
 import { useColumnResize } from '@/composables/useColumnResize'
 import { useExport } from '@/composables/useExport'
+import {
+  useDatabaseGrouping,
+  aggregationBadge,
+  aggregationOptions,
+  computeAggregation,
+} from '@/composables/useDatabaseGrouping'
+import { useSubItemTree } from '@/composables/useSubItemTree'
+import { useStickyColumns } from '@/composables/useStickyColumns'
+import { useRowDragDrop } from '@/composables/useRowDragDrop'
+import { useAddRow } from '@/composables/useAddRow'
 
 // ── Subcomponents ─────────────────────────────────────────────────────────────
+import DatabaseViewTabs from './subcomponents/DatabaseViewTabs.vue'
+import DatabaseToolbar, { type ExportFormat } from './subcomponents/DatabaseToolbar.vue'
 import FilterPanel from './subcomponents/FilterPanel.vue'
 import SortPanel from './subcomponents/SortPanel.vue'
 import ViewDescription from './subcomponents/ViewDescription.vue'
@@ -101,8 +112,6 @@ import FormulaCell from './properties/cells/FormulaCell.vue'
 import SideView from '@/components/main/SideView.vue'
 import AutomationsModal from './AutomationsModal.vue'
 import DatabaseTemplateEditor from './DatabaseTemplateEditor.vue'
-import TemplateManagerPanel from './subcomponents/TemplateManagerPanel.vue'
-import ReadOnlyBadge from '@/components/main/ReadOnlyBadge.vue'
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
@@ -127,7 +136,6 @@ const { t }       = useI18n()
 const blockStore  = useBlockStore()
 const dbStore     = useDatabaseStore()
 const viewsStore  = useDatabaseViewsStore()
-const drag        = useDrag()
 
 /** The block whose choice of view this instance shows and stores. */
 const placementId = props.placementId ?? props.blockId
@@ -153,16 +161,13 @@ const queryResultKey = `${props.blockId}:${crypto.randomUUID()}`
 
 // ── Name search ───────────────────────────────────────────────────────────────
 
-// A magnifier toggle in the toolbar expands into a text field that searches
-// entries by name (case-insensitive substring match). The search runs on the
+// The toolbar's name search (case-insensitive substring match) runs on the
 // server as an additional filter of the view query, so it reaches every entry
 // of the database, not just the loaded page, and the load-more bar, the totals
 // and the aggregations all reflect the matching set.
 const NAME_SEARCH_DEBOUNCE_MS = 250
 
-const nameSearchActive = ref(false)
-const nameSearchQuery  = ref('')
-const searchInputEl    = ref<HTMLInputElement | null>(null)
+const nameSearchQuery = ref('')
 
 // filteredAndSortedEntries is the single source the table, calendar, agenda,
 // aggregations and export all render from. Filtering, the name search
@@ -188,25 +193,6 @@ watch(
     }, NAME_SEARCH_DEBOUNCE_MS)
   },
 )
-
-function toggleNameSearch(): void {
-  nameSearchActive.value = !nameSearchActive.value
-  if (nameSearchActive.value) {
-    nextTick(() => searchInputEl.value?.focus())
-  } else {
-    nameSearchQuery.value = ''
-  }
-}
-
-function clearNameSearch(): void {
-  nameSearchQuery.value = ''
-  nextTick(() => searchInputEl.value?.focus())
-}
-
-function onSearchBlur(): void {
-  // Collapse the field automatically when left empty so it does not linger.
-  if (!nameSearchQuery.value.trim()) nameSearchActive.value = false
-}
 
 // ── Load-more pagination ──────────────────────────────────────────────────────
 
@@ -261,140 +247,6 @@ function hideTip(): void {
   if (_tipTimer) { clearTimeout(_tipTimer); _tipTimer = null }
   tip.value.visible = false
 }
-
-// ── Sub-item hierarchy ────────────────────────────────────────────────────────
-
-/** The parent_item schema of this database, if seeded. */
-const parentItemSchema = computed(() =>
-  schemas.value.find(s => s.type === 'parent_item') ?? null,
-)
-/** The sub_item schema of this database, if seeded. */
-const subItemSchema = computed(() =>
-  schemas.value.find(s => s.type === 'sub_item') ?? null,
-)
-
-/**
- * Map from entry id → child ids, derived from parentMap (the inverse of
- * parent_item values). This is the authoritative source for tree rendering:
- * it is always consistent with subItemParentMap because it is computed from
- * the same parent_item values that the user writes directly.
- *
- * Previously this was built from sub_item values, which are a backend-managed
- * mirror. Using the mirror caused entries to disappear from the tree whenever
- * the sub_item value on the parent was stale or missing (e.g. immediately
- * after a parent_item write before the WS refresh arrived).
- *
- * Only populated when the sub_item schema exists (i.e. the pair is seeded).
- */
-const subItemChildrenMap = computed((): Map<string, string[]> => {
-  if (!subItemSchema.value) return new Map()
-  const map = new Map<string, string[]>()
-  for (const [childId, parentId] of subItemParentMap.value) {
-    const existing = map.get(parentId)
-    if (existing) {
-      existing.push(childId)
-    } else {
-      map.set(parentId, [childId])
-    }
-  }
-  return map
-})
-
-/**
- * Map from entry id → parent id, built from parent_item values.
- * Only populated when the parent_item schema exists.
- */
-const subItemParentMap = computed((): Map<string, string> => {
-  if (!parentItemSchema.value) return new Map()
-  const pid = parentItemSchema.value.id
-  const map = new Map<string, string>()
-  for (const entry of displayedEntries.value) {
-    const val = entry.values[pid]
-    const parents = (val?.related_ids as string[] | undefined) ?? []
-    if (parents.length > 0) map.set(entry.id, parents[0])
-  }
-  return map
-})
-
-// ── Fold state (localStorage-persisted, default: unfolded) ────────────────────
-
-const foldedEntries = ref<Set<string>>(new Set())
-
-function _foldKey(): string { return `db-fold-${props.blockId}` }
-
-function loadFoldState(): void {
-  try {
-    const raw = localStorage.getItem(_foldKey())
-    if (raw) foldedEntries.value = new Set(JSON.parse(raw))
-  } catch { /* ignore */ }
-}
-
-function saveFoldState(): void {
-  try {
-    localStorage.setItem(_foldKey(), JSON.stringify([...foldedEntries.value]))
-  } catch { /* ignore */ }
-}
-
-function toggleFold(entryId: string): void {
-  const next = new Set(foldedEntries.value)
-  if (next.has(entryId)) next.delete(entryId)
-  else next.add(entryId)
-  foldedEntries.value = next
-  saveFoldState()
-}
-
-// ── Flat tree for table view (depth-first, respects fold state) ───────────────
-
-interface FlatTreeEntry { entry: DatabaseEntry; depth: number }
-
-/**
- * When no grouping is active and the sub-item schema pair is present,
- * renders the entry list as an indented tree (root entries first, then their
- * children recursively).  Falls back to flat rendering for grouped views or
- * when sub-items are not seeded.
- */
-const flatTreeEntries = computed((): FlatTreeEntry[] => {
-  const allEntries = filteredAndSortedEntries.value
-
-  // Flat mode: grouping active, or sub-item pair not seeded yet.
-  if (isGrouped.value || !subItemSchema.value) {
-    return allEntries.map(e => ({ entry: e, depth: 0 }))
-  }
-
-  const entryById = new Map(allEntries.map(e => [e.id, e]))
-  const parentMap  = subItemParentMap.value
-  const childMap   = subItemChildrenMap.value
-
-  // Root entries: those whose parent is absent from the current display set.
-  const rootEntries = allEntries.filter(e => {
-    const parentId = parentMap.get(e.id)
-    return !parentId || !entryById.has(parentId)
-  })
-
-  const result: FlatTreeEntry[] = []
-  const visited = new Set<string>() // cycle guard
-
-  function walk(entry: DatabaseEntry, depth: number): void {
-    if (visited.has(entry.id)) return
-    visited.add(entry.id)
-    result.push({ entry, depth })
-    if (foldedEntries.value.has(entry.id)) return
-    const childIds = childMap.get(entry.id) ?? []
-    const children = childIds
-      .map(id => entryById.get(id))
-      .filter((e): e is DatabaseEntry => e !== undefined)
-    // Preserve the server-side sort order among siblings.
-    children.sort((a, b) => {
-      const ai = allEntries.findIndex(e => e.id === a.id)
-      const bi = allEntries.findIndex(e => e.id === b.id)
-      return ai - bi
-    })
-    for (const child of children) walk(child, depth + 1)
-  }
-
-  for (const entry of rootEntries) walk(entry, 0)
-  return result
-})
 
 // ── Composable: view manager ──────────────────────────────────────────────────
 // queryFromActiveView is defined AFTER viewManager (it closes over activeView).
@@ -513,6 +365,36 @@ const {
   onFilterDateModeChange, onFilterDateOffsetChange,
 } = fp
 
+// ── Composable: group-by & aggregations ───────────────────────────────────────
+
+const {
+  isGrouped, tableGroups,
+  aggPickerKey, getAggregationFn, setAggregation, toggleAggPicker,
+} = useDatabaseGrouping({
+  activeView,
+  schemas,
+  entries: filteredAndSortedEntries,
+  saveViews,
+  editable,
+  t,
+})
+
+// ── Composable: sub-item tree ─────────────────────────────────────────────────
+
+const {
+  parentItemSchema,
+  subItemChildrenMap,
+  foldedEntries,
+  loadFoldState,
+  toggleFold,
+  flatTreeEntries,
+} = useSubItemTree({
+  schemas,
+  entries: filteredAndSortedEntries,
+  isGrouped,
+  storageKey: `db-fold-${props.blockId}`,
+})
+
 // ── Composable: column resize ─────────────────────────────────────────────────
 
 const resize = useColumnResize({ views, activeViewId, saveViews })
@@ -533,6 +415,17 @@ const exp = useExport({
 })
 
 const { showExportMenu, exportCSV, exportExcel, exportPDF, exportICS } = exp
+
+const EXPORTS: Record<ExportFormat, () => unknown> = {
+  csv: exportCSV,
+  excel: exportExcel,
+  pdf: exportPDF,
+  ics: exportICS,
+}
+
+function onExport(format: ExportFormat): void {
+  EXPORTS[format]()
+}
 
 // ── Derived: column order ─────────────────────────────────────────────────────
 
@@ -635,94 +528,14 @@ async function commitNameLabelRename(): Promise<void> {
   await blockStore.updateBlock(props.blockId, { content })
 }
 
-// ── Sticky header & frozen columns ────────────────────────────────────────────
+// ── Composable: sticky header & frozen columns ────────────────────────────────
 
-/**
- * Sticky column header (vertical scroll) and frozen leftmost columns
- * (horizontal scroll) for the table view.
- *
- * Frozen left-offsets are measured from the rendered header-cell widths
- * (offsetWidth, scroll-independent) rather than offsetLeft, so a re-measure
- * while the table is scrolled horizontally cannot corrupt the values. The
- * handle column is pinned (left: 0) whenever at least one column is frozen.
- */
-const theadRowEl = ref<HTMLElement | null>(null)
+const sticky = useStickyColumns({ activeView, activeViewId, orderedColumns })
 
-const stickyHeaderEnabled = computed<boolean>(() => isStickyHeaderEnabled(activeView.value))
-
-const frozenColumnCount = computed<number>(() => clampFrozenColumns(activeView.value?.frozenColumns))
-
-/** Keys of the leftmost columns to freeze, in render order. */
-const frozenColumnKeys = computed<Set<string>>(
-  () => new Set(orderedColumns.value.slice(0, frozenColumnCount.value).map(c => c.key)),
-)
-
-/** Whether the drag-handle column is pinned (true when any column is frozen). */
-const handleFrozen = computed<boolean>(() => frozenColumnCount.value > 0)
-
-/** Measured left offset (px) per frozen column key. */
-const frozenOffsets = ref<Record<string, number>>({})
-
-function measureFrozenOffsets(): void {
-  const count = frozenColumnCount.value
-  if (count === 0) {
-    if (Object.keys(frozenOffsets.value).length > 0) frozenOffsets.value = {}
-    return
-  }
-  const row = theadRowEl.value
-  if (!row) return
-  const cells = Array.from(row.children) as HTMLElement[]
-  // cells[0] = handle, cells[1..] = orderedColumns, last = add-column placeholder.
-  const next: Record<string, number> = {}
-  let acc = cells[0] ? cells[0].offsetWidth : 0
-  const cols = orderedColumns.value
-  for (let i = 0; i < count && i < cols.length; i++) {
-    next[cols[i].key] = acc
-    const cell = cells[i + 1]
-    acc += cell ? cell.offsetWidth : 0
-  }
-  frozenOffsets.value = next
-}
-
-/** Inline style (left offset) for a frozen data/header column cell. */
-function frozenColStyle(key: string): Record<string, string> {
-  if (!frozenColumnKeys.value.has(key)) return {}
-  const left = frozenOffsets.value[key]
-  return left == null ? {} : { left: `${left}px` }
-}
-
-/** True when a column is frozen AND its offset has been measured. */
-function isFrozenCol(key: string): boolean {
-  return frozenColumnKeys.value.has(key) && frozenOffsets.value[key] != null
-}
-
-/** Inline style for the pinned drag-handle column. */
-const handleFrozenStyle = computed<Record<string, string>>(
-  () => (handleFrozen.value ? { left: '0px' } : ({} as Record<string, string>)),
-)
-
-let _frozenRO: ResizeObserver | null = null
-
-function _attachFrozenObserver(): void {
-  _frozenRO?.disconnect()
-  _frozenRO = null
-  const el = theadRowEl.value
-  if (el && typeof ResizeObserver !== 'undefined') {
-    _frozenRO = new ResizeObserver(() => measureFrozenOffsets())
-    _frozenRO.observe(el)
-  }
-}
-
-// Re-measure / re-observe whenever the rendered table structure can change.
-watch(
-  () => [
-    activeViewId.value,
-    activeView.value?.viewType,
-    frozenColumnCount.value,
-    orderedColumns.value.length,
-  ] as const,
-  () => nextTick(() => { _attachFrozenObserver(); measureFrozenOffsets() }),
-)
+const {
+  theadRowEl, stickyHeaderEnabled,
+  handleFrozen, handleFrozenStyle, frozenColStyle, isFrozenCol,
+} = sticky
 
 // ── Panel / menu visibility ───────────────────────────────────────────────────
 
@@ -840,8 +653,7 @@ onMounted(async () => {
   window.addEventListener(WS_BLOCK_EVENT, _onDbEntriesUpdated)
   window.addEventListener(WS_BLOCK_EVENT, _onDbSchemaUpdated)
   window.addEventListener(WS_RESYNC_EVENT, _onResync)
-  window.addEventListener('resize', measureFrozenOffsets)
-  nextTick(() => { _attachFrozenObserver(); measureFrozenOffsets() })
+  sticky.start()
 
   // From here on, whatever changes the active view – a tab click, a new or
   // deleted view, a view removed by another client – loads its first page.
@@ -864,9 +676,7 @@ onUnmounted(() => {
   window.removeEventListener(WS_BLOCK_EVENT, _onDbEntriesUpdated)
   window.removeEventListener(WS_BLOCK_EVENT, _onDbSchemaUpdated)
   window.removeEventListener(WS_RESYNC_EVENT, _onResync)
-  window.removeEventListener('resize', measureFrozenOffsets)
-  _frozenRO?.disconnect()
-  _frozenRO = null
+  sticky.stop()
   resizeCleanup()
   if (_tipTimer) clearTimeout(_tipTimer)
   if (_nameSearchTimer) clearTimeout(_nameSearchTimer)
@@ -993,105 +803,23 @@ function onColDrop(e: DragEvent, targetKey: string) {
 
 function onColDragEnd() { colDragKey.value = null; colDropKey.value = null }
 
-// ── Row drag & drop ───────────────────────────────────────────────────────────
-//
-// Three-zone interaction per row:
-//   top 25%    → above  (sibling reorder: insert before target)
-//   middle 50% → onto   (relation: normal drop sets parent_item;
-//                         Ctrl+drop moves block as actual child)
-//   bottom 25% → below  (sibling reorder: insert after target)
+// ── Composable: row drag & drop ───────────────────────────────────────────────
 
-interface RowDropState { above: boolean; below: boolean; onto: boolean }
+const rowDrag = useRowDragDrop({
+  databaseId: props.blockId,
+  editable,
+  parentItemSchema,
+  rows: computed(() => flatTreeEntries.value.map(r => r.entry)),
+  setParent: async (childId, parentId) => {
+    await dbStore.upsertValue(props.blockId, childId, parentItemSchema.value!.id, { related_ids: [parentId] })
+  },
+  requery: () => queryFromActiveView(),
+})
 
-const rowDropStates = ref<Record<string, RowDropState>>({})
-
-function getRowDropState(id: string): RowDropState {
-  return rowDropStates.value[id] ?? { above: false, below: false, onto: false }
-}
-
-function clearRowDropState(id: string): void {
-  delete rowDropStates.value[id]
-}
-
-let _rowDragInProgress = false
-
-function onRowDragStart(e: DragEvent, entry: DatabaseEntry): void {
-  // Restrict drag initiation to the dedicated row handle element.
-  // draggable="true" now lives on the .db__row-handle span, not on the <tr>,
-  // so legitimate drags already arrive with e.target inside the handle.
-  // e.preventDefault() on non-handle events cancels the browser drag gesture
-  // and prevents it from interfering with cell click / cursor placement.
-  const handle = (e.target as HTMLElement).closest?.('.db__row-handle')
-  if (!handle || !editable.value) {
-    e.preventDefault()
-    return
-  }
-  e.stopPropagation()
-  e.dataTransfer!.effectAllowed = 'move'
-  _rowDragInProgress = true
-  drag.startDrag(entry.id, props.blockId, 'page')
-}
-
-function onRowDragEnd(entry: DatabaseEntry): void {
-  drag.endDrag()
-  clearRowDropState(entry.id)
-  setTimeout(() => { _rowDragInProgress = false }, 0)
-}
-
-function onRowDragOver(e: DragEvent, entry: DatabaseEntry): void {
-  const { blockId, dragMode } = drag.getDragging()
-  if (!blockId || dragMode === 'column' || !editable.value) return
-  e.preventDefault()
-  e.stopPropagation()
-  e.dataTransfer!.dropEffect = 'move'
-  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-  const rel  = (e.clientY - rect.top) / rect.height
-  rowDropStates.value[entry.id] =
-    rel < 0.25 ? { above: true,  below: false, onto: false }
-    : rel > 0.75 ? { above: false, below: true,  onto: false }
-    : { above: false, below: false, onto: true }
-}
-
-async function onRowDrop(e: DragEvent, entry: DatabaseEntry): Promise<void> {
-  const { blockId: draggedId, dragMode } = drag.getDragging()
-  if (!draggedId || dragMode === 'column') return
-  e.preventDefault()
-  e.stopPropagation()
-  const state = getRowDropState(entry.id)
-  clearRowDropState(entry.id)
-
-  if (state.onto && draggedId !== entry.id) {
-    // Middle-zone drop: set the dragged entry as a subitem of the target entry
-    // via the parent_item relation. No block-hierarchy reparenting occurs.
-    if (parentItemSchema.value) {
-      drag.endDrag()
-      await dbStore.upsertValue(
-        props.blockId, draggedId, parentItemSchema.value.id,
-        { related_ids: [entry.id] },
-      )
-    } else {
-      // Sub-item pair not seeded yet — fall back to plain position reorder.
-      const list = flatTreeEntries.value.map(r => r.entry)
-      const idx  = list.findIndex(r => r.id === entry.id)
-      const after = idx < list.length - 1 ? list[idx + 1].position : null
-      await drag.dropBetween(props.blockId, entry.position, after)
-    }
-    await queryFromActiveView()
-    return
-  }
-
-  // Above / below → position-based sibling reorder (existing behaviour).
-  const list = flatTreeEntries.value.map(r => r.entry)
-  const idx  = list.findIndex(r => r.id === entry.id)
-  if (state.above) {
-    const before = idx > 0 ? list[idx - 1].position : null
-    await drag.dropBetween(props.blockId, before, entry.position)
-  } else {
-    const after = idx < list.length - 1 ? list[idx + 1].position : null
-    await drag.dropBetween(props.blockId, entry.position, after)
-  }
-  await queryFromActiveView()
-}
+const {
+  getRowDropState, clearRowDropState,
+  onRowDragStart, onRowDragEnd, onRowDragOver, onRowDrop,
+} = rowDrag
 
 // ── Row context menu ──────────────────────────────────────────────────────────
 
@@ -1101,7 +829,7 @@ const rowContextMenu   = ref<RowContextMenu>({ visible: false, x: 0, y: 0, entry
 const rowContextMenuEl = ref<HTMLElement | null>(null)
 
 function openRowContextMenu(e: MouseEvent, entry: DatabaseEntry): void {
-  if (_rowDragInProgress) return
+  if (rowDrag.isRowDragInProgress()) return
   e.stopPropagation()
   rowContextMenu.value = { visible: true, x: e.clientX, y: e.clientY, entryId: entry.id }
   nextTick(() => {
@@ -1253,10 +981,6 @@ const sideViewEntryId = ref<string | null>(null)
 function openEntry(entry: DatabaseEntry) { sideViewEntryId.value = entry.id }
 function closeSideView(): void           { sideViewEntryId.value = null }
 
-async function onSideViewRefresh(): Promise<void> {
-  await queryFromActiveView()
-}
-
 // ── Active cell ───────────────────────────────────────────────────────────────
 
 interface ActiveCell { entryId: string; schemaId: string }
@@ -1309,140 +1033,7 @@ async function handleRelationChange(
   await dbStore.upsertValue(props.blockId, entry.id, schema.id, value)
 }
 
-// ── Add row ───────────────────────────────────────────────────────────────────
-
-const isAddingRow = ref(false)
-
-function deriveInitialValuesFromFilters(): {
-  values: Record<string, Record<string, unknown>>
-  name: string | null
-} {
-  const view = activeView.value
-  if (!view || view.filterGroups.length === 0) return { values: {}, name: null }
-
-  const SKIP_TYPES = new Set([
-    'id', 'created_by', 'created_time', 'last_edited_by', 'last_edited_time',
-    'formula', 'rollup', 'file',
-  ])
-
-  function todayISO(): string { return new Date().toISOString().slice(0, 10) }
-  function shiftDate(iso: string, days: number): string {
-    const d = new Date(iso + 'T00:00:00')
-    d.setDate(d.getDate() + days)
-    return d.toISOString().slice(0, 10)
-  }
-  function resolveDateRef(filter: ViewFilter): string | null {
-    const mode  = filter.dateMode ?? 'exact'
-    const today = todayISO()
-    if (mode === 'today')    return today
-    if (mode === 'relative') return shiftDate(today, filter.dateOffset ?? 0)
-    return filter.value || null
-  }
-
-  function deriveFilterValue(filter: ViewFilter): Record<string, unknown> | null {
-    const { schemaId, operator, value } = filter
-    if (schemaId === NAME_COL_KEY) return null
-    const schema = schemas.value.find((s) => s.id === schemaId)
-    if (!schema || SKIP_TYPES.has(schema.type)) return null
-    const today = todayISO()
-    switch (schema.type) {
-      case 'text':
-      case 'email':
-      case 'phone':
-      case 'url': {
-        if (!value || !['eq', 'contains', 'starts_with'].includes(operator)) return null
-        const key = schema.type === 'text' ? 'text' : 'value'
-        return { [key]: value }
-      }
-      case 'number': {
-        const num = parseFloat(value)
-        if (isNaN(num)) return null
-        if (operator === 'eq' || operator === 'gte' || operator === 'lte') return { number: num }
-        if (operator === 'gt') return { number: num + 1 }
-        if (operator === 'lt') return { number: num - 1 }
-        return null
-      }
-      case 'checkbox':
-        if (operator === 'eq') return { checked: value === 'true' }
-        return null
-      case 'select': {
-        const isMulti = (schema.config?.mode as string | undefined) === 'multiple'
-        if (isMulti) {
-          if (operator === 'contains' && value) return { options: [value] }
-          return null
-        }
-        if (operator === 'eq' && value) return { option: value }
-        return null
-      }
-      case 'relation':
-        if (operator === 'contains' && value) return { related_ids: [value] }
-        return null
-      case 'date': {
-        const presetMap: Partial<Record<FilterOperator, string>> = {
-          past_week:  shiftDate(today, -1),
-          past_month: shiftDate(today, -1),
-          past_year:  shiftDate(today, -1),
-          this_week:  today,
-          next_week:  shiftDate(today, 1),
-          next_month: shiftDate(today, 1),
-          next_year:  shiftDate(today, 1),
-        }
-        if (operator in presetMap) return { start: presetMap[operator as keyof typeof presetMap]! }
-        if (operator === 'between') {
-          const ref = filter.value || null
-          if (!ref) return null
-          return { start: ref }
-        }
-        const ref = resolveDateRef(filter)
-        if (!ref) return null
-        if (operator === 'eq' || operator === 'gte' || operator === 'lte') return { start: ref }
-        if (operator === 'gt') return { start: shiftDate(ref, 1) }
-        if (operator === 'lt') return { start: shiftDate(ref, -1) }
-        return null
-      }
-      default: return null
-    }
-  }
-
-  function deriveNameValue(filter: ViewFilter): string | null {
-    if (!['eq', 'contains', 'starts_with'].includes(filter.operator)) return null
-    return filter.value || null
-  }
-
-  const result: Record<string, Record<string, unknown>> = {}
-  let derivedName: string | null = null
-
-  for (const group of view.filterGroups) {
-    if (group.conjunction === 'and') {
-      for (const filter of group.filters) {
-        if (filter.schemaId === NAME_COL_KEY) {
-          if (derivedName === null) derivedName = deriveNameValue(filter)
-          continue
-        }
-        if (result[filter.schemaId] !== undefined) continue
-        const v = deriveFilterValue(filter)
-        if (v !== null) result[filter.schemaId] = v
-      }
-    } else {
-      let picked = false
-      for (const filter of group.filters) {
-        if (picked) break
-        if (filter.schemaId === NAME_COL_KEY) {
-          if (derivedName === null) {
-            const n = deriveNameValue(filter)
-            if (n !== null) { derivedName = n; picked = true }
-          }
-          continue
-        }
-        if (result[filter.schemaId] !== undefined) { picked = true; continue }
-        const v = deriveFilterValue(filter)
-        if (v !== null) { result[filter.schemaId] = v; picked = true }
-      }
-    }
-  }
-
-  return { values: result, name: derivedName }
-}
+// ── Composable: add row ───────────────────────────────────────────────────────
 
 // Column types whose cell opens an inline editor when activated, and can
 // therefore take the focus of a freshly created row.
@@ -1483,236 +1074,16 @@ async function focusNewEntry(entryId: string, derivedName: string | null): Promi
   document.querySelector<HTMLElement>(`[data-entry-id="${entryId}"]`)?.scrollIntoView({ block: 'nearest' })
 }
 
-async function addRow() {
-  if (isAddingRow.value || !editable.value) return
-  isAddingRow.value = true
-  try {
-    const { values, name } = deriveInitialValuesFromFilters()
-    const created = await dbStore.createEntry(props.blockId)
-    if (Object.keys(values).length > 0) {
-      await Promise.all(
-        Object.entries(values).map(([schemaId, value]) =>
-          dbStore.upsertValue(props.blockId, created.id, schemaId, value),
-        ),
-      )
-    }
-    await queryFromActiveView()
-    await focusNewEntry(created.id, name)
-  } finally {
-    isAddingRow.value = false
-  }
-}
-
-async function addRowOnDate(dateStr: string): Promise<void> {
-  const view = activeView.value
-  if (!view?.calendarDateSchemaId) return
-  if (isAddingRow.value || !editable.value) return
-  isAddingRow.value = true
-  try {
-    const { values } = deriveInitialValuesFromFilters()
-    const created    = await dbStore.createEntry(props.blockId)
-    const merged: Record<string, Record<string, unknown>> = { ...values }
-    merged[view.calendarDateSchemaId] = { start: dateStr, end: dateStr }
-    await Promise.all(
-      Object.entries(merged).map(([schemaId, value]) =>
-        dbStore.upsertValue(props.blockId, created.id, schemaId, value),
-      ),
-    )
-    await queryFromActiveView()
-  } finally {
-    isAddingRow.value = false
-  }
-}
-
-// ── Group-by feature ──────────────────────────────────────────────────────────
-
-const groupBySchema = computed<PropertySchema | null>(() => {
-  const id = activeView.value?.groupBySchemaId
-  if (!id) return null
-  return schemas.value.find(s => s.id === id) ?? null
+const { isAddingRow, addRow, addGroupRow, addRowOnDate } = useAddRow({
+  databaseId: props.blockId,
+  activeView,
+  schemas,
+  editable,
+  createEntry: () => dbStore.createEntry(props.blockId),
+  writeValue: (entryId, schemaId, value) => dbStore.upsertValue(props.blockId, entryId, schemaId, value),
+  requery: () => queryFromActiveView(),
+  onCreated: focusNewEntry,
 })
-
-const isGrouped = computed<boolean>(() =>
-  (activeView.value?.viewType === 'table' || !activeView.value) &&
-  groupBySchema.value !== null,
-)
-
-const aggPickerKey = ref<string | null>(null)
-
-function setAggregation(colKey: string, fn: AggregationType): void {
-  const view = activeView.value
-  if (!view) return
-  view.columnAggregations = { ...view.columnAggregations, [colKey]: fn }
-  saveViews()
-  aggPickerKey.value = null
-}
-
-/** Open or close the aggregation picker *key*; offered with write access only. */
-function toggleAggPicker(key: string): void {
-  if (!editable.value) return
-  aggPickerKey.value = aggPickerKey.value === key ? null : key
-}
-
-function aggOptionsForCol(schema: PropertySchema | null): AggregationType[] {
-  const isNum = schema?.type === 'number' || schema?.type === 'formula'
-  const base: AggregationType[] = ['none', 'count']
-  if (isNum) base.push('sum', 'avg', 'min', 'max')
-  return base
-}
-
-interface TableGroup {
-  key: string
-  label: string
-  entries: DatabaseEntry[]
-  groupValue: Record<string, unknown> | null
-}
-
-function getEntryGroupKey(entry: DatabaseEntry, schema: PropertySchema): string {
-  const val = entry.values[schema.id]
-  if (!val) return ''
-  switch (schema.type) {
-    case 'select': {
-      // Option ids; a combination of options forms a group of its own.
-      const mode = (schema.config?.mode as string | undefined) ?? 'single'
-      if (mode === 'multiple') {
-        const opts = (val.options as string[] | undefined) ?? []
-        return [...opts].sort().join('\x00')
-      }
-      return (val.option as string | undefined) ?? ''
-    }
-    case 'text':    return (val.text   as string | undefined) ?? ''
-    case 'number':  return val.number != null ? String(val.number) : ''
-    case 'checkbox': return String(val.checked ?? false)
-    case 'email':
-    case 'phone':
-    case 'url':     return (val.value as string | undefined) ?? ''
-    default:        return ''
-  }
-}
-
-function groupKeyToValue(key: string, schema: PropertySchema): Record<string, unknown> | null {
-  if (!key) return null
-  switch (schema.type) {
-    case 'select': {
-      const mode = (schema.config?.mode as string | undefined) ?? 'single'
-      if (mode === 'multiple') return { options: key.split('\x00') }
-      return { option: key }
-    }
-    case 'text':     return { text: key }
-    case 'number':   return { number: parseFloat(key) }
-    case 'checkbox': return { checked: key === 'true' }
-    case 'email':
-    case 'phone':
-    case 'url':      return { value: key }
-    default:         return null
-  }
-}
-
-const tableGroups = computed<TableGroup[]>(() => {
-  const schema = groupBySchema.value
-  if (!schema) return []
-
-  const groupMap = new Map<string, TableGroup>()
-
-  const options = schema.type === 'select' ? schemaOptions(schema) : []
-
-  /** What a group key reads as: option labels for select, else the key. */
-  function groupLabel(key: string): string {
-    if (key === '') return t('db.groupBy.ungrouped')
-    if (schema!.type === 'checkbox') {
-      return key === 'true' ? t('db.filter.checkboxTrue') : t('db.filter.checkboxFalse')
-    }
-    if (schema!.type === 'select') {
-      return key.split('\x00').map(id => optionLabel(options, id)).filter(Boolean).join(', ')
-        || t('db.groupBy.ungrouped')
-    }
-    return key
-  }
-
-  for (const entry of filteredAndSortedEntries.value) {
-    const key = getEntryGroupKey(entry, schema)
-    if (!groupMap.has(key)) {
-      const label = groupLabel(key)
-      groupMap.set(key, { key, label, entries: [], groupValue: groupKeyToValue(key, schema) })
-    }
-    groupMap.get(key)!.entries.push(entry)
-  }
-
-  let orderedKeys: string[]
-  if (schema.type === 'select' && (schema.config?.mode as string | undefined) !== 'multiple') {
-    const optionIds = options.map(o => o.id)
-    orderedKeys = [
-      ...optionIds.filter(id => groupMap.has(id)),
-      ...[...groupMap.keys()].filter(k => k !== '' && !optionIds.includes(k)),
-      ...([''].filter(k => groupMap.has(k))),
-    ]
-  } else {
-    orderedKeys = [
-      ...[...groupMap.keys()].filter(k => k !== ''),
-      ...([''].filter(k => groupMap.has(k))),
-    ]
-  }
-
-  return orderedKeys.map(k => groupMap.get(k)!).filter(Boolean)
-})
-
-// ── Aggregation helpers ───────────────────────────────────────────────────────
-
-const AGG_BADGES: Record<AggregationType, string> = {
-  none: '', count: 'CNT', sum: 'SUM', avg: 'AVG', min: 'MIN', max: 'MAX',
-}
-
-function getAggregationFn(colKey: string): AggregationType {
-  return (activeView.value?.columnAggregations?.[colKey] as AggregationType | undefined) ?? 'none'
-}
-
-function getAggregationBadge(fn: AggregationType): string { return AGG_BADGES[fn] ?? '' }
-
-function _formatAggNum(n: number, schema: PropertySchema | null): string {
-  const raw = Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '')
-  if (schema?.type === 'number' && (schema.config?.format as string | undefined) === 'euro') {
-    return `${raw} \u20ac`
-  }
-  return raw
-}
-
-function computeAggregation(
-  entries: DatabaseEntry[],
-  colKey: string,
-  schema: PropertySchema | null,
-  fn: AggregationType,
-): string {
-  if (fn === 'none') return ''
-  if (fn === 'count') {
-    const nonEmpty = entries.filter(e => {
-      if (colKey === NAME_COL_KEY) return !!((e.content?.title as string | undefined) ?? '').trim()
-      return e.values[schema!.id] != null
-    })
-    return String(nonEmpty.length)
-  }
-  const numbers: number[] = []
-  for (const entry of entries) {
-    let n: number | null = null
-    if (schema?.type === 'number') {
-      const val = entry.values[schema.id]
-      const raw = val?.number
-      if (typeof raw === 'number' && !isNaN(raw)) n = raw
-    } else if (schema?.type === 'formula') {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const val = entry.values[schema.id] as any
-      if (typeof val?.result === 'number' && !isNaN(val.result)) n = val.result
-    }
-    if (n !== null) numbers.push(n)
-  }
-  if (numbers.length === 0) return ''
-  switch (fn) {
-    case 'sum': return _formatAggNum(numbers.reduce((a, b) => a + b, 0), schema)
-    case 'avg': return _formatAggNum(numbers.reduce((a, b) => a + b, 0) / numbers.length, schema)
-    case 'min': return _formatAggNum(Math.min(...numbers), schema)
-    case 'max': return _formatAggNum(Math.max(...numbers), schema)
-    default:    return ''
-  }
-}
 
 // ── Wrap column toggle ────────────────────────────────────────────────────────
 
@@ -1737,29 +1108,6 @@ async function toggleWrapColumn(colKey: string): Promise<void> {
     ? current.filter(k => k !== colKey)
     : [...current, colKey]
   await saveViews()
-}
-
-async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<void> {
-  if (isAddingRow.value || !editable.value) return
-  isAddingRow.value = true
-  try {
-    const { values, name } = deriveInitialValuesFromFilters()
-    const created          = await dbStore.createEntry(props.blockId)
-    const merged: Record<string, Record<string, unknown>> = { ...values }
-    const groupSchemaId = activeView.value?.groupBySchemaId
-    if (groupValue && groupSchemaId) merged[groupSchemaId] = groupValue
-    if (Object.keys(merged).length > 0) {
-      await Promise.all(
-        Object.entries(merged).map(([schemaId, value]) =>
-          dbStore.upsertValue(props.blockId, created.id, schemaId, value),
-        ),
-      )
-    }
-    await queryFromActiveView()
-    await focusNewEntry(created.id, name)
-  } finally {
-    isAddingRow.value = false
-  }
 }
 </script>
 
@@ -1802,255 +1150,82 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
       </div>
 
       <!-- ── View tabs ──────────────────────────────────────────────────── -->
-      <div class="db__tabs" @click.stop>
-        <div
-          v-for="view in views"
-          :key="view.id"
-          class="db__tab"
-          :class="{
-            'db__tab--active':    view.id === activeViewId,
-            'db__tab--dragging':  tabDragId === view.id,
-            'db__tab--drag-over': tabDropId === view.id,
-          }"
-          :draggable="editable"
-          @dragstart="onTabDragStart($event, view.id)"
-          @dragover="onTabDragOver($event, view.id)"
-          @dragleave="onTabDragLeave(view.id)"
-          @drop="onTabDrop($event, view.id)"
-          @dragend="onTabDragEnd"
-        >
-          <input
-            v-if="renamingViewId === view.id"
-            class="db__tab-rename-input"
-            v-model="viewNameDraft"
-            @blur="commitRenameView(view.id)"
-            @keydown.enter.prevent="commitRenameView(view.id)"
-            @keydown.escape.prevent="cancelRenameView"
-            @click.stop
-          />
-          <span
-            v-else
-            class="db__tab-label"
-            @click="switchView(view.id)"
-            @dblclick.stop="editable && startRenameView(view.id)"
-          >
-            <Icon :icon="viewTypeIcon(view.viewType)" width="12" height="12" class="db__tab-type-icon" />
-            {{ viewDisplayName(view, t) }}
-          </span>
-          <div v-if="editable" class="db__tab-menu-wrap">
-            <button
-              class="db__tab-menu"
-              :title="t('db.views.viewMenu')"
-              @click.stop="openViewTabMenu(view.id, $event)"
-            >
-              <Icon icon="mdi:dots-grid" width="12" height="12" />
-            </button>
-          </div>
-        </div>
-
-        <button v-if="editable" class="db__tabs-add" :title="t('db.views.addView')" @click.stop="addView">
-          <Icon icon="mdi:plus" width="14" height="14" />
-        </button>
-      </div>
+      <DatabaseViewTabs
+        v-model:name-draft="viewNameDraft"
+        :views="views"
+        :active-view-id="activeViewId"
+        :renaming-view-id="renamingViewId"
+        :tab-drag-id="tabDragId"
+        :tab-drop-id="tabDropId"
+        @switch="switchView"
+        @start-rename="startRenameView"
+        @commit-rename="commitRenameView"
+        @cancel-rename="cancelRenameView"
+        @open-menu="openViewTabMenu"
+        @add="addView"
+        @tab-drag-start="onTabDragStart"
+        @tab-drag-over="onTabDragOver"
+        @tab-drag-leave="onTabDragLeave"
+        @tab-drop="onTabDrop"
+        @tab-drag-end="onTabDragEnd"
+      />
 
       <!-- ── Toolbar ────────────────────────────────────────────────────── -->
-      <div class="db__toolbar" @click.stop>
-        <div class="db__toolbar-left">
-
-          <ReadOnlyBadge v-if="!editable && inline" />
-
-          <!-- Filter, sort, view settings, automations and templates change
-               the database or its views, so they need write access. -->
-          <template v-if="editable">
-
-          <!-- Filter -->
-          <div class="db__toolbar-item">
-            <button
-              class="db__toolbar-btn"
-              :class="{ 'db__toolbar-btn--active': showFilterPanel || filterCount > 0 }"
-              @click.stop="showFilterPanel = !showFilterPanel; showSortPanel = false; showExportMenu = false; showTemplatesModal = false"
-            >
-              <Icon icon="mdi:filter-outline" width="14" height="14" />
-              {{ t('db.filter.title') }}
-              <span v-if="filterCount > 0" class="db__toolbar-badge">{{ filterCount }}</span>
-            </button>
-            <FilterPanel
-              v-if="showFilterPanel"
-              :active-view="activeView"
-              :schemas="schemas"
-              :displayed-entries="displayedEntries"
-              :name-col-key="NAME_COL_KEY"
-              :name-label="nameLabel"
-              @group-conjunction-change="onGroupConjunctionChange"
-              @remove-group="removeGroup"
-              @filter-schema-change="onFilterSchemaChange"
-              @filter-operator-change="onFilterOperatorChange"
-              @filter-value-change="onFilterValueChange"
-              @filter-value2-change="onFilterValue2Change"
-              @filter-date-mode-change="onFilterDateModeChange"
-              @filter-date-offset-change="onFilterDateOffsetChange"
-              @remove-filter="removeFilter"
-              @add-filter="addFilter"
-              @add-group="addGroup"
-            />
-          </div>
-
-          <!-- Sort -->
-          <div class="db__toolbar-item">
-            <button
-              class="db__toolbar-btn"
-              :class="{ 'db__toolbar-btn--active': showSortPanel || sortCount > 0 }"
-              @click.stop="showSortPanel = !showSortPanel; showFilterPanel = false; showExportMenu = false; showTemplatesModal = false"
-            >
-              <Icon icon="mdi:sort" width="14" height="14" />
-              {{ t('db.sort.title') }}
-              <span v-if="sortCount > 0" class="db__toolbar-badge">{{ sortCount }}</span>
-            </button>
-            <SortPanel
-              v-if="showSortPanel"
-              :active-view="activeView"
-              :schemas="schemas"
-              :name-col-key="NAME_COL_KEY"
-              :name-label="nameLabel"
-              @add-sort="addSort"
-              @remove-sort="removeSort"
-              @sort-schema-change="onSortSchemaChange"
-              @sort-direction-change="onSortDirectionChange"
-            />
-          </div>
-
-          <!-- View settings -->
-          <div class="db__toolbar-item">
-            <button
-              class="db__toolbar-btn"
-              :title="t('db.viewSettings.title')"
-              @click.stop="showTemplatesModal = false; openViewSettings(activeViewId, $event)"
-            >
-              <Icon icon="mdi:cog-outline" width="14" height="14" />
-              {{ t('db.viewSettings.title') }}
-            </button>
-          </div>
-
-          <!-- Automations -->
-          <div class="db__toolbar-item">
-            <button
-              class="db__toolbar-btn"
-              :class="{ 'db__toolbar-btn--active': showAutomationsModal }"
-              :title="t('automations.title')"
-              @click.stop="showAutomationsModal = !showAutomationsModal; showFilterPanel = false; showSortPanel = false; showExportMenu = false; showTemplatesModal = false"
-            >
-              <Icon icon="mdi:lightning-bolt-outline" width="14" height="14" />
-              {{ t('automations.title') }}
-            </button>
-          </div>
-
-          <!-- Templates -->
-          <div class="db__toolbar-item">
-            <button
-              class="db__toolbar-btn"
-              :class="{ 'db__toolbar-btn--active': showTemplatesModal }"
-              :title="t('db.templates.manage')"
-              @click.stop="showTemplatesModal = !showTemplatesModal; showFilterPanel = false; showSortPanel = false; showExportMenu = false; showAutomationsModal = false"
-            >
-              <Icon icon="mdi:file-document-multiple-outline" width="14" height="14" />
-              {{ t('db.templates.title') }}
-            </button>
-            <!-- Template manager dropdown -->
-            <div v-if="showTemplatesModal" class="db__panel db__panel--template-manager" @click.stop>
-              <TemplateManagerPanel
-                :database-id="blockId"
-                @edit-template="(id) => { editingTemplateId = id; showTemplatesModal = false }"
-                @close="showTemplatesModal = false"
-              />
-            </div>
-          </div>
-
-          </template>
-
-        </div>
-
-        <div class="db__toolbar-right">
-          <!-- Name search -->
-          <div class="db__toolbar-item">
-            <button
-              v-if="!nameSearchActive"
-              class="db__toolbar-btn db__toolbar-btn--icon"
-              @mouseenter="showTip($event, t('db.search.open'))"
-              @mouseleave="hideTip"
-              @click.stop="hideTip(); showTemplatesModal = false; toggleNameSearch()"
-            >
-              <Icon icon="mdi:magnify" width="14" height="14" />
-            </button>
-            <div v-else class="db__search-field">
-              <Icon icon="mdi:magnify" width="14" height="14" class="db__search-icon" />
-              <input
-                ref="searchInputEl"
-                v-model="nameSearchQuery"
-                type="text"
-                class="db__search-input"
-                :placeholder="t('db.search.placeholder')"
-                @keydown.escape="toggleNameSearch()"
-                @blur="onSearchBlur"
-              />
-              <button
-                class="db__search-clear"
-                :title="t('db.search.clear')"
-                @mousedown.prevent
-                @click.stop="clearNameSearch()"
-              >
-                <Icon icon="mdi:close" width="13" height="13" />
-              </button>
-            </div>
-          </div>
-
-          <!-- New entry (table view only) -->
-          <div v-if="editable && (!activeView || activeView.viewType === 'table')" class="db__toolbar-item">
-            <button
-              class="db__toolbar-btn db__toolbar-btn--new-entry db__toolbar-btn--icon"
-              :disabled="isAddingRow"
-              @mouseenter="showTip($event, hasMore ? t('db.addRowLimitHint') : t('db.addRow'))"
-              @mouseleave="hideTip"
-              @click.stop="hideTip(); showTemplatesModal = false; addRow()"
-            >
-              <Icon icon="mdi:plus" width="14" height="14" />
-            </button>
-          </div>
-
-          <!-- Export -->
-          <div class="db__toolbar-item">
-            <button
-              class="db__toolbar-btn db__toolbar-btn--icon"
-              @mouseenter="showTip($event, t('db.export.title'))"
-              @mouseleave="hideTip"
-              @click.stop="hideTip(); showExportMenu = !showExportMenu; showFilterPanel = false; showSortPanel = false; showTemplatesModal = false"
-            >
-              <Icon icon="mdi:tray-arrow-up" width="14" height="14" />
-            </button>
-            <div v-if="showExportMenu" class="db__panel db__panel--right" @click.stop>
-              <template v-if="isCalendarView">
-                <button class="db__panel-action" @click="exportICS">
-                  <Icon icon="mdi:calendar-export-outline" width="14" height="14" />
-                  {{ t('db.export.ics') }}
-                </button>
-              </template>
-              <template v-else>
-                <button class="db__panel-action" @click="exportCSV">
-                  <Icon icon="mdi:file-delimited-outline" width="14" height="14" />
-                  {{ t('db.export.csv') }}
-                </button>
-                <button class="db__panel-action" @click="exportExcel">
-                  <Icon icon="mdi:microsoft-excel" width="14" height="14" />
-                  {{ t('db.export.excel') }}
-                </button>
-                <button class="db__panel-action" @click="exportPDF">
-                  <Icon icon="mdi:file-pdf-box" width="14" height="14" />
-                  {{ t('db.export.pdf') }}
-                </button>
-              </template>
-            </div>
-          </div>
-        </div>
-      </div>
+      <DatabaseToolbar
+        v-model:show-filter-panel="showFilterPanel"
+        v-model:show-sort-panel="showSortPanel"
+        v-model:show-export-menu="showExportMenu"
+        v-model:show-templates-modal="showTemplatesModal"
+        v-model:show-automations-modal="showAutomationsModal"
+        v-model:search-query="nameSearchQuery"
+        :database-id="blockId"
+        :inline="inline"
+        :filter-count="filterCount"
+        :sort-count="sortCount"
+        :is-calendar-view="isCalendarView"
+        :show-new-entry="!activeView || activeView.viewType === 'table'"
+        :has-more="hasMore"
+        :is-adding-row="isAddingRow"
+        @open-view-settings="openViewSettings(activeViewId, $event)"
+        @add-row="addRow"
+        @export="onExport"
+        @edit-template="editingTemplateId = $event"
+        @show-tip="showTip"
+        @hide-tip="hideTip"
+      >
+        <template #filter-panel>
+          <FilterPanel
+            :active-view="activeView"
+            :schemas="schemas"
+            :displayed-entries="displayedEntries"
+            :name-col-key="NAME_COL_KEY"
+            :name-label="nameLabel"
+            @group-conjunction-change="onGroupConjunctionChange"
+            @remove-group="removeGroup"
+            @filter-schema-change="onFilterSchemaChange"
+            @filter-operator-change="onFilterOperatorChange"
+            @filter-value-change="onFilterValueChange"
+            @filter-value2-change="onFilterValue2Change"
+            @filter-date-mode-change="onFilterDateModeChange"
+            @filter-date-offset-change="onFilterDateOffsetChange"
+            @remove-filter="removeFilter"
+            @add-filter="addFilter"
+            @add-group="addGroup"
+          />
+        </template>
+        <template #sort-panel>
+          <SortPanel
+            :active-view="activeView"
+            :schemas="schemas"
+            :name-col-key="NAME_COL_KEY"
+            :name-label="nameLabel"
+            @add-sort="addSort"
+            @remove-sort="removeSort"
+            @sort-schema-change="onSortSchemaChange"
+            @sort-direction-change="onSortDirectionChange"
+          />
+        </template>
+      </DatabaseToolbar>
 
       <!-- ── View description ───────────────────────────────────────────── -->
       <!--
@@ -2426,19 +1601,19 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                   >
                     <div class="db__agg-inner">
                       <template v-if="getAggregationFn(col.key) !== 'none'">
-                        <span class="db__agg-badge">{{ getAggregationBadge(getAggregationFn(col.key)) }}</span>
+                        <span class="db__agg-badge">{{ aggregationBadge(getAggregationFn(col.key)) }}</span>
                         <span class="db__agg-value">{{ computeAggregation(filteredAndSortedEntries, col.key, col.schema, getAggregationFn(col.key)) }}</span>
                       </template>
                       <span v-else-if="editable" class="db__agg-plus"><Icon icon="mdi:plus" width="11" height="11" /></span>
                       <div v-if="aggPickerKey === ('flat:' + col.key)" class="db__agg-picker" @click.stop>
                         <button
-                          v-for="opt in aggOptionsForCol(col.schema)"
+                          v-for="opt in aggregationOptions(col.schema)"
                           :key="opt"
                           class="db__agg-picker-opt"
                           :class="{ 'db__agg-picker-opt--active': getAggregationFn(col.key) === opt }"
                           @click="setAggregation(col.key, opt)"
                         >
-                          {{ opt === 'none' ? t('db.viewSettings.aggNone') : getAggregationBadge(opt) }}
+                          {{ opt === 'none' ? t('db.viewSettings.aggNone') : aggregationBadge(opt) }}
                         </button>
                       </div>
                     </div>
@@ -2619,19 +1794,19 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                     >
                       <div class="db__agg-inner">
                         <template v-if="getAggregationFn(col.key) !== 'none'">
-                          <span class="db__agg-badge">{{ getAggregationBadge(getAggregationFn(col.key)) }}</span>
+                          <span class="db__agg-badge">{{ aggregationBadge(getAggregationFn(col.key)) }}</span>
                           <span class="db__agg-value">{{ computeAggregation(group.entries, col.key, col.schema, getAggregationFn(col.key)) }}</span>
                         </template>
                         <span v-else-if="editable" class="db__agg-plus"><Icon icon="mdi:plus" width="11" height="11" /></span>
                         <div v-if="aggPickerKey === (group.key + ':' + col.key)" class="db__agg-picker" @click.stop>
                           <button
-                            v-for="opt in aggOptionsForCol(col.schema)"
+                            v-for="opt in aggregationOptions(col.schema)"
                             :key="opt"
                             class="db__agg-picker-opt"
                             :class="{ 'db__agg-picker-opt--active': getAggregationFn(col.key) === opt }"
                             @click="setAggregation(col.key, opt)"
                           >
-                            {{ opt === 'none' ? t('db.viewSettings.aggNone') : getAggregationBadge(opt) }}
+                            {{ opt === 'none' ? t('db.viewSettings.aggNone') : aggregationBadge(opt) }}
                           </button>
                         </div>
                       </div>
@@ -2794,7 +1969,6 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
       :database-id="blockId"
       :entry-id="sideViewEntryId"
       @close="closeSideView"
-      @refresh="onSideViewRefresh"
     />
 
     <!-- ── Automations modal ─────────────────────────────────────────────── -->

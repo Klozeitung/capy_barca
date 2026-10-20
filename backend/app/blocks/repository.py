@@ -110,7 +110,7 @@ def resolve_filter_descriptor(
     skip the (stale) condition.
 
     This is the single resolution path shared by the database query endpoint
-    (database_router.query_entries) and the automation bulk-action engine
+    (database_entries_router.query_entries) and the automation bulk-action engine
     (automations_engine._handle_bulk_upsert_value), so a stored filter spec is
     interpreted identically no matter which subsystem evaluates it.
 
@@ -333,6 +333,262 @@ def _text_operator_clause(expr, operator: str, value: str):
     return None
 
 
+class _CorrelatedValue:
+    """
+    The stored value of one property for the entry being filtered.
+
+    Every clause built from it is a correlated subquery on its own
+    ``PropertyValue`` alias, so filters stay independent of each other and no
+    join fanout occurs between them.
+    """
+
+    def __init__(self, schema_uuid: uuid.UUID) -> None:
+        self.pv = aliased(PropertyValue)
+        self.schema_uuid = schema_uuid
+
+    @property
+    def value(self):
+        """The JSONB value column."""
+        return self.pv.value
+
+    def base(self):
+        """A fresh correlated subquery base: the row of this property, if any."""
+        return (
+            select(1)
+            .where(self.pv.page_id == Block.id)
+            .where(self.pv.property_schema_id == self.schema_uuid)
+        )
+
+
+def _not_empty_array(cv: _CorrelatedValue, key: str):
+    """Subquery base: the value holds a non-empty JSON array under *key*."""
+    arr_str = cv.value[key].as_string()
+    return (
+        cv.base()
+        .where(cv.value.is_not(None))
+        .where(arr_str.is_not(None))
+        .where(arr_str != '[]')
+    )
+
+
+def _emptiness_clause(f: FilterDescriptor, schema_type: str, is_multi: bool, cv: _CorrelatedValue):
+    """``is_empty`` / ``is_not_empty`` for every property type."""
+    if schema_type == 'relation':
+        # A plain relation is non-empty with a non-empty related_ids list, a
+        # timeline relation with a non-trivial _timeline (its pool-based value).
+        timeline_str = cv.value['_timeline'].as_string()
+        timeline_not_empty = (
+            cv.base()
+            .where(cv.value.is_not(None))
+            .where(timeline_str.is_not(None))
+            .where(timeline_str != '{}')
+        )
+        not_empty = or_(
+            _not_empty_array(cv, 'related_ids').exists(),
+            timeline_not_empty.exists(),
+        )
+    elif is_multi:
+        not_empty = _not_empty_array(cv, 'options').exists()
+    elif schema_type == 'file':
+        not_empty = _not_empty_array(cv, 'files').exists()
+    else:
+        val_str = cv.value[_value_key(schema_type)].as_string()
+        not_empty = (
+            cv.base()
+            .where(cv.value.is_not(None))
+            .where(val_str.is_not(None))
+            .where(val_str != '')
+            .exists()
+        )
+    return (~not_empty) if f.operator == 'is_empty' else not_empty
+
+
+def _date_clause(f: FilterDescriptor, cv: _CorrelatedValue, raw_expr, date_expr):
+    """
+    Date operators on a stored ISO string *raw_expr*, compared through
+    *date_expr* (the date part of it).
+
+    Presets cover a range relative to today, ``between`` an explicit inclusive
+    range, and the point comparisons a reference date from ``date_mode``.
+    """
+    if f.operator in _PRESET_OPERATORS:
+        preset = _preset_range_iso(f.operator)
+        if preset is None:
+            return None
+        start_iso, end_iso = preset
+        return (
+            cv.base()
+            .where(raw_expr.is_not(None))
+            .where(date_expr >= start_iso)
+            .where(date_expr <= end_iso)
+            .exists()
+        )
+
+    if f.operator == 'between':
+        start_iso = f.value or None
+        end_iso = f.value2 or None
+        if not start_iso or not end_iso:
+            # An incomplete range must not pass every entry through; a
+            # guaranteed-false expression excludes the rows instead.
+            return false()
+        return (
+            cv.base()
+            .where(raw_expr.is_not(None))
+            .where(date_expr >= start_iso)
+            .where(date_expr <= end_iso)
+            .exists()
+        )
+
+    ref = _ref_date_iso(f.date_mode, f.date_offset, f.value)
+    if not ref:
+        return None
+    op_map = {
+        'eq': date_expr == ref,
+        'gt': date_expr > ref,
+        'gte': date_expr >= ref,
+        'lt': date_expr < ref,
+        'lte': date_expr <= ref,
+    }
+    cond = op_map.get(f.operator)
+    if cond is None:
+        return None
+    return cv.base().where(raw_expr.is_not(None)).where(cond).exists()
+
+
+def _date_property_clause(f: FilterDescriptor, schema_type: str, cv: _CorrelatedValue):
+    """Date operators on a date property or a creation / edit timestamp."""
+    date_key = 'start' if schema_type == 'date' else 'datetime'
+    raw_expr = cv.value[date_key].as_string()
+    # Timestamps carry a time part (YYYY-MM-DDTHH:…); compare their date prefix.
+    date_expr = func.substr(raw_expr, 1, 10) if schema_type != 'date' else raw_expr
+    return _date_clause(f, cv, raw_expr, date_expr)
+
+
+def _relation_contains_clause(f: FilterDescriptor, cv: _CorrelatedValue):
+    """
+    ``contains`` / ``not_contains`` of one entry id, in a plain relation's
+    related_ids and anywhere in a timeline relation's _timeline. Matches the
+    quoted id in the JSON text, so no database-specific operators are needed.
+    """
+    if not f.value:
+        return None
+    needle = f'%"{f.value}"%'
+    has_id_plain = (
+        cv.base()
+        .where(cv.value.is_not(None))
+        .where(cv.value['related_ids'].as_string().like(needle))
+    )
+    has_id_timeline = (
+        cv.base()
+        .where(cv.value.is_not(None))
+        .where(cv.value['_timeline'].as_string().like(needle))
+    )
+    has_id = or_(has_id_plain.exists(), has_id_timeline.exists())
+    return has_id if f.operator == 'contains' else ~has_id
+
+
+def _multi_select_clause(f: FilterDescriptor, cv: _CorrelatedValue):
+    """``contains`` / ``not_contains`` of one option of a multi-select."""
+    if not f.value:
+        # No option selected in the filter panel: a no-op, so the view is not
+        # cleared and "create with filter" does not make new rows disappear
+        # at once. The relation branch has the same guard.
+        return None
+    options_str = cv.value['options'].as_string()
+    # lower() on both sides makes the match case-insensitive in PostgreSQL,
+    # where LIKE is case-sensitive. The value is wrapped in its JSON quotes so
+    # that only a whole option matches.
+    option_match = _like_contains(func.lower(options_str), f'"{f.value.lower()}"')
+    if f.operator == 'contains':
+        return cv.base().where(option_match).exists()
+    if f.operator == 'not_contains':
+        return ~cv.base().where(option_match).exists()
+    return None
+
+
+def _number_clause(f: FilterDescriptor, cv: _CorrelatedValue, num_expr):
+    """Numeric comparisons on *num_expr*."""
+    try:
+        num_val = float(f.value)
+    except (ValueError, TypeError):
+        return None
+
+    # neq uses NOT EXISTS so that entries with no value also satisfy "not
+    # equal". All positive operators require the value to exist.
+    if f.operator == 'neq':
+        return ~cv.base().where(num_expr.is_not(None)).where(num_expr == num_val).exists()
+
+    op_map = {
+        'eq':  num_expr == num_val,
+        'gt':  num_expr > num_val,
+        'gte': num_expr >= num_val,
+        'lt':  num_expr < num_val,
+        'lte': num_expr <= num_val,
+    }
+    cond = op_map.get(f.operator)
+    if cond is None:
+        return None
+    return cv.base().where(num_expr.is_not(None)).where(cond).exists()
+
+
+def _boolean_clause(f: FilterDescriptor, cv: _CorrelatedValue, bool_expr):
+    """
+    ``eq`` / ``neq`` on *bool_expr*.
+
+    The false state has two representations: no row at all (a checkbox that
+    was never toggled) and a row holding false. Only a row holding true is
+    true, so false is "no row holding true". ``''`` and ``'false'`` both ask
+    for false. The JSON value is compared as a boolean rather than as the
+    strings ``->>`` yields.
+    """
+    has_true = cv.base().where(bool_expr == True).exists()  # noqa: E712
+    wants_true = f.value == 'true'
+    if f.operator == 'eq':
+        return has_true if wants_true else ~has_true
+    if f.operator == 'neq':
+        return (~has_true) if wants_true else has_true
+    return None
+
+
+def _text_clause(f: FilterDescriptor, cv: _CorrelatedValue, str_expr):
+    """
+    Text operators on the lower-cased string *str_expr*, case-insensitive.
+
+    Negative operators use NOT EXISTS so entries with no value row (or a null
+    value field) satisfy them, consistent with the frontend treating missing
+    values as empty strings. Only the subquery of the requested operator is
+    built.
+    """
+    lv = f.value.lower()
+    if f.operator == 'not_contains':
+        return ~cv.base().where(_like_contains(str_expr, lv)).exists()
+    if f.operator == 'neq':
+        return ~cv.base().where(str_expr == lv).exists()
+    if f.operator == 'contains':
+        return cv.base().where(_like_contains(str_expr, lv)).exists()
+    if f.operator == 'starts_with':
+        return cv.base().where(_like_starts_with(str_expr, lv)).exists()
+    if f.operator == 'ends_with':
+        return cv.base().where(_like_ends_with(str_expr, lv)).exists()
+    if f.operator == 'eq':
+        return cv.base().where(str_expr == lv).exists()
+    return None
+
+
+def _formula_clause(f: FilterDescriptor, cv: _CorrelatedValue):
+    """A formula filter, compared as the formula's result type."""
+    raw_expr = cv.value['result']
+    result_type = f.formula_result_type or 'text'
+    if result_type == 'number':
+        return _number_clause(f, cv, raw_expr.as_float())
+    if result_type == 'boolean':
+        return _boolean_clause(f, cv, raw_expr.as_boolean())
+    if result_type == 'date':
+        raw_str = raw_expr.as_string()
+        return _date_clause(f, cv, raw_str, func.substr(raw_str, 1, 10))
+    return _text_clause(f, cv, func.lower(raw_expr.as_string()))
+
+
 def _build_filter_clause(f: FilterDescriptor):
     """
     Return a SQLAlchemy WHERE expression for a single FilterDescriptor.
@@ -341,15 +597,19 @@ def _build_filter_clause(f: FilterDescriptor):
     Schema-column filters use correlated EXISTS subqueries on PropertyValue
     so that each filter is independent and no cross-filter JOIN fanout occurs.
 
+    The clause is chosen by operator and type, in this order: emptiness for
+    every type; dates and timestamps; relation membership; multi-select
+    membership; numbers and ids; checkboxes; formulas by result type; text for
+    everything else (text, single select, email, phone, url, created_by,
+    last_edited_by).
+
     Returns None if the filter is malformed or the operator is unrecognised;
     callers should skip None results.
     """
-    # ── Name column (Block.content->>'title') ────────────────────────────────
     if f.schema_id == '__name__':
         title_expr = Block.content['title'].as_string()
         return _text_operator_clause(title_expr, f.operator, f.value)
 
-    # ── Schema column ─────────────────────────────────────────────────────────
     try:
         schema_uuid = uuid.UUID(f.schema_id)
     except ValueError:
@@ -361,332 +621,24 @@ def _build_filter_clause(f: FilterDescriptor):
         isinstance(f.schema_config, dict) and
         f.schema_config.get('mode') == 'multiple'
     )
+    cv = _CorrelatedValue(schema_uuid)
 
-    PV = aliased(PropertyValue)
-
-    def pv_base():
-        """Fresh correlated subquery base for this schema."""
-        return (
-            select(1)
-            .where(PV.page_id == Block.id)
-            .where(PV.property_schema_id == schema_uuid)
-        )
-
-    # ── Emptiness operators ───────────────────────────────────────────────────
     if f.operator in ('is_empty', 'is_not_empty'):
-        if is_multi or schema_type == 'relation':
-            arr_key = 'options' if is_multi else 'related_ids'
-            arr_str = PV.value[arr_key].as_string()
-            # Timeline relations store related_ids inside _timeline slots.
-            # A value is non-empty when either the flat array or the _timeline
-            # key is present and non-trivial.  We check both paths with OR.
-            if schema_type == 'relation':
-                # Non-timeline path: related_ids is non-empty
-                plain_not_empty = (
-                    pv_base()
-                    .where(PV.value.is_not(None))
-                    .where(arr_str.is_not(None))
-                    .where(arr_str != '[]')
-                )
-                # Timeline path: _timeline key is present (pool-based value)
-                timeline_str = PV.value['_timeline'].as_string()
-                timeline_not_empty = (
-                    pv_base()
-                    .where(PV.value.is_not(None))
-                    .where(timeline_str.is_not(None))
-                    .where(timeline_str != '{}')
-                )
-                not_empty = or_(
-                    plain_not_empty.exists(),
-                    timeline_not_empty.exists(),
-                )
-                return (~not_empty) if f.operator == 'is_empty' else not_empty
-            else:
-                not_empty = (
-                    pv_base()
-                    .where(PV.value.is_not(None))
-                    .where(arr_str.is_not(None))
-                    .where(arr_str != '[]')
-                    .exists()
-                )
-                return (~not_empty) if f.operator == 'is_empty' else not_empty
-
-        if schema_type == 'file':
-            files_str = PV.value['files'].as_string()
-            not_empty = (
-                pv_base()
-                .where(PV.value.is_not(None))
-                .where(files_str.is_not(None))
-                .where(files_str != '[]')
-                .exists()
-            )
-            return (~not_empty) if f.operator == 'is_empty' else not_empty
-
-        # Scalar types
-        vk = _value_key(schema_type)
-        val_str = PV.value[vk].as_string()
-        not_empty = (
-            pv_base()
-            .where(PV.value.is_not(None))
-            .where(val_str.is_not(None))
-            .where(val_str != '')
-            .exists()
-        )
-        return (~not_empty) if f.operator == 'is_empty' else not_empty
-
-    # ── Date operators ────────────────────────────────────────────────────────
+        return _emptiness_clause(f, schema_type, is_multi, cv)
     if schema_type in ('date', 'created_time', 'last_edited_time'):
-        date_key = 'start' if schema_type == 'date' else 'datetime'
-        raw_expr = PV.value[date_key].as_string()
-        # Truncate ISO datetime strings (YYYY-MM-DDTHH:…) to date prefix
-        date_expr = func.substr(raw_expr, 1, 10) if schema_type != 'date' else raw_expr
-
-        if f.operator in _PRESET_OPERATORS:
-            preset = _preset_range_iso(f.operator)
-            if preset is None:
-                return None
-            start_iso, end_iso = preset
-            return (
-                pv_base()
-                .where(raw_expr.is_not(None))
-                .where(date_expr >= start_iso)
-                .where(date_expr <= end_iso)
-                .exists()
-            )
-
-        # 'between': both bounds are exact ISO date strings (inclusive)
-        if f.operator == 'between':
-            start_iso = f.value or None
-            end_iso = f.value2 or None
-            if not start_iso or not end_iso:
-                # Incomplete filter — must not silently pass all entries through.
-                # Return a guaranteed-false expression so the row is excluded.
-                return false()
-            return (
-                pv_base()
-                .where(raw_expr.is_not(None))
-                .where(date_expr >= start_iso)
-                .where(date_expr <= end_iso)
-                .exists()
-            )
-
-        # Point comparison
-        ref = _ref_date_iso(f.date_mode, f.date_offset, f.value)
-        if not ref:
-            return None
-        op_map = {
-            'eq': date_expr == ref,
-            'gt': date_expr > ref,
-            'gte': date_expr >= ref,
-            'lt': date_expr < ref,
-            'lte': date_expr <= ref,
-        }
-        cond = op_map.get(f.operator)
-        if cond is None:
-            return None
-        return pv_base().where(raw_expr.is_not(None)).where(cond).exists()
-
-    # ── Relation contains / not_contains ─────────────────────────────────────
-    # Checks whether a specific entry UUID appears in the related_ids JSON array
-    # for both plain relations and timeline relations (_timeline slots).
-    # Uses a LIKE-on-JSON-string strategy so no DB-specific operators are needed.
+        return _date_property_clause(f, schema_type, cv)
     if schema_type == 'relation' and f.operator in ('contains', 'not_contains'):
-        if not f.value:
-            return None
-        needle = f'%"{f.value}"%'
-        # Plain relation path
-        arr_str = PV.value['related_ids'].as_string()
-        has_id_plain = (
-            pv_base()
-            .where(PV.value.is_not(None))
-            .where(arr_str.like(needle))
-        )
-        # Timeline relation path: search the entire _timeline JSON blob
-        timeline_str = PV.value['_timeline'].as_string()
-        has_id_timeline = (
-            pv_base()
-            .where(PV.value.is_not(None))
-            .where(timeline_str.like(needle))
-        )
-        has_id = or_(has_id_plain.exists(), has_id_timeline.exists())
-        return has_id if f.operator == 'contains' else ~has_id
-
-    # ── Multi-select contains / not_contains ──────────────────────────────────
+        return _relation_contains_clause(f, cv)
     if is_multi:
-        if not f.value:
-            # Empty value = no option selected in the filter panel → treat as
-            # no-op so that (a) the view is not incorrectly cleared and (b)
-            # "create with filter" does not make new rows disappear immediately.
-            # Mirrors the identical guard in the relation contains/not_contains
-            # branch above.
-            return None
-        options_str = PV.value['options'].as_string()
-        # Use lower() on both sides so the match is case-insensitive in
-        # PostgreSQL (where LIKE is case-sensitive by default). The label is
-        # wrapped in its JSON quotes so that only a whole option matches.
-        option_match = _like_contains(func.lower(options_str), f'"{f.value.lower()}"')
-        if f.operator == 'contains':
-            return pv_base().where(option_match).exists()
-        if f.operator == 'not_contains':
-            return ~pv_base().where(option_match).exists()
-        return None
-
-    # ── Number / ID (numeric comparisons) ────────────────────────────────────
+        return _multi_select_clause(f, cv)
     if schema_type in ('number', 'id'):
         num_key = 'number' if schema_type == 'number' else 'id_value'
-        num_expr = PV.value[num_key].as_float()
-        try:
-            num_val = float(f.value)
-        except (ValueError, TypeError):
-            return None
-
-        # neq uses NOT EXISTS so that entries with no value also satisfy "not equal".
-        # All positive operators require the value to exist and be non-null.
-        if f.operator == 'neq':
-            return ~pv_base().where(num_expr.is_not(None)).where(num_expr == num_val).exists()
-
-        op_map = {
-            'eq':  num_expr == num_val,
-            'gt':  num_expr > num_val,
-            'gte': num_expr >= num_val,
-            'lt':  num_expr < num_val,
-            'lte': num_expr <= num_val,
-        }
-        cond = op_map.get(f.operator)
-        if cond is None:
-            return None
-        return pv_base().where(num_expr.is_not(None)).where(cond).exists()
-
-    # ── Checkbox ──────────────────────────────────────────────────────────────
+        return _number_clause(f, cv, cv.value[num_key].as_float())
     if schema_type == 'checkbox':
-        # The "false" state has two representations:
-        #   - No PropertyValue row at all (checkbox was never explicitly toggled)
-        #   - A row with value['checked'] = false (toggled on then off)
-        # The "true" state is exclusively: a row with value['checked'] = true.
-        #
-        # Use as_boolean() rather than as_string() so the JSON value is compared
-        # as a boolean instead of as the strings 'true'/'false' that ->> yields.
-        checked_bool = PV.value['checked'].as_boolean()
-        has_true = pv_base().where(checked_bool == True).exists()  # noqa: E712
-        wants_true = f.value == 'true'   # '' and 'false' both mean false
-        if f.operator == 'eq':
-            return has_true if wants_true else ~has_true
-        if f.operator == 'neq':
-            return (~has_true) if wants_true else has_true
-        return None
-
-    # ── Formula (result_type-aware) ──────────────────────────────────────────
+        return _boolean_clause(f, cv, cv.value['checked'].as_boolean())
     if schema_type == 'formula':
-        result_type = f.formula_result_type or 'text'
-        raw_expr = PV.value['result']
-
-        if result_type == 'number':
-            num_expr = raw_expr.as_float()
-            try:
-                num_val = float(f.value)
-            except (ValueError, TypeError):
-                return None
-            if f.operator == 'neq':
-                return ~pv_base().where(num_expr.is_not(None)).where(num_expr == num_val).exists()
-            op_map = {
-                'eq': num_expr == num_val, 'gt': num_expr > num_val,
-                'gte': num_expr >= num_val, 'lt': num_expr < num_val, 'lte': num_expr <= num_val,
-            }
-            cond = op_map.get(f.operator)
-            if cond is None:
-                return None
-            return pv_base().where(num_expr.is_not(None)).where(cond).exists()
-
-        if result_type == 'boolean':
-            bool_expr = raw_expr.as_boolean()
-            wants_true = f.value == 'true'
-            has_true = pv_base().where(bool_expr == True).exists()  # noqa: E712
-            if f.operator == 'eq':
-                return has_true if wants_true else ~has_true
-            if f.operator == 'neq':
-                return (~has_true) if wants_true else has_true
-            return None
-
-        if result_type == 'date':
-            raw_str = raw_expr.as_string()
-            date_str = func.substr(raw_str, 1, 10)
-            if f.operator in _PRESET_OPERATORS:
-                preset = _preset_range_iso(f.operator)
-                if preset is None:
-                    return None
-                start_iso, end_iso = preset
-                return (
-                    pv_base()
-                    .where(raw_str.is_not(None))
-                    .where(date_str >= start_iso)
-                    .where(date_str <= end_iso)
-                    .exists()
-                )
-            if f.operator == 'between':
-                start_iso = f.value or None
-                end_iso = f.value2 or None
-                if not start_iso or not end_iso:
-                    return false()
-                return (
-                    pv_base()
-                    .where(raw_str.is_not(None))
-                    .where(date_str >= start_iso)
-                    .where(date_str <= end_iso)
-                    .exists()
-                )
-            ref = _ref_date_iso(f.date_mode, f.date_offset, f.value)
-            if not ref:
-                return None
-            op_map = {
-                'eq': date_str == ref, 'gt': date_str > ref, 'gte': date_str >= ref,
-                'lt': date_str < ref, 'lte': date_str <= ref,
-            }
-            cond = op_map.get(f.operator)
-            if cond is None:
-                return None
-            return pv_base().where(raw_str.is_not(None)).where(cond).exists()
-
-        # formula result_type == 'text' (default)
-        str_expr = func.lower(raw_expr.as_string())
-        lv = f.value.lower()
-        if f.operator == 'not_contains':
-            return ~pv_base().where(_like_contains(str_expr, lv)).exists()
-        if f.operator == 'neq':
-            return ~pv_base().where(str_expr == lv).exists()
-        if f.operator == 'contains':
-            return pv_base().where(_like_contains(str_expr, lv)).exists()
-        if f.operator == 'starts_with':
-            return pv_base().where(_like_starts_with(str_expr, lv)).exists()
-        if f.operator == 'ends_with':
-            return pv_base().where(_like_ends_with(str_expr, lv)).exists()
-        if f.operator == 'eq':
-            return pv_base().where(str_expr == lv).exists()
-        return None
-
-    # ── Text / select / email / phone / url / created_by / last_edited_by ────
-    vk = _value_key(schema_type)
-    lv = f.value.lower()
-
-    # Negative operators use NOT EXISTS so entries with no PropertyValue row
-    # (or a null value field) satisfy them — consistent with the frontend
-    # treating missing values as empty strings.
-    # Positive operators are built lazily to avoid constructing all six
-    # correlated subqueries against the same PV alias simultaneously.
-    if f.operator == 'not_contains':
-        return ~pv_base().where(_like_contains(func.lower(PV.value[vk].as_string()), lv)).exists()
-    if f.operator == 'neq':
-        return ~pv_base().where(func.lower(PV.value[vk].as_string()) == lv).exists()
-
-    str_expr = func.lower(PV.value[vk].as_string())
-    if f.operator == 'contains':
-        return pv_base().where(_like_contains(str_expr, lv)).exists()
-    if f.operator == 'starts_with':
-        return pv_base().where(_like_starts_with(str_expr, lv)).exists()
-    if f.operator == 'ends_with':
-        return pv_base().where(_like_ends_with(str_expr, lv)).exists()
-    if f.operator == 'eq':
-        return pv_base().where(str_expr == lv).exists()
-    return None
+        return _formula_clause(f, cv)
+    return _text_clause(f, cv, func.lower(cv.value[_value_key(schema_type)].as_string()))
 
 
 # ─── Server-side entry query ──────────────────────────────────────────────────

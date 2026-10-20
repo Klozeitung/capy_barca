@@ -43,11 +43,14 @@ app/blocks/service_test.py
 app/blocks/router_test.py
 app/blocks/database_router_test.py
 app/blocks/database_router_permissions_test.py
+app/blocks/schema_service_test.py
+app/blocks/entry_service_test.py
 app/blocks/events_test.py
 app/blocks/preferences_test.py
 app/blocks/filter_test.py
 app/blocks/types_test.py
 app/blocks/computed_test.py
+app/blocks/timeline_test.py
 app/blocks/formula_engine_test.py
 app/blocks/resolution_test.py
 app/blocks/views_test.py
