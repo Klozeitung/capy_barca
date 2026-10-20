@@ -8,17 +8,24 @@
  * Content shape: { url: string }
  *
  * No backend call is needed — the URL is saved directly to block content.
+ *
+ * Without write access to the block (``useEditable``) an empty block shows a
+ * plain placeholder instead of the URL input, and there is no remove button.
  */
 import { computed, ref } from 'vue'
 import { Icon } from '@iconify/vue'
+import { useI18n } from 'vue-i18n'
 import { useBlockStore, type Block } from '@/stores/blocks'
+import { provideEditable } from '@/composables/useEditable'
 
 const props = defineProps<{
   block: Block
   parentId: string
 }>()
 
+const { t } = useI18n()
 const blockStore = useBlockStore()
+const editable = provideEditable(() => props.block)
 
 const hasUrl = computed(() => Boolean(props.block.content?.url))
 const embedUrl = computed(() => props.block.content?.url as string | undefined)
@@ -43,7 +50,7 @@ async function handleConfirm(): Promise<void> {
   try {
     new URL(url)
   } catch {
-    inputError.value = 'Please enter a valid URL'
+    inputError.value = t('block.embed.invalidUrl')
     return
   }
 
@@ -59,14 +66,14 @@ async function handleRemove(): Promise<void> {
 <template>
   <div class="embed-block">
     <!-- URL input state -->
-    <template v-if="!hasUrl">
+    <template v-if="!hasUrl && editable">
       <div class="embed-block__input-row">
         <Icon icon="mdi:code-tags" width="16" height="16" class="embed-block__input-icon" />
         <input
           v-model="urlInput"
           type="url"
           class="embed-block__input"
-          placeholder="Paste an embed URL and press Enter…"
+          :placeholder="t('block.embed.placeholder')"
           @keydown="handleKeydown"
         />
         <button
@@ -74,11 +81,16 @@ async function handleRemove(): Promise<void> {
           :disabled="!urlInput.trim()"
           @click="handleConfirm"
         >
-          Embed
+          {{ t('block.embed.confirm') }}
         </button>
       </div>
       <span v-if="inputError" class="embed-block__error">{{ inputError }}</span>
     </template>
+
+    <div v-else-if="!hasUrl" class="embed-block__input-row embed-block__input-row--static">
+      <Icon icon="mdi:code-tags" width="16" height="16" class="embed-block__input-icon" />
+      <span>{{ t('block.media.empty') }}</span>
+    </div>
 
     <!-- Iframe state -->
     <template v-else>
@@ -93,11 +105,16 @@ async function handleRemove(): Promise<void> {
             target="_blank"
             rel="noopener noreferrer"
             class="embed-block__toolbar-btn"
-            title="Open in new tab"
+            :title="t('block.media.openInNewTab')"
           >
             <Icon icon="mdi:open-in-new" width="13" height="13" />
           </a>
-          <button class="embed-block__toolbar-btn" title="Remove embed" @click="handleRemove">
+          <button
+            v-if="editable"
+            class="embed-block__toolbar-btn"
+            :title="t('block.embed.remove')"
+            @click="handleRemove"
+          >
             <Icon icon="mdi:close" width="13" height="13" />
           </button>
         </div>
@@ -107,7 +124,7 @@ async function handleRemove(): Promise<void> {
           allowfullscreen
           sandbox="allow-scripts allow-same-origin allow-presentation allow-forms"
           loading="lazy"
-          title="Embedded content"
+          :title="t('block.embed.frameTitle')"
         />
       </div>
     </template>
@@ -234,5 +251,11 @@ async function handleRemove(): Promise<void> {
   height: 480px;
   border: none;
   background: var(--color-bg);
+}
+
+/* ── Read-only placeholder ───────────────────────────────────────────────── */
+.embed-block__input-row--static {
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
 }
 </style>

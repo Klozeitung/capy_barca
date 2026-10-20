@@ -15,6 +15,9 @@
  * - Comment section: rendered beneath BlockPropertySection (or beneath
  *   BlockTopSection for non-entry pages). Collapsible, default hidden,
  *   matching the PropertySection default. Available on all block types.
+ * - Write access: the page's ``can_write`` is provided to everything below
+ *   (see ``useEditable``); a page the user may only read shows a read-only
+ *   badge in the toolbar.
  */
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
@@ -26,6 +29,9 @@ import BlockPropertySection from './BlockPropertySection.vue'
 import BlockCommentSection from './BlockCommentSection.vue'
 import DatabaseBlock from '@/components/editor/blocks/DatabaseBlock.vue'
 import PageSettingsModal from './PageSettingsModal.vue'
+import ReadOnlyBadge from './ReadOnlyBadge.vue'
+import { apiClient } from '@/api/client'
+import { provideEditable } from '@/composables/useEditable'
 import { useBlockStore } from '@/stores/blocks'
 import {
   useDatabaseStore,
@@ -51,6 +57,8 @@ const loading = ref(false)
 const block = computed(() =>
   props.blockId ? blockStore.blocks[props.blockId] ?? null : null,
 )
+
+const editable = provideEditable(block)
 
 async function load(id: string | null | undefined): Promise<void> {
   if (!id) return
@@ -179,9 +187,9 @@ const PREF_KEY = 'full-size'
 
 async function fetchFullSize(id: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/blocks/${id}/preferences/${PREF_KEY}`)
-    if (!res.ok) return false
-    const data = await res.json()
+    const data = await apiClient.get<{ value: unknown }>(
+      `/api/blocks/${id}/preferences/${PREF_KEY}`,
+    )
     return data.value === true
   } catch {
     return false
@@ -190,11 +198,7 @@ async function fetchFullSize(id: string): Promise<boolean> {
 
 async function saveFullSize(id: string, val: boolean): Promise<void> {
   try {
-    await fetch(`/api/blocks/${id}/preferences/${PREF_KEY}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ value: val }),
-    })
+    await apiClient.put(`/api/blocks/${id}/preferences/${PREF_KEY}`, { value: val })
   } catch {
     // Best-effort: UI state is already updated; a failed write is non-critical.
   }
@@ -240,6 +244,7 @@ async function onFullSizeUpdate(val: boolean): Promise<void> {
            Shown for all block types (pages and databases) so that
            permissions can be managed from any full-screen view. -->
       <div class="main-view__toolbar">
+        <ReadOnlyBadge v-if="!editable" class="main-view__badge" />
         <button
           class="main-view__settings-btn"
           :title="t('pageSettings.title')"
@@ -381,10 +386,16 @@ async function onFullSizeUpdate(val: boolean): Promise<void> {
   z-index: 10;
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
   padding: 6px 10px;
   /* Transparent so it doesn't obscure the cover image or title area.
      The button itself has a subtle hover background. */
   pointer-events: none;
+}
+
+.main-view__badge {
+  pointer-events: all;
 }
 
 .main-view__settings-btn {

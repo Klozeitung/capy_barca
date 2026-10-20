@@ -59,6 +59,7 @@ import {
   SELECT_OPTION_COLORS,
 } from '@/stores/database'
 import { getSchemaIcon } from '@/stores/propertyTypes'
+import { apiClient } from '@/api/client'
 import { isKeyableProperty } from './cells/cellUtils'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
@@ -384,20 +385,10 @@ async function validateFormula(): Promise<void> {
   }
   formulaValidation.value = 'validating'
   try {
-    const resp = await fetch(
+    const data = await apiClient.post<{ valid: boolean; error?: string; prop_names?: string[] }>(
       `/api/databases/${props.databaseId}/formulas/validate`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expression: formulaExpression.value }),
-      },
+      { expression: formulaExpression.value },
     )
-    if (!resp.ok) {
-      formulaValidation.value = 'error'
-      formulaValidationError.value = t('errors.loadFailed')
-      return
-    }
-    const data = await resp.json()
     if (data.valid) {
       formulaValidation.value = 'valid'
       formulaValidationError.value = ''
@@ -817,10 +808,9 @@ async function loadTargetSchemas(targetDbId: string): Promise<void> {
   }
   rollupTargetLoading.value = true
   try {
-    const resp = await fetch(`/api/databases/${targetDbId}/schemas`)
-    if (resp.ok) {
-      rollupTargetSchemas.value = await resp.json()
-    }
+    rollupTargetSchemas.value = await apiClient.get<PropertySchema[]>(
+      `/api/databases/${targetDbId}/schemas`,
+    )
   } catch {
     rollupTargetSchemas.value = []
   } finally {
@@ -865,8 +855,9 @@ onMounted(async () => {
   // Load schemas for formula chip list and rollup relation picker
   if (props.schema.type === 'formula' || props.schema.type === 'rollup') {
     try {
-      const resp = await fetch(`/api/databases/${props.databaseId}/schemas`)
-      if (resp.ok) currentDbSchemas.value = await resp.json()
+      currentDbSchemas.value = await apiClient.get<PropertySchema[]>(
+        `/api/databases/${props.databaseId}/schemas`,
+      )
     } catch { /* non-critical */ }
   }
   // For rollup: pre-load target DB schemas from the saved relation

@@ -5,18 +5,25 @@
  * Upload drop zone for audio files. Renders a native <audio> element with
  * controls once a file is stored. Content shape: { file_uuid, url, filename,
  * size, mime }.
+ *
+ * Without write access to the block (``useEditable``) an empty block shows a
+ * plain placeholder instead of the upload zone, and there is no remove button.
  */
 import { computed, ref } from 'vue'
 import { Icon } from '@iconify/vue'
+import { useI18n } from 'vue-i18n'
 import { useBlockStore, type Block } from '@/stores/blocks'
 import { useMediaUpload } from '@/composables/useMediaUpload'
+import { provideEditable } from '@/composables/useEditable'
 
 const props = defineProps<{
   block: Block
   parentId: string
 }>()
 
+const { t } = useI18n()
 const blockStore = useBlockStore()
+const editable = provideEditable(() => props.block)
 const upload = useMediaUpload('audio', props.block.id)
 const inputRef = ref<HTMLInputElement | null>(null)
 
@@ -44,7 +51,7 @@ async function handleRemove(): Promise<void> {
 
 <template>
   <div class="media-block">
-    <template v-if="!hasFile">
+    <template v-if="!hasFile && editable">
       <div
         class="media-block__dropzone"
         :class="{ 'media-block__dropzone--over': upload.isDragging.value }"
@@ -55,8 +62,8 @@ async function handleRemove(): Promise<void> {
       >
         <Icon icon="mdi:music-note-plus" width="28" height="28" class="media-block__zone-icon" />
         <span class="media-block__zone-hint">
-          <template v-if="upload.isUploading.value">Uploading…</template>
-          <template v-else>Drop an audio file, or click to upload</template>
+          <template v-if="upload.isUploading.value">{{ t('block.media.uploading') }}</template>
+          <template v-else>{{ t('block.media.dropAudio') }}</template>
         </span>
         <span v-if="upload.error.value" class="media-block__zone-error">
           {{ upload.error.value }}
@@ -71,6 +78,11 @@ async function handleRemove(): Promise<void> {
       />
     </template>
 
+    <div v-else-if="!hasFile" class="media-block__dropzone media-block__dropzone--static">
+      <Icon icon="mdi:music-note-plus" width="28" height="28" class="media-block__zone-icon" />
+      <span class="media-block__zone-hint">{{ t('block.media.empty') }}</span>
+    </div>
+
     <template v-else>
       <div class="media-block__audio-card">
         <span class="media-block__audio-icon">
@@ -82,7 +94,12 @@ async function handleRemove(): Promise<void> {
             <source :src="fileUrl" :type="mime" />
           </audio>
         </div>
-        <button class="media-block__remove-btn" title="Remove audio" @click="handleRemove">
+        <button
+          v-if="editable"
+          class="media-block__remove-btn"
+          :title="t('block.media.removeAudio')"
+          @click="handleRemove"
+        >
           <Icon icon="mdi:close" width="14" height="14" />
         </button>
       </div>
@@ -193,5 +210,13 @@ async function handleRemove(): Promise<void> {
 .media-block__remove-btn:hover {
   background: var(--color-active);
   color: var(--color-text);
+}
+
+/* ── Read-only placeholder (after the drop zone rules so these win) ─────── */
+.media-block__dropzone--static,
+.media-block__dropzone--static:hover {
+  cursor: default;
+  border-color: var(--color-border);
+  background: transparent;
 }
 </style>

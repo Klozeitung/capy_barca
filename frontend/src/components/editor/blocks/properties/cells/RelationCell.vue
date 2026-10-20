@@ -38,6 +38,10 @@
  * While the store reports the cell as pending, the open picker shows a
  * spinner and takes no picks, and the chips cannot be removed or re-nuanced:
  * every change builds on the value the server has just confirmed.
+ *
+ * Without write access (``useEditable``) the linked entries are shown and
+ * open as before, but no link can be added, removed or re-nuanced and the
+ * timeline editor does not open.
  */
 import { ref, computed, onUnmounted, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -45,6 +49,7 @@ import { useI18n } from 'vue-i18n'
 import { useDatabaseStore, type PropertySchema, type DatabaseEntry, optionColorStyle, optionLabel } from '@/stores/database'
 import { useBlockStore } from '@/stores/blocks'
 import { useEscapeKey } from '@/composables/useEscapeStack'
+import { useEditable } from '@/composables/useEditable'
 import SideView from '@/components/main/SideView.vue'
 import TimelineEditor from './TimelineEditor.vue'
 import {
@@ -75,6 +80,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const dbStore = useDatabaseStore()
 const blockStore = useBlockStore()
+const editable = useEditable()
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
 
@@ -89,6 +95,7 @@ const timelineOpen = ref(false)
 const anchorRect = ref<DOMRect | undefined>()
 
 function openTimeline(event: MouseEvent) {
+  if (!editable.value) return
   anchorRect.value = (event.currentTarget as HTMLElement).getBoundingClientRect()
   timelineOpen.value = true
 }
@@ -404,6 +411,7 @@ function scrollActiveIntoView() {
 }
 
 async function openPicker() {
+  if (!editable.value) return
   if (cellEl.value) {
     const rect = cellEl.value.getBoundingClientRect()
     let top = rect.bottom + 4
@@ -513,7 +521,7 @@ function emitFlat(ids: string[], nuances: Record<string, string>) {
 }
 
 /** Nuance is editable inline only for flat relations (timeline → TimelineEditor). */
-const nuanceEditable = computed(() => !!nuanceCfg.value && !hasTimeline.value)
+const nuanceEditable = computed(() => editable.value && !!nuanceCfg.value && !hasTimeline.value)
 
 /** Set or clear the nuance option of a linked entry on a flat relation. */
 function setFlatNuance(uid: string, optionId: string) {
@@ -548,7 +556,7 @@ function applyToggle(entryId: string) {
 
 function removeRelated(entryId: string, event: MouseEvent) {
   event.stopPropagation()
-  if (isPending.value) return
+  if (isPending.value || !editable.value) return
   const updated = relatedIds.value.filter(id => id !== entryId)
   if (!hasTimeline.value) {
     emitFlat(updated, currentNuances.value)
@@ -667,6 +675,7 @@ async function onSideViewRefresh(): Promise<void> {
         </div>
         <!-- Clock button to open TimelineEditor -->
         <button
+          v-if="editable"
           class="rel-cell__timeline-btn"
           :aria-label="t('db.timeline.title')"
           @click.stop="openTimeline($event)"
@@ -701,6 +710,7 @@ async function onSideViewRefresh(): Promise<void> {
                 <span class="rel-cell__tag-text">{{ getEntryTitle(row.id) }}</span>
               </span>
               <button
+                v-if="editable"
                 class="rel-cell__tag-remove"
                 :aria-label="t('db.relation.removeLink')"
                 @click="removeRelated(row.id, $event)"
@@ -711,7 +721,7 @@ async function onSideViewRefresh(): Promise<void> {
           </div>
         </div>
         <button
-          v-if="!isOpen"
+          v-if="editable && !isOpen"
           class="rel-cell__add-btn rel-cell__add-btn--keyed"
           :aria-label="t('db.relation.addLink')"
           @click.stop="openPicker"
@@ -775,6 +785,7 @@ async function onSideViewRefresh(): Promise<void> {
             <span v-if="nuanceCfg?.affix2" class="rel-cell__affix">{{ nuanceCfg?.affix2 }}</span>
           </span>
           <button
+            v-if="editable"
             class="rel-cell__tag-remove"
             :aria-label="t('db.relation.removeLink')"
             @click="removeRelated(id, $event)"
@@ -784,7 +795,7 @@ async function onSideViewRefresh(): Promise<void> {
         </span>
         <!-- Timeline mode: clock button instead of picker -->
         <button
-          v-if="hasTimeline && !timelineOpen"
+          v-if="editable && hasTimeline && !timelineOpen"
           class="rel-cell__timeline-btn"
           :aria-label="t('db.timeline.title')"
           @click.stop="openTimeline($event)"
@@ -794,7 +805,7 @@ async function onSideViewRefresh(): Promise<void> {
 
         <!-- Normal mode: add-link button -->
         <button
-          v-else-if="!isOpen && !hasTimeline"
+          v-else-if="editable && !isOpen && !hasTimeline"
           class="rel-cell__add-btn"
           :aria-label="t('db.relation.addLink')"
           @click.stop="openPicker"

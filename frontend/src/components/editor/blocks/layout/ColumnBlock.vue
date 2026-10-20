@@ -14,11 +14,15 @@
  * The remove button is only shown when canRemove is true (i.e. the layout has
  * more than 2 columns). Deletion is delegated to LayoutBlock via the `remove`
  * emit to keep width management centralised there.
+ *
+ * Without write access to the layout (``useEditable``) the toolbar stays for
+ * the spacing but offers neither the drag handle nor the remove button.
  */
 import { useI18n } from 'vue-i18n'
 import { Icon } from '@iconify/vue'
 import { type Block } from '@/stores/blocks'
 import { useDrag } from '@/composables/useDrag'
+import { useEditable } from '@/composables/useEditable'
 import BlockContentSection from '@/components/main/BlockContentSection.vue'
 
 // ── Props & Emits ─────────────────────────────────────────────────────────────
@@ -40,6 +44,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const drag = useDrag()
+const editable = useEditable()
 
 // ── Column drag (reordering within LayoutBlock) ───────────────────────────────
 
@@ -65,6 +70,7 @@ function onColumnDragEnd(): void {
       <!-- Drag handle: draggable="true" scoped to the handle span only so
            the rest of the column does not accidentally initiate a column drag. -->
       <span
+        v-if="editable"
         class="column-block__drag-handle"
         draggable="true"
         :title="t('block.types.column')"
@@ -75,7 +81,7 @@ function onColumnDragEnd(): void {
       </span>
 
       <button
-        v-if="canRemove"
+        v-if="canRemove && editable"
         class="column-block__remove-btn"
         :title="t('layout.removeColumn')"
         @click="emit('remove', block.id)"

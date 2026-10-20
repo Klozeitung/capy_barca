@@ -1,7 +1,17 @@
 <script setup lang="ts">
+/**
+ * IconPicker
+ *
+ * Search over the bundled icon sets. With an empty search the picker offers
+ * the icons the user picked most recently (``recentIcons`` store) above a
+ * fixed set of common icons; every pick is recorded there, whichever
+ * component opened the picker. Removing the icon is not a pick.
+ */
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { Icon } from '@iconify/vue'
+import { useI18n } from 'vue-i18n'
 import { useEscapeKey } from '@/composables/useEscapeStack'
+import { useRecentIconsStore } from '@/stores/recentIcons'
 import mdiData from '@iconify-json/mdi/icons.json'
 import tablerData from '@iconify-json/tabler/icons.json'
 import lucideData from '@iconify-json/lucide/icons.json'
@@ -31,6 +41,9 @@ const emit = defineEmits<{
   'close': []
 }>()
 
+const { t } = useI18n()
+const recentIcons = useRecentIconsStore()
+
 // ── State ─────────────────────────────────────────────────────────────────────
 
 const searchRef = ref<HTMLInputElement | null>(null)
@@ -50,6 +63,8 @@ const COMMON: string[] = [
 
 // ── Search ────────────────────────────────────────────────────────────────────
 
+const isSearching = computed(() => query.value.trim() !== '')
+
 const results = computed<string[]>(() => {
   const q = query.value.trim().toLowerCase()
   if (!q) return COMMON
@@ -57,6 +72,9 @@ const results = computed<string[]>(() => {
     .filter((icon) => icon.slice(icon.indexOf(':') + 1).includes(q))
     .slice(0, 120)
 })
+
+/** The recently used icons, shown above the common ones while not searching. */
+const recent = computed<string[]>(() => (isSearching.value ? [] : recentIcons.icons))
 
 // ── Teleport positioning ──────────────────────────────────────────────────────
 
@@ -103,6 +121,7 @@ const useTeleport = computed(() => !!props.triggerRect)
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 onMounted(async () => {
+  recentIcons.ensureLoaded()
   await nextTick()
   searchRef.value?.focus()
   document.addEventListener('mousedown', onOutsideClick)
@@ -130,6 +149,7 @@ function iconTitle(icon: string): string {
 function select(icon: string): void {
   emit('update:modelValue', icon)
   emit('close')
+  recentIcons.recordUse(icon)
 }
 
 function clear(): void {
@@ -145,8 +165,11 @@ useEscapeKey(() => emit('close'))
 </script>
 
 <template>
-  <!-- Teleport mode: rendered at <body> level with fixed positioning. -->
-  <Teleport v-if="useTeleport" to="body">
+  <!--
+    With a trigger rect the picker is moved to <body> and placed with fixed
+    positioning; without one it stays in place, positioned absolutely.
+  -->
+  <Teleport to="body" :disabled="!useTeleport">
     <div
       ref="containerRef"
       class="icon-picker"
@@ -158,66 +181,48 @@ useEscapeKey(() => emit('close'))
           ref="searchRef"
           v-model="query"
           class="icon-picker__search"
-          placeholder="Symbol suchen…"
+          :placeholder="t('iconPicker.search')"
           spellcheck="false"
         />
-        <button v-if="modelValue" class="icon-picker__clear" title="Symbol entfernen" @click="clear">
+        <button v-if="modelValue" class="icon-picker__clear" :title="t('iconPicker.clear')" @click="clear">
           <Icon icon="mdi:close" width="14" height="14" />
         </button>
       </div>
-      <div class="icon-picker__grid">
-        <button
-          v-for="icon in results"
-          :key="icon"
-          class="icon-picker__cell"
-          :class="{ 'icon-picker__cell--active': icon === modelValue }"
-          :title="iconTitle(icon)"
-          @click="select(icon)"
-        >
-          <Icon :icon="icon" width="20" height="20" />
-        </button>
-        <div v-if="results.length === 0" class="icon-picker__empty">
-          Keine Ergebnisse.
+      <div class="icon-picker__body">
+        <template v-if="recent.length > 0">
+          <p class="icon-picker__label">{{ t('iconPicker.recent') }}</p>
+          <div class="icon-picker__grid">
+            <button
+              v-for="icon in recent"
+              :key="icon"
+              class="icon-picker__cell"
+              :class="{ 'icon-picker__cell--active': icon === modelValue }"
+              :title="iconTitle(icon)"
+              @click="select(icon)"
+            >
+              <Icon :icon="icon" width="20" height="20" />
+            </button>
+          </div>
+          <p class="icon-picker__label">{{ t('iconPicker.common') }}</p>
+        </template>
+        <div class="icon-picker__grid">
+          <button
+            v-for="icon in results"
+            :key="icon"
+            class="icon-picker__cell"
+            :class="{ 'icon-picker__cell--active': icon === modelValue }"
+            :title="iconTitle(icon)"
+            @click="select(icon)"
+          >
+            <Icon :icon="icon" width="20" height="20" />
+          </button>
+          <div v-if="results.length === 0" class="icon-picker__empty">
+            {{ t('iconPicker.noResults') }}
+          </div>
         </div>
       </div>
     </div>
   </Teleport>
-
-  <!-- Inline mode: position: absolute, existing callers unchanged. -->
-  <div
-    v-else
-    ref="containerRef"
-    class="icon-picker"
-  >
-    <div class="icon-picker__header">
-      <Icon icon="mdi:magnify" width="15" height="15" class="icon-picker__search-icon" />
-      <input
-        ref="searchRef"
-        v-model="query"
-        class="icon-picker__search"
-        placeholder="Symbol suchen…"
-        spellcheck="false"
-      />
-      <button v-if="modelValue" class="icon-picker__clear" title="Symbol entfernen" @click="clear">
-        <Icon icon="mdi:close" width="14" height="14" />
-      </button>
-    </div>
-    <div class="icon-picker__grid">
-      <button
-        v-for="icon in results"
-        :key="icon"
-        class="icon-picker__cell"
-        :class="{ 'icon-picker__cell--active': icon === modelValue }"
-        :title="iconTitle(icon)"
-        @click="select(icon)"
-      >
-        <Icon :icon="icon" width="20" height="20" />
-      </button>
-      <div v-if="results.length === 0" class="icon-picker__empty">
-        Keine Ergebnisse.
-      </div>
-    </div>
-  </div>
 </template>
 
 <style scoped>
@@ -275,15 +280,28 @@ useEscapeKey(() => emit('close'))
   color: var(--color-text);
 }
 
+.icon-picker__body {
+  max-height: 220px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.icon-picker__label {
+  margin: 0;
+  padding: 6px 10px 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
 .icon-picker__grid {
   display: grid;
   grid-template-columns: repeat(8, 1fr);
   gap: 2px;
   padding: 6px;
-  max-height: 220px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-border) transparent;
 }
 
 .icon-picker__cell {

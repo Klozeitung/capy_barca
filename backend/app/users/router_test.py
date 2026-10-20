@@ -133,6 +133,128 @@ def test_change_date_format_returns_401_unauthenticated():
     assert response.status_code == 401
 
 
+# ── /api/users/me/recent-icons ───────────────────────────────────────────────
+
+
+def _use_icon(client: TestClient, icon: str):
+    return client.post("/api/users/me/recent-icons", json={"icon": icon})
+
+
+def _icon_names(response) -> list[str]:
+    return [entry["icon"] for entry in response.json()]
+
+
+def test_recent_icons_start_empty(admin_client):
+    response = admin_client.get("/api/users/me/recent-icons")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_using_an_icon_records_it_with_a_timestamp(admin_client):
+    response = _use_icon(admin_client, "mdi:star-outline")
+
+    assert response.status_code == 200
+    [entry] = response.json()
+    assert entry["icon"] == "mdi:star-outline"
+    assert entry["used_at"]
+    assert admin_client.get("/api/users/me/recent-icons").json() == response.json()
+
+
+def test_recent_icons_are_newest_first(admin_client):
+    for icon in ("mdi:alpha-a", "tabler:alpha-b", "lucide:alpha-c"):
+        _use_icon(admin_client, icon)
+
+    response = admin_client.get("/api/users/me/recent-icons")
+
+    assert _icon_names(response) == ["lucide:alpha-c", "tabler:alpha-b", "mdi:alpha-a"]
+
+
+def test_using_a_listed_icon_again_moves_it_to_the_front_without_a_duplicate(admin_client):
+    for icon in ("mdi:alpha-a", "mdi:alpha-b", "mdi:alpha-c"):
+        _use_icon(admin_client, icon)
+    before = {e["icon"]: e["used_at"] for e in admin_client.get("/api/users/me/recent-icons").json()}
+
+    response = _use_icon(admin_client, "mdi:alpha-a")
+
+    assert _icon_names(response) == ["mdi:alpha-a", "mdi:alpha-c", "mdi:alpha-b"]
+    assert response.json()[0]["used_at"] >= before["mdi:alpha-a"]
+
+
+def test_a_new_icon_replaces_the_one_used_longest_ago_when_the_list_is_full(admin_client):
+    from app.users.repository import RECENT_ICONS_LIMIT
+
+    icons = [f"mdi:numeric-{n}" for n in range(RECENT_ICONS_LIMIT)]
+    for icon in icons:
+        _use_icon(admin_client, icon)
+
+    response = _use_icon(admin_client, "mdi:numeric-x")
+
+    names = _icon_names(response)
+    assert len(names) == RECENT_ICONS_LIMIT
+    assert names[0] == "mdi:numeric-x"
+    assert icons[0] not in names
+    assert set(icons[1:]) <= set(names)
+
+
+def test_reusing_an_icon_of_a_full_list_drops_nothing(admin_client):
+    from app.users.repository import RECENT_ICONS_LIMIT
+
+    icons = [f"mdi:numeric-{n}" for n in range(RECENT_ICONS_LIMIT)]
+    for icon in icons:
+        _use_icon(admin_client, icon)
+
+    response = _use_icon(admin_client, icons[0])
+
+    names = _icon_names(response)
+    assert names[0] == icons[0]
+    assert sorted(names) == sorted(icons)
+
+
+def test_record_icon_use_updates_the_timestamp_of_a_listed_icon():
+    from datetime import datetime, timezone
+
+    from app.users.repository import record_icon_use
+
+    first = datetime(2000, 7, 28, tzinfo=timezone.utc)
+    later = datetime(2045, 7, 17, tzinfo=timezone.utc)
+    with s.SessionLocal() as db:
+        user = create_user(db, "icon_user", "secret")
+        record_icon_use(db, user, "mdi:alpha-a", first)
+        record_icon_use(db, user, "mdi:alpha-b", first)
+        icons = record_icon_use(db, user, "mdi:alpha-a", later)
+        db.commit()
+
+    assert icons == [
+        {"icon": "mdi:alpha-a", "used_at": later.isoformat()},
+        {"icon": "mdi:alpha-b", "used_at": first.isoformat()},
+    ]
+
+
+@pytest.mark.parametrize(
+    "icon",
+    ["", "home", "fa:home", "mdi:Home", "mdi:", "mdi:../etc", "mdi:a b", "mdi:-a", "mdi:" + "a" * 130],
+)
+def test_using_something_that_is_not_an_icon_returns_422(admin_client, icon):
+    assert _use_icon(admin_client, icon).status_code == 422
+    assert admin_client.get("/api/users/me/recent-icons").json() == []
+
+
+def test_recent_icons_are_personal(admin_client, member_client):
+    _use_icon(admin_client, "mdi:alpha-a")
+    assert member_client.get("/api/users/me/recent-icons").json() == []
+
+
+def test_recent_icons_are_not_part_of_the_user_profile(admin_client):
+    _use_icon(admin_client, "mdi:alpha-a")
+    assert "recent_icons" not in admin_client.get("/api/users/me").json()
+    assert all("recent_icons" not in u for u in admin_client.get("/api/users").json())
+
+
+def test_recent_icons_return_401_unauthenticated():
+    assert anon_client.get("/api/users/me/recent-icons").status_code == 401
+    assert _use_icon(anon_client, "mdi:alpha-a").status_code == 401
+
+
 # ── PATCH /api/users/me/password ─────────────────────────────────────────────
 
 def test_change_password_returns_204(admin_client):

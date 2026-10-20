@@ -24,6 +24,13 @@
  * Chips include the referenced block's icon via Iconify's synchronous getIcon()
  * cache. The icon is guaranteed to be cached because the MentionMenu renders it
  * via <Icon> before the user confirms a selection.
+ *
+ * Write access
+ * ------------
+ * The row provides its block's ``can_write`` to what it renders (see
+ * ``useEditable``). Without it the text is shown but not editable, the to-do
+ * checkbox and the callout icon do not react, and no placeholder invites
+ * typing. Folding a toggle and following a mention still work.
  */
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
@@ -32,6 +39,7 @@ import { useBlockStore, type Block } from '@/stores/blocks'
 import { useSlashMenu } from '@/composables/useSlashMenu'
 import { useMentionMenu } from '@/composables/useMentionMenu'
 import { resolveColor } from '@/composables/blockColors'
+import { provideEditable } from '@/composables/useEditable'
 import { useI18n } from 'vue-i18n'
 import SlashMenu from './SlashMenu.vue'
 import MentionMenu from './MentionMenu.vue'
@@ -106,6 +114,7 @@ const router = useRouter()
 const blockStore = useBlockStore()
 const slashMenu = useSlashMenu()
 const mentionMenu = useMentionMenu()
+const editable = provideEditable(() => props.block)
 
 // ── Mention storage format ────────────────────────────────────────────────────
 // Storage format: @<uuid>|   (saved in block.content.text)
@@ -504,6 +513,10 @@ watch(
   () => props.focusRequested,
   async (requested) => {
     if (!requested) return
+    if (!editable.value) {
+      emit('focus-consumed')
+      return
+    }
     await nextTick()
     const el = editorEl.value
     if (!el) return
@@ -955,6 +968,7 @@ async function onKeydown(e: KeyboardEvent): Promise<void> {
 // ── To-do toggle ──────────────────────────────────────────────────────────────
 
 function onToggleChecked(): void {
+  if (!editable.value) return
   blockStore.updateBlock(props.block.id, {
     content: {
       ...props.block.content,
@@ -971,6 +985,7 @@ const showCalloutIconPicker = ref(false)
 const calloutIconPickerRect = ref<DOMRect | null>(null)
 
 function onCalloutIconBtnClick(e: MouseEvent): void {
+  if (!editable.value) return
   calloutIconPickerRect.value = (e.currentTarget as HTMLElement).getBoundingClientRect()
   showCalloutIconPicker.value = !showCalloutIconPicker.value
 }
@@ -1132,6 +1147,8 @@ async function applySlashSelection(type: string): Promise<void> {
     <button
       v-else-if="block.type === 'to_do'"
       class="editor-row__checkbox"
+      :class="{ 'editor-row__control--static': !editable }"
+      :disabled="!editable"
       :aria-label="block.content?.checked ? t('editor.row.uncheck') : t('editor.row.check')"
       tabindex="-1"
       @mousedown.prevent="onToggleChecked"
@@ -1165,14 +1182,16 @@ async function applySlashSelection(type: string): Promise<void> {
     >
       <button
         class="editor-row__callout-icon-btn"
-        :title="t('editor.row.changeIcon')"
+        :class="{ 'editor-row__control--static': !editable }"
+        :disabled="!editable"
+        :title="editable ? t('editor.row.changeIcon') : undefined"
         tabindex="-1"
         @click.stop="onCalloutIconBtnClick"
       >
         <Icon :icon="calloutIcon" width="18" height="18" />
       </button>
       <IconPicker
-        v-if="showCalloutIconPicker"
+        v-if="showCalloutIconPicker && editable"
         :model-value="calloutIcon"
         :trigger-rect="calloutIconPickerRect"
         @update:model-value="onCalloutIconUpdate"
@@ -1189,11 +1208,11 @@ async function applySlashSelection(type: string): Promise<void> {
     -->
     <div
       ref="editorEl"
-      :class="editorClass"
-      :data-placeholder="placeholder"
-      :data-empty="editorEmpty || undefined"
+      :class="[editorClass, { 'editor-row__editor--static': !editable }]"
+      :data-placeholder="editable ? placeholder : undefined"
+      :data-empty="(editable && editorEmpty) || undefined"
       class="editor-row__editor"
-      contenteditable="true"
+      :contenteditable="editable ? 'true' : 'false'"
       spellcheck="true"
       @input="onInput"
       @keydown="onKeydown"
@@ -1256,6 +1275,10 @@ async function applySlashSelection(type: string): Promise<void> {
   cursor: text;
   overflow: hidden;
   /* Height is managed by autoResize() via inline style.height. */
+}
+
+.editor-row__editor--static {
+  cursor: default;
 }
 
 /* Placeholder shown when the editor has no content. */
@@ -1473,5 +1496,12 @@ async function applySlashSelection(type: string): Promise<void> {
 
 .editor-row__mention-chip--locked:hover {
   background: color-mix(in srgb, var(--color-text-muted) 8%, transparent);
+}
+
+/* ── Read-only controls (after their regular rules so these win) ─────────── */
+.editor-row__control--static,
+.editor-row__control--static:hover {
+  cursor: default;
+  background: none;
 }
 </style>

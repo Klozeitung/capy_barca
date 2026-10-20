@@ -14,6 +14,9 @@
  *
  * Options are stored in config.options as SelectOption[]. The value stores
  * the option's id, { option: id }, so renaming an option never touches it.
+ *
+ * Without write access (``useEditable``) the value is only displayed: the
+ * cell does not activate and the timeline editor does not open.
  */
 import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -29,6 +32,7 @@ import {
 } from '@/stores/database'
 import { useEscapeKey } from '@/composables/useEscapeStack'
 import { getCellValue, getTimelineDisplayMode } from './cellUtils'
+import { useEditable } from '@/composables/useEditable'
 import TimelineEditor from './TimelineEditor.vue'
 import TimelineSlotList from './TimelineSlotList.vue'
 
@@ -46,6 +50,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const dbStore = useDatabaseStore()
+const editable = useEditable()
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
 
@@ -54,8 +59,14 @@ const timelineOpen = ref(false)
 const anchorRect = ref<DOMRect | undefined>()
 
 function openTimeline(event: MouseEvent) {
+  if (!editable.value) return
   anchorRect.value = (event.currentTarget as HTMLElement).getBoundingClientRect()
   timelineOpen.value = true
+}
+
+/** Ask the parent to open this cell for editing, with write access only. */
+function activate(): void {
+  if (editable.value) emit('activate')
 }
 
 // ── Refs ─────────────────────────────────────────────────────────────────────
@@ -235,7 +246,7 @@ async function createAndSelect() {
     v-else
     ref="cellEl"
     class="db__cell-chip-wrap"
-    @click.stop="hasTimeline() ? openTimeline($event) : emit('activate')"
+    @click.stop="hasTimeline() ? openTimeline($event) : activate()"
   >
     <span
       v-if="currentLabel()"

@@ -23,6 +23,10 @@
  *
  * "Open as page" navigates to the full-page entry view with ?showProperties=1
  * so the property section is expanded there by default.
+ *
+ * The entry's ``can_write`` is provided to everything in the panel (see
+ * ``useEditable``); an entry the user may only read shows a read-only badge
+ * in the header.
  */
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
@@ -37,10 +41,12 @@ import {
 } from '@/stores/database'
 import { WS_BLOCK_EVENT, WS_RESYNC_EVENT, type BlockEventPayload } from '@/stores/ws'
 import { useEscapeKey } from '@/composables/useEscapeStack'
+import { provideEditable } from '@/composables/useEditable'
 import BlockTopSection from './BlockTopSection.vue'
 import BlockPropertySection from './BlockPropertySection.vue'
 import BlockContentSection from './BlockContentSection.vue'
 import BlockCommentSection from './BlockCommentSection.vue'
+import ReadOnlyBadge from './ReadOnlyBadge.vue'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
@@ -76,6 +82,8 @@ const block = computed<Block | null>(() =>
 const entry = computed<DatabaseEntry | null>(() =>
   dbStore.getEntry(props.databaseId, props.entryId),
 )
+
+const editable = provideEditable(block)
 
 /**
  * Load the entry block, its content, and the entry with its values and
@@ -272,6 +280,7 @@ onUnmounted(() => {
           <Icon icon="mdi:arrow-expand" width="15" height="15" />
         </button>
         <div class="sv__header-spacer" />
+        <ReadOnlyBadge v-if="!editable" />
         <button
           class="sv__header-btn"
           :title="t('actions.cancel')"

@@ -5,7 +5,10 @@
     "workspace": "Arbeitsbereich",
     "addPage": "Neue Seite",
     "profile": "Profil",
-    "help": "Hilfe"
+    "help": "Hilfe",
+    "expand": "Aufklappen",
+    "collapse": "Zuklappen",
+    "addSubpage": "Unterseite hinzufügen"
   },
   "block": {
     "types": {
@@ -64,6 +67,29 @@
       "convertToStatic": "Toggle entfernen",
       "lockMirror": "Spiegel sperren",
       "unlockMirror": "Spiegel entsperren"
+    },
+    "media": {
+      "uploading": "Wird hochgeladen…",
+      "empty": "Noch kein Inhalt.",
+      "dropImage": "Bild ablegen oder zum Hochladen klicken",
+      "dropVideo": "Video ablegen oder zum Hochladen klicken",
+      "dropAudio": "Audiodatei ablegen oder zum Hochladen klicken",
+      "dropPdf": "PDF ablegen oder zum Hochladen klicken",
+      "dropFile": "Datei ablegen oder zum Hochladen klicken",
+      "removeImage": "Bild entfernen",
+      "removeVideo": "Video entfernen",
+      "removeAudio": "Audio entfernen",
+      "removePdf": "PDF entfernen",
+      "removeFile": "Datei entfernen",
+      "openInNewTab": "In neuem Tab öffnen",
+      "download": "Herunterladen"
+    },
+    "embed": {
+      "placeholder": "Einbettungs-URL einfügen und Enter drücken…",
+      "confirm": "Einbetten",
+      "invalidUrl": "Bitte eine gültige URL eingeben.",
+      "remove": "Einbettung entfernen",
+      "frameTitle": "Eingebetteter Inhalt"
     }
   },
   "editor": {
@@ -131,7 +157,8 @@
     "addIcon": "Symbol hinzufügen",
     "addCover": "Cover hinzufügen",
     "noContent": "Noch kein Inhalt. Klicken oder '/' eingeben.",
-    "noPageSelected": "Keine Seite ausgewählt."
+    "noPageSelected": "Keine Seite ausgewählt.",
+    "noContentReadOnly": "Noch kein Inhalt."
   },
   "actions": {
     "save": "Speichern",
@@ -272,7 +299,8 @@
     "exportAsPdf": "Als PDF exportieren",
     "exportAsPdfHint": "Aktuelle Seite drucken oder als PDF-Datei speichern.",
     "sectionPermissions": "Berechtigungen",
-    "permissionsTitle": "Zugriffssteuerung"
+    "permissionsTitle": "Zugriffssteuerung",
+    "coverNone": "Kein Cover festgelegt."
   },
   "trash": {
     "title": "Papierkorb",
@@ -839,7 +867,7 @@
     "sectionPermissions": "Berechtigungen",
     "permissionsTitle": "Zugriffssteuerung",
     "permissionsIntro": "Jeder Block kann individuell eingeschränkt werden. Ohne explizite Einstellung erbt ein Block die Berechtigung seines Elternelements. Einschränkungen summieren sich nach unten: Ein Block ist nur für Nutzer sichtbar, die alle übergeordneten Blöcke sehen dürfen, und eine Einstellung kann nie mehr gewähren als die Blöcke darüber.",
-    "permissionsLevels": "Freigaben haben eine Stufe: Lesen erlaubt Ansehen und Kommentieren, Bearbeiten zusätzlich Änderungen. Wer nur lesen darf und trotzdem etwas ändert, erhält einen Hinweis; die Änderung wird nicht gespeichert.",
+    "permissionsLevels": "Freigaben haben eine Stufe: Lesen erlaubt Ansehen und Kommentieren, Bearbeiten zusätzlich Änderungen. Wer nur lesen darf, sieht keine Bearbeitungselemente; ein Hinweis „Nur Lesezugriff“ zeigt das an.",
     "permissionsNote": "Berechtigungen werden über den Schraubenschlüssel-Button in den Seiteneinstellungen verwaltet. Administratoren sehen immer alle Blöcke.",
     "sectionDatabases": "Datenbanken",
     "databasesTitle": "Datenbanken",
@@ -960,6 +988,19 @@
     "editorError": "Der Editor konnte nicht gestartet werden.",
     "close": "Schließen",
     "moveTitle": "„{name}“ verschieben nach…",
-    "noOtherDrives": "Keine anderen Drive-Blöcke gefunden. Öffne eine Seite mit einem Drive-Block, damit er hier erscheint."
+    "noOtherDrives": "Keine anderen Drive-Blöcke gefunden. Öffne eine Seite mit einem Drive-Block, damit er hier erscheint.",
+    "viewInCollabora": "In Collabora ansehen",
+    "emptyReadOnly": "Dieser Drive enthält noch keine Dateien."
+  },
+  "iconPicker": {
+    "search": "Symbol suchen…",
+    "clear": "Symbol entfernen",
+    "noResults": "Keine Ergebnisse.",
+    "recent": "Zuletzt verwendet",
+    "common": "Häufig"
+  },
+  "readOnly": {
+    "badge": "Nur Lesezugriff",
+    "badgeTitle": "Du kannst diesen Inhalt ansehen und kommentieren, aber nicht ändern."
   }
 }

@@ -33,11 +33,24 @@
  *                 onto a crumb moves it to that ancestor folder.
  * Search        – Search icon in header toggles a search input; results are
  *                 a flat filtered list across all nested folders.
+ *
+ * Write access
+ * ------------
+ * Without ``can_write`` on the block (``useEditable``) the drive can be
+ * browsed, searched and downloaded from, and office documents open in
+ * Collabora, which the backend then starts read-only. Uploading, creating,
+ * renaming, reordering, moving and removing are not offered. Moving a file
+ * only lists target drives the user may change.
+ *
+ * Requests go through ``apiClient``, so an expired session and a refusal for
+ * read-only access are handled as everywhere else.
  */
 import { computed, nextTick, ref, watch } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import IconPicker from '@/components/IconPicker.vue'
+import { apiClient } from '@/api/client'
+import { canWrite, provideEditable } from '@/composables/useEditable'
 import { useBlockStore, type Block } from '@/stores/blocks'
 import { useMediaUpload, type UploadedFile } from '@/composables/useMediaUpload'
 import { downloadFile } from '@/composables/useDownload'
@@ -68,9 +81,23 @@ const props = defineProps<{
 
 const { t, locale } = useI18n()
 const blockStore = useBlockStore()
+const editable = provideEditable(() => props.block)
 const upload = useMediaUpload('drive', props.block.id)
 const inputRef = ref<HTMLInputElement | null>(null)
 const isDropOver = ref(false)
+
+/**
+ * Dragover on the whole block. Always prevented, so a file dropped by a
+ * reader is not opened by the browser instead; only shown as a drop target
+ * when files may be added.
+ */
+function onBlockDragOver(e: DragEvent): void {
+  if (editable.value) {
+    isDropOver.value = true
+  } else if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = 'none'
+  }
+}
 
 // ── Tree helpers ──────────────────────────────────────────────────────────────
 
@@ -178,6 +205,7 @@ watch(
 )
 
 async function startTitleEdit(): Promise<void> {
+  if (!editable.value) return
   titleInput.value = currentTitle.value
   editingTitle.value = true
   await nextTick()
@@ -254,6 +282,7 @@ const folderRenameValue = ref('')
 const folderRenameInputRef = ref<HTMLInputElement | null>(null)
 
 async function startFolderRename(folder: DriveFolder): Promise<void> {
+  if (!editable.value) return
   renamingFolderId.value = folder.id
   folderRenameValue.value = folder.name
   await nextTick()
@@ -291,6 +320,7 @@ const renameValue = ref('')
 const renameInputRef = ref<HTMLInputElement | null>(null)
 
 async function startRename(file: UploadedFile): Promise<void> {
+  if (!editable.value) return
   renamingFileUuid.value = file.file_uuid
   renameValue.value = file.filename
   await nextTick()
@@ -322,6 +352,10 @@ const dropTargetFolderId = ref<string | null>(null) // target folder id for move
 const dropAbove = ref(false)
 
 function onFileDragStart(file: UploadedFile, e: DragEvent): void {
+  if (!editable.value) {
+    e.preventDefault()
+    return
+  }
   draggingFileUuid.value = file.file_uuid
   e.dataTransfer!.effectAllowed = 'move'
   e.dataTransfer!.setData('drive-file-uuid', file.file_uuid)
@@ -543,20 +577,13 @@ function isEditable(mime: string): boolean {
 async function openInCollabora(file: UploadedFile): Promise<void> {
   collaboraError.value = null
   try {
-    const res = await fetch('/api/wopi/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({
-        file_uuid: file.file_uuid,
-        block_id: props.block.id,
-        filename: file.filename,
-        mime: file.mime,
-        lang: locale.value === 'en' ? 'en' : 'de',
-      }),
+    const data = await apiClient.post<{ editor_url: string }>('/api/wopi/token', {
+      file_uuid: file.file_uuid,
+      block_id: props.block.id,
+      filename: file.filename,
+      mime: file.mime,
+      lang: locale.value === 'en' ? 'en' : 'de',
     })
-    if (!res.ok) { collaboraError.value = t('drive.editorError'); return }
-    const data = await res.json()
     collaboraFilename.value = file.filename
     collaboraUrl.value = data.editor_url
   } catch {
@@ -593,7 +620,7 @@ function iconForMime(mime: string): string {
 // ── Upload handlers ───────────────────────────────────────────────────────────
 
 async function handleDrop(e: DragEvent): Promise<void> {
-  if (draggingFileUuid.value) return
+  if (draggingFileUuid.value || !editable.value) return
   isDropOver.value = false
   const newFiles = await upload.onDropMultiple(e)
   if (newFiles.length) {
@@ -621,14 +648,14 @@ async function handleRemove(fileUuid: string): Promise<void> {
 const movingFile = ref<UploadedFile | null>(null)
 
 /**
- * All Drive blocks in the store, excluding the current one.
- * Only blocks that have been loaded (visited pages) are available.
+ * All Drive blocks in the store the user may change, excluding the current
+ * one. Only blocks that have been loaded (visited pages) are available.
  * The block's display title comes from content.title, with the localized
  * default as fallback.
  */
 const otherDriveBlocks = computed(() =>
   Object.values(blockStore.blocks).filter(
-    (b) => b.type === 'drive' && b.id !== props.block.id,
+    (b) => b.type === 'drive' && b.id !== props.block.id && canWrite(b),
   ),
 )
 
@@ -653,21 +680,11 @@ async function executeMoveFile(targetBlockId: string): Promise<void> {
   //    Only proceed with index changes if the backend confirms success.
   let newUrl: string
   try {
-    const res = await fetch('/api/media/drive-file/move', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({
-        file_uuid: file.file_uuid,
-        source_block_id: props.block.id,
-        target_block_id: targetBlockId,
-      }),
+    const data = await apiClient.post<{ url: string }>('/api/media/drive-file/move', {
+      file_uuid: file.file_uuid,
+      source_block_id: props.block.id,
+      target_block_id: targetBlockId,
     })
-    if (!res.ok) {
-      console.error('Drive file move failed: HTTP', res.status)
-      return
-    }
-    const data = await res.json()
     newUrl = data.url
   } catch (err) {
     console.error('Drive file move failed:', err)
@@ -707,7 +724,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
 <template>
   <div
     class="drive-block"
-    @dragover.prevent.stop="isDropOver = true"
+    @dragover.prevent.stop="onBlockDragOver"
     @dragleave.stop="isDropOver = false"
     @drop.prevent.stop="handleDrop"
   >
@@ -728,13 +745,15 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
       <div v-else class="drive-block__icon-anchor">
         <button
           class="drive-block__icon-btn"
-          :title="t('drive.changeIcon')"
+          :class="{ 'drive-block__icon-btn--static': !editable }"
+          :disabled="!editable"
+          :title="editable ? t('drive.changeIcon') : undefined"
           @click.stop="showIconPicker = !showIconPicker"
         >
           <Icon :icon="displayIcon" width="15" height="15" />
         </button>
         <IconPicker
-          v-if="showIconPicker"
+          v-if="showIconPicker && editable"
           :model-value="block.icon"
           @update:model-value="onIconUpdate"
           @close="showIconPicker = false"
@@ -777,7 +796,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
             <span
               v-else
               class="drive-block__title"
-              :title="t('drive.renameHint')"
+              :title="editable ? t('drive.renameHint') : undefined"
               @dblclick.stop="startTitleEdit"
             >
               {{ displayTitle }}
@@ -827,6 +846,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
 
         <!-- New folder button -->
         <button
+          v-if="editable"
           class="drive-block__add-btn"
           :title="t('drive.newFolder')"
           @click="startCreateFolder"
@@ -836,6 +856,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
 
         <!-- Add file button -->
         <button
+          v-if="editable"
           class="drive-block__add-btn"
           :title="t('drive.addFile')"
           :disabled="upload.isUploading.value"
@@ -847,6 +868,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
       </template>
 
       <input
+        v-if="editable"
         ref="inputRef"
         type="file"
         multiple
@@ -892,12 +914,13 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
             <button
               v-if="isEditable(result.file.mime)"
               class="drive-block__row-action"
-              :title="t('drive.editInCollabora')"
+              :title="editable ? t('drive.editInCollabora') : t('drive.viewInCollabora')"
               @click="openInCollabora(result.file)"
             >
-              <Icon icon="mdi:pencil-outline" width="14" height="14" />
+              <Icon :icon="editable ? 'mdi:pencil-outline' : 'mdi:eye-outline'" width="14" height="14" />
             </button>
             <button
+              v-if="editable"
               class="drive-block__row-action"
               :title="t('drive.moveToDrive')"
               @click.stop="openMoveModal(result.file)"
@@ -912,6 +935,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
               <Icon icon="mdi:download" width="14" height="14" />
             </button>
             <button
+              v-if="editable"
               class="drive-block__row-action"
               :title="t('actions.remove')"
               @click="handleRemove(result.file.file_uuid)"
@@ -992,6 +1016,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
           <span class="drive-col drive-col--size drive-block__row-size">—</span>
           <span class="drive-col drive-col--actions" @click.stop>
             <button
+              v-if="editable"
               class="drive-block__row-action"
               :title="t('actions.rename')"
               @click.stop="startFolderRename(folder)"
@@ -999,6 +1024,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
               <Icon icon="mdi:pencil-outline" width="14" height="14" />
             </button>
             <button
+              v-if="editable"
               class="drive-block__row-action"
               :title="t('drive.deleteFolder')"
               @click.stop="removeFolder(folder.id)"
@@ -1025,12 +1051,12 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
           <!-- Drag handle -->
           <span
             class="drive-col drive-col--drag"
-            draggable="true"
-            :title="t('drive.dragHandle')"
+            :draggable="editable"
+            :title="editable ? t('drive.dragHandle') : undefined"
             @dragstart="onFileDragStart(file, $event)"
             @dragend="onFileDragEnd"
           >
-            <Icon icon="mdi:drag-vertical" width="14" height="14" class="drive-block__drag-handle" />
+            <Icon v-if="editable" icon="mdi:drag-vertical" width="14" height="14" class="drive-block__drag-handle" />
           </span>
 
           <!-- Name -->
@@ -1048,7 +1074,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
             <span
               v-else
               class="drive-block__row-name"
-              :title="t('drive.renameHint')"
+              :title="editable ? t('drive.renameHint') : undefined"
               @dblclick.stop="startRename(file)"
             >
               {{ file.filename }}
@@ -1063,12 +1089,13 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
             <button
               v-if="isEditable(file.mime)"
               class="drive-block__row-action"
-              :title="t('drive.editInCollabora')"
+              :title="editable ? t('drive.editInCollabora') : t('drive.viewInCollabora')"
               @click="openInCollabora(file)"
             >
-              <Icon icon="mdi:pencil-outline" width="14" height="14" />
+              <Icon :icon="editable ? 'mdi:pencil-outline' : 'mdi:eye-outline'" width="14" height="14" />
             </button>
             <button
+              v-if="editable"
               class="drive-block__row-action"
               :title="t('drive.moveToDrive')"
               @click.stop="openMoveModal(file)"
@@ -1083,6 +1110,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
               <Icon icon="mdi:download" width="14" height="14" />
             </button>
             <button
+              v-if="editable"
               class="drive-block__row-action"
               :title="t('actions.remove')"
               @click="handleRemove(file.file_uuid)"
@@ -1096,7 +1124,7 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
 
     <!-- Empty state -->
     <div v-else class="drive-block__empty">
-      <span>{{ t('drive.emptyHint') }}</span>
+      <span>{{ editable ? t('drive.emptyHint') : t('drive.emptyReadOnly') }}</span>
     </div>
 
     <!-- Upload progress -->
@@ -1231,6 +1259,13 @@ const totalFileCount = computed(() => countFiles(rootFolder.value))
 .drive-block__icon-btn:hover {
   background: var(--color-active);
   color: var(--color-text);
+}
+
+.drive-block__icon-btn--static,
+.drive-block__icon-btn--static:hover {
+  cursor: default;
+  background: transparent;
+  color: var(--color-text-muted);
 }
 
 .drive-block__icon-anchor :deep(.icon-picker) {

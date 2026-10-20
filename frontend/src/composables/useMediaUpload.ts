@@ -11,9 +11,13 @@
  * so the block dropzones can display them as a tooltip: 413 when the file is
  * past the size ceiling, 415 when the block does not accept that type, 403
  * when the block is not the caller's to write to.
+ *
+ * Requests go through ``apiClient``, so an expired session and a refusal for
+ * read-only access are handled the same way as everywhere else.
  */
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { apiClient, ApiError } from '@/api/client'
 
 export type MediaCategory = 'image' | 'video' | 'audio' | 'pdf' | 'file' | 'drive'
 
@@ -40,24 +44,24 @@ export function useMediaUpload(category: MediaCategory, blockId: string) {
     try {
       const form = new FormData()
       form.append('file', file)
-      const res = await fetch(`/api/media/upload/${category}/${blockId}`, {
-        method: 'POST',
-        body: form,
-        credentials: 'include',
-      })
-      if (!res.ok) {
-        if (res.status === 413) throw new Error(t('errors.uploadTooLarge'))
-        if (res.status === 415) throw new Error(t('errors.uploadTypeNotAllowed'))
-        if (res.status === 403) throw new Error(t('errors.uploadForbidden'))
-        throw new Error(t('errors.uploadFailed'))
-      }
-      return (await res.json()) as UploadedFile
+      return await apiClient.postForm<UploadedFile>(
+        `/api/media/upload/${category}/${blockId}`,
+        form,
+      )
     } catch (e) {
-      error.value = e instanceof Error ? e.message : t('errors.uploadFailed')
+      error.value = uploadErrorMessage(e)
       return null
     } finally {
       isUploading.value = false
     }
+  }
+
+  function uploadErrorMessage(e: unknown): string {
+    const status = e instanceof ApiError ? e.status : null
+    if (status === 413) return t('errors.uploadTooLarge')
+    if (status === 415) return t('errors.uploadTypeNotAllowed')
+    if (status === 403) return t('errors.uploadForbidden')
+    return t('errors.uploadFailed')
   }
 
   async function uploadMultiple(files: FileList | File[]): Promise<UploadedFile[]> {
@@ -71,11 +75,18 @@ export function useMediaUpload(category: MediaCategory, blockId: string) {
 
   // ── Delete ─────────────────────────────────────────────────────────────────
 
+  /**
+   * Delete a stored file. A refusal by the server (for instance a file that
+   * is already gone) does not stop the caller from clearing the block; only
+   * a network failure is passed on.
+   */
   async function deleteFile(fileUuid: string): Promise<void> {
-    await fetch(`/api/media/${category}/${blockId}/${fileUuid}`, {
-      method: 'DELETE',
-      credentials: 'include',
-    })
+    try {
+      await apiClient.delete(`/api/media/${category}/${blockId}/${fileUuid}`)
+    } catch (e) {
+      if (e instanceof ApiError && e.status !== 0) return
+      throw e
+    }
   }
 
   // ── Drag state helpers (used as raw event handlers in templates) ───────────

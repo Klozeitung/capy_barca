@@ -165,9 +165,7 @@ function roleLabel(role: string): string {
 async function fetchCapacity(): Promise<void> {
   capacityError.value = false
   try {
-    const res = await fetch('/api/media/capacity', { credentials: 'include' })
-    if (!res.ok) throw new Error()
-    capacity.value = (await res.json()) as CapacityData
+    capacity.value = await apiClient.get<CapacityData>('/api/media/capacity')
   } catch {
     capacityError.value = true
   }
@@ -191,9 +189,7 @@ async function downloadBackupScript(): Promise<void> {
   backupDownloading.value = true
   backupError.value = false
   try {
-    const res = await fetch('/api/backup/script', { credentials: 'include' })
-    if (!res.ok) throw new Error()
-    const blob = await res.blob()
+    const blob = await apiClient.getBlob('/api/backup/script')
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url

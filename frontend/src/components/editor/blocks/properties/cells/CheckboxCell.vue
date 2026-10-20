@@ -8,11 +8,15 @@
  *
  * When ``schema.config.hasTimeline`` is true, clicking opens the
  * TimelineEditor instead of toggling the value directly.
+ *
+ * Without write access (``useEditable``) the value is only displayed: the
+ * cell does not activate and the timeline editor does not open.
  */
 import { ref } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useDatabaseStore, type DatabaseEntry, type PropertySchema } from '@/stores/database'
 import { getCellValue, getTimelineDisplayMode } from './cellUtils'
+import { useEditable } from '@/composables/useEditable'
 import TimelineEditor from './TimelineEditor.vue'
 import TimelineSlotList from './TimelineSlotList.vue'
 
@@ -23,6 +27,7 @@ const props = defineProps<{
 }>()
 
 const dbStore = useDatabaseStore()
+const editable = useEditable()
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
 
@@ -31,6 +36,7 @@ const timelineOpen = ref(false)
 const anchorRect = ref<DOMRect | undefined>()
 
 function openTimeline(event: MouseEvent) {
+  if (!editable.value) return
   anchorRect.value = (event.currentTarget as HTMLElement).getBoundingClientRect()
   timelineOpen.value = true
 }
@@ -43,6 +49,7 @@ function isChecked(): boolean {
 }
 
 async function toggle() {
+  if (!editable.value) return
   await dbStore.upsertValue(
     props.databaseId,
     props.entry.id,
@@ -84,6 +91,7 @@ async function toggle() {
     type="checkbox"
     class="db__checkbox"
     :checked="isChecked()"
+    :disabled="!editable"
     @change.stop="toggle"
     @click.stop
   />

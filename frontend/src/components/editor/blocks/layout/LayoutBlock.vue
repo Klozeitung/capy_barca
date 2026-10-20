@@ -23,10 +23,16 @@
  * Content model:
  *   layout.content = { widths: number[] }   // proportional, sum ≈ 1.0
  *   column.content = {}                     // children managed separately
+ *
+ * Write access: the layout provides its ``can_write`` to its columns (see
+ * ``useEditable``). Without it the dividers do not resize and columns cannot
+ * be reordered or removed; the dividers keep their place so the layout looks
+ * the same.
  */
 import { computed, onMounted, ref, nextTick } from 'vue'
 import { useBlockStore, type Block } from '@/stores/blocks'
 import { useDrag } from '@/composables/useDrag'
+import { provideEditable } from '@/composables/useEditable'
 import ColumnBlock from '@/components/editor/blocks/layout/ColumnBlock.vue'
 
 // ── Props ─────────────────────────────────────────────────────────────────────
@@ -40,6 +46,7 @@ const props = defineProps<{
 
 const blockStore = useBlockStore()
 const drag = useDrag()
+const editable = provideEditable(() => props.block)
 
 const MIN_COLUMNS = 2
 
@@ -109,6 +116,7 @@ async function removeColumn(columnId: string): Promise<void> {
 // ── Resize dividers ───────────────────────────────────────────────────────────
 
 function onResizeStart(e: PointerEvent, idx: number): void {
+  if (!editable.value) return
   e.preventDefault()
   ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
   isResizing.value = true
@@ -159,6 +167,7 @@ function onColDragOver(e: DragEvent, col: Block): void {
   const { dragMode, blockId, sourceParentId } = drag.getDragging()
   // Only handle column-mode drags originating from this same layout block.
   if (dragMode !== 'column' || !blockId || sourceParentId !== props.block.id) return
+  if (!editable.value) return
   e.preventDefault()
   e.stopPropagation()
   e.dataTransfer!.dropEffect = 'move'
@@ -247,6 +256,7 @@ async function onColDrop(e: DragEvent, col: Block): Promise<void> {
         <div
           v-if="idx < columns.length - 1"
           class="layout-block__resize-divider"
+          :class="{ 'layout-block__resize-divider--static': !editable }"
           @pointerdown="(e) => onResizeStart(e, idx)"
         />
       </template>
@@ -324,6 +334,14 @@ async function onColDrop(e: DragEvent, col: Block): Promise<void> {
 .layout-block__row--resizing .layout-block__resize-divider::after {
   background: var(--color-accent);
   width: 3px;
+}
+
+.layout-block__resize-divider--static {
+  cursor: default;
+}
+
+.layout-block__resize-divider--static:hover::after {
+  background: transparent;
 }
 
 @media print {

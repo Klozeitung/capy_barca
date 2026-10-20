@@ -18,8 +18,8 @@ export interface Block {
   owner_id?: string | null
   /**
    * Whether the current user may change this block. Sent with every block an
-   * HTTP endpoint returns; absent on blocks that arrived only through a
-   * WebSocket event, and kept when such an event updates a known block.
+   * HTTP endpoint returns and, per recipient, with every block snapshot of a
+   * WebSocket event. Components read it through ``useEditable``.
    */
   can_write?: boolean
 }

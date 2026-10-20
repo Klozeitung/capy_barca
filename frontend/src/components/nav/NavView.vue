@@ -8,7 +8,8 @@
  * avoids a redundant "Workspace" parent row.
  *
  * A "New page" button at the bottom of the scroll area replaces the
- * add-child affordance that previously lived on the workspace NavItem.
+ * add-child affordance that previously lived on the workspace NavItem. It is
+ * left out when the workspace root is known and the user may not change it.
  */
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -18,6 +19,7 @@ import NavItem from './NavItem.vue'
 import NavAdmin from './NavAdmin.vue'
 import TrashModal from './TrashModal.vue'
 import { useBlockStore, type Block } from '@/stores/blocks'
+import { canWrite } from '@/composables/useEditable'
 import { WORKSPACE_ROOT_ID } from '@/constants'
 
 const { t } = useI18n()
@@ -29,6 +31,9 @@ const NAV_TYPES = new Set(['workspace', 'page', 'database', 'calendar'])
 
 const isCreating = ref(false)
 const showTrash = ref(false)
+
+/** Whether the user may add pages at the top level of the workspace. */
+const rootWritable = computed(() => canWrite(blockStore.blocks[WORKSPACE_ROOT_ID]))
 
 // Reactive list of workspace children that belong in the nav tree.
 const rootChildren = computed<Block[]>(() =>
@@ -85,7 +90,7 @@ async function addPage(): Promise<void> {
 
       <!-- Bottom actions -->
       <div class="nav-footer">
-        <button class="nav-footer__add-btn" :disabled="isCreating" @click="addPage">
+        <button v-if="rootWritable" class="nav-footer__add-btn" :disabled="isCreating" @click="addPage">
           <Icon icon="mdi:plus" width="14" height="14" />
           {{ t('nav.addPage') }}
         </button>

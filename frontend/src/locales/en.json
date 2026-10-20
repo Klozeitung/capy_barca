@@ -5,7 +5,10 @@
     "workspace": "Workspace",
     "addPage": "New page",
     "profile": "Profile",
-    "help": "Help"
+    "help": "Help",
+    "expand": "Expand",
+    "collapse": "Collapse",
+    "addSubpage": "Add subpage"
   },
   "block": {
     "types": {
@@ -64,6 +67,29 @@
       "convertToStatic": "Remove toggle",
       "lockMirror": "Lock mirror",
       "unlockMirror": "Unlock mirror"
+    },
+    "media": {
+      "uploading": "Uploading…",
+      "empty": "No content yet.",
+      "dropImage": "Drop an image, or click to upload",
+      "dropVideo": "Drop a video, or click to upload",
+      "dropAudio": "Drop an audio file, or click to upload",
+      "dropPdf": "Drop a PDF, or click to upload",
+      "dropFile": "Drop a file, or click to upload",
+      "removeImage": "Remove image",
+      "removeVideo": "Remove video",
+      "removeAudio": "Remove audio",
+      "removePdf": "Remove PDF",
+      "removeFile": "Remove file",
+      "openInNewTab": "Open in new tab",
+      "download": "Download"
+    },
+    "embed": {
+      "placeholder": "Paste an embed URL and press Enter…",
+      "confirm": "Embed",
+      "invalidUrl": "Please enter a valid URL.",
+      "remove": "Remove embed",
+      "frameTitle": "Embedded content"
     }
   },
   "editor": {
@@ -131,7 +157,8 @@
     "addIcon": "Add icon",
     "addCover": "Add cover",
     "noContent": "No content yet. Click or type '/' to begin.",
-    "noPageSelected": "No page selected."
+    "noPageSelected": "No page selected.",
+    "noContentReadOnly": "No content yet."
   },
   "actions": {
     "save": "Save",
@@ -272,7 +299,8 @@
     "exportAsPdf": "Export as PDF",
     "exportAsPdfHint": "Print or save the current page as a PDF file.",
     "sectionPermissions": "Permissions",
-    "permissionsTitle": "Access control"
+    "permissionsTitle": "Access control",
+    "coverNone": "No cover set."
   },
   "trash": {
     "title": "Recycle Bin",
@@ -839,7 +867,7 @@
     "sectionPermissions": "Permissions",
     "permissionsTitle": "Access control",
     "permissionsIntro": "Each block can be individually restricted. Without an explicit setting, a block inherits the permission of its parent. Restrictions add up downwards: a block is visible only to users who may see all of its parent blocks, and a setting can never grant more than the blocks above it.",
-    "permissionsLevels": "Access comes with a level: Read allows viewing and commenting, Edit also allows changes. A change by someone with read access is refused with a notice and not saved.",
+    "permissionsLevels": "Access comes with a level: Read allows viewing and commenting, Edit also allows changes. Users with read access see no editing controls; a \"Read only\" badge indicates this.",
     "permissionsNote": "Permissions are managed via the gear button in page settings. Admins always see all blocks.",
     "sectionDatabases": "Databases",
     "databasesTitle": "Databases",
@@ -960,6 +988,19 @@
     "editorError": "The editor could not be started.",
     "close": "Close",
     "moveTitle": "Move “{name}” to…",
-    "noOtherDrives": "No other drive blocks found. Open a page with a drive block for it to appear here."
+    "noOtherDrives": "No other drive blocks found. Open a page with a drive block for it to appear here.",
+    "viewInCollabora": "View in Collabora",
+    "emptyReadOnly": "This drive has no files yet."
+  },
+  "iconPicker": {
+    "search": "Search icons…",
+    "clear": "Remove icon",
+    "noResults": "No results.",
+    "recent": "Recently used",
+    "common": "Common"
+  },
+  "readOnly": {
+    "badge": "Read only",
+    "badgeTitle": "You can view and comment on this content, but not change it."
   }
 }

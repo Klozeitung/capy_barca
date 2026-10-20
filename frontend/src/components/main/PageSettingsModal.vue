@@ -6,9 +6,11 @@
  * of the global SettingsModal (sidebar nav on the left, content pane on the
  * right).
  *
- * Currently contains one section: "Seite"
+ * Sections for pages: page, export and permissions; databases show the
+ * permissions only.
  *   - Layout: full-size toggle (expands content to the full available width)
- *   - Cover:  upload / change / remove the page cover image
+ *   - Cover:  upload / change / remove the page cover image, offered only
+ *             when the user may change the page (``useEditable``)
  *
  * Cover storage convention (server-side):
  *   static/uploads/covers/{pageId}
@@ -16,14 +18,19 @@
  * Uploading a new cover automatically replaces the existing file on disk.
  * Removing the cover calls DELETE /api/blocks/{id}/cover.
  *
- * Full-size state is a client-side preference stored in localStorage under
- * the key `page-fullsize-{pageId}`. It is managed by the parent (MainView)
- * and exposed here via props/emits so the modal stays stateless with respect
- * to that setting.
+ * Full-size state is a block preference stored by the backend, which a
+ * reader may set too. It is managed by the parent (MainView) and exposed
+ * here via props/emits so the modal stays stateless with respect to that
+ * setting.
+ *
+ * Cover requests go through ``apiClient``, so an expired session and a
+ * refusal for read-only access are handled as everywhere else.
  */
 import { ref, computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
+import { apiClient } from '@/api/client'
+import { useEditable } from '@/composables/useEditable'
 import { useBlockStore, type Block } from '@/stores/blocks'
 import PermissionsSection from './PermissionsSection.vue'
 
@@ -44,6 +51,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const blockStore = useBlockStore()
+const editable = useEditable()
 
 // ── Sidebar sections ──────────────────────────────────────────────────────────
 
@@ -101,12 +109,7 @@ async function onCoverFileSelected(e: Event): Promise<void> {
     // POST /api/blocks/{id}/cover — server saves the file as
     // static/uploads/covers/{pageId} (overwriting any previous cover).
     // The response is the updated block.
-    const res = await fetch(`/api/blocks/${props.block.id}/cover`, {
-      method: 'POST',
-      body: formData,
-      credentials: 'include',
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    await apiClient.postForm(`/api/blocks/${props.block.id}/cover`, formData)
     // Re-fetch the block so the store reflects the new cover URL.
     await blockStore.fetchBlock(props.block.id)
   } catch {
@@ -121,11 +124,7 @@ async function removeCover(): Promise<void> {
   coverRemoving.value = true
   try {
     // DELETE /api/blocks/{id}/cover — server removes the file from disk.
-    const res = await fetch(`/api/blocks/${props.block.id}/cover`, {
-      method: 'DELETE',
-      credentials: 'include',
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    await apiClient.delete(`/api/blocks/${props.block.id}/cover`)
     // Re-fetch the block so the store clears the cover field.
     await blockStore.fetchBlock(props.block.id)
   } catch {
@@ -210,7 +209,7 @@ function exportAsPdf(): void {
           <!-- Right content pane -->
           <div class="psm__content">
 
-            <!-- ── Seite ──────────────────────────────────────────────── -->
+            <!-- ── Page ───────────────────────────────────────────────── -->
             <template v-if="activeSection === 'page'">
 
               <!-- Layout section -->
@@ -251,7 +250,7 @@ function exportAsPdf(): void {
                 </div>
 
                 <!-- Actions -->
-                <div class="psm__cover-actions">
+                <div v-if="editable" class="psm__cover-actions">
                   <button
                     class="psm__btn"
                     :disabled="coverUploading"
@@ -292,8 +291,13 @@ function exportAsPdf(): void {
                   {{ coverError }}
                 </p>
 
+                <p v-if="!editable && !block.cover" class="psm__row-hint">
+                  {{ t('pageSettings.coverNone') }}
+                </p>
+
                 <!-- Hidden file input -->
                 <input
+                  v-if="editable"
                   ref="coverFileInput"
                   type="file"
                   accept="image/*"

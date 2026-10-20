@@ -16,10 +16,16 @@
  * therefore filtered by scheme before they reach the template. The backend
  * applies the same restriction; this is the half that also covers content that
  * never passed through the bookmark endpoint.
+ *
+ * Without write access to the block (``useEditable``) an empty block shows a
+ * plain placeholder instead of the URL input, and there is no remove button.
+ * The preview request goes through ``apiClient``.
  */
 import { computed, ref } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
+import { apiClient, ApiError } from '@/api/client'
+import { provideEditable } from '@/composables/useEditable'
 import { useBlockStore, type Block } from '@/stores/blocks'
 
 const props = defineProps<{
@@ -29,6 +35,7 @@ const props = defineProps<{
 
 const { t } = useI18n()
 const blockStore = useBlockStore()
+const editable = provideEditable(() => props.block)
 
 const hasUrl = computed(() => Boolean(props.block.content?.url))
 const bUrl = computed(() => props.block.content?.url as string | undefined)
@@ -77,20 +84,15 @@ async function handleConfirm(): Promise<void> {
   fetchError.value = null
 
   try {
-    const res = await fetch('/api/media/bookmark', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
-    })
-    if (res.status === 400) throw new Error(t('block.bookmark.invalidTarget'))
-    if (res.status === 429) throw new Error(t('block.bookmark.tooManyRequests'))
-    if (!res.ok) throw new Error(t('block.bookmark.fetchFailed'))
-    const data = await res.json()
+    const data = await apiClient.post<Record<string, unknown>>('/api/media/bookmark', { url })
     await blockStore.updateBlock(props.block.id, { content: data })
     urlInput.value = ''
   } catch (e) {
-    fetchError.value = e instanceof Error ? e.message : t('block.bookmark.fetchFailed')
+    const status = e instanceof ApiError ? e.status : null
+    fetchError.value =
+      status === 400 ? t('block.bookmark.invalidTarget')
+      : status === 429 ? t('block.bookmark.tooManyRequests')
+      : t('block.bookmark.fetchFailed')
   } finally {
     isFetching.value = false
   }
@@ -122,7 +124,7 @@ function hideBrokenIcon(event: Event): void {
 <template>
   <div class="bookmark-block">
     <!-- URL input state -->
-    <template v-if="!hasUrl">
+    <template v-if="!hasUrl && editable">
       <div class="bookmark-block__input-row">
         <Icon icon="mdi:link" width="16" height="16" class="bookmark-block__input-icon" />
         <input
@@ -146,6 +148,11 @@ function hideBrokenIcon(event: Event): void {
       </div>
       <span v-if="fetchError" class="bookmark-block__error">{{ fetchError }}</span>
     </template>
+
+    <div v-else-if="!hasUrl" class="bookmark-block__input-row bookmark-block__input-row--static">
+      <Icon icon="mdi:link" width="16" height="16" class="bookmark-block__input-icon" />
+      <span>{{ t('block.media.empty') }}</span>
+    </div>
 
     <!-- Preview card state -->
     <template v-else>
@@ -182,6 +189,7 @@ function hideBrokenIcon(event: Event): void {
       </a>
 
       <button
+        v-if="editable"
         class="bookmark-block__remove-btn"
         :title="t('block.bookmark.remove')"
         @click="handleRemove"
@@ -370,5 +378,11 @@ function hideBrokenIcon(event: Event): void {
 
 .bookmark-block:hover .bookmark-block__remove-btn {
   opacity: 1;
+}
+
+/* ── Read-only placeholder ───────────────────────────────────────────────── */
+.bookmark-block__input-row--static {
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
 }
 </style>

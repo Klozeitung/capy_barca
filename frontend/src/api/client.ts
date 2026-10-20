@@ -14,6 +14,8 @@
  *   import { apiClient } from '@/api/client'
  *   const block = await apiClient.get<Block>('/api/blocks/123')
  *   const created = await apiClient.post<Block>('/api/blocks', payload)
+ *   const uploaded = await apiClient.postForm<File>('/api/media/upload/…', form)
+ *   const bytes = await apiClient.getBlob('/media/…')
  */
 
 // ── Error type ────────────────────────────────────────────────────────────────
@@ -80,14 +82,34 @@ function baseInit(method: string, body?: JsonBody): RequestInit {
 }
 
 /**
+ * Build a RequestInit for a multipart upload. No Content-Type header is set,
+ * so the browser adds the multipart boundary itself.
+ */
+function formInit(form: FormData): RequestInit {
+  return { method: 'POST', credentials: 'include', body: form }
+}
+
+/** Read a successful response as JSON. */
+function parseJson<T>(response: Response): Promise<T> {
+  return response.json() as Promise<T>
+}
+
+/**
  * Execute a fetch, parse the response, and map non-OK statuses to ApiError.
  *
  * A 401 additionally broadcasts the `capybarca:unauthorized` event so that
  * the auth store can react globally. A 403 with the read-only detail
  * broadcasts `capybarca:read-only`; the error is thrown either way, so the
  * caller still rolls back its optimistic change.
+ *
+ * *parse* reads the body of a successful response; JSON unless the caller
+ * asks for something else, such as the bytes of a download.
  */
-async function request<T>(url: string, init: RequestInit): Promise<T> {
+async function request<T>(
+  url: string,
+  init: RequestInit,
+  parse: (response: Response) => Promise<T> = parseJson,
+): Promise<T> {
   let response: Response
 
   try {
@@ -120,7 +142,7 @@ async function request<T>(url: string, init: RequestInit): Promise<T> {
     return undefined as T
   }
 
-  return response.json() as Promise<T>
+  return parse(response)
 }
 
 // ── Public client ─────────────────────────────────────────────────────────────
@@ -144,5 +166,15 @@ export const apiClient = {
 
   delete<T>(url: string): Promise<T> {
     return request<T>(url, baseInit('DELETE'))
+  },
+
+  /** POST a multipart form, for file uploads. */
+  postForm<T>(url: string, form: FormData): Promise<T> {
+    return request<T>(url, formInit(form))
+  },
+
+  /** GET a response body as raw bytes, for downloads. */
+  getBlob(url: string): Promise<Blob> {
+    return request<Blob>(url, { method: 'GET', credentials: 'include' }, (r) => r.blob())
   },
 }

@@ -14,11 +14,15 @@
  * when the user clicks the surrounding padding. In that case cursor-at-end
  * is acceptable. Focus and caret placement use requestAnimationFrame to
  * survive the browser's asynchronous post-focus cursor reset.
+ *
+ * Without write access (``useEditable``) the value is only displayed: the
+ * cell does not activate and the timeline editor does not open.
  */
 import { ref, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useDatabaseStore, type DatabaseEntry, type PropertySchema } from '@/stores/database'
 import { displayValue, getTimelineDisplayMode } from './cellUtils'
+import { useEditable } from '@/composables/useEditable'
 import TimelineEditor from './TimelineEditor.vue'
 import TimelineSlotList from './TimelineSlotList.vue'
 
@@ -35,6 +39,7 @@ const emit = defineEmits<{
 }>()
 
 const dbStore = useDatabaseStore()
+const editable = useEditable()
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
 
@@ -43,6 +48,7 @@ const timelineOpen = ref(false)
 const anchorRect = ref<DOMRect | undefined>()
 
 function openTimeline(event: MouseEvent) {
+  if (!editable.value) return
   anchorRect.value = (event.currentTarget as HTMLElement).getBoundingClientRect()
   timelineOpen.value = true
 }
@@ -58,6 +64,7 @@ const inputEl = ref<HTMLInputElement | null>(null)
 // ── Display span click handler ────────────────────────────────────────────────
 
 function onDisplayClick(event: MouseEvent): void {
+  if (!editable.value) return
   if (hasTimeline()) { openTimeline(event); return }
   emit('activate')
 }

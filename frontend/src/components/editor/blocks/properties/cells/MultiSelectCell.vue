@@ -14,6 +14,9 @@
  * While the store reports the cell as pending, the picker shows a spinner and
  * takes no toggles, and chips cannot be removed: every change builds on the
  * value the server has just confirmed.
+ *
+ * Without write access (``useEditable``) the value is only displayed: the
+ * cell does not activate and the timeline editor does not open.
  */
 import { ref, computed, nextTick, watch, onUnmounted } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -29,6 +32,7 @@ import {
 } from '@/stores/database'
 import { useEscapeKey } from '@/composables/useEscapeStack'
 import { getCellValue, getTimelineDisplayMode } from './cellUtils'
+import { useEditable } from '@/composables/useEditable'
 import TimelineEditor from './TimelineEditor.vue'
 import TimelineSlotList from './TimelineSlotList.vue'
 
@@ -46,6 +50,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const dbStore = useDatabaseStore()
+const editable = useEditable()
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
 
@@ -92,6 +97,7 @@ useEscapeKey(() => emit('deactivate'), computed(() => props.isActive))
 
 async function openPicker(e: MouseEvent) {
   e.stopPropagation()
+  if (!editable.value) return
   if (hasTimeline()) {
     anchorRect.value = (e.currentTarget as HTMLElement).getBoundingClientRect()
     timelineOpen.value = true

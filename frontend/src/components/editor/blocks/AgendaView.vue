@@ -16,11 +16,15 @@
  * the affected scope.
  *
  * Month and day labels follow the UI language (calendarLabels).
+ *
+ * Without write access to the database (``useEditable``) entries are shown
+ * and open, but cannot be added or edited.
  */
 import { ref, computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useBlockStore } from '@/stores/blocks'
+import { useEditable } from '@/composables/useEditable'
 import { useDatabaseStore, type DatabaseEntry, type DatabaseView, type PropertySchema } from '@/stores/database'
 import { agendaDayLabel, monthYearLabel } from '@/composables/calendarLabels'
 import CalendarFastEditModal from './CalendarFastEditModal.vue'
@@ -54,6 +58,7 @@ const emit = defineEmits<{
 const { t, locale } = useI18n()
 const blockStore = useBlockStore()
 const dbStore    = useDatabaseStore()
+const editable   = useEditable()
 
 // ── Month navigation ──────────────────────────────────────────────────────────
 
@@ -367,6 +372,7 @@ async function onRecurFollowing(): Promise<void> {
             </span>
             <span class="agenda__day-label">{{ dayLabel(dateStr) }}</span>
             <button
+              v-if="editable"
               class="agenda__day-add"
               :title="t('db.addRow')"
               @click.stop="emit('add-on-date', dateStr)"
@@ -414,6 +420,7 @@ async function onRecurFollowing(): Promise<void> {
 
               <!-- Actions -->
               <button
+                v-if="editable"
                 class="agenda__entry-edit"
                 :title="t('db.calendar.fastEdit')"
                 @click.stop="requestEdit(occ)"

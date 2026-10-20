@@ -6,6 +6,7 @@ explicit ``db: Session`` argument and contain no business logic beyond the
 direct DB operation. Callers are responsible for committing the transaction.
 """
 import uuid
+from datetime import datetime
 
 import bcrypt
 from sqlalchemy.orm import Session
@@ -13,6 +14,9 @@ from sqlalchemy.orm import Session
 from app.users.model import User
 
 _BCRYPT_ROUNDS = 12
+
+# How many recently used icons a user keeps (see ``record_icon_use``).
+RECENT_ICONS_LIMIT = 10
 
 
 # ─── Password helpers ─────────────────────────────────────────────────────────
@@ -107,6 +111,30 @@ def update_date_format(db: Session, user: User, new_format: str) -> None:
     """
     user.date_format = new_format
     db.flush()
+
+
+def record_icon_use(db: Session, user: User, icon: str, used_at: datetime) -> list[dict]:
+    """
+    Note that *user* picked *icon* at *used_at* and return the updated list.
+
+    An icon already in the list gets the new timestamp; a new one is added
+    and, when the list holds ``RECENT_ICONS_LIMIT`` icons already, replaces
+    the one used longest ago. The list is stored and returned newest first.
+
+    The user row is locked for the rest of the transaction before the list is
+    read, so two requests at the same time (two open tabs) apply one after
+    the other instead of one overwriting the other's entry.
+
+    The caller must commit the session after this call.
+    """
+    db.refresh(user, with_for_update=True)
+    # The stored list is newest first, so the new use goes to the front and
+    # the entry used longest ago is the one cut off at the end.
+    others = [e for e in (user.recent_icons or []) if e.get("icon") != icon]
+    entry = {"icon": icon, "used_at": used_at.isoformat()}
+    user.recent_icons = [entry, *others][:RECENT_ICONS_LIMIT]
+    db.flush()
+    return user.recent_icons
 
 
 def update_password(db: Session, user: User, new_password: str) -> None:

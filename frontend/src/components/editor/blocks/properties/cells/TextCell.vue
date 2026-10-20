@@ -22,11 +22,15 @@
  * the display span while it is still in the DOM (before emit triggers the v-if
  * swap). The resulting offset is applied via requestAnimationFrame so that the
  * browser's own asynchronous focus-cursor update does not override it.
+ *
+ * Without write access (``useEditable``) the value is only displayed: the
+ * cell does not activate and the timeline editor does not open.
  */
 import { ref, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useDatabaseStore, type DatabaseEntry, type PropertySchema } from '@/stores/database'
 import { getCellValue, displayValue, getTimelineDisplayMode } from './cellUtils'
+import { useEditable } from '@/composables/useEditable'
 import TimelineEditor from './TimelineEditor.vue'
 import TimelineSlotList from './TimelineSlotList.vue'
 
@@ -43,6 +47,7 @@ const emit = defineEmits<{
 }>()
 
 const dbStore = useDatabaseStore()
+const editable = useEditable()
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
 
@@ -51,6 +56,7 @@ const timelineOpen = ref(false)
 const anchorRect = ref<DOMRect | undefined>()
 
 function openTimeline(event: MouseEvent) {
+  if (!editable.value) return
   anchorRect.value = (event.currentTarget as HTMLElement).getBoundingClientRect()
   timelineOpen.value = true
 }
@@ -73,6 +79,7 @@ let _pendingCaretOffset: number | null = null
 // ── Display span click handler ────────────────────────────────────────────────
 
 function onDisplayClick(event: MouseEvent): void {
+  if (!editable.value) return
   if (hasTimeline()) { openTimeline(event); return }
 
   // Capture the caret position from the span's DOM text node NOW – the span is

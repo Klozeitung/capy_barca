@@ -29,10 +29,15 @@
  * - The edit and delete controls are only rendered when the server reports
  *   ``can_edit`` for that comment. The endpoints refuse anyone else with 403
  *   either way; this keeps the interface from offering what it cannot deliver.
+ * - Commenting needs read access only, so the section stays fully usable on
+ *   pages the user may not change.
+ * - Requests go through ``apiClient``, so an expired session is handled as
+ *   everywhere else.
  */
 import { ref, onMounted, watch } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
+import { apiClient } from '@/api/client'
 
 // ── Props ──────────────────────────────────────────────────────────────────────
 
@@ -85,9 +90,7 @@ const userNames = ref<Map<string, string>>(new Map())
 
 async function loadUserNames(): Promise<void> {
   try {
-    const res = await fetch('/api/users/names')
-    if (!res.ok) return
-    const data: { id: string; username: string }[] = await res.json()
+    const data = await apiClient.get<{ id: string; username: string }[]>('/api/users/names')
     const map = new Map<string, string>()
     for (const u of data) map.set(u.id, u.username)
     userNames.value = map
@@ -98,9 +101,7 @@ async function loadComments(): Promise<void> {
   loading.value = true
   error.value = false
   try {
-    const res = await fetch(`/api/blocks/${props.blockId}/comments`)
-    if (!res.ok) throw new Error(`${res.status}`)
-    comments.value = await res.json()
+    comments.value = await apiClient.get<CommentData[]>(`/api/blocks/${props.blockId}/comments`)
   } catch {
     error.value = true
   } finally {
@@ -113,12 +114,7 @@ async function submitComment(): Promise<void> {
   if (!text || submitting.value) return
   submitting.value = true
   try {
-    const res = await fetch(`/api/blocks/${props.blockId}/comments`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    })
-    if (!res.ok) throw new Error(`${res.status}`)
+    await apiClient.post(`/api/blocks/${props.blockId}/comments`, { text })
     newText.value = ''
     await loadComments()
   } finally {
@@ -130,12 +126,7 @@ async function saveEdit(id: string): Promise<void> {
   const text = editText.value.trim()
   if (!text) return
   try {
-    const res = await fetch(`/api/blocks/${props.blockId}/comments/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    })
-    if (!res.ok) throw new Error(`${res.status}`)
+    await apiClient.patch(`/api/blocks/${props.blockId}/comments/${id}`, { text })
     editingId.value = null
     await loadComments()
   } catch { /* best-effort */ }
@@ -148,9 +139,11 @@ async function deleteComment(id: string): Promise<void> {
   }
   pendingDeleteId.value = null
   try {
-    await fetch(`/api/blocks/${props.blockId}/comments/${id}`, { method: 'DELETE' })
-    await loadComments()
-  } catch { /* best-effort */ }
+    await apiClient.delete(`/api/blocks/${props.blockId}/comments/${id}`)
+  } catch {
+    // Best-effort; the reload below shows what the server holds.
+  }
+  await loadComments()
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

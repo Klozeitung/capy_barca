@@ -1,4 +1,14 @@
 <script setup lang="ts">
+/**
+ * NavItem
+ *
+ * One entry of the navigation tree: fold, icon, title, add-child button and
+ * the drop zones for moving blocks.
+ *
+ * Write access: renaming, changing the icon, adding a child, dragging the
+ * entry and dropping onto it need ``can_write`` on this block; dropping
+ * beside it needs it on the parent. Folding is a view setting and stays.
+ */
 import { computed, onMounted, ref, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -7,11 +17,12 @@ import NavTree from './NavTree.vue'
 import IconPicker from '@/components/IconPicker.vue'
 import { useBlockStore, type Block } from '@/stores/blocks'
 import { useDrag } from '@/composables/useDrag'
+import { canWrite } from '@/composables/useEditable'
 
 const MAX_DEPTH = 8
 
-// Typen, die im NavTree als navigierbare Eltern-Blöcke gelten.
-// Muss mit NavTree.NAV_TYPES übereinstimmen.
+// Types that count as navigable parent blocks in the NavTree.
+// Must match NavTree.NAV_TYPES.
 const NAV_TYPES = new Set(['workspace', 'page', 'database', 'calendar'])
 
 const props = defineProps<{
@@ -34,12 +45,12 @@ const isActive = computed(
 )
 
 /**
- * Bestimmt, ob der Fold-Button angezeigt werden soll.
+ * Whether the fold button is shown.
  *
- * Für Database-Blöcke gilt: Ihre Kinder (Einträge) werden im NavTree nie
- * angezeigt – der Fold-Button würde also ins Leere gehen und erscheint deshalb
- * nicht. Für alle anderen Typen wird auf die gefilterten NAV_TYPES-Kinder
- * geprüft, damit Einträge in einer Datenbank (page-type) nicht mitzählen.
+ * The children (entries) of a database block are never shown in the NavTree,
+ * so a fold button would lead nowhere and is left out. For all other types
+ * only the children of NAV_TYPES count, so that the page-type entries of a
+ * database do not.
  */
 const hasChildren = computed(() => {
   if (isDatabase.value || isCalendar.value) return false
@@ -48,6 +59,14 @@ const hasChildren = computed(() => {
 })
 
 const label = computed(() => props.block.content?.title as string | undefined ?? t('nav.untitled'))
+
+/** Whether the user may change this block (and add children to it). */
+const writable = computed(() => canWrite(props.block))
+
+/** Whether the user may change the parent, which a drop beside this entry does. */
+const parentWritable = computed(() =>
+  canWrite(props.block.parent_id ? blockStore.blocks[props.block.parent_id] : null),
+)
 
 const isDragOver = ref(false)
 const isDropAbove = ref(false)
@@ -89,7 +108,7 @@ function handleClick(): void {
 
 async function addChild(e: MouseEvent): Promise<void> {
   e.stopPropagation()
-  if (isCreating.value) return
+  if (isCreating.value || !writable.value) return
   isCreating.value = true
   try {
     const newBlock = await blockStore.createBlock({
@@ -112,6 +131,7 @@ async function addChild(e: MouseEvent): Promise<void> {
 
 async function startRename(e: MouseEvent): Promise<void> {
   e.stopPropagation()
+  if (!writable.value) return
   renameValue.value = props.block.content?.title as string | undefined ?? ''
   isRenaming.value = true
   await nextTick()
@@ -134,8 +154,13 @@ function onRenameKeydown(e: KeyboardEvent): void {
 
 // ── Icon ──────────────────────────────────────────────────────────────────────
 
-function openIconPicker(e: MouseEvent): void {
-  e.stopPropagation()
+function openIconPicker(): void {
+  // Without write access the icon is just part of the entry: a click on it
+  // navigates like a click anywhere else on the row.
+  if (!writable.value) {
+    handleClick()
+    return
+  }
   showIconPicker.value = true
 }
 
@@ -148,6 +173,10 @@ async function onIconUpdate(newIcon: string | null): Promise<void> {
 // ── Drag & Drop ───────────────────────────────────────────────────────────────
 
 function onDragStart(e: DragEvent): void {
+  if (!writable.value) {
+    e.preventDefault()
+    return
+  }
   e.dataTransfer!.effectAllowed = 'move'
   drag.startDrag(props.block.id, props.block.parent_id, props.block.type)
 }
@@ -180,6 +209,7 @@ function onDragOver(e: DragEvent): void {
     } else {
       isDropBelow.value = true; isDropAbove.value = false; isDragOver.value = false
     }
+    refuseUnwritableZone(e)
     return
   }
 
@@ -190,6 +220,7 @@ function onDragOver(e: DragEvent): void {
       return
     }
     isDragOver.value = true; isDropAbove.value = false; isDropBelow.value = false
+    refuseUnwritableZone(e)
     return
   }
 
@@ -206,6 +237,14 @@ function onDragOver(e: DragEvent): void {
   } else {
     isDragOver.value = true; isDropAbove.value = false; isDropBelow.value = false
   }
+  refuseUnwritableZone(e)
+}
+
+/** Clear the highlighted zone and show no drop cursor where dropping is not allowed. */
+function refuseUnwritableZone(e: DragEvent): void {
+  if (dropAllowed()) return
+  onDragLeave()
+  e.dataTransfer!.dropEffect = 'none'
 }
 
 function onDragLeave(): void {
@@ -214,10 +253,20 @@ function onDragLeave(): void {
   isDropBelow.value = false
 }
 
+/**
+ * Whether the drop zone the cursor is in may be used: onto this block needs
+ * write access to it, above or below needs write access to the parent.
+ */
+function dropAllowed(): boolean {
+  if (isDragOver.value) return writable.value
+  if (isDropAbove.value || isDropBelow.value) return parentWritable.value
+  return false
+}
+
 async function onDrop(e: DragEvent): Promise<void> {
   e.preventDefault()
   const { blockId, blockType } = drag.getDragging()
-  if (!blockId || blockId === props.block.id) { onDragLeave(); return }
+  if (!blockId || blockId === props.block.id || !dropAllowed()) { onDragLeave(); return }
 
   if (blockType === 'workspace') {
     if (isWorkspace.value && (isDropAbove.value || isDropBelow.value)) {
@@ -294,7 +343,7 @@ const indentPx = computed(() => (props.depth ?? 0) * 12 + 8)
         'nav-item--drag-over': isDragOver,
       }"
       :style="{ paddingLeft: indentPx + 'px' }"
-      draggable="true"
+      :draggable="writable"
       @click="handleClick"
       @dblclick.stop="startRename"
       @dragstart="onDragStart"
@@ -306,7 +355,7 @@ const indentPx = computed(() => (props.depth ?? 0) * 12 + 8)
       <button
         v-if="hasChildren"
         class="fold-btn"
-        :aria-label="isFolded ? 'Aufklappen' : 'Zuklappen'"
+        :aria-label="isFolded ? t('nav.expand') : t('nav.collapse')"
         @click.stop="toggleFold"
       >
         <Icon :icon="isFolded ? 'mdi:chevron-right' : 'mdi:chevron-down'" width="14" height="14" />
@@ -314,7 +363,11 @@ const indentPx = computed(() => (props.depth ?? 0) * 12 + 8)
       <span v-else class="fold-btn fold-btn--spacer" aria-hidden="true" />
 
       <div class="icon-anchor">
-        <button class="block-icon-btn" @click.stop="openIconPicker">
+        <button
+          class="block-icon-btn"
+          :class="{ 'block-icon-btn--static': !writable }"
+          @click.stop="openIconPicker"
+        >
           <Icon :icon="displayIcon" width="16" height="16" />
         </button>
 
@@ -342,11 +395,11 @@ const indentPx = computed(() => (props.depth ?? 0) * 12 + 8)
         :class="{ 'nav-item__label--workspace': isWorkspace }"
       >{{ label }}</span>
 
-      <!-- Add-child-Button nur für Workspace und Page, nicht für Database -->
+      <!-- Add-child button for workspaces and pages only, not for databases -->
       <button
-        v-if="!isDatabase"
+        v-if="!isDatabase && writable"
         class="add-child-btn"
-        aria-label="Unterseite hinzufügen"
+        :aria-label="t('nav.addSubpage')"
         @click.stop="addChild"
       >
         <Icon icon="mdi:plus" width="14" height="14" />
@@ -431,6 +484,8 @@ const indentPx = computed(() => (props.depth ?? 0) * 12 + 8)
 }
 
 .block-icon-btn:hover { background: var(--color-border); color: var(--color-text); }
+.block-icon-btn--static { cursor: inherit; }
+.block-icon-btn--static:hover { background: none; }
 
 .nav-item__label {
   flex: 1;

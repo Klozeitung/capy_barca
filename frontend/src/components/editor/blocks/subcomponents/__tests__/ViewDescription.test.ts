@@ -13,12 +13,12 @@ import ViewDescription from '../ViewDescription.vue'
 let app: App | null = null
 let host: HTMLElement | null = null
 
-function mount(description: string) {
+function mount(description: string, readonly = false) {
   const onSave = vi.fn()
   host = document.createElement('div')
   document.body.appendChild(host)
   app = createApp({
-    render: () => h(ViewDescription, { viewId: 'v1', description, onSave }),
+    render: () => h(ViewDescription, { viewId: 'v1', description, readonly, onSave }),
   })
   app.mount(host)
   return { root: host, onSave }
@@ -94,6 +94,24 @@ describe('ViewDescription', () => {
     expect(onSave).not.toHaveBeenCalled()
     expect(root.querySelector('textarea')).toBeNull()
     expect(root.querySelector('.vd__display')!.textContent).toBe('Original')
+  })
+
+  it('read-only: shows the description but does not open an editor', async () => {
+    const { root, onSave } = mount('Open tasks', true)
+    const display = root.querySelector<HTMLElement>('.vd__display')!
+    expect(display.textContent).toBe('Open tasks')
+
+    display.click()
+    await nextTick()
+
+    expect(root.querySelector('textarea')).toBeNull()
+    expect(display.getAttribute('role')).toBeNull()
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
+  it('read-only: an empty description renders nothing', () => {
+    const { root } = mount('', true)
+    expect(root.querySelector('.vd__display')).toBeNull()
   })
 
   it('reports an emptied description so the caller can remove it', async () => {

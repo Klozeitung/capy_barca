@@ -11,11 +11,15 @@
  * TimelineEditor instead of the inline date picker.
  *
  * Value shape: { start: string, end: string | null }
+ *
+ * Without write access (``useEditable``) the value is only displayed: the
+ * cell does not activate and the timeline editor does not open.
  */
 import { ref, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useDatabaseStore, type DatabaseEntry, type PropertySchema } from '@/stores/database'
 import { getCellValue, displayValue, getTimelineDisplayMode, resolveDateFormat } from './cellUtils'
+import { useEditable } from '@/composables/useEditable'
 import DatePicker from '@/components/DatePicker.vue'
 import TimelineEditor from './TimelineEditor.vue'
 import TimelineSlotList from './TimelineSlotList.vue'
@@ -34,6 +38,7 @@ const emit = defineEmits<{
 }>()
 
 const dbStore = useDatabaseStore()
+const editable = useEditable()
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
 
@@ -42,6 +47,7 @@ const timelineOpen = ref(false)
 const anchorRect = ref<DOMRect | undefined>()
 
 function openTimeline(event: MouseEvent) {
+  if (!editable.value) return
   anchorRect.value = (event.currentTarget as HTMLElement).getBoundingClientRect()
   timelineOpen.value = true
 }
@@ -151,7 +157,7 @@ watch(
     v-else
     class="db__cell-value"
     :class="{ 'db__cell-value--has-timeline': hasTimeline() }"
-    @click.stop="hasTimeline() ? openTimeline($event) : emit('activate')"
+    @click.stop="hasTimeline() ? openTimeline($event) : editable && emit('activate')"
   >
     <span class="db__cell-text">{{ displayValue(entry, schema) }}</span>
     <Icon

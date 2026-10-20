@@ -20,6 +20,7 @@ app/database/option_ids_migration_test.py
 app/database/permission_levels_migration_test.py
 app/database/sibling_positions_migration_test.py
 app/database/wopi_tokens_migration_test.py
+app/database/recent_icons_migration_test.py
 app/database/migration_lock_test.py
 
 app/session/user_registration_test.py

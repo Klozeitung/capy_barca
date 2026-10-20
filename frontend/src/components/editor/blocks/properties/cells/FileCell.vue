@@ -10,8 +10,16 @@
  * /api/media/file/{entryId}/{fileUuid}.
  *
  * Value shape: { files: StoredFile[] }
+ *
+ * Without write access (``useEditable``) the files are listed and open, but
+ * the cell does not activate, so nothing can be added or removed.
+ *
+ * Uploads and deletions go through ``apiClient``, so an expired session and a
+ * refusal for read-only access are handled as everywhere else.
  */
 import { Icon } from '@iconify/vue'
+import { apiClient, ApiError } from '@/api/client'
+import { useEditable } from '@/composables/useEditable'
 import { useDatabaseStore, type DatabaseEntry, type PropertySchema } from '@/stores/database'
 import { getCellValue } from './cellUtils'
 
@@ -40,6 +48,12 @@ const emit = defineEmits<{
 }>()
 
 const dbStore = useDatabaseStore()
+const editable = useEditable()
+
+/** Ask the parent to open this cell for editing, with write access only. */
+function activate(): void {
+  if (editable.value) emit('activate')
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -60,21 +74,20 @@ async function handleUpload(event: Event) {
     const form = new FormData()
     form.append('file', file)
     try {
-      const res = await fetch(`/api/media/upload/file/${props.entry.id}`, {
-        method: 'POST',
-        body: form,
-        credentials: 'include',
+      const data = await apiClient.postForm<{
+        file_uuid: string
+        url: string
+        filename: string
+        size: number
+        mime: string
+      }>(`/api/media/upload/file/${props.entry.id}`, form)
+      uploaded.push({
+        file_uuid: data.file_uuid,
+        url: data.url,
+        name: data.filename,
+        size: data.size,
+        mime: data.mime,
       })
-      if (res.ok) {
-        const data = await res.json()
-        uploaded.push({
-          file_uuid: data.file_uuid,
-          url: data.url,
-          name: data.filename,
-          size: data.size,
-          mime: data.mime,
-        })
-      }
     } catch {
       // Individual upload failures are silently skipped; existing files are preserved.
     }
@@ -97,10 +110,13 @@ async function removeFile(fileUuid: string) {
   const current = fileList()
   const updated = current.filter(f => f.file_uuid !== fileUuid)
 
-  await fetch(`/api/media/file/${props.entry.id}/${fileUuid}`, {
-    method: 'DELETE',
-    credentials: 'include',
-  })
+  try {
+    await apiClient.delete(`/api/media/file/${props.entry.id}/${fileUuid}`)
+  } catch (e) {
+    // A refusal by the server (for instance a file that is already gone) does
+    // not keep the file in the list; only a network failure stops here.
+    if (!(e instanceof ApiError) || e.status === 0) throw e
+  }
 
   await dbStore.upsertValue(
     props.databaseId,
@@ -115,7 +131,7 @@ async function removeFile(fileUuid: string) {
   <div
     class="db__file-cell"
     :class="{ 'db__file-cell--active': isActive }"
-    @click.stop="emit('activate')"
+    @click.stop="activate"
   >
     <div class="db__file-chips">
       <span

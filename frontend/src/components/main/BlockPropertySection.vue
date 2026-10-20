@@ -37,11 +37,19 @@
  * --------------
  * While a value's write is waiting for the server, its cell keeps showing the
  * new value under a spinner and takes no input (see the database store).
+ *
+ * Write access
+ * ------------
+ * Without write access (``useEditable``) the section only shows: no property
+ * settings, deleting, adding, renaming or reordering, and the cells display
+ * their values without opening an editor. Folding groups and choosing which
+ * properties are visible remain, as they are view settings.
  */
 import { ref, computed, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useBlockStore } from '@/stores/blocks'
+import { useEditable } from '@/composables/useEditable'
 import {
   useDatabaseStore,
   type PropertySchema,
@@ -96,6 +104,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const blockStore = useBlockStore()
 const dbStore = useDatabaseStore()
+const editable = useEditable()
 
 // ── Schemas (excluding __name__) ──────────────────────────────────────────────
 
@@ -295,6 +304,7 @@ function clearActiveCell(): void {
 }
 
 function onCellClick(schema: PropertySchema): void {
+  if (!editable.value) return
   if (isReadonlyPropertyType(schema.type)) return
   if (schema.type === 'checkbox' || schema.type === 'relation' || schema.type === 'file') return
   if (schema.type === 'parent_item' || schema.type === 'sub_item') return
@@ -439,6 +449,7 @@ const renamingGroup = ref<string | null>(null)
 const renameDraft = ref('')
 
 function startRename(groupName: string): void {
+  if (!editable.value) return
   renamingGroup.value = groupName
   renameDraft.value = groupName
   nextTick(() => {
@@ -748,6 +759,7 @@ async function onGroupHeaderDrop(e: DragEvent, groupName: string): Promise<void>
 
         <!-- Delete group (custom groups only) — properties move to default -->
         <button
+          v-if="editable"
           class="bps__group-delete-btn"
           :class="{ 'bps__group-delete-btn--confirm': confirmDeleteGroup === group.name }"
           :title="confirmDeleteGroup === group.name
@@ -761,6 +773,7 @@ async function onGroupHeaderDrop(e: DragEvent, groupName: string): Promise<void>
         <!-- Drag handle for group reorder — only element that starts a group
              drag, so property interactions inside the group never trigger it. -->
         <span
+          v-if="editable"
           class="bps__group-drag-handle"
           draggable="true"
           :title="t('propertySection.reorderGroup')"
@@ -790,7 +803,7 @@ async function onGroupHeaderDrop(e: DragEvent, groupName: string): Promise<void>
             'bps__row--drag-over': dragOverSchemaId === schema.id,
             'bps__row--dragging': dragSchemaId === schema.id,
           }"
-          draggable="true"
+          :draggable="editable"
           @dragstart.stop="onPropertyDragStart($event, schema)"
           @dragover.stop="onPropertyDragOver($event, schema.id, group.name)"
           @drop.stop="onPropertyDrop($event, schema.id, group.name)"
@@ -799,6 +812,7 @@ async function onGroupHeaderDrop(e: DragEvent, groupName: string): Promise<void>
           <!-- Left: property label + actions -->
           <div class="bps__label">
             <Icon
+              v-if="editable"
               class="bps__drag-handle"
               icon="mdi:drag-vertical-variant"
               width="14"
@@ -812,6 +826,7 @@ async function onGroupHeaderDrop(e: DragEvent, groupName: string): Promise<void>
             />
             <span class="bps__prop-name">{{ schema.name }}</span>
             <button
+              v-if="editable"
               class="bps__action-btn"
               :title="t('db.settings.title')"
               @click.stop="openSettings(schema)"
@@ -819,6 +834,7 @@ async function onGroupHeaderDrop(e: DragEvent, groupName: string): Promise<void>
               <Icon icon="mdi:cog-outline" width="13" height="13" />
             </button>
             <button
+              v-if="editable"
               class="bps__action-btn bps__action-btn--danger"
               :class="{ 'bps__action-btn--confirm': confirmDeleteId === schema.id }"
               :title="confirmDeleteId === schema.id ? t('db.deleteColumnConfirm') : t('actions.delete')"
@@ -959,6 +975,7 @@ async function onGroupHeaderDrop(e: DragEvent, groupName: string): Promise<void>
 
         <!-- Add property button (per group) -->
         <button
+          v-if="editable"
           class="bps__add-prop-btn"
           @click="openAddSchema(group.name)"
         >
@@ -969,7 +986,7 @@ async function onGroupHeaderDrop(e: DragEvent, groupName: string): Promise<void>
     </div>
 
     <!-- Add group button -->
-    <div class="bps__add-group">
+    <div v-if="editable" class="bps__add-group">
       <div v-if="showNewGroupInput" class="bps__new-group-row">
         <input
           v-model="newGroupName"

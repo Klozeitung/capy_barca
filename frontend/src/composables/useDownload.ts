@@ -8,13 +8,15 @@
  * URL and ignores the download attribute).  Fetching the bytes ourselves and
  * creating a temporary blob URL guarantees that the browser uses the filename
  * we provide, independent of server-side headers or URL structure.
+ *
+ * The bytes are fetched through ``apiClient``, so an expired session is
+ * handled the same way as everywhere else.
  */
+import { apiClient } from '@/api/client'
 
 export async function downloadFile(url: string, filename: string): Promise<void> {
   try {
-    const res = await fetch(url, { credentials: 'include' })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const blob = await res.blob()
+    const blob = await apiClient.getBlob(url)
     const blobUrl = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = blobUrl

@@ -5,19 +5,27 @@
  * Accepts a single file of any type via drop or click-select. Renders a
  * compact download card once uploaded. Content shape:
  * { file_uuid, url, filename, size, mime }.
+ *
+ * Without write access to the block (``useEditable``) an empty block shows a
+ * plain placeholder instead of the upload zone, and there is no remove button.
+ * Downloading stays available.
  */
 import { computed, ref } from 'vue'
 import { Icon } from '@iconify/vue'
+import { useI18n } from 'vue-i18n'
 import { useBlockStore, type Block } from '@/stores/blocks'
 import { useMediaUpload } from '@/composables/useMediaUpload'
 import { downloadFile } from '@/composables/useDownload'
+import { provideEditable } from '@/composables/useEditable'
 
 const props = defineProps<{
   block: Block
   parentId: string
 }>()
 
+const { t } = useI18n()
 const blockStore = useBlockStore()
+const editable = provideEditable(() => props.block)
 const upload = useMediaUpload('file', props.block.id)
 const inputRef = ref<HTMLInputElement | null>(null)
 
@@ -68,7 +76,7 @@ function handleDownload(): void {
 
 <template>
   <div class="media-block">
-    <template v-if="!hasFile">
+    <template v-if="!hasFile && editable">
       <div
         class="media-block__dropzone"
         :class="{ 'media-block__dropzone--over': upload.isDragging.value }"
@@ -79,8 +87,8 @@ function handleDownload(): void {
       >
         <Icon icon="mdi:file-upload-outline" width="28" height="28" class="media-block__zone-icon" />
         <span class="media-block__zone-hint">
-          <template v-if="upload.isUploading.value">Uploading…</template>
-          <template v-else>Drop a file, or click to upload</template>
+          <template v-if="upload.isUploading.value">{{ t('block.media.uploading') }}</template>
+          <template v-else>{{ t('block.media.dropFile') }}</template>
         </span>
         <span v-if="upload.error.value" class="media-block__zone-error">
           {{ upload.error.value }}
@@ -94,6 +102,11 @@ function handleDownload(): void {
       />
     </template>
 
+    <div v-else-if="!hasFile" class="media-block__dropzone media-block__dropzone--static">
+      <Icon icon="mdi:file-upload-outline" width="28" height="28" class="media-block__zone-icon" />
+      <span class="media-block__zone-hint">{{ t('block.media.empty') }}</span>
+    </div>
+
     <template v-else>
       <div class="file-card">
         <span class="file-card__icon">
@@ -105,12 +118,17 @@ function handleDownload(): void {
         </div>
         <button
           class="file-card__download"
-          title="Download"
+          :title="t('block.media.download')"
           @click="handleDownload"
         >
           <Icon icon="mdi:download" width="16" height="16" />
         </button>
-        <button class="file-card__remove" title="Remove file" @click="handleRemove">
+        <button
+          v-if="editable"
+          class="file-card__remove"
+          :title="t('block.media.removeFile')"
+          @click="handleRemove"
+        >
           <Icon icon="mdi:close" width="14" height="14" />
         </button>
       </div>
@@ -229,5 +247,13 @@ function handleDownload(): void {
 .file-card__remove:hover {
   background: var(--color-active);
   color: var(--color-text);
+}
+
+/* ── Read-only placeholder (after the drop zone rules so these win) ─────── */
+.media-block__dropzone--static,
+.media-block__dropzone--static:hover {
+  cursor: default;
+  border-color: var(--color-border);
+  background: transparent;
 }
 </style>

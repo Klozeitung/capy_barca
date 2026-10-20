@@ -1,14 +1,22 @@
 <script setup lang="ts">
+/**
+ * BlockTopSection
+ *
+ * Cover, icon and title of a page. Icon and title are editable in place
+ * unless the user may only read the page (``useEditable``).
+ */
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Icon } from '@iconify/vue'
 import IconPicker from '@/components/IconPicker.vue'
+import { useEditable } from '@/composables/useEditable'
 import { useBlockStore, type Block } from '@/stores/blocks'
 
 const props = defineProps<{ block: Block }>()
 
 const { t } = useI18n()
 const blockStore = useBlockStore()
+const editable = useEditable()
 
 const hasCover = computed(() => !!props.block.cover)
 
@@ -41,6 +49,10 @@ async function onIconUpdate(newIcon: string | null): Promise<void> {
 // ── Title ─────────────────────────────────────────────────────────────────────
 
 const editingTitle = ref(false)
+
+function startTitleEdit(): void {
+  if (editable.value) editingTitle.value = true
+}
 const titleInput = ref<string>((props.block.content?.title as string | undefined) ?? '')
 
 watch(
@@ -71,12 +83,17 @@ function onTitleKeydown(e: KeyboardEvent): void {
     <div class="block-meta" :class="{ 'block-meta--with-cover': hasCover }">
       <!-- Icon -->
       <div class="block-icon-wrap">
-        <button class="block-icon-btn" @click="showIconPicker = !showIconPicker">
+        <button
+          class="block-icon-btn"
+          :class="{ 'block-icon-btn--static': !editable }"
+          :disabled="!editable"
+          @click="showIconPicker = !showIconPicker"
+        >
           <Icon :icon="displayIcon" width="40" height="40" />
         </button>
 
         <IconPicker
-          v-if="showIconPicker"
+          v-if="showIconPicker && editable"
           :model-value="block.icon"
           @update:model-value="onIconUpdate"
           @close="showIconPicker = false"
@@ -86,7 +103,7 @@ function onTitleKeydown(e: KeyboardEvent): void {
       <!-- Title -->
       <div class="block-title-wrap">
         <textarea
-          v-if="editingTitle"
+          v-if="editingTitle && editable"
           v-model="titleInput"
           class="block-title-input"
           rows="1"
@@ -97,10 +114,10 @@ function onTitleKeydown(e: KeyboardEvent): void {
         <h1
           v-else
           class="block-title"
-          :class="{ 'block-title--empty': !title }"
-          tabindex="0"
-          @click="editingTitle = true"
-          @focus="editingTitle = true"
+          :class="{ 'block-title--empty': !title, 'block-title--static': !editable }"
+          :tabindex="editable ? 0 : undefined"
+          @click="startTitleEdit"
+          @focus="startTitleEdit"
         >
           {{ title || t('main.untitled') }}
         </h1>
@@ -147,6 +164,9 @@ function onTitleKeydown(e: KeyboardEvent): void {
 
 .block-icon-btn:hover { background: var(--color-hover); }
 
+.block-icon-btn--static,
+.block-icon-btn--static:hover { cursor: default; background: none; }
+
 .block-icon-wrap :deep(.icon-picker) {
   top: calc(100% + 4px);
   left: 0;
@@ -166,6 +186,8 @@ function onTitleKeydown(e: KeyboardEvent): void {
 }
 
 .block-title--empty { color: var(--color-text-muted); }
+
+.block-title--static { cursor: default; }
 
 .block-title-input {
   width: 100%;

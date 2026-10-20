@@ -8,9 +8,15 @@ stated once for the whole application instead of per endpoint.
 A password change, own or by an admin, withdraws every WOPI token of the
 account (``app.wopi.registry``), so an open document editor stops reading and
 saving with the old credentials.
+
+Each user keeps the icons they picked most recently
+(``/me/recent-icons``), which the icon picker offers first. The list is
+personal and therefore not part of ``UserResponse``, which also feeds the
+admin's list of all users.
 """
 import os
 import uuid
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -83,6 +89,20 @@ class AdminResetPasswordRequest(BaseModel):
 
 class ChangeRoleRequest(BaseModel):
     role: str = Field(pattern="^(admin|member)$")
+
+
+# An icon as the frontend's icon picker names it: one of the bundled Iconify
+# sets, a colon, and the icon's name within the set.
+_ICON_PATTERN = r"^(mdi|tabler|lucide):[a-z0-9]+(-[a-z0-9]+)*$"
+
+
+class RecentIcon(BaseModel):
+    icon: str
+    used_at: datetime
+
+
+class RecordIconUseRequest(BaseModel):
+    icon: str = Field(max_length=128, pattern=_ICON_PATTERN)
 
 
 # ─── Own profile ──────────────────────────────────────────────────────────────
@@ -164,6 +184,33 @@ def change_own_date_format(
     db.commit()
     db.refresh(current_user)
     return current_user
+
+
+@users_router.get("/me/recent-icons", response_model=list[RecentIcon])
+def list_own_recent_icons(current_user: User = Depends(get_current_user)):
+    """Return the icons the current user picked most recently, newest first."""
+    return current_user.recent_icons or []
+
+
+@users_router.post("/me/recent-icons", response_model=list[RecentIcon])
+def record_own_icon_use(
+    payload: RecordIconUseRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Note that the current user picked an icon and return the updated list.
+
+    An icon already in the list moves to the front with a new timestamp; a
+    new one is added at the front and, when the list is full, replaces the
+    one used longest ago (see ``user_repo.record_icon_use``). Names that are
+    not an icon of a bundled set are rejected by request validation (422).
+    """
+    icons = user_repo.record_icon_use(
+        db, current_user, payload.icon, datetime.now(timezone.utc),
+    )
+    db.commit()
+    return icons
 
 
 # ─── Admin: user list + create ────────────────────────────────────────────────

@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import sqlalchemy as sa
 from sqlalchemy import Boolean, Column, DateTime, Text
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.database.database import Base
 
@@ -27,6 +28,15 @@ class User(Base):
         nullable=False,
         default="DD.MM.YYYY",
         server_default="DD.MM.YYYY",
+    )
+    # The icons this user picked most recently, newest first, at most
+    # ``RECENT_ICONS_LIMIT`` of them: a list of {"icon": str, "used_at": ISO
+    # 8601 timestamp}. Maintained by ``users.repository.record_icon_use``.
+    recent_icons = Column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=sa.text("'[]'::jsonb"),
     )
     # The Python-level default supplies the timestamp on insert; server_default
     # is kept for the DDL column definition only.

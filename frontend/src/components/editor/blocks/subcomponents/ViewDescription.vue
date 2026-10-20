@@ -17,6 +17,9 @@
  * The component only reports the edited text together with the id of its
  * view; normalising and persisting it is the caller's job (see
  * ``useViewManager.saveViewDescription``).
+ *
+ * With ``readonly`` (a user who may not change the view) the text is shown
+ * but does not open for editing, and an empty description renders nothing.
  */
 import { ref, computed, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -26,6 +29,8 @@ const props = defineProps<{
   viewId: string
   /** Stored description of the view; empty when it has none. */
   description: string
+  /** Show the description without offering to edit it. */
+  readonly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -52,7 +57,7 @@ function fitHeight(): void {
 }
 
 async function startEdit(): Promise<void> {
-  if (editing.value) return
+  if (editing.value || props.readonly) return
   draft.value = props.description
   editing.value = true
   await nextTick()
@@ -91,7 +96,10 @@ function commitFromKeyboard(): void {
 </script>
 
 <template>
-  <div class="vd" @click.stop>
+  <div v-if="readonly" class="vd">
+    <div v-if="!isEmpty" class="vd__display vd__display--static">{{ description }}</div>
+  </div>
+  <div v-else class="vd" @click.stop>
     <textarea
       v-if="editing"
       ref="textareaEl"
@@ -147,6 +155,12 @@ function commitFromKeyboard(): void {
 .vd__display:focus-visible {
   background: var(--color-hover);
   outline: none;
+}
+
+.vd__display--static,
+.vd__display--static:hover {
+  cursor: default;
+  background: none;
 }
 
 /* No placeholder: an empty description is a slim strip, visible on hover only. */

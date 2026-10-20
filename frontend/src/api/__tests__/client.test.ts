@@ -153,4 +153,54 @@ describe('apiClient', () => {
     expect(listener).not.toHaveBeenCalled()
     window.removeEventListener(API_READ_ONLY_EVENT, listener)
   })
+
+  it('postForm sends the form as body without a JSON content type', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(200, { file_uuid: 'f1' }))
+    const form = new FormData()
+    form.append('file', new Blob(['x']), 'a.txt')
+
+    const result = await apiClient.postForm('/api/media/upload/file/b1', form)
+
+    expect(result).toEqual({ file_uuid: 'f1' })
+    const [, init] = vi.mocked(fetch).mock.calls[0]
+    expect((init as RequestInit).method).toBe('POST')
+    expect((init as RequestInit).body).toBe(form)
+    expect((init as RequestInit).credentials).toBe('include')
+    expect((init as RequestInit).headers).toBeUndefined()
+  })
+
+  it('postForm dispatches the read-only event on a refused upload', async () => {
+    const listener = vi.fn()
+    window.addEventListener(API_READ_ONLY_EVENT, listener)
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(403, { detail: READ_ONLY_DETAIL }))
+
+    await expect(
+      apiClient.postForm('/api/media/upload/file/b1', new FormData()),
+    ).rejects.toMatchObject({ status: 403 })
+
+    expect(listener).toHaveBeenCalledOnce()
+    window.removeEventListener(API_READ_ONLY_EVENT, listener)
+  })
+
+  it('getBlob resolves with the response bytes', async () => {
+    const blob = new Blob(['content'])
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      blob: async () => blob,
+    } as unknown as Response)
+
+    await expect(apiClient.getBlob('/media/file/x')).resolves.toBe(blob)
+  })
+
+  it('getBlob dispatches the unauthorized event on 401', async () => {
+    const listener = vi.fn()
+    window.addEventListener(API_UNAUTHORIZED_EVENT, listener)
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(401))
+
+    await expect(apiClient.getBlob('/media/file/x')).rejects.toMatchObject({ status: 401 })
+
+    expect(listener).toHaveBeenCalledOnce()
+    window.removeEventListener(API_UNAUTHORIZED_EVENT, listener)
+  })
 })

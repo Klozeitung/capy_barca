@@ -59,6 +59,17 @@
  *   (e.preventDefault) that do not originate from the handle.
  * - Layout blocks expose an "Add column" item in the drag handle context menu
  *   (visible when the column count is below 4).
+ *
+ * Write access
+ * ------------
+ * The section provides the ``can_write`` of its parent block to everything it
+ * renders (see ``useEditable``). Adding blocks, the empty-state template
+ * picker and dropping into the section need it. Each child carries its own
+ * ``can_write`` for what changes that child: dragging it, the handle
+ * shortcuts and the editing items of its context menu. A block the user may
+ * only read keeps its handle when the menu still offers something to a
+ * reader (showing a database inline, which is a local view setting) or the
+ * handle leads somewhere (a synched mirror's origin).
  */
 import { computed, ref, watch, nextTick, onMounted, type Component } from 'vue'
 import { useRouter } from 'vue-router'
@@ -66,6 +77,7 @@ import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useBlockStore, type Block } from '@/stores/blocks'
 import { useDrag } from '@/composables/useDrag'
+import { provideEditable } from '@/composables/useEditable'
 import { BLOCK_COLORS, BLOCK_BG_COLORS, resolveColor, resolveBgColor } from '@/composables/blockColors'
 import BlockEditorRow from '@/components/editor/BlockEditorRow.vue'
 // Self-import for recursive toggle children rendering.
@@ -111,6 +123,19 @@ const router = useRouter()
 const blockStore = useBlockStore()
 const drag = useDrag()
 const templateStore = useDatabaseTemplatesStore()
+
+/** Whether the user may change the parent block, and so add to this section. */
+const editable = provideEditable(() => blockStore.blocks[props.parentId])
+
+/** Whether the user may change *block* itself. */
+function blockEditable(block: Block): boolean {
+  return block.can_write ?? editable.value
+}
+
+/** Whether the drag handle of *block* has anything to offer the user. */
+function showsHandle(block: Block): boolean {
+  return blockEditable(block) || block.type === 'database' || block.type === 'synched_mirror'
+}
 
 // ── Children ──────────────────────────────────────────────────────────────────
 
@@ -355,6 +380,7 @@ function onNavigate(blockId: string, direction: 'up' | 'down'): void {
 // otherwise focus that block instead.
 
 async function onAddBlock(): Promise<void> {
+  if (!editable.value) return
   const kids = children.value
   const last = kids[kids.length - 1]
 
@@ -582,6 +608,11 @@ const contextMenuBlock = computed<Block | null>(() =>
   contextMenu.value.blockId
     ? children.value.find((b) => b.id === contextMenu.value.blockId) ?? null
     : null,
+)
+
+/** Whether the context menu may offer the items that change its block. */
+const contextMenuEditable = computed(() =>
+  contextMenuBlock.value ? blockEditable(contextMenuBlock.value) : false,
 )
 
 async function openContextMenu(e: MouseEvent, block: Block): Promise<void> {
@@ -882,6 +913,13 @@ function onHandleClick(e: MouseEvent, block: Block): void {
   if (_dragInProgress) return
   e.stopPropagation()
 
+  // The shortcuts all change blocks. A reader only gets the menu, and only
+  // where it offers something: showing a database inline.
+  if (!blockEditable(block)) {
+    if (block.type === 'database') openContextMenu(e, block)
+    return
+  }
+
   const ctrl = e.ctrlKey || e.metaKey
   const shift = e.shiftKey
   const alt = e.altKey
@@ -947,7 +985,7 @@ function onDragStart(e: DragEvent, block: Block): void {
   // drag that swallows the mousedown and prevents native textarea cursor
   // placement from working.
   const handle = (e.target as HTMLElement).closest?.('.content-block__drag-handle')
-  if (!handle) {
+  if (!handle || !blockEditable(block)) {
     e.preventDefault()
     return
   }
@@ -974,6 +1012,9 @@ function onDragOver(e: DragEvent, block: Block): void {
   const { blockId, blockType, dragMode } = drag.getDragging()
   // Ignore column-mode drags — they are handled by LayoutBlock.
   if (!blockId || dragMode === 'column') return
+  // Dropping beside a block changes this section, dropping onto a page
+  // changes that page; neither is offered without write access.
+  if (blockType === 'page' ? !blockEditable(block) : !editable.value) return
 
   e.preventDefault()
   // Stop bubbling so that hovering over a block inside a toggle does not
@@ -1031,7 +1072,7 @@ async function onDrop(e: DragEvent, block: Block): Promise<void> {
 // Drop into the empty-state zone (e.g. a toggle with no children yet).
 function onDragOverEmpty(e: DragEvent): void {
   const { blockId, dragMode } = drag.getDragging()
-  if (!blockId || dragMode === 'column') return
+  if (!blockId || dragMode === 'column' || !editable.value) return
   e.preventDefault()
   e.stopPropagation()
   e.dataTransfer!.dropEffect = 'move'
@@ -1055,7 +1096,7 @@ async function onDropEmpty(e: DragEvent): Promise<void> {
 // Drop at the end of the list (the click-to-add affordance area).
 function onDragOverEnd(e: DragEvent): void {
   const { blockId, dragMode } = drag.getDragging()
-  if (!blockId || dragMode === 'column') return
+  if (!blockId || dragMode === 'column' || !editable.value) return
   e.preventDefault()
   e.stopPropagation()
   e.dataTransfer!.dropEffect = 'move'
@@ -1114,7 +1155,7 @@ async function onDropEnd(e: DragEvent): Promise<void> {
 
         <!-- Toggle conversion: headings, paragraph, text_toggle -->
         <button
-          v-if="contextMenuBlock && isToggleConvertible(contextMenuBlock.type)"
+          v-if="contextMenuEditable && contextMenuBlock && isToggleConvertible(contextMenuBlock.type)"
           class="block-context-menu__item"
           @click="contextMenuConvertToggle"
         >
@@ -1132,7 +1173,7 @@ async function onDropEnd(e: DragEvent): Promise<void> {
 
         <!-- Lock toggle: synched_mirror blocks only -->
         <button
-          v-if="contextMenuBlock?.type === 'synched_mirror'"
+          v-if="contextMenuEditable && contextMenuBlock?.type === 'synched_mirror'"
           class="block-context-menu__item"
           @click="contextMenuToggleMirrorLock"
         >
@@ -1146,7 +1187,7 @@ async function onDropEnd(e: DragEvent): Promise<void> {
 
         <!-- Add column: layout blocks below maximum column count only -->
         <button
-          v-if="contextMenuBlock?.type === 'layout' && layoutColumnCount(contextMenuBlock.id) < LAYOUT_MAX_COLUMNS"
+          v-if="contextMenuEditable && contextMenuBlock?.type === 'layout' && layoutColumnCount(contextMenuBlock.id) < LAYOUT_MAX_COLUMNS"
           class="block-context-menu__item"
           @click="contextMenuAddColumn"
         >
@@ -1154,13 +1195,14 @@ async function onDropEnd(e: DragEvent): Promise<void> {
           {{ t('layout.addColumn') }}
         </button>
 
-        <button class="block-context-menu__item" @click="contextMenuDuplicate">
+        <button v-if="contextMenuEditable && editable" class="block-context-menu__item" @click="contextMenuDuplicate">
           <Icon icon="mdi:content-copy" width="14" height="14" />
           {{ t('actions.duplicate') }}
         </button>
 
         <!-- Color picker: all blocks except dividers and inline databases -->
-        <template v-if="contextMenuBlock
+        <template v-if="contextMenuEditable
+          && contextMenuBlock
           && contextMenuBlock.type !== 'divider'
           && contextMenuBlock.type !== 'linked_database'
           && !(contextMenuBlock.type === 'database' && isDbInline(contextMenu.blockId!))"
@@ -1195,7 +1237,11 @@ async function onDropEnd(e: DragEvent): Promise<void> {
           <div class="block-context-menu__divider" />
         </template>
 
-        <button class="block-context-menu__item block-context-menu__item--danger" @click="contextMenuDelete">
+        <button
+          v-if="contextMenuEditable"
+          class="block-context-menu__item block-context-menu__item--danger"
+          @click="contextMenuDelete"
+        >
           <Icon icon="mdi:trash-can-outline" width="14" height="14" />
           {{ t('actions.delete') }}
         </button>
@@ -1234,14 +1280,17 @@ async function onDropEnd(e: DragEvent): Promise<void> {
     <div
       v-if="isEmpty"
       class="block-content__empty"
-      :class="{ 'block-content__empty--drop-active': dropAtEnd }"
+      :class="{ 'block-content__empty--drop-active': dropAtEnd, 'block-content__empty--static': !editable }"
       @dragover="onDragOverEmpty"
       @dragleave="onDragLeaveEmpty"
       @drop="onDropEmpty"
     >
       <!-- Template picker: shown when this section belongs to a database entry
            and the owning database has at least one template defined. -->
-      <template v-if="databaseId && templateStore.getTemplates(databaseId).length > 0">
+      <template v-if="!editable">
+        <span>{{ t('main.noContentReadOnly') }}</span>
+      </template>
+      <template v-else-if="databaseId && templateStore.getTemplates(databaseId).length > 0">
         <div class="block-content__template-hint">
           {{ t('db.templates.emptyHint') }}
         </div>
@@ -1301,8 +1350,9 @@ async function onDropEnd(e: DragEvent): Promise<void> {
              potential drag, which would prevent native textarea cursor
              placement. Only deliberate handle interactions start a drag. -->
         <span
+          v-if="showsHandle(block)"
           class="content-block__drag-handle"
-          draggable="true"
+          :draggable="blockEditable(block)"
           @mousedown="(e) => onHandleMouseDown(e, block)"
           @click="(e) => onHandleClick(e, block)"
         >
@@ -1425,7 +1475,7 @@ async function onDropEnd(e: DragEvent): Promise<void> {
     <!-- Click-to-add affordance at the bottom of the content area.
          Also serves as a drop zone for appending dragged blocks at the end. -->
     <div
-      v-if="!isEmpty"
+      v-if="!isEmpty && editable"
       class="block-content__add-area"
       :class="{ 'block-content__add-area--drop-active': dropAtEnd }"
       @click="onAddBlock"
@@ -1471,6 +1521,10 @@ async function onDropEnd(e: DragEvent): Promise<void> {
   align-items: flex-start;
   border-radius: 6px;
   transition: background 0.1s;
+}
+
+.block-content__empty--static {
+  cursor: default;
 }
 
 .block-content__empty--drop-active {

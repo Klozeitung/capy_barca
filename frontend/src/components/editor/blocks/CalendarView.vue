@@ -46,11 +46,16 @@
  *          height and the page scroll handles the rest. Cells use
  *          min-height: 150px so rows with multi-day bars have room, and the
  *          chip list is capped at 90px.
+ * Access   Without write access to the database (``useEditable``) entries are
+ *          shown and open, but cannot be added, imported, dragged, edited,
+ *          deleted or given an icon. Switching between month, week and day
+ *          then stays local instead of being saved to the view.
  */
 import { ref, computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useBlockStore } from '@/stores/blocks'
+import { useEditable } from '@/composables/useEditable'
 import { useDatabaseStore, type DatabaseEntry, type DatabaseView, type PropertySchema } from '@/stores/database'
 import {
   fullDayLabel,
@@ -88,6 +93,7 @@ const emit = defineEmits<{
 const { t, locale } = useI18n()
 const blockStore = useBlockStore()
 const dbStore    = useDatabaseStore()
+const editable   = useEditable()
 
 // ── Navigation state ──────────────────────────────────────────────────────────
 
@@ -99,12 +105,22 @@ const viewDay   = ref(now.getDate())
 
 // ── Granularity ───────────────────────────────────────────────────────────────
 
+/**
+ * Granularity chosen here by a user without write access, who cannot save it
+ * to the view. Null while the view's own setting applies.
+ */
+const localGranularity = ref<'month' | 'week' | 'day' | null>(null)
+
 /** Active granularity: month (default) | week | day. Persisted in the view object. */
 const granularity = computed<'month' | 'week' | 'day'>(() =>
-  props.view.calendarGranularity ?? 'month',
+  localGranularity.value ?? props.view.calendarGranularity ?? 'month',
 )
 
 function setGranularity(g: 'month' | 'week' | 'day'): void {
+  if (!editable.value) {
+    localGranularity.value = g
+    return
+  }
   emit('update-view', { ...props.view, calendarGranularity: g })
 }
 
@@ -426,6 +442,7 @@ const iconPickerRect    = ref<DOMRect | null>(null)
 
 function openChipIconPicker(entry: DatabaseEntry, e: MouseEvent): void {
   e.stopPropagation()
+  if (!editable.value) return
   iconPickerEntryId.value = entry.id
   iconPickerRect.value    = (e.currentTarget as HTMLElement).getBoundingClientRect()
 }
@@ -776,6 +793,10 @@ const dragEntry    = ref<DatabaseEntry | null>(null)
 const dragOverDate = ref<string | null>(null)
 
 function onEntryDragStart(entry: DatabaseEntry, e: DragEvent): void {
+  if (!editable.value) {
+    e.preventDefault()
+    return
+  }
   dragEntry.value = entry
   e.dataTransfer?.setData('text/plain', entry.id)
   if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
@@ -887,6 +908,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
 
         <!-- ICS import -->
         <button
+          v-if="editable"
           class="cal-view__import-btn"
           :disabled="isImporting"
           :title="t('db.calendar.importIcsTitle')"
@@ -944,7 +966,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
                 :class="{ 'cal-view__bar--dragging': dragEntry?.id === bar.occ.entry.id }"
                 :style="{ ...entryChipStyle(bar.occ.entry), gridColumn: `${bar.colStart} / ${bar.colEnd}` }"
                 :title="entryTitle(bar.occ.entry)"
-                :draggable="!bar.occ.isVirtual"
+                :draggable="editable && !bar.occ.isVirtual"
                 @dragstart="!bar.occ.isVirtual && onEntryDragStart(bar.occ.entry, $event)"
                 @dragend="onEntryDragEnd"
               >
@@ -962,7 +984,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
                 />
 
                 <!-- Page icon → icon picker -->
-                <button class="cal-view__chip-icon-btn" @click.stop="openChipIconPicker(bar.occ.entry, $event)">
+                <button class="cal-view__chip-icon-btn" :class="{ 'cal-view__chip-icon-btn--static': !editable }" @click.stop="openChipIconPicker(bar.occ.entry, $event)">
                   <Icon :icon="bar.occ.entry.icon ?? 'mdi:file-outline'" width="9" height="9" />
                 </button>
 
@@ -972,12 +994,13 @@ async function onCellDrop(cell: CalCell): Promise<void> {
                 </span>
 
                 <!-- Edit -->
-                <button class="cal-view__chip-action" :title="t('db.calendar.fastEdit')" @click.stop="requestEdit(bar.occ)">
+                <button v-if="editable" class="cal-view__chip-action" :title="t('db.calendar.fastEdit')" @click.stop="requestEdit(bar.occ)">
                   <Icon icon="mdi:pencil-outline" width="9" height="9" />
                 </button>
 
                 <!-- Delete -->
                 <button
+                  v-if="editable"
                   class="cal-view__chip-action"
                   :class="{ 'cal-view__chip-action--danger': confirmDeleteId === occKey(bar.occ) }"
                   :title="confirmDeleteId === occKey(bar.occ) ? t('db.calendar.deleteConfirm') : t('actions.delete')"
@@ -1009,7 +1032,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
                   <span class="cal-view__day-number" :class="{ 'cal-view__day-number--today': cell.isToday }">
                     {{ cell.day }}
                   </span>
-                  <button class="cal-view__add-btn" :title="t('db.addRow')" @click.stop="emit('add-on-date', cell.dateStr)">
+                  <button v-if="editable" class="cal-view__add-btn" :title="t('db.addRow')" @click.stop="emit('add-on-date', cell.dateStr)">
                     <Icon icon="mdi:plus" width="12" height="12" />
                   </button>
                 </div>
@@ -1023,7 +1046,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
                     :class="{ 'cal-view__chip--dragging': dragEntry?.id === occ.entry.id }"
                     :style="entryChipStyle(occ.entry)"
                     :title="entryTitle(occ.entry)"
-                    :draggable="!occ.isVirtual"
+                    :draggable="editable && !occ.isVirtual"
                     @dragstart="!occ.isVirtual && onEntryDragStart(occ.entry, $event)"
                     @dragend="onEntryDragEnd"
                   >
@@ -1037,7 +1060,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
                     />
 
                     <!-- Page icon → icon picker -->
-                    <button class="cal-view__chip-icon-btn" @click.stop="openChipIconPicker(occ.entry, $event)">
+                    <button class="cal-view__chip-icon-btn" :class="{ 'cal-view__chip-icon-btn--static': !editable }" @click.stop="openChipIconPicker(occ.entry, $event)">
                       <Icon :icon="occ.entry.icon ?? 'mdi:file-outline'" width="10" height="10" />
                     </button>
 
@@ -1050,12 +1073,13 @@ async function onCellDrop(cell: CalCell): Promise<void> {
                     <span v-if="entryTime(occ.entry)" class="cal-view__chip-time">{{ entryTime(occ.entry) }}</span>
 
                     <!-- Edit -->
-                    <button class="cal-view__chip-action" :title="t('db.calendar.fastEdit')" @click.stop="requestEdit(occ)">
+                    <button v-if="editable" class="cal-view__chip-action" :title="t('db.calendar.fastEdit')" @click.stop="requestEdit(occ)">
                       <Icon icon="mdi:pencil-outline" width="9" height="9" />
                     </button>
 
                     <!-- Delete -->
                     <button
+                      v-if="editable"
                       class="cal-view__chip-action"
                       :class="{ 'cal-view__chip-action--danger': confirmDeleteId === occKey(occ) }"
                       :title="confirmDeleteId === occKey(occ) ? t('db.calendar.deleteConfirm') : t('actions.delete')"
@@ -1081,7 +1105,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
               :class="{ 'cal-view__dv-date-num--today': dayCell.isToday }"
             >{{ dayCell.day }}</span>
             <span class="cal-view__dv-date-label">{{ periodLabel }}</span>
-            <button class="cal-view__dv-add" :title="t('db.addRow')" @click.stop="emit('add-on-date', dayCell.dateStr)">
+            <button v-if="editable" class="cal-view__dv-add" :title="t('db.addRow')" @click.stop="emit('add-on-date', dayCell.dateStr)">
               <Icon icon="mdi:plus" width="13" height="13" />
               {{ t('db.addRow') }}
             </button>
@@ -1134,6 +1158,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
 
             <!-- Edit -->
             <button
+              v-if="editable"
               class="cal-view__dv-action"
               :title="t('db.calendar.fastEdit')"
               @click.stop="requestEdit(occ)"
@@ -1143,6 +1168,7 @@ async function onCellDrop(cell: CalCell): Promise<void> {
 
             <!-- Delete (2-step for non-recurring, dialog for recurring) -->
             <button
+              v-if="editable"
               class="cal-view__dv-action"
               :class="{ 'cal-view__dv-action--danger': confirmDeleteId === occKey(occ) }"
               :title="confirmDeleteId === occKey(occ) ? t('db.calendar.deleteConfirm') : t('actions.delete')"
@@ -1507,5 +1533,12 @@ async function onCellDrop(cell: CalCell): Promise<void> {
 .cal-view__dv-action:hover { background: var(--color-hover); color: var(--color-text); }
 .cal-view__dv-action--danger {
   opacity: 1 !important; background: rgba(224, 85, 85, 0.12); color: #e05555 !important;
+}
+
+/* ── Read-only chip icon (after the regular chip rules so these win) ─────── */
+.cal-view__chip-icon-btn--static,
+.cal-view__chip-icon-btn--static:hover {
+  cursor: default;
+  background: transparent;
 }
 </style>

@@ -29,6 +29,17 @@
  * FilterPanel      – filter UI (template + styles live in DatabaseBlock.css)
  * SortPanel        – sort UI
  * ViewDescription  – per-view description between toolbar and view content
+ *
+ * Write access
+ * ------------
+ * The database's ``can_write`` is provided to everything inside (see
+ * ``useEditable``), the cells, calendar and agenda included. Without it the
+ * database is shown as its views are set up: switching views, searching by
+ * name, folding sub-items, opening entries, loading more and exporting
+ * remain; everything that changes entries, properties, views (filters, sorts,
+ * column order, widths, wrapping, aggregations, descriptions), automations or
+ * templates is not offered. An inline database the user may only read shows
+ * a read-only badge in its toolbar; on a page of its own the page shows it.
  */
 import { ref, computed, onMounted, onUnmounted, nextTick, watch, type VNode } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -53,6 +64,7 @@ import {
   entriesEventDetails,
 } from '@/stores/database'
 import { isReadonlyPropertyType } from '@/stores/propertyTypes'
+import { provideEditable } from '@/composables/useEditable'
 
 // ── Composables ───────────────────────────────────────────────────────────────
 import { useDatabaseViewsStore } from '@/stores/databaseViews'
@@ -90,6 +102,7 @@ import SideView from '@/components/main/SideView.vue'
 import AutomationsModal from './AutomationsModal.vue'
 import DatabaseTemplateEditor from './DatabaseTemplateEditor.vue'
 import TemplateManagerPanel from './subcomponents/TemplateManagerPanel.vue'
+import ReadOnlyBadge from '@/components/main/ReadOnlyBadge.vue'
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
@@ -122,6 +135,7 @@ const placementId = props.placementId ?? props.blockId
 // ── Base state ────────────────────────────────────────────────────────────────
 
 const block   = computed(() => blockStore.blocks[props.blockId])
+const editable = provideEditable(block)
 const schemas = computed(() => dbStore.getSchemas(props.blockId))
 const isLoading = ref(true)
 
@@ -592,6 +606,7 @@ function setNameLabelInputEl(el: unknown): void {
 }
 
 async function startNameLabelRename(): Promise<void> {
+  if (!editable.value) return
   nameLabelDraft.value    = nameLabel.value
   renamingNameLabel.value = true
   await nextTick()
@@ -880,7 +895,7 @@ function onAddSchemaPanelClose(): void {
 
 const settingsSchema = ref<PropertySchema | null>(null)
 
-function openSettings(schema: PropertySchema)  { settingsSchema.value = schema }
+function openSettings(schema: PropertySchema)  { if (editable.value) settingsSchema.value = schema }
 function closeSettings()                        { settingsSchema.value = null }
 
 // ── Delete schema ─────────────────────────────────────────────────────────────
@@ -938,7 +953,7 @@ const colDragKey = ref<string | null>(null)
 const colDropKey = ref<string | null>(null)
 
 function onColDragStart(e: DragEvent, key: string) {
-  if (resizingKey.value !== null) { e.preventDefault(); return }
+  if (resizingKey.value !== null || !editable.value) { e.preventDefault(); return }
   colDragKey.value = key
   if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key) }
 }
@@ -1002,7 +1017,7 @@ function onRowDragStart(e: DragEvent, entry: DatabaseEntry): void {
   // e.preventDefault() on non-handle events cancels the browser drag gesture
   // and prevents it from interfering with cell click / cursor placement.
   const handle = (e.target as HTMLElement).closest?.('.db__row-handle')
-  if (!handle) {
+  if (!handle || !editable.value) {
     e.preventDefault()
     return
   }
@@ -1020,7 +1035,7 @@ function onRowDragEnd(entry: DatabaseEntry): void {
 
 function onRowDragOver(e: DragEvent, entry: DatabaseEntry): void {
   const { blockId, dragMode } = drag.getDragging()
-  if (!blockId || dragMode === 'column') return
+  if (!blockId || dragMode === 'column' || !editable.value) return
   e.preventDefault()
   e.stopPropagation()
   e.dataTransfer!.dropEffect = 'move'
@@ -1152,6 +1167,7 @@ const schemaIconPickerKey  = ref<string | null>(null)
 const schemaIconPickerRect = ref<DOMRect | null>(null)
 
 function openSchemaIconPicker(schema: PropertySchema, event: MouseEvent): void {
+  if (!editable.value) return
   schemaIconPickerKey.value  = schema.id
   schemaIconPickerRect.value = (event.currentTarget as HTMLElement).getBoundingClientRect()
 }
@@ -1172,6 +1188,7 @@ const entryIconPickerRect    = ref<DOMRect | null>(null)
 
 function openEntryIconPicker(entry: DatabaseEntry, event: MouseEvent): void {
   event.stopPropagation()
+  if (!editable.value) return
   entryIconPickerEntryId.value = entry.id
   entryIconPickerRect.value    = (event.currentTarget as HTMLElement).getBoundingClientRect()
 }
@@ -1202,7 +1219,12 @@ function entryIcon(entry: DatabaseEntry): string {
 const editingNameId = ref<string | null>(null)
 const nameDraft     = ref('')
 
+/** Click on an entry's name: edit it, or open the entry without write access. */
 function startNameEdit(entry: DatabaseEntry) {
+  if (!editable.value) {
+    openEntry(entry)
+    return
+  }
   editingNameId.value = entry.id
   nameDraft.value     = (entry.content?.title as string | undefined) ?? ''
 }
@@ -1253,6 +1275,7 @@ watch(activeCell, (cell) => {
 })
 
 function onCellClick(entry: DatabaseEntry, schema: PropertySchema): void {
+  if (!editable.value) return
   if (isReadonlyPropertyType(schema.type)) return
   if (schema.type === 'checkbox' || schema.type === 'relation' || schema.type === 'file') return
   if (schema.type === 'select' && (schema.config?.mode ?? 'single') === 'multiple') return
@@ -1464,7 +1487,7 @@ async function focusNewEntry(entryId: string, derivedName: string | null): Promi
 }
 
 async function addRow() {
-  if (isAddingRow.value) return
+  if (isAddingRow.value || !editable.value) return
   isAddingRow.value = true
   try {
     const { values, name } = deriveInitialValuesFromFilters()
@@ -1486,7 +1509,7 @@ async function addRow() {
 async function addRowOnDate(dateStr: string): Promise<void> {
   const view = activeView.value
   if (!view?.calendarDateSchemaId) return
-  if (isAddingRow.value) return
+  if (isAddingRow.value || !editable.value) return
   isAddingRow.value = true
   try {
     const { values } = deriveInitialValuesFromFilters()
@@ -1525,6 +1548,12 @@ function setAggregation(colKey: string, fn: AggregationType): void {
   view.columnAggregations = { ...view.columnAggregations, [colKey]: fn }
   saveViews()
   aggPickerKey.value = null
+}
+
+/** Open or close the aggregation picker *key*; offered with write access only. */
+function toggleAggPicker(key: string): void {
+  if (!editable.value) return
+  aggPickerKey.value = aggPickerKey.value === key ? null : key
 }
 
 function aggOptionsForCol(schema: PropertySchema | null): AggregationType[] {
@@ -1714,7 +1743,7 @@ async function toggleWrapColumn(colKey: string): Promise<void> {
 }
 
 async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<void> {
-  if (isAddingRow.value) return
+  if (isAddingRow.value || !editable.value) return
   isAddingRow.value = true
   try {
     const { values, name } = deriveInitialValuesFromFilters()
@@ -1750,13 +1779,15 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
         <div class="db__title-icon-wrap">
           <button
             class="db__title-icon-btn"
-            :title="t('main.addIcon')"
+            :class="{ 'db__title-icon-btn--static': !editable }"
+            :disabled="!editable"
+            :title="editable ? t('main.addIcon') : undefined"
             @click.stop="showIconPicker = !showIconPicker"
           >
             <Icon :icon="block?.icon ?? 'mdi:table-large'" class="db__title-icon" width="28" height="28" />
           </button>
           <IconPicker
-            v-if="showIconPicker"
+            v-if="showIconPicker && editable"
             :model-value="block?.icon ?? null"
             @update:model-value="onIconUpdate"
             @close="showIconPicker = false"
@@ -1766,6 +1797,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
           class="db__title-input"
           :value="block?.content?.title ?? ''"
           :placeholder="t('main.untitled')"
+          :readonly="!editable"
           @vue:mounted="onTitleMount"
           @input="titleDraft = ($event.target as HTMLInputElement).value"
           @blur="saveTitle"
@@ -1783,7 +1815,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
             'db__tab--dragging':  tabDragId === view.id,
             'db__tab--drag-over': tabDropId === view.id,
           }"
-          draggable="true"
+          :draggable="editable"
           @dragstart="onTabDragStart($event, view.id)"
           @dragover="onTabDragOver($event, view.id)"
           @dragleave="onTabDragLeave(view.id)"
@@ -1803,12 +1835,12 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
             v-else
             class="db__tab-label"
             @click="switchView(view.id)"
-            @dblclick.stop="startRenameView(view.id)"
+            @dblclick.stop="editable && startRenameView(view.id)"
           >
             <Icon :icon="viewTypeIcon(view.viewType)" width="12" height="12" class="db__tab-type-icon" />
             {{ viewDisplayName(view, t) }}
           </span>
-          <div class="db__tab-menu-wrap">
+          <div v-if="editable" class="db__tab-menu-wrap">
             <button
               class="db__tab-menu"
               :title="t('db.views.viewMenu')"
@@ -1819,7 +1851,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
           </div>
         </div>
 
-        <button class="db__tabs-add" :title="t('db.views.addView')" @click.stop="addView">
+        <button v-if="editable" class="db__tabs-add" :title="t('db.views.addView')" @click.stop="addView">
           <Icon icon="mdi:plus" width="14" height="14" />
         </button>
       </div>
@@ -1827,6 +1859,12 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
       <!-- ── Toolbar ────────────────────────────────────────────────────── -->
       <div class="db__toolbar" @click.stop>
         <div class="db__toolbar-left">
+
+          <ReadOnlyBadge v-if="!editable && inline" />
+
+          <!-- Filter, sort, view settings, automations and templates change
+               the database or its views, so they need write access. -->
+          <template v-if="editable">
 
           <!-- Filter -->
           <div class="db__toolbar-item">
@@ -1930,6 +1968,8 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
             </div>
           </div>
 
+          </template>
+
         </div>
 
         <div class="db__toolbar-right">
@@ -1967,7 +2007,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
           </div>
 
           <!-- New entry (table view only) -->
-          <div v-if="!activeView || activeView.viewType === 'table'" class="db__toolbar-item">
+          <div v-if="editable && (!activeView || activeView.viewType === 'table')" class="db__toolbar-item">
             <button
               class="db__toolbar-btn db__toolbar-btn--new-entry db__toolbar-btn--icon"
               :disabled="isAddingRow"
@@ -2026,6 +2066,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
         :key="activeView.id"
         :view-id="activeView.id"
         :description="activeView.description ?? ''"
+        :readonly="!editable"
         @save="saveViewDescription"
       />
 
@@ -2057,7 +2098,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                       'db__th--frozen':    isFrozenCol(NAME_COL_KEY),
                     }"
                     :style="{ ...colStyle(NAME_COL_KEY), ...frozenColStyle(NAME_COL_KEY) }"
-                    :draggable="!renamingNameLabel"
+                    :draggable="editable && !renamingNameLabel"
                     @dragstart="onColDragStart($event, NAME_COL_KEY)"
                     @dragover="onColDragOver($event, NAME_COL_KEY)"
                     @dragleave="onColDragLeave(NAME_COL_KEY)"
@@ -2081,11 +2122,12 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                         <span
                           class="db__th-name"
                           @dblclick.stop="hideTip(); startNameLabelRename()"
-                          @mouseenter="showTip($event, t('db.nameColumnRenameHint'))"
+                          @mouseenter="editable && showTip($event, t('db.nameColumnRenameHint'))"
                           @mouseleave="hideTip"
                         >{{ nameLabel }}</span>
                       </span>
                       <button
+                        v-if="editable"
                         class="db__th-btn"
                         :class="{ 'db__th-btn--wrap-active': isWrapped(NAME_COL_KEY) }"
                         :title="isWrapped(NAME_COL_KEY) ? t('db.wrapColumnOff') : t('db.wrapColumnOn')"
@@ -2095,6 +2137,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                       </button>
                     </div>
                     <span
+                      v-if="editable"
                       class="db__th-resize"
                       :class="{ 'db__th-resize--active': resizingKey === NAME_COL_KEY }"
                       @pointerdown.stop.prevent="(e) => startResize(e, NAME_COL_KEY, (e.currentTarget as HTMLElement).closest('th') as HTMLElement)"
@@ -2111,7 +2154,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                       'db__th--frozen':    isFrozenCol(col.key),
                     }"
                     :style="{ ...colStyle(col.key), ...frozenColStyle(col.key) }"
-                    draggable="true"
+                    :draggable="editable"
                     @dragstart="onColDragStart($event, col.key)"
                     @dragover="onColDragOver($event, col.key)"
                     @dragleave="onColDragLeave(col.key)"
@@ -2123,7 +2166,8 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                         <div class="db__th-icon-wrap">
                           <button
                             class="db__th-icon-btn"
-                            :title="t('db.changeIcon')"
+                            :class="{ 'db__th-icon-btn--static': !editable }"
+                            :title="editable ? t('db.changeIcon') : undefined"
                             @click.stop="openSchemaIconPicker(col.schema!, $event)"
                           >
                             <Icon :icon="getSchemaIcon(col.schema!)" width="14" height="14" class="db__th-type-icon" />
@@ -2138,12 +2182,14 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                         </div>
                         <span
                           class="db__th-name"
+                          :class="{ 'db__th-name--static': !editable }"
                           @click="openSettings(col.schema!)"
                           @mouseenter="showColumnTip($event, col.schema!)"
                           @mouseleave="hideTip"
                         >{{ col.schema!.name }}</span>
                       </span>
-                      <template v-if="deletingSchemaId === col.key">
+                      <template v-if="!editable" />
+                      <template v-else-if="deletingSchemaId === col.key">
                         <button class="db__th-btn db__th-btn--confirm" :title="t('db.deleteColumnConfirm')" @click.stop="confirmDeleteSchema(col.key)">
                           <Icon icon="mdi:check" width="13" height="13" />
                         </button>
@@ -2160,7 +2206,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                         <Icon icon="mdi:trash-can-outline" width="13" height="13" />
                       </button>
                       <button
-                        v-if="deletingSchemaId !== col.key && supportsLineWrap(col.schema)"
+                        v-if="editable && deletingSchemaId !== col.key && supportsLineWrap(col.schema)"
                         class="db__th-btn"
                         :class="{ 'db__th-btn--wrap-active': isWrapped(col.key) }"
                         :title="isWrapped(col.key) ? t('db.wrapColumnOff') : t('db.wrapColumnOn')"
@@ -2170,6 +2216,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                       </button>
                     </div>
                     <span
+                      v-if="editable"
                       class="db__th-resize"
                       :class="{ 'db__th-resize--active': resizingKey === col.key }"
                       @pointerdown.stop.prevent="(e) => startResize(e, col.key, (e.currentTarget as HTMLElement).closest('th') as HTMLElement)"
@@ -2177,7 +2224,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                   </th>
                 </template>
                 <th class="db__th db__th--add">
-                  <button class="db__add-col-btn" :title="t('db.addSchema.title')" @click="showAddSchema = true">
+                  <button v-if="editable" class="db__add-col-btn" :title="t('db.addSchema.title')" @click="showAddSchema = true">
                     <Icon icon="mdi:plus" width="16" height="16" />
                   </button>
                 </th>
@@ -2212,7 +2259,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                   @drop.stop
                   @click.stop
                 >
-                  <span class="db__row-handle" draggable="true" @click.stop="openRowContextMenu($event, entry)">
+                  <span v-if="editable" class="db__row-handle" draggable="true" @click.stop="openRowContextMenu($event, entry)">
                     <Icon icon="mdi:drag" width="13" height="13" />
                   </span>
                 </td>
@@ -2256,7 +2303,8 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                       <div class="db__entry-icon-wrap">
                         <button
                           class="db__entry-icon-btn"
-                          :title="t('main.addIcon')"
+                          :class="{ 'db__entry-icon-btn--static': !editable }"
+                          :title="editable ? t('main.addIcon') : undefined"
                           @click.stop="openEntryIconPicker(entry, $event)"
                         >
                           <Icon :icon="entryIcon(entry)" class="db__entry-icon" width="14" height="14" />
@@ -2309,7 +2357,8 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                         <div class="db__entry-icon-wrap">
                           <button
                             class="db__entry-icon-btn"
-                            :title="t('main.addIcon')"
+                            :class="{ 'db__entry-icon-btn--static': !editable }"
+                            :title="editable ? t('main.addIcon') : undefined"
                             @click.stop="openEntryIconPicker(entry, $event)"
                           >
                             <Icon :icon="entryIcon(entry)" class="db__entry-icon" width="14" height="14" />
@@ -2366,7 +2415,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                   :class="{ 'db__aggregation-cell--frozen': handleFrozen }"
                   :style="handleFrozenStyle"
                 >
-                  <button class="db__group-add-btn" :disabled="isAddingRow" @mouseenter="hasMore ? showTip($event, t('db.addRowLimitHint')) : undefined" @mouseleave="hideTip" @click="addRow">
+                  <button v-if="editable" class="db__group-add-btn" :disabled="isAddingRow" @mouseenter="hasMore ? showTip($event, t('db.addRowLimitHint')) : undefined" @mouseleave="hideTip" @click="addRow">
                     <Icon icon="mdi:plus" width="13" height="13" />
                     {{ t('db.addRowShort') }}
                   </button>
@@ -2376,14 +2425,14 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                     class="db__aggregation-cell"
                     :class="{ 'db__aggregation-cell--frozen': isFrozenCol(col.key) }"
                     :style="{ ...colStyle(col.key), ...frozenColStyle(col.key) }"
-                    @click.stop="aggPickerKey = aggPickerKey === ('flat:' + col.key) ? null : ('flat:' + col.key)"
+                    @click.stop="toggleAggPicker('flat:' + col.key)"
                   >
                     <div class="db__agg-inner">
                       <template v-if="getAggregationFn(col.key) !== 'none'">
                         <span class="db__agg-badge">{{ getAggregationBadge(getAggregationFn(col.key)) }}</span>
                         <span class="db__agg-value">{{ computeAggregation(filteredAndSortedEntries, col.key, col.schema, getAggregationFn(col.key)) }}</span>
                       </template>
-                      <span v-else class="db__agg-plus"><Icon icon="mdi:plus" width="11" height="11" /></span>
+                      <span v-else-if="editable" class="db__agg-plus"><Icon icon="mdi:plus" width="11" height="11" /></span>
                       <div v-if="aggPickerKey === ('flat:' + col.key)" class="db__agg-picker" @click.stop>
                         <button
                           v-for="opt in aggOptionsForCol(col.schema)"
@@ -2442,7 +2491,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                     @drop.stop
                     @click.stop
                   >
-                    <span class="db__row-handle" draggable="true" @click.stop="openRowContextMenu($event, entry)">
+                    <span v-if="editable" class="db__row-handle" draggable="true" @click.stop="openRowContextMenu($event, entry)">
                       <Icon icon="mdi:drag" width="13" height="13" />
                     </span>
                   </td>
@@ -2466,7 +2515,8 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                         <div class="db__entry-icon-wrap">
                           <button
                             class="db__entry-icon-btn"
-                            :title="t('main.addIcon')"
+                            :class="{ 'db__entry-icon-btn--static': !editable }"
+                            :title="editable ? t('main.addIcon') : undefined"
                             @click.stop="openEntryIconPicker(entry, $event)"
                           >
                             <Icon :icon="entryIcon(entry)" class="db__entry-icon" width="14" height="14" />
@@ -2502,7 +2552,8 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                           <div class="db__entry-icon-wrap">
                             <button
                               class="db__entry-icon-btn"
-                              :title="t('main.addIcon')"
+                              :class="{ 'db__entry-icon-btn--static': !editable }"
+                              :title="editable ? t('main.addIcon') : undefined"
                               @click.stop="openEntryIconPicker(entry, $event)"
                             >
                               <Icon :icon="entryIcon(entry)" class="db__entry-icon" width="14" height="14" />
@@ -2557,7 +2608,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                     :class="{ 'db__aggregation-cell--frozen': handleFrozen }"
                     :style="handleFrozenStyle"
                   >
-                    <button class="db__group-add-btn" :disabled="isAddingRow" @mouseenter="hasMore ? showTip($event, t('db.addRowLimitHint')) : undefined" @mouseleave="hideTip" @click="addGroupRow(group.groupValue)">
+                    <button v-if="editable" class="db__group-add-btn" :disabled="isAddingRow" @mouseenter="hasMore ? showTip($event, t('db.addRowLimitHint')) : undefined" @mouseleave="hideTip" @click="addGroupRow(group.groupValue)">
                       <Icon icon="mdi:plus" width="13" height="13" />
                       {{ t('db.addRowShort') }}
                     </button>
@@ -2567,14 +2618,14 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
                       class="db__aggregation-cell"
                       :class="{ 'db__aggregation-cell--frozen': isFrozenCol(col.key) }"
                       :style="{ ...colStyle(col.key), ...frozenColStyle(col.key) }"
-                      @click.stop="aggPickerKey = aggPickerKey === (group.key + ':' + col.key) ? null : (group.key + ':' + col.key)"
+                      @click.stop="toggleAggPicker(group.key + ':' + col.key)"
                     >
                       <div class="db__agg-inner">
                         <template v-if="getAggregationFn(col.key) !== 'none'">
                           <span class="db__agg-badge">{{ getAggregationBadge(getAggregationFn(col.key)) }}</span>
                           <span class="db__agg-value">{{ computeAggregation(group.entries, col.key, col.schema, getAggregationFn(col.key)) }}</span>
                         </template>
-                        <span v-else class="db__agg-plus"><Icon icon="mdi:plus" width="11" height="11" /></span>
+                        <span v-else-if="editable" class="db__agg-plus"><Icon icon="mdi:plus" width="11" height="11" /></span>
                         <div v-if="aggPickerKey === (group.key + ':' + col.key)" class="db__agg-picker" @click.stop>
                           <button
                             v-for="opt in aggOptionsForCol(col.schema)"
@@ -2695,11 +2746,11 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
           <Icon icon="mdi:arrow-top-right" width="13" height="13" />
           {{ t('db.openEntry') }}
         </button>
-        <button class="db__row-ctx-item" @click="contextMenuDuplicateEntry">
+        <button v-if="editable" class="db__row-ctx-item" @click="contextMenuDuplicateEntry">
           <Icon icon="mdi:content-copy" width="13" height="13" />
           {{ t('actions.duplicate') }}
         </button>
-        <button class="db__row-ctx-item db__row-ctx-item--danger" @click="contextMenuDeleteEntry">
+        <button v-if="editable" class="db__row-ctx-item db__row-ctx-item--danger" @click="contextMenuDeleteEntry">
           <Icon icon="mdi:trash-can-outline" width="13" height="13" />
           {{ t('actions.delete') }}
         </button>
@@ -2932,6 +2983,21 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
 }
 
 .db__cell-wrap--lead:hover .db__open-btn { opacity: 1; }
+
+/* ── Read-only controls ──────────────────────────────────────────────────── */
+.db__title-icon-btn--static,
+.db__title-icon-btn--static:hover,
+.db__th-icon-btn--static,
+.db__th-icon-btn--static:hover,
+.db__entry-icon-btn--static,
+.db__entry-icon-btn--static:hover {
+  cursor: default;
+  background: transparent;
+}
+
+.db__th-name--static {
+  cursor: default;
+}
 
 /* ── Name column header rename ───────────────────────────────────────────── */
 .db__th-rename-input {
