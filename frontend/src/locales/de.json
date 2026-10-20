@@ -539,7 +539,14 @@
       "aggSum": "Summe",
       "aggAvg": "Durchschnitt",
       "aggMin": "Minimum",
-      "aggMax": "Maximum"
+      "aggMax": "Maximum",
+      "sectionDatabase": "Datenbank",
+      "databaseHint": "Diese Einstellungen gelten für die ganze Datenbank, also für alle Ansichten.",
+      "defaultEntryIcon": "Standard-Icon",
+      "defaultEntryIconButton": "Standard-Icon wählen",
+      "defaultEntryIconHint": "Neue Einträge erhalten dieses Icon. Eine angewendete Vorlage mit eigenem Icon hat Vorrang.",
+      "defaultEntryIconOwnerOnly": "Nur der Eigentümer der Datenbank oder ein Administrator kann das Standard-Icon festlegen.",
+      "databaseSettingsError": "Die Datenbankeinstellungen konnten nicht geladen oder gespeichert werden."
     },
     "relation": {
       "addLink": "Verknüpfung hinzufügen",
@@ -871,7 +878,7 @@
     "permissionsNote": "Berechtigungen werden über den Schraubenschlüssel-Button in den Seiteneinstellungen verwaltet. Administratoren sehen immer alle Blöcke.",
     "sectionDatabases": "Datenbanken",
     "databasesTitle": "Datenbanken",
-    "databasesOverview": "Eine Datenbank speichert Einträge als Zeilen und Properties als typisierte Spalten (Text, Zahl, Datum, Auswahl, Relation, Rollup und mehr). Dieselben Daten lassen sich über verschiedene Ansichten zeigen — Tabelle, Kalender und weitere — jeweils mit eigenen Filtern und Sortierung. Spalten, auch die Name-Spalte, lassen sich pro Ansicht in den Ansicht-Einstellungen ausblenden; die Name-Spalte benennst du per Doppelklick auf ihren Spaltenkopf um. Optionen einer Auswahl benennst du in den Eigenschafts-Einstellungen um; die Einträge behalten sie dabei. Ansichten gelten für alle; welche gerade gezeigt wird, merkt sich jede Datenbank und jede eingebettete Datenbank selbst.",
+    "databasesOverview": "Eine Datenbank speichert Einträge als Zeilen und Properties als typisierte Spalten (Text, Zahl, Datum, Auswahl, Relation, Rollup und mehr). Dieselben Daten lassen sich über verschiedene Ansichten zeigen — Tabelle, Kalender und weitere — jeweils mit eigenen Filtern und Sortierung. Spalten, auch die Name-Spalte, lassen sich pro Ansicht in den Ansicht-Einstellungen ausblenden; die Name-Spalte benennst du per Doppelklick auf ihren Spaltenkopf um. Optionen einer Auswahl benennst du in den Eigenschafts-Einstellungen um; die Einträge behalten sie dabei. Ansichten gelten für alle; welche gerade gezeigt wird, merkt sich jede Datenbank und jede eingebettete Datenbank selbst. Im Reiter „Datenbank“ der Ansicht-Einstellungen legen der Eigentümer der Datenbank oder ein Administrator ein Standard-Icon für neue Einträge fest.",
     "databasesDates": "Das Datumsformat legst du unter Einstellungen → Datum fest; es gilt überall, eine einzelne Datums-Property kann es in ihren Einstellungen überschreiben. Datumsfelder decken die Jahre 1 bis 9999 ab.",
     "databasesGroups": "In der Eigenschaften-Seitenleiste lassen sich Properties zu Gruppen zusammenfassen. Eigene Gruppen kannst du ein- und ausklappen, per Doppelklick umbenennen und über den Ziehpunkt rechts im Gruppenkopf per Drag-and-drop neu anordnen. Die Standardgruppe bleibt immer oben.",
     "databasesKeying": "Eine Relations-Eigenschaft kann gekeyt werden: Wähle eine Eigenschaft der Zieldatenbank, nach der die Einträge der Relation sortiert werden. Der gewählte Wert wird neben jedem Eintrag angezeigt.",

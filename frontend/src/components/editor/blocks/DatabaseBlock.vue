@@ -731,10 +731,15 @@ const showTemplatesModal = ref(false)
 /** ID of the entry_template block currently open in the editor, or null. */
 const editingTemplateId = ref<string | null>(null)
 
+/**
+ * Close every open toolbar panel and menu. Runs on any click outside them
+ * (the document listener) and before another toolbar panel opens.
+ */
 function closeAllPanels() {
   showFilterPanel.value    = false
   showSortPanel.value      = false
   showExportMenu.value     = false
+  showTemplatesModal.value = false
   aggPickerKey.value       = null
   viewTabMenuId.value      = null
   clearActiveCell()
@@ -1871,7 +1876,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
             <button
               class="db__toolbar-btn"
               :class="{ 'db__toolbar-btn--active': showFilterPanel || filterCount > 0 }"
-              @click.stop="showFilterPanel = !showFilterPanel; showSortPanel = false; showExportMenu = false"
+              @click.stop="showFilterPanel = !showFilterPanel; showSortPanel = false; showExportMenu = false; showTemplatesModal = false"
             >
               <Icon icon="mdi:filter-outline" width="14" height="14" />
               {{ t('db.filter.title') }}
@@ -1903,7 +1908,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
             <button
               class="db__toolbar-btn"
               :class="{ 'db__toolbar-btn--active': showSortPanel || sortCount > 0 }"
-              @click.stop="showSortPanel = !showSortPanel; showFilterPanel = false; showExportMenu = false"
+              @click.stop="showSortPanel = !showSortPanel; showFilterPanel = false; showExportMenu = false; showTemplatesModal = false"
             >
               <Icon icon="mdi:sort" width="14" height="14" />
               {{ t('db.sort.title') }}
@@ -1927,7 +1932,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
             <button
               class="db__toolbar-btn"
               :title="t('db.viewSettings.title')"
-              @click.stop="openViewSettings(activeViewId, $event)"
+              @click.stop="showTemplatesModal = false; openViewSettings(activeViewId, $event)"
             >
               <Icon icon="mdi:cog-outline" width="14" height="14" />
               {{ t('db.viewSettings.title') }}
@@ -1940,7 +1945,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
               class="db__toolbar-btn"
               :class="{ 'db__toolbar-btn--active': showAutomationsModal }"
               :title="t('automations.title')"
-              @click.stop="showAutomationsModal = !showAutomationsModal; showFilterPanel = false; showSortPanel = false; showExportMenu = false"
+              @click.stop="showAutomationsModal = !showAutomationsModal; showFilterPanel = false; showSortPanel = false; showExportMenu = false; showTemplatesModal = false"
             >
               <Icon icon="mdi:lightning-bolt-outline" width="14" height="14" />
               {{ t('automations.title') }}
@@ -1980,7 +1985,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
               class="db__toolbar-btn db__toolbar-btn--icon"
               @mouseenter="showTip($event, t('db.search.open'))"
               @mouseleave="hideTip"
-              @click.stop="hideTip(); toggleNameSearch()"
+              @click.stop="hideTip(); showTemplatesModal = false; toggleNameSearch()"
             >
               <Icon icon="mdi:magnify" width="14" height="14" />
             </button>
@@ -2013,7 +2018,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
               :disabled="isAddingRow"
               @mouseenter="showTip($event, hasMore ? t('db.addRowLimitHint') : t('db.addRow'))"
               @mouseleave="hideTip"
-              @click.stop="hideTip(); addRow()"
+              @click.stop="hideTip(); showTemplatesModal = false; addRow()"
             >
               <Icon icon="mdi:plus" width="14" height="14" />
             </button>
@@ -2025,7 +2030,7 @@ async function addGroupRow(groupValue: Record<string, unknown> | null): Promise<
               class="db__toolbar-btn db__toolbar-btn--icon"
               @mouseenter="showTip($event, t('db.export.title'))"
               @mouseleave="hideTip"
-              @click.stop="hideTip(); showExportMenu = !showExportMenu; showFilterPanel = false; showSortPanel = false"
+              @click.stop="hideTip(); showExportMenu = !showExportMenu; showFilterPanel = false; showSortPanel = false; showTemplatesModal = false"
             >
               <Icon icon="mdi:tray-arrow-up" width="14" height="14" />
             </button>

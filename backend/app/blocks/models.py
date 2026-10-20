@@ -411,3 +411,35 @@ class DatabaseViewSelection(Base):
         nullable=False,
         index=True,
     )
+
+
+class DatabaseSettings(Base):
+    """
+    Settings of a whole database, as opposed to one of its views.
+
+    At most one row per database block; a database without a row has the
+    default settings. Only the database's owner and admins may change them
+    (see ``database_router.update_database_settings``). Purging the database
+    removes the row.
+
+    ``default_entry_icon`` is the Iconify icon every new entry of the database
+    starts with; ``None`` leaves new entries without an icon. Applying an
+    entry template replaces it with the template's icon, when it has one.
+    """
+
+    __tablename__ = "database_settings"
+
+    database_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid,
+        sa.ForeignKey("blocks.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    default_entry_icon: Mapped[Optional[str]] = mapped_column(
+        sa.Text, nullable=True, default=None
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+        onupdate=sa.func.now(),
+    )

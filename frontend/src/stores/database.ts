@@ -204,6 +204,16 @@ export interface DatabaseInfo {
 }
 
 /**
+ * Settings of a whole database, as GET/PUT /api/databases/{id}/settings
+ * return them. ``can_manage`` says whether the current user may change them
+ * (the database's owner and admins may).
+ */
+export interface DatabaseSettings {
+  default_entry_icon: string | null
+  can_manage: boolean
+}
+
+/**
  * Lightweight relation-target descriptor returned by
  * POST /api/databases/{id}/entries/resolve-titles.
  *
@@ -1385,8 +1395,29 @@ export const useDatabaseStore = defineStore('database', () => {
     }
   }
 
+  // ── Database settings ─────────────────────────────────────────────────────
+
+  /** Load the settings of the whole database *databaseId*. */
+  async function fetchDatabaseSettings(databaseId: string): Promise<DatabaseSettings> {
+    return apiClient.get<DatabaseSettings>(`/api/databases/${databaseId}/settings`)
+  }
+
   /**
-   * Create an entry. The caller reloads what it displays; nothing else is
+   * Set the icon every new entry of *databaseId* starts with; ``null``
+   * removes it. Only the database's owner and admins may.
+   */
+  async function setDefaultEntryIcon(
+    databaseId: string,
+    icon: string | null,
+  ): Promise<DatabaseSettings> {
+    return apiClient.put<DatabaseSettings>(`/api/databases/${databaseId}/settings`, {
+      default_entry_icon: icon,
+    })
+  }
+
+  /**
+   * Create an entry. It starts with the database's default entry icon, which
+   * the backend sets. The caller reloads what it displays; nothing else is
    * fetched here, least of all the whole database.
    */
   async function createEntry(databaseId: string): Promise<DatabaseEntry> {
@@ -1783,6 +1814,10 @@ export const useDatabaseStore = defineStore('database', () => {
 
     // Database list
     fetchAllDatabases,
+
+    // Database settings
+    fetchDatabaseSettings,
+    setDefaultEntryIcon,
 
     // Schema operations
     fetchSchemas,

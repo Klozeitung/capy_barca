@@ -539,7 +539,14 @@
       "aggSum": "Sum",
       "aggAvg": "Average",
       "aggMin": "Minimum",
-      "aggMax": "Maximum"
+      "aggMax": "Maximum",
+      "sectionDatabase": "Database",
+      "databaseHint": "These settings apply to the whole database, that is to every view.",
+      "defaultEntryIcon": "Default icon",
+      "defaultEntryIconButton": "Choose default icon",
+      "defaultEntryIconHint": "New entries start with this icon. An applied template with an icon of its own takes precedence.",
+      "defaultEntryIconOwnerOnly": "Only the owner of the database or an admin can set the default icon.",
+      "databaseSettingsError": "The database settings could not be loaded or saved."
     },
     "relation": {
       "addLink": "Add link",
@@ -871,7 +878,7 @@
     "permissionsNote": "Permissions are managed via the gear button in page settings. Admins always see all blocks.",
     "sectionDatabases": "Databases",
     "databasesTitle": "Databases",
-    "databasesOverview": "A database stores entries as rows and properties as typed columns (text, number, date, select, relation, rollup, and more). The same data can appear through different views — table, calendar, and others — each with its own filters and sorting. Columns, the name column included, can be hidden per view in the view settings; rename the name column by double-clicking its header. Rename the options of a select property in its settings; entries keep them. Views are shared by everyone; each database and each embedded database remembers on its own which view it shows.",
+    "databasesOverview": "A database stores entries as rows and properties as typed columns (text, number, date, select, relation, rollup, and more). The same data can appear through different views — table, calendar, and others — each with its own filters and sorting. Columns, the name column included, can be hidden per view in the view settings; rename the name column by double-clicking its header. Rename the options of a select property in its settings; entries keep them. Views are shared by everyone; each database and each embedded database remembers on its own which view it shows. In the \"Database\" tab of the view settings, the owner of the database or an admin sets a default icon for new entries.",
     "databasesDates": "Your date format is set under Settings → Date and applies everywhere; a single date property can override it in its own settings. Date fields cover the years 1 to 9999.",
     "databasesGroups": "In the properties side panel you can organise properties into groups. Custom groups fold and unfold, rename on double-click, and reorder by drag-and-drop via the handle on the right of the group header. The default group always stays on top.",
     "databasesKeying": "A relation property can be keyed: choose a property of the target database to sort the relation's entries by. The chosen value is shown beside each entry.",

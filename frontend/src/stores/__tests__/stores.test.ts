@@ -786,6 +786,32 @@ describe('useDatabaseStore', () => {
     expect(store.getSchemas('unknown')).toEqual([])
   })
 
+  // ── Database settings ───────────────────────────────────────────────────────
+
+  it('fetchDatabaseSettings reads the settings of the database', async () => {
+    const settings = { default_entry_icon: 'mdi:star-outline', can_manage: false }
+    vi.mocked(apiClient.get).mockResolvedValueOnce(settings)
+
+    const store = useDatabaseStore()
+    await expect(store.fetchDatabaseSettings('db-1')).resolves.toEqual(settings)
+    expect(apiClient.get).toHaveBeenCalledWith('/api/databases/db-1/settings')
+  })
+
+  it('setDefaultEntryIcon puts the icon, and null to remove it', async () => {
+    vi.mocked(apiClient.put).mockResolvedValue({ default_entry_icon: null, can_manage: true })
+
+    const store = useDatabaseStore()
+    await store.setDefaultEntryIcon('db-1', 'mdi:star-outline')
+    await store.setDefaultEntryIcon('db-1', null)
+
+    expect(apiClient.put).toHaveBeenNthCalledWith(
+      1, '/api/databases/db-1/settings', { default_entry_icon: 'mdi:star-outline' },
+    )
+    expect(apiClient.put).toHaveBeenNthCalledWith(
+      2, '/api/databases/db-1/settings', { default_entry_icon: null },
+    )
+  })
+
   // ── createSchema ────────────────────────────────────────────────────────────
 
   it('createSchema posts to correct endpoint and re-fetches', async () => {

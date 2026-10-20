@@ -427,6 +427,147 @@ def test_create_multiple_entries_increments_position(http_client):
     assert e2["position"] > e1["position"]
 
 
+# ─── Database settings and the default entry icon ────────────────────────────
+
+
+def _settings_url(database_id: str) -> str:
+    return f"/api/databases/{database_id}/settings"
+
+
+def _set_default_icon(http_client, database_id: str, icon):
+    resp = http_client.put(_settings_url(database_id), json={"default_entry_icon": icon})
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _block_icon(http_client, block_id: str):
+    return http_client.get(f"/api/blocks/{block_id}").json()["icon"]
+
+
+def test_database_settings_default_to_no_icon(http_client):
+    db_id = _create_database(http_client)
+    resp = http_client.get(_settings_url(db_id))
+    assert resp.status_code == 200
+    assert resp.json() == {"default_entry_icon": None, "can_manage": True}
+
+
+def test_database_settings_store_the_default_icon(http_client):
+    db_id = _create_database(http_client)
+    assert _set_default_icon(http_client, db_id, "mdi:star-outline") == {
+        "default_entry_icon": "mdi:star-outline", "can_manage": True,
+    }
+    assert http_client.get(_settings_url(db_id)).json()["default_entry_icon"] == "mdi:star-outline"
+
+
+def test_database_settings_clear_the_default_icon(http_client):
+    db_id = _create_database(http_client)
+    _set_default_icon(http_client, db_id, "mdi:star-outline")
+    _set_default_icon(http_client, db_id, None)
+    assert http_client.get(_settings_url(db_id)).json()["default_entry_icon"] is None
+
+
+def test_database_settings_belong_to_one_database(http_client):
+    db_a = _create_database(http_client)
+    db_b = _create_database(http_client)
+    _set_default_icon(http_client, db_a, "mdi:star-outline")
+    assert http_client.get(_settings_url(db_b)).json()["default_entry_icon"] is None
+
+
+@pytest.mark.parametrize("icon", ["", "star", "fa:star", "mdi:Star", "mdi:a b", "mdi:" + "a" * 130])
+def test_database_settings_reject_something_that_is_not_an_icon(http_client, icon):
+    db_id = _create_database(http_client)
+    resp = http_client.put(_settings_url(db_id), json={"default_entry_icon": icon})
+    assert resp.status_code == 422
+
+
+def test_database_settings_of_an_unknown_database_return_404(http_client):
+    unknown = uuid.uuid4()
+    assert http_client.get(_settings_url(str(unknown))).status_code == 404
+    assert http_client.put(
+        _settings_url(str(unknown)), json={"default_entry_icon": None},
+    ).status_code == 404
+
+
+def test_database_settings_of_a_page_return_409(http_client):
+    page = http_client.post(
+        "/api/blocks", json={"type": "page", "parent_id": str(WORKSPACE_ROOT_ID)},
+    ).json()["id"]
+    assert http_client.get(_settings_url(page)).status_code == 409
+
+
+def test_new_entry_starts_with_the_default_icon(http_client):
+    db_id = _create_database(http_client)
+    _set_default_icon(http_client, db_id, "mdi:star-outline")
+
+    entry = _create_entry(http_client, db_id)
+
+    assert entry["icon"] == "mdi:star-outline"
+    assert _block_icon(http_client, entry["id"]) == "mdi:star-outline"
+
+
+def test_new_entry_has_no_icon_without_a_default(http_client):
+    db_id = _create_database(http_client)
+    assert _create_entry(http_client, db_id)["icon"] is None
+
+
+def test_setting_a_default_icon_leaves_existing_entries_alone(http_client):
+    db_id = _create_database(http_client)
+    earlier = _create_entry(http_client, db_id)
+
+    _set_default_icon(http_client, db_id, "mdi:star-outline")
+
+    assert _block_icon(http_client, earlier["id"]) is None
+
+
+def test_applied_template_icon_replaces_the_default_icon(http_client):
+    db_id = _create_database(http_client)
+    _set_default_icon(http_client, db_id, "mdi:star-outline")
+    tmpl = _create_entry_template(http_client, db_id)
+    assert http_client.patch(
+        f"/api/blocks/{tmpl['id']}/appearance", json={"icon": "mdi:flag-outline"},
+    ).status_code == 200
+    entry = _create_entry(http_client, db_id)
+
+    http_client.post(f"/api/databases/{db_id}/entry-templates/{tmpl['id']}/apply/{entry['id']}")
+
+    assert _block_icon(http_client, entry["id"]) == "mdi:flag-outline"
+
+
+def test_applied_template_without_icon_keeps_the_default_icon(http_client):
+    db_id = _create_database(http_client)
+    _set_default_icon(http_client, db_id, "mdi:star-outline")
+    tmpl = _create_entry_template(http_client, db_id)
+    entry = _create_entry(http_client, db_id)
+
+    http_client.post(f"/api/databases/{db_id}/entry-templates/{tmpl['id']}/apply/{entry['id']}")
+
+    assert _block_icon(http_client, entry["id"]) == "mdi:star-outline"
+
+
+def test_duplicate_keeps_the_original_icon_rather_than_the_default(http_client):
+    db_id = _create_database(http_client)
+    _set_default_icon(http_client, db_id, "mdi:star-outline")
+    original = _create_entry(http_client, db_id)
+    http_client.patch(f"/api/blocks/{original['id']}/appearance", json={"icon": "mdi:flag-outline"})
+
+    copy = http_client.post(f"/api/databases/{db_id}/entries/{original['id']}/duplicate").json()
+
+    assert copy["icon"] == "mdi:flag-outline"
+
+
+def test_purging_the_database_removes_its_settings(http_client):
+    from app.blocks.models import DatabaseSettings
+    from app.session import session as s
+
+    db_id = _create_database(http_client)
+    _set_default_icon(http_client, db_id, "mdi:star-outline")
+    http_client.delete(f"/api/blocks/{db_id}")
+    assert http_client.delete(f"/api/blocks/{db_id}/purge").status_code in (200, 204)
+
+    with s.SessionLocal() as db:
+        assert db.get(DatabaseSettings, uuid.UUID(db_id)) is None
+
+
 # ─── POST /api/databases/{id}/entries/{entry_id}/duplicate ───────────────────
 
 

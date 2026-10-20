@@ -156,6 +156,7 @@ _PREFIX = "/api/databases"
 
 _REFUSALS: list[Case] = [
     Case("GET", f"{_PREFIX}/{{database_id}}/schemas", 404),
+    Case("GET", f"{_PREFIX}/{{database_id}}/settings", 404),
     Case("POST", f"{_PREFIX}/{{database_id}}/schemas", 403, {"name": "Field B", "type": "text"}),
     Case("PATCH", f"{_PREFIX}/{{database_id}}/schemas/{{schema_id}}", 403, {"name": "Field C"}),
     Case("DELETE", f"{_PREFIX}/{{database_id}}/schemas/{{schema_id}}", 403),
@@ -187,6 +188,12 @@ _EMPTY_RESULTS: list[tuple[Case, object]] = [
 # GET /api/databases has no database id; its filtering is tested separately.
 _UNSCOPED = {("GET", _PREFIX)}
 
+# Reserved for the database's owner and admins, so a write grant is not
+# enough; tested separately below.
+_OWNER_ONLY: list[Case] = [
+    Case("PUT", f"{_PREFIX}/{{database_id}}/settings", 404, {"default_entry_icon": "mdi:star-outline"}),
+]
+
 
 def _send(client, case: Case, scene: Scene):
     kwargs = {"json": case.body} if case.body is not None else {}
@@ -202,6 +209,7 @@ def test_every_route_has_a_refusal_case():
     }
     covered = {(c.method, c.route) for c in _REFUSALS}
     covered |= {(c.method, c.route) for c, _ in _EMPTY_RESULTS}
+    covered |= {(c.method, c.route) for c in _OWNER_ONLY}
     covered |= _UNSCOPED
     assert registered == covered
 
@@ -667,3 +675,84 @@ def test_key_references_hide_the_names_of_an_inaccessible_database(
     assert references[0]["schema_name"] is None
     assert references[0]["database_title"] is None
     assert references[0]["database_id"] == private_db
+
+
+# ─── Database settings: owner and admins only ────────────────────────────────
+
+
+_SETTINGS_CHANGE = _OWNER_ONLY[0]
+
+
+def test_stranger_cannot_find_the_settings_to_change(
+    http_client, login_as, member_user, private_scene,
+):
+    login_as(member_user)
+    assert _send(http_client, _SETTINGS_CHANGE, private_scene).status_code == 404
+
+
+@pytest.mark.parametrize("level", ["read", "write"])
+def test_member_with_access_who_is_not_the_owner_may_not_change_the_settings(
+    http_client, login_as, member_user, private_scene, level,
+):
+    _set_mode(http_client, private_scene.db, "whitelist", [str(member_user.id)], level=level)
+    login_as(member_user)
+
+    settings = http_client.get(f"{_PREFIX}/{private_scene.db}/settings").json()
+    response = _send(http_client, _SETTINGS_CHANGE, private_scene)
+
+    assert settings["can_manage"] is False
+    assert response.status_code == 403
+
+
+def test_refused_settings_change_leaves_the_settings_alone(
+    http_client, login_as, admin_user, member_user, private_scene,
+):
+    _set_mode(http_client, private_scene.db, "whitelist", [str(member_user.id)])
+    login_as(member_user)
+    _send(http_client, _SETTINGS_CHANGE, private_scene)
+
+    login_as(admin_user)
+    settings = http_client.get(f"{_PREFIX}/{private_scene.db}/settings").json()
+    assert settings["default_entry_icon"] is None
+
+
+def test_owner_who_is_a_member_may_change_the_settings(http_client, login_as, member_user):
+    login_as(member_user)
+    db_id = _create_database(http_client, title="Own X")
+
+    settings = http_client.get(f"{_PREFIX}/{db_id}/settings").json()
+    response = http_client.put(
+        f"{_PREFIX}/{db_id}/settings", json={"default_entry_icon": "mdi:star-outline"},
+    )
+
+    assert settings["can_manage"] is True
+    assert response.status_code == 200, response.text
+
+
+def test_admin_may_change_the_settings_of_a_database_owned_by_someone_else(
+    http_client, login_as, admin_user, member_user,
+):
+    login_as(member_user)
+    db_id = _create_database(http_client, title="Own X")
+
+    login_as(admin_user)
+    response = http_client.put(
+        f"{_PREFIX}/{db_id}/settings", json={"default_entry_icon": "mdi:star-outline"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["can_manage"] is True
+
+
+def test_writer_creates_entries_with_the_owners_default_icon(
+    http_client, login_as, member_user, private_scene,
+):
+    """The default icon applies to every account that creates entries."""
+    _send(http_client, _SETTINGS_CHANGE, private_scene)
+    _set_mode(http_client, private_scene.db, "whitelist", [str(member_user.id)])
+    login_as(member_user)
+
+    resp = http_client.post(f"{_PREFIX}/{private_scene.db}/entries")
+
+    assert resp.status_code == 201
+    assert resp.json()["icon"] == "mdi:star-outline"

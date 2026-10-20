@@ -125,6 +125,15 @@ automatically:
 
 Cycle detection runs on every formula / rollup schema create or update,
 using Kahn's topological-sort algorithm.  A detected cycle returns 422.
+
+Database settings
+-----------------
+Settings of the whole database, as opposed to one of its views, live in
+``database_settings`` (``GET``/``PUT /{database_id}/settings``). Reading them
+needs read access; changing them is reserved for the database's owner and
+admins. ``default_entry_icon`` is given to every entry ``create_entry`` makes;
+applying a template with an icon of its own replaces it, and duplicating an
+entry keeps the original's icon.
 """
 import logging
 import uuid
@@ -156,7 +165,7 @@ from app.blocks.computed import (
     has_any_cycle,
 )
 from app.blocks.formula_engine import FormulaError, rename_prop_in_expression, validate_syntax
-from app.blocks.models import PropertySchema
+from app.blocks.models import DatabaseSettings, PropertySchema
 from app.blocks.router import get_db
 from app.blocks.service import BlockConflict, BlockNotFound
 from app.permissions import repository as perm_repo
@@ -444,6 +453,28 @@ class KeyReferenceResponse(BaseModel):
     database_title: Optional[str]
 
 
+# An icon as the frontend's icon picker names it: one of the bundled Iconify
+# sets, a colon, and the icon's name within the set. The same rule applies to
+# the recently used icons of a user (``app.users.router``).
+_ICON_PATTERN = r"^(mdi|tabler|lucide):[a-z0-9]+(-[a-z0-9]+)*$"
+
+
+class DatabaseSettingsResponse(BaseModel):
+    """
+    Settings of a whole database.
+
+    ``can_manage`` tells the caller whether they may change them: the
+    database's owner and admins may.
+    """
+    default_entry_icon: Optional[str]
+    can_manage: bool
+
+
+class DatabaseSettingsUpdate(BaseModel):
+    """New settings; ``default_entry_icon`` ``None`` removes the icon."""
+    default_entry_icon: Optional[str] = Field(default=None, max_length=128, pattern=_ICON_PATTERN)
+
+
 # ─── Readonly-property helpers ────────────────────────────────────────────────
 
 
@@ -693,6 +724,19 @@ def _get_database_or_raise(
             detail=f"Block {database_id} is not a database (type: '{block.type}')",
         )
     return block
+
+
+def _may_manage_database(database: Any, user: User) -> bool:
+    """Whether *user* may change the settings of *database*: its owner or an admin."""
+    return user.role == "admin" or (
+        database.owner_id is not None and database.owner_id == user.id
+    )
+
+
+def _default_entry_icon(db: Session, database_id: uuid.UUID) -> Optional[str]:
+    """The icon new entries of *database_id* start with, or None."""
+    settings = db.get(DatabaseSettings, database_id)
+    return settings.default_entry_icon if settings is not None else None
 
 
 def _relation_target_id(config: Optional[dict]) -> Optional[uuid.UUID]:
@@ -1989,6 +2033,63 @@ def list_schemas(
     return repo.list_schemas(db, database_id)
 
 
+@database_router.get(
+    "/{database_id}/settings",
+    response_model=DatabaseSettingsResponse,
+)
+def get_database_settings(
+    database_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return the settings of the whole database.
+
+    Needs read access (404 otherwise). A database without stored settings
+    answers with the defaults.
+    """
+    database = _get_database_or_raise(db, database_id, current_user, _Access.READ)
+    return DatabaseSettingsResponse(
+        default_entry_icon=_default_entry_icon(db, database_id),
+        can_manage=_may_manage_database(database, current_user),
+    )
+
+
+@database_router.put(
+    "/{database_id}/settings",
+    response_model=DatabaseSettingsResponse,
+)
+def update_database_settings(
+    database_id: uuid.UUID,
+    payload: DatabaseSettingsUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Replace the settings of the whole database.
+
+    Only the owner of the database and admins may: anyone else who can read
+    it receives 403, anyone who cannot read it 404. Icon names outside the
+    bundled icon sets are rejected by request validation (422).
+    """
+    database = _get_database_or_raise(db, database_id, current_user, _Access.READ)
+    if not _may_manage_database(database, current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the owner of the database or an admin may change its settings",
+        )
+    settings = db.get(DatabaseSettings, database_id)
+    if settings is None:
+        settings = DatabaseSettings(database_id=database_id)
+        db.add(settings)
+    settings.default_entry_icon = payload.default_entry_icon
+    db.commit()
+    return DatabaseSettingsResponse(
+        default_entry_icon=settings.default_entry_icon,
+        can_manage=True,
+    )
+
+
 @database_router.post(
     "/{database_id}/schemas",
     response_model=SchemaResponse,
@@ -3004,7 +3105,8 @@ def create_entry(
     """
     Create a new page-type entry block inside the database.
 
-    The entry is appended after all existing siblings. Returns the new entry
+    The entry is appended after all existing siblings and starts with the
+    database's default entry icon, when one is set. Returns the new entry
     with an empty values map.
 
     After creating the entry, readonly properties are populated and all
@@ -3013,7 +3115,10 @@ def create_entry(
     """
     _get_database_or_raise(db, database_id, current_user, _Access.WRITE)
     try:
-        block = service.create_block(db, type="page", parent_id=database_id)
+        block = service.create_block(
+            db, type="page", parent_id=database_id,
+            icon=_default_entry_icon(db, database_id),
+        )
         _populate_readonly_properties(db, database_id, block.id, block.created_at, current_user.id)
         compute_all_for_entry(db, database_id, block.id)
         db.commit()
@@ -3028,6 +3133,7 @@ def create_entry(
                 "type": "page",
                 "position": block.position,
                 "state": block.state,
+                "icon": block.icon,
             },
         )
         return EntryResponse(

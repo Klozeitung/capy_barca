@@ -8,6 +8,10 @@
  *  - properties : visibility toggles per column
  *  - grouping   : (table view only) group-by property + per-column aggregation functions
  *  - headers    : (table view only) sticky column header + frozen leftmost columns
+ *  - database   : settings of the whole database rather than of this view:
+ *                 the icon every new entry starts with. Shown to everyone who
+ *                 opens the modal; only the database's owner and admins may
+ *                 change it, and the backend enforces that.
  *
  * Layout mirrors the global settings modal: a narrow sidebar on the left
  * with section navigation, and a content pane on the right.
@@ -20,10 +24,11 @@
  * Upgrade path: add more sidebar entries (filter presets, sort presets, …)
  * by extending ``SECTIONS`` and adding a matching ``<template>`` branch.
  */
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
-import type { DatabaseView, PropertySchema, ViewType } from '@/stores/database'
+import IconPicker from '@/components/IconPicker.vue'
+import type { DatabaseSettings, DatabaseView, PropertySchema, ViewType } from '@/stores/database'
 import { useDatabaseStore, clampFrozenColumns, MAX_FROZEN_COLUMNS, NAME_COL_KEY } from '@/stores/database'
 import { getPropertyTypeIcon, isReadonlyPropertyType } from '@/stores/propertyTypes'
 import { orderAndSplitColumns } from './viewSettingsHelpers'
@@ -54,10 +59,52 @@ const SECTIONS = [
   { key: 'properties', labelKey: 'db.viewSettings.sectionProperties', icon: 'mdi:eye-outline' },
   { key: 'grouping',   labelKey: 'db.viewSettings.sectionGrouping',   icon: 'mdi:group' },
   { key: 'headers',    labelKey: 'db.viewSettings.sectionHeaders',    icon: 'mdi:pin-outline' },
+  { key: 'database',   labelKey: 'db.viewSettings.sectionDatabase',   icon: 'mdi:database-cog-outline' },
 ] as const
 
 type SectionKey = typeof SECTIONS[number]['key']
 const activeSection = ref<SectionKey>('viewType')
+
+// ── Database settings (whole database, not this view) ─────────────────────────
+
+/** Shown for entries without an icon, here as in the table rows. */
+const FALLBACK_ENTRY_ICON = 'mdi:file-outline'
+
+const dbSettings = ref<DatabaseSettings | null>(null)
+const dbSettingsError = ref(false)
+const isSavingDefaultIcon = ref(false)
+const showDefaultIconPicker = ref(false)
+const defaultIconPickerRect = ref<DOMRect | null>(null)
+
+const defaultEntryIcon = computed(() => dbSettings.value?.default_entry_icon ?? null)
+
+onMounted(async () => {
+  try {
+    dbSettings.value = await dbStore.fetchDatabaseSettings(props.databaseId)
+  } catch {
+    dbSettingsError.value = true
+  }
+})
+
+function openDefaultIconPicker(e: MouseEvent): void {
+  if (!dbSettings.value?.can_manage) return
+  defaultIconPickerRect.value = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  showDefaultIconPicker.value = true
+}
+
+async function setDefaultEntryIcon(icon: string | null): Promise<void> {
+  showDefaultIconPicker.value = false
+  if (icon === defaultEntryIcon.value) return
+  isSavingDefaultIcon.value = true
+  dbSettingsError.value = false
+  try {
+    dbSettings.value = await dbStore.setDefaultEntryIcon(props.databaseId, icon)
+  } catch {
+    dbSettingsError.value = true
+  } finally {
+    isSavingDefaultIcon.value = false
+  }
+}
 
 // ── View type definitions ─────────────────────────────────────────────────────
 
@@ -543,6 +590,52 @@ function hideAll() {
 
           </template>
 
+          <!-- ── Section: Database (applies to every view) ─────────────────── -->
+          <template v-if="activeSection === 'database'">
+            <div class="vsm__section-header">
+              <span class="vsm__section-title">{{ t('db.viewSettings.sectionDatabase') }}</span>
+            </div>
+            <p class="vsm__hint">{{ t('db.viewSettings.databaseHint') }}</p>
+
+            <div class="vsm__section-header vsm__section-header--spaced">
+              <span class="vsm__section-title">{{ t('db.viewSettings.defaultEntryIcon') }}</span>
+            </div>
+
+            <div class="vsm__default-icon-row">
+              <span
+                class="vsm__default-icon-preview"
+                :class="{ 'vsm__default-icon-preview--fallback': !defaultEntryIcon }"
+              >
+                <Icon :icon="defaultEntryIcon ?? FALLBACK_ENTRY_ICON" width="20" height="20" />
+              </span>
+              <button
+                v-if="dbSettings?.can_manage"
+                class="vsm__create-date-btn"
+                :disabled="isSavingDefaultIcon"
+                @click.stop="openDefaultIconPicker"
+              >
+                <Icon icon="mdi:emoticon-outline" width="13" height="13" />
+                {{ t('db.viewSettings.defaultEntryIconButton') }}
+              </button>
+            </div>
+
+            <p class="vsm__hint">{{ t('db.viewSettings.defaultEntryIconHint') }}</p>
+            <p v-if="dbSettings && !dbSettings.can_manage" class="vsm__hint">
+              {{ t('db.viewSettings.defaultEntryIconOwnerOnly') }}
+            </p>
+            <p v-if="dbSettingsError" class="vsm__hint vsm__hint--error">
+              {{ t('db.viewSettings.databaseSettingsError') }}
+            </p>
+
+            <IconPicker
+              v-if="showDefaultIconPicker"
+              :model-value="defaultEntryIcon"
+              :trigger-rect="defaultIconPickerRect"
+              @update:model-value="setDefaultEntryIcon"
+              @close="showDefaultIconPicker = false"
+            />
+          </template>
+
         </div>
       </div>
 
@@ -937,6 +1030,33 @@ function hideAll() {
 
 .vsm__create-date-btn:hover:not(:disabled) { opacity: 0.8; }
 .vsm__create-date-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Database section ────────────────────────────────────────────────────── */
+.vsm__default-icon-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.vsm__default-icon-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-text);
+  flex-shrink: 0;
+}
+
+.vsm__default-icon-preview--fallback {
+  color: var(--color-text-muted);
+}
+
+.vsm__hint--error {
+  color: #e05353;
+}
 
 /* ── Headers & frozen columns section ────────────────────────────────────── */
 .vsm__check-row {
