@@ -1289,32 +1289,24 @@ function onCellClick(entry: DatabaseEntry, schema: PropertySchema): void {
 
 // ── Relation change ───────────────────────────────────────────────────────────
 
+/**
+ * Write a relation, parent or sub-item value.
+ *
+ * The cell shows the new value at once, and the tree of sub-items is built
+ * from the ``parent_item`` values of the loaded rows, so nothing has to be
+ * loaded here. What the server changed besides, mirror values on other
+ * entries and the formulas and rollups reading them, arrives as
+ * ``database_entries_updated`` naming those entries, which every view of the
+ * affected databases answers by loading just them (``_applyEntriesEvent``).
+ * A mirror property the write created is announced as
+ * ``database_schema_updated`` first.
+ */
 async function handleRelationChange(
   entry: DatabaseEntry,
   schema: PropertySchema,
   value: Record<string, unknown> | null,
 ): Promise<void> {
   await dbStore.upsertValue(props.blockId, entry.id, schema.id, value)
-  if (schema.type === 'parent_item') {
-    // sub_item mirrors were updated server-side; reload so the tree rebuilds
-    // with the correct parent/child relationships.
-    await queryFromActiveView()
-    return
-  }
-  if (schema.type === 'relation' && schema.config?.direction === 'bilateral') {
-    // The mirror value was written server-side on the target entry. Views and
-    // side views of the target database reload on the WebSocket event that
-    // write broadcasts, and a side view fetches its entry fresh when opened.
-    const targetId  = schema.config.target_database_id as string | undefined
-    const refetches: Promise<unknown>[] = [
-      dbStore.fetchSchemas(props.blockId),
-      queryFromActiveView(),
-    ]
-    if (targetId && targetId !== props.blockId) {
-      refetches.push(dbStore.fetchSchemas(targetId))
-    }
-    await Promise.all(refetches)
-  }
 }
 
 // ── Add row ───────────────────────────────────────────────────────────────────

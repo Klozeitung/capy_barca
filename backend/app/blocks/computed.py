@@ -8,9 +8,12 @@ computed values for a single database entry.
 Public API
 ----------
   build_dependency_graph(schemas)                  -> graph
+  build_cross_readers(db, schemas, source_db_id)   -> readers per relation
   build_cross_read_map(db, schemas, source_db_id)  -> read map
   has_any_cycle(graph)                             -> bool
   topological_order(graph)                         -> list[uuid.UUID]
+  SchemaIndex.load(db)                             -> schemas of all databases
+  compute_for_entry(db, db_id, entry_id, dirty)    -> set[uuid.UUID]
   compute_all_for_entry(db, db_id, entry_id)       -> set[uuid.UUID]
   recompute_after_value_change(db, db_id, entry_id, changed) -> list[uuid.UUID]
 
@@ -41,6 +44,21 @@ After a value change, the map tells which entries elsewhere actually depend
 on the properties that changed, so only those are evaluated again
 (``recompute_after_value_change``).
 
+Evaluating only what a change reaches
+-------------------------------------
+A value change does not evaluate every computed property of an entry again.
+``compute_for_entry`` takes the properties that changed (or the computed
+properties known to be stale) and evaluates, in dependency order, only those
+that read one of them, directly or through another computed property whose
+result changed in the same pass. Formulas calling ``now()`` or ``today()``
+are the exception: their result depends on the time of evaluation, so they
+are evaluated whenever their entry is.
+
+The schemas of all databases are needed several times while one request
+works through the entry, its mirror entries and their readers. A
+``SchemaIndex`` loads them with one query and remembers what each database
+reads of another, so a request builds it once and passes it along.
+
 Schema-like protocol
 --------------------
 The graph builder operates on any object with ``.id``, ``.name``, ``.type``,
@@ -59,7 +77,12 @@ from sqlalchemy.orm import Session
 
 from app.blocks import options as opts
 from app.blocks import repository as repo
-from app.blocks.formula_engine import FormulaError, evaluate, extract_prop_names
+from app.blocks.formula_engine import (
+    FormulaError,
+    evaluate,
+    extract_prop_names,
+    uses_volatile_functions,
+)
 
 
 class CycleError(Exception):
@@ -374,7 +397,7 @@ def _extract_scalar(schema_type: str, value: Optional[dict], config: Optional[di
         return value.get("related_ids", [])
     if schema_type in ("formula", "rollup"):
         # A formula or rollup whose result is a relation-descriptor list
-        # (marked with relation=True, e.g. a formula returning prop('Ort') or
+        # (marked with relation=True, e.g. a formula returning prop('Link') or
         # a relation rollup) is treated like a relation column when it is
         # itself rolled up: return the list of related entry IDs so the
         # relation-aware rollup path can resolve them to chips. Empty results
@@ -968,10 +991,137 @@ def _compute_rollup(
 # ─── Main entry point ─────────────────────────────────────────────────────────
 
 
+def _volatile_formulas(schemas: list[Any]) -> set[uuid.UUID]:
+    """IDs of the formulas among *schemas* that call ``now()`` or ``today()``."""
+    return {
+        s.id for s in schemas
+        if s.type == "formula"
+        and uses_volatile_functions((s.config or {}).get("expression", "") or "")
+    }
+
+
+def _reached(
+    graph: dict[uuid.UUID, set[uuid.UUID]],
+    dirty: set[uuid.UUID],
+) -> set[uuid.UUID]:
+    """
+    The computed schemas of *graph* that *dirty* reaches: those in *dirty*
+    and those depending, directly or through other computed schemas, on one
+    of them. An upper bound of what an evaluation pass may have to do.
+    """
+    dependents: dict[uuid.UUID, list[uuid.UUID]] = defaultdict(list)
+    for schema_id, deps in graph.items():
+        for dep in deps:
+            dependents[dep].append(schema_id)
+    reached = {sid for sid in dirty if sid in graph}
+    queue: deque[uuid.UUID] = deque(dirty)
+    seen: set[uuid.UUID] = set(dirty)
+    while queue:
+        node = queue.popleft()
+        for dependent in dependents.get(node, ()):
+            reached.add(dependent)
+            if dependent not in seen:
+                seen.add(dependent)
+                queue.append(dependent)
+    return reached
+
+
+def compute_for_entry(
+    db: Session,
+    database_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    dirty: Optional[set[uuid.UUID]] = None,
+    *,
+    schemas: Optional[list[Any]] = None,
+) -> set[uuid.UUID]:
+    """
+    Evaluate the formula and rollup schemas of *entry_id* that *dirty* calls
+    for, and persist the results as PropertyValues.
+
+    *dirty* names properties whose value changed on the entry and computed
+    properties known to be stale, such as rollups whose linked entries
+    changed. A computed schema is evaluated when it is in *dirty*, when it
+    depends on a property in *dirty*, or when it depends on a computed schema
+    whose result changed in this pass; formulas calling ``now()`` or
+    ``today()`` are evaluated every time. Without *dirty* every computed
+    schema is evaluated (see ``compute_all_for_entry``).
+
+    *schemas* are the database's schemas when the caller already has them,
+    which saves loading them again.
+
+    Only results that differ from the stored ones are written. Evaluation
+    order is a topological sort of the dependency graph; on a cycle every
+    computed schema is written with an error result. Does **not** commit.
+
+    Returns the IDs of the computed schemas whose stored value changed.
+    """
+    changed: set[uuid.UUID] = set()
+    if schemas is None:
+        schemas = repo.list_schemas(db, database_id)
+    computed_schemas = [s for s in schemas if s.type in ("formula", "rollup")]
+    if not computed_schemas:
+        return changed
+
+    id_to_schema = {s.id: s for s in schemas}
+    graph = build_dependency_graph(schemas)
+
+    try:
+        ordered_ids = topological_order(graph)
+    except CycleError:
+        ordered_ids = None
+
+    volatile: set[uuid.UUID] = set()
+    stale: Optional[set[uuid.UUID]] = None
+    # Properties whose change makes their readers stale. A computed schema
+    # in *dirty* only does so once its own evaluation changed its result.
+    written: set[uuid.UUID] = set()
+    if dirty is not None and ordered_ids is not None:
+        stale = set(dirty)
+        written = {sid for sid in stale if sid not in graph}
+        volatile = _volatile_formulas(computed_schemas)
+        if not (_reached(graph, stale) | volatile):
+            # Nothing on this entry reads what changed.
+            return changed
+
+    # Load all current values for this entry into a mutable map so that
+    # downstream formulas can read freshly computed upstream results.
+    values_list = repo.list_values(db, entry_id)
+    values_map: dict[uuid.UUID, Optional[dict]] = {
+        pv.property_schema_id: pv.value for pv in values_list
+    }
+
+    if ordered_ids is None:
+        for s in computed_schemas:
+            _write_computed(
+                db, entry_id, s.id,
+                {"result": None, "error": "Circular dependency detected"},
+                values_map, changed,
+            )
+        return changed
+
+    for schema_id in ordered_ids:
+        schema = id_to_schema.get(schema_id)
+        if schema is None:
+            continue
+        if stale is not None and not (
+            schema_id in stale
+            or schema_id in volatile
+            or graph.get(schema_id, set()) & (written | changed)
+        ):
+            continue
+        if schema.type == "formula":
+            _compute_formula(db, schema, entry_id, schemas, values_map, changed)
+        elif schema.type == "rollup":
+            _compute_rollup(db, schema, entry_id, id_to_schema, values_map, changed)
+    return changed
+
+
 def compute_all_for_entry(
     db: Session,
     database_id: uuid.UUID,
     entry_id: uuid.UUID,
+    *,
+    schemas: Optional[list[Any]] = None,
 ) -> set[uuid.UUID]:
     """
     Evaluate all formula and rollup schemas for *entry_id* and persist the
@@ -987,42 +1137,7 @@ def compute_all_for_entry(
 
     Returns the IDs of the computed schemas whose stored value changed.
     """
-    changed: set[uuid.UUID] = set()
-    schemas = repo.list_schemas(db, database_id)
-    computed_schemas = [s for s in schemas if s.type in ("formula", "rollup")]
-    if not computed_schemas:
-        return changed
-
-    id_to_schema = {s.id: s for s in schemas}
-    graph = build_dependency_graph(schemas)
-
-    # Load all current values for this entry into a mutable map so that
-    # downstream formulas can read freshly computed upstream results.
-    values_list = repo.list_values(db, entry_id)
-    values_map: dict[uuid.UUID, Optional[dict]] = {
-        pv.property_schema_id: pv.value for pv in values_list
-    }
-
-    try:
-        ordered_ids = topological_order(graph)
-    except CycleError:
-        for s in computed_schemas:
-            _write_computed(
-                db, entry_id, s.id,
-                {"result": None, "error": "Circular dependency detected"},
-                values_map, changed,
-            )
-        return changed
-
-    for schema_id in ordered_ids:
-        schema = id_to_schema.get(schema_id)
-        if schema is None:
-            continue
-        if schema.type == "formula":
-            _compute_formula(db, schema, entry_id, schemas, values_map, changed)
-        elif schema.type == "rollup":
-            _compute_rollup(db, schema, entry_id, id_to_schema, values_map, changed)
-    return changed
+    return compute_for_entry(db, database_id, entry_id, None, schemas=schemas)
 
 
 # ─── Cross-database cascade ───────────────────────────────────────────────────
@@ -1053,15 +1168,22 @@ def _relation_target_database_id(rel_schema: Any) -> Optional[uuid.UUID]:
 READS_TITLE = uuid.UUID(int=0)
 
 
-def build_cross_read_map(
+# One computed schema reading through a relation, as (column, reader): the
+# column of the linked entries it reads (``READS_TITLE`` for their titles,
+# ``None`` for a rollup not fully configured) and the computed schema's ID.
+CrossReader = tuple[Optional[uuid.UUID], uuid.UUID]
+
+
+def build_cross_readers(
     db: Session,
     schemas: list[Any],
     source_database_id: uuid.UUID,
-) -> dict[uuid.UUID, set[uuid.UUID]]:
+) -> dict[uuid.UUID, list[CrossReader]]:
     """
     Map each relation-style schema among *schemas* that points at
     ``source_database_id`` and is read by a computed schema of the same
-    database to what is read through it from the linked entries:
+    database to the computed schemas reading through it, each with what it
+    reads from the linked entries:
 
     * a rollup reads the property named by ``config.rollup_schema_id``
       through the relation named by ``config.relation_schema_id``;
@@ -1069,8 +1191,9 @@ def build_cross_read_map(
       references through ``prop('…')``.
 
     This is the dependency graph's counterpart across databases: the graph
-    says which computed property depends on which relation, the map says
-    which properties of the other side that dependency reaches.
+    says which computed property depends on which relation, this map says
+    which properties of the other side that dependency reaches, and for
+    whom.
     """
     by_id: dict[uuid.UUID, Any] = {s.id: s for s in schemas}
     by_name: dict[str, Any] = {s.name: s for s in schemas}
@@ -1078,7 +1201,7 @@ def build_cross_read_map(
     def _points_at_source(rel_schema: Any) -> bool:
         return _relation_target_database_id(rel_schema) == source_database_id
 
-    read_map: dict[uuid.UUID, set[uuid.UUID]] = {}
+    readers: dict[uuid.UUID, list[CrossReader]] = {}
     for schema in schemas:
         if schema.type == "rollup":
             config = schema.config or {}
@@ -1092,13 +1215,13 @@ def build_cross_read_map(
             rel_schema = by_id.get(rel_schema_id) or repo.get_schema(db, rel_schema_id)
             if rel_schema is None or not _points_at_source(rel_schema):
                 continue
-            columns = read_map.setdefault(rel_schema.id, set())
             try:
-                columns.add(uuid.UUID(str(config.get("rollup_schema_id"))))
+                column: Optional[uuid.UUID] = uuid.UUID(str(config.get("rollup_schema_id")))
             except ValueError:
                 # Not fully configured: the rollup stores an error that no
                 # value change can affect, but the relation is still read.
-                pass
+                column = None
+            readers.setdefault(rel_schema.id, []).append((column, schema.id))
 
         elif schema.type == "formula":
             expression = (schema.config or {}).get("expression", "")
@@ -1115,9 +1238,49 @@ def build_cross_read_map(
                     and dep.type in _RELATION_COL_TYPES
                     and _points_at_source(dep)
                 ):
-                    read_map.setdefault(dep.id, set()).add(READS_TITLE)
+                    readers.setdefault(dep.id, []).append((READS_TITLE, schema.id))
 
-    return read_map
+    return readers
+
+
+def build_cross_read_map(
+    db: Session,
+    schemas: list[Any],
+    source_database_id: uuid.UUID,
+) -> dict[uuid.UUID, set[uuid.UUID]]:
+    """
+    Map each relation-style schema among *schemas* that points at
+    ``source_database_id`` and is read by a computed schema of the same
+    database to what is read through it from the linked entries (see
+    ``build_cross_readers``, of which this is the summary without the
+    readers themselves).
+    """
+    return {
+        rel_id: {column for column, _ in entries if column is not None}
+        for rel_id, entries in build_cross_readers(db, schemas, source_database_id).items()
+    }
+
+
+def _readers_of_changes(
+    readers: dict[uuid.UUID, list[CrossReader]],
+    changed_schema_ids: Optional[set[uuid.UUID]],
+) -> dict[uuid.UUID, set[uuid.UUID]]:
+    """
+    Narrow *readers* to what a change of *changed_schema_ids* on a linked
+    entry makes stale: relation ID to the computed schemas reading one of
+    those properties through it. Without *changed_schema_ids* every reader
+    counts, as after a change of anything a reader may show.
+    """
+    stale: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for rel_id, entries in readers.items():
+        hit = {
+            reader for column, reader in entries
+            if changed_schema_ids is None
+            or (column is not None and column in changed_schema_ids)
+        }
+        if hit:
+            stale[rel_id] = hit
+    return stale
 
 
 def _relations_read_by_computed(
@@ -1129,28 +1292,27 @@ def _relations_read_by_computed(
     """
     Return the IDs of relation-style schemas among *schemas* that point at
     ``source_database_id`` and are read by a computed schema of the same
-    database (see ``build_cross_read_map``).
+    database (see ``build_cross_readers``).
 
     With *changed_schema_ids*, only relations through which one of those
     properties of the source side is read are returned. Without it, every
     such relation is returned, which is what a change of anything a reader
     may show calls for, the titles included.
     """
-    read_map = build_cross_read_map(db, schemas, source_database_id)
-    if changed_schema_ids is None:
-        return set(read_map)
-    return {rel_id for rel_id, columns in read_map.items() if columns & changed_schema_ids}
+    readers = build_cross_readers(db, schemas, source_database_id)
+    return set(_readers_of_changes(readers, changed_schema_ids))
 
 
-def _entries_linking_to(
+def _links_to(
     db: Session,
     database_id: uuid.UUID,
     rel_schema_ids: set[uuid.UUID],
     changed_entry_id: uuid.UUID,
-) -> list[uuid.UUID]:
+) -> dict[uuid.UUID, set[uuid.UUID]]:
     """
-    Return the active entries of *database_id* whose value for any relation in
-    *rel_schema_ids* includes ``changed_entry_id``, in position order.
+    Map the active entries of *database_id* whose value for a relation in
+    *rel_schema_ids* includes ``changed_entry_id`` to those relations, in
+    position order.
 
     Runs after every write to a relation, so its cost must not grow with the
     size of the database: a single query fetches the candidate values, already
@@ -1159,19 +1321,114 @@ def _entries_linking_to(
     checked exactly against the plain and the timeline shape of the value.
     """
     if not rel_schema_ids:
-        return []
+        return {}
     changed_entry_id_str = str(changed_entry_id)
-    linking: list[uuid.UUID] = []
-    seen: set[uuid.UUID] = set()
-    for page_id, value in repo.list_relation_values_mentioning(
+    linking: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for page_id, schema_id, value in repo.list_relation_values_mentioning(
         db, database_id, rel_schema_ids, changed_entry_id_str,
     ):
-        if page_id in seen:
-            continue
         if _entry_id_in_relation_value(changed_entry_id_str, value):
-            seen.add(page_id)
-            linking.append(page_id)
+            linking.setdefault(page_id, set()).add(schema_id)
     return linking
+
+
+class SchemaIndex:
+    """
+    The schemas of every active database, loaded with one query, and what the
+    computed schemas of each database read of another.
+
+    Built once per request and passed to the recompute functions, which
+    otherwise look up every database's schemas on every call. It reflects the
+    schemas at the time it was loaded: a request that creates or changes a
+    schema loads it afterwards.
+    """
+
+    def __init__(self, db: Session, schemas_by_database: dict[uuid.UUID, list[Any]]):
+        self._db = db
+        self._schemas = schemas_by_database
+        self._order = list(schemas_by_database)
+        self._readers: dict[tuple[uuid.UUID, uuid.UUID], dict[uuid.UUID, list[CrossReader]]] = {}
+
+    @classmethod
+    def load(cls, db: Session) -> "SchemaIndex":
+        """Load the schemas of all active databases."""
+        return cls(db, repo.list_schemas_of_active_databases(db))
+
+    def schemas(self, database_id: uuid.UUID) -> list[Any]:
+        """
+        The schemas of *database_id*. A database the index does not hold, one
+        without schemas or not active, is looked up and remembered.
+        """
+        found = self._schemas.get(database_id)
+        if found is None:
+            found = repo.list_schemas(self._db, database_id)
+            self._schemas[database_id] = found
+        return found
+
+    def readers(
+        self,
+        reader_database_id: uuid.UUID,
+        source_database_id: uuid.UUID,
+    ) -> dict[uuid.UUID, list[CrossReader]]:
+        """What *reader_database_id* reads of *source_database_id* (see ``build_cross_readers``)."""
+        key = (reader_database_id, source_database_id)
+        found = self._readers.get(key)
+        if found is None:
+            found = build_cross_readers(
+                self._db, self.schemas(reader_database_id), source_database_id,
+            )
+            self._readers[key] = found
+        return found
+
+    def readers_elsewhere(
+        self,
+        source_database_id: uuid.UUID,
+    ) -> list[tuple[uuid.UUID, dict[uuid.UUID, list[CrossReader]]]]:
+        """
+        Every other active database whose computed schemas read
+        *source_database_id*, with what they read, in database order.
+        """
+        result = []
+        for database_id in self._order:
+            if database_id == source_database_id:
+                continue
+            readers = self.readers(database_id, source_database_id)
+            if readers:
+                result.append((database_id, readers))
+        return result
+
+
+def _recompute_linked_readers(
+    db: Session,
+    database_id: uuid.UUID,
+    schemas: list[Any],
+    readers: dict[uuid.UUID, list[CrossReader]],
+    changed_entry_id: uuid.UUID,
+    changed_schema_ids: Optional[set[uuid.UUID]],
+) -> list[uuid.UUID]:
+    """
+    Evaluate again, on every entry of *database_id* linking to
+    ``changed_entry_id``, the computed schemas that read one of
+    *changed_schema_ids* through the linking relation, and what depends on
+    them.
+
+    An entry linking to itself is among them: its rollups over that link read
+    the changed values, which the evaluation of its own changed properties
+    does not reach, since those rollups depend on the relation rather than on
+    the column they read through it. Returns the other entries evaluated.
+    """
+    stale = _readers_of_changes(readers, changed_schema_ids)
+    if not stale:
+        return []
+    evaluated: list[uuid.UUID] = []
+    for entry_id, relations in _links_to(db, database_id, set(stale), changed_entry_id).items():
+        dirty: set[uuid.UUID] = set()
+        for rel_id in relations:
+            dirty |= stale.get(rel_id, set())
+        compute_for_entry(db, database_id, entry_id, dirty, schemas=schemas)
+        if entry_id != changed_entry_id:
+            evaluated.append(entry_id)
+    return evaluated
 
 
 def compute_cross_db_dependents(
@@ -1179,43 +1436,42 @@ def compute_cross_db_dependents(
     source_database_id: uuid.UUID,
     changed_entry_id: uuid.UUID,
     changed_schema_ids: Optional[set[uuid.UUID]] = None,
+    *,
+    index: Optional[SchemaIndex] = None,
 ) -> list[uuid.UUID]:
     """
     Re-evaluate entries in *other* databases whose computed schemas read data
     from ``source_database_id`` and link to ``changed_entry_id``.
 
     Walk:
-      1. For every database that is not ``source_database_id``:
-      2.   Collect the relations into ``source_database_id`` that a rollup or a
-           formula of that database reads (see ``_relations_read_by_computed``),
-           narrowed to those reading one of *changed_schema_ids* when given.
-      3.   Find entries whose value for one of those relations includes
-           ``changed_entry_id`` and call ``compute_all_for_entry`` for each,
-           once per entry.
+      1. For every database that is not ``source_database_id`` and whose
+         computed schemas read it (``SchemaIndex.readers_elsewhere``):
+      2.   Narrow the readers to those reading one of *changed_schema_ids*,
+           when given.
+      3.   Find entries whose value for one of the relations they read
+           through includes ``changed_entry_id``, and evaluate on each of
+           them those readers and what depends on them.
 
     Without *changed_schema_ids* every reader is evaluated again, as needed
     after a change of the entry's title or of anything else a reader may
-    show.
+    show. *index* is the request's ``SchemaIndex``; one is loaded when it is
+    not given.
 
     Returns the list of database IDs (de-duplicated, excluding
     ``source_database_id``) in which at least one entry was recomputed.
     The caller is responsible for committing and broadcasting.
     """
+    if index is None:
+        index = SchemaIndex.load(db)
     affected_db_ids: list[uuid.UUID] = []
 
-    for database in repo.list_databases(db):
-        if database.id == source_database_id:
-            continue
-
-        schemas = repo.list_schemas(db, database.id)
-        rel_schema_ids = _relations_read_by_computed(
-            db, schemas, source_database_id, changed_schema_ids,
+    for database_id, readers in index.readers_elsewhere(source_database_id):
+        evaluated = _recompute_linked_readers(
+            db, database_id, index.schemas(database_id), readers,
+            changed_entry_id, changed_schema_ids,
         )
-        entry_ids = _entries_linking_to(db, database.id, rel_schema_ids, changed_entry_id)
-        for entry_id in entry_ids:
-            compute_all_for_entry(db, database.id, entry_id)
-        if entry_ids and database.id not in affected_db_ids:
-            affected_db_ids.append(database.id)
+        if evaluated and database_id not in affected_db_ids:
+            affected_db_ids.append(database_id)
 
     return affected_db_ids
 
@@ -1225,6 +1481,8 @@ def compute_same_db_rollup_dependents(
     database_id: uuid.UUID,
     changed_entry_id: uuid.UUID,
     changed_schema_ids: Optional[set[uuid.UUID]] = None,
+    *,
+    index: Optional[SchemaIndex] = None,
 ) -> bool:
     """
     Re-evaluate entries in the *same* database whose computed schemas read
@@ -1234,23 +1492,22 @@ def compute_same_db_rollup_dependents(
     this function fills that gap.  Whenever entry A changes, any sibling entry
     B in the same database that has a rollup or formula reading A via a
     self-referential relation must also be recomputed. With
-    *changed_schema_ids*, only readers of one of those properties count.
+    *changed_schema_ids*, only readers of one of those properties count, and
+    only they and what depends on them are evaluated.
 
     Returns ``True`` if at least one entry was recomputed.
     The caller is responsible for committing.
     """
-    schemas = repo.list_schemas(db, database_id)
-    rel_schema_ids = _relations_read_by_computed(
-        db, schemas, database_id, changed_schema_ids,
+    if index is not None:
+        schemas = index.schemas(database_id)
+        readers = index.readers(database_id, database_id)
+    else:
+        schemas = repo.list_schemas(db, database_id)
+        readers = build_cross_readers(db, schemas, database_id)
+    evaluated = _recompute_linked_readers(
+        db, database_id, schemas, readers, changed_entry_id, changed_schema_ids,
     )
-    recomputed = False
-    for entry_id in _entries_linking_to(db, database_id, rel_schema_ids, changed_entry_id):
-        if entry_id == changed_entry_id:
-            # The changed entry itself is recomputed by its caller.
-            continue
-        compute_all_for_entry(db, database_id, entry_id)
-        recomputed = True
-    return recomputed
+    return bool(evaluated)
 
 
 def recompute_after_value_change(
@@ -1258,27 +1515,37 @@ def recompute_after_value_change(
     database_id: uuid.UUID,
     entry_id: uuid.UUID,
     changed_schema_ids: set[uuid.UUID],
+    *,
+    index: Optional[SchemaIndex] = None,
 ) -> list[uuid.UUID]:
     """
     Bring everything computed from entry *entry_id* of *database_id* up to
     date after the values of *changed_schema_ids* were written on it.
 
-    1. The entry's own formulas and rollups are evaluated again. Those whose
+    1. The entry's own formulas and rollups that read one of the changed
+       properties are evaluated again (see ``compute_for_entry``). Those whose
        result changed join the changed properties.
     2. Entries of the same database and of other databases are evaluated
        again only where the read map says they read one of the changed
-       properties through a relation linking this entry.
+       properties through a relation linking this entry, and only in what
+       they read of it.
 
-    Does nothing for an ID that is no active entry of *database_id*. Returns
-    the IDs of the other databases in which entries were evaluated again.
-    The caller commits and broadcasts.
+    *index* is the request's ``SchemaIndex``; a caller handling several
+    entries passes the same one to every call. Does nothing for an ID that is
+    no active entry of *database_id*. Returns the IDs of the other databases
+    in which entries were evaluated again. The caller commits and broadcasts.
     """
     entry = repo.get_block(db, entry_id)
     if entry is None or entry.parent_id != database_id or entry.state != "active":
         return []
-    changed = set(changed_schema_ids) | compute_all_for_entry(db, database_id, entry_id)
-    compute_same_db_rollup_dependents(db, database_id, entry_id, changed)
-    return compute_cross_db_dependents(db, database_id, entry_id, changed)
+    if index is None:
+        index = SchemaIndex.load(db)
+    changed = set(changed_schema_ids) | compute_for_entry(
+        db, database_id, entry_id, set(changed_schema_ids),
+        schemas=index.schemas(database_id),
+    )
+    compute_same_db_rollup_dependents(db, database_id, entry_id, changed, index=index)
+    return compute_cross_db_dependents(db, database_id, entry_id, changed, index=index)
 
 
 def recompute_database_and_readers(
@@ -1297,26 +1564,24 @@ def recompute_database_and_readers(
     Returns the IDs of the databases whose entries were recomputed. The caller
     commits and broadcasts.
     """
+    index = SchemaIndex.load(db)
     affected: list[uuid.UUID] = []
 
     def _recompute_all(target_id: uuid.UUID) -> None:
+        schemas = index.schemas(target_id)
         entries = repo.list_children(
             db, target_id, state="active",
             exclude_types=frozenset({"entry_template"}),
         )
         for entry in entries:
-            compute_all_for_entry(db, target_id, entry.id)
+            compute_all_for_entry(db, target_id, entry.id, schemas=schemas)
         affected.append(target_id)
 
-    own = repo.list_schemas(db, database_id)
+    own = index.schemas(database_id)
     if any(s.type in ("formula", "rollup") for s in own):
         _recompute_all(database_id)
 
-    for database in repo.list_databases(db):
-        if database.id == database_id:
-            continue
-        schemas = repo.list_schemas(db, database.id)
-        if _relations_read_by_computed(db, schemas, database_id):
-            _recompute_all(database.id)
+    for reader_id, _ in index.readers_elsewhere(database_id):
+        _recompute_all(reader_id)
 
     return affected

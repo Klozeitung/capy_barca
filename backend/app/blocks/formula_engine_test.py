@@ -19,6 +19,7 @@ from app.blocks.formula_engine import (
     evaluate,
     extract_prop_names,
     rename_prop_in_expression,
+    uses_volatile_functions,
     validate_syntax,
 )
 
@@ -1330,6 +1331,37 @@ def test_extract_no_props():
 def test_extract_syntax_error_raises():
     with pytest.raises(FormulaError):
         extract_prop_names("'unterminated")
+
+
+# ─── uses_volatile_functions ─────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("expression", [
+    "now()",
+    "today()",
+    "NOW()",
+    "dateBetween(now(), prop('Start'), 'days')",
+    "if(prop('Flag'), 1, -year(today()))",
+    "prop('A') + (not empty(now()))",
+])
+def test_volatile_functions_are_found_anywhere(expression):
+    assert uses_volatile_functions(expression) is True
+
+
+@pytest.mark.parametrize("expression", [
+    "prop('A') + 1",
+    "dateAdd(prop('Start'), 1, 'days')",
+    "'now()'",
+    "prop('now')",
+    "",
+])
+def test_formulas_without_volatile_functions_are_not_volatile(expression):
+    assert uses_volatile_functions(expression) is False
+
+
+def test_unparseable_expression_is_not_volatile():
+    assert uses_volatile_functions("now(") is False
+    assert uses_volatile_functions(_nested(400)) is False
 
 
 # ─── Complex / integration ────────────────────────────────────────────────────

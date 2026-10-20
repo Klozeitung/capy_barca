@@ -144,32 +144,17 @@ function onBackdropClick(e: MouseEvent): void {
 
 // ── Export ────────────────────────────────────────────────────────────────────
 
+/**
+ * Print the page through the browser's dialog, where it can be saved as PDF.
+ *
+ * Nothing is measured or resized around printing: text blocks take the height
+ * of their content in any layout, so the print stylesheet reflows them at the
+ * page width and font size of the print by itself. The short delay lets the
+ * modal close before the dialog opens, so it is not printed along.
+ */
 function exportAsPdf(): void {
   emit('close')
-  setTimeout(() => {
-    // Fit every editor to its content under the stylesheet in effect.
-    // beforeprint fires after print-CSS is applied, afterprint after the
-    // screen CSS is back, so scrollHeight reflects the right layout each time.
-    // The heights are set directly: an input event would make every editor
-    // save its unchanged text, one request per block on the page.
-    function fitEditors() {
-      document.querySelectorAll<HTMLElement>('.editor-row__textarea').forEach(el => {
-        el.style.height = 'auto'
-        el.style.height = el.scrollHeight + 'px'
-      })
-    }
-    function handleBeforePrint() {
-      fitEditors()
-    }
-    function handleAfterPrint() {
-      fitEditors()
-      window.removeEventListener('beforeprint', handleBeforePrint)
-      window.removeEventListener('afterprint', handleAfterPrint)
-    }
-    window.addEventListener('beforeprint', handleBeforePrint)
-    window.addEventListener('afterprint', handleAfterPrint)
-    window.print()
-  }, 150)
+  setTimeout(() => window.print(), 150)
 }
 </script>
 

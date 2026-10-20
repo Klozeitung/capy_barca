@@ -22,6 +22,7 @@ app/database/sibling_positions_migration_test.py
 app/database/wopi_tokens_migration_test.py
 app/database/recent_icons_migration_test.py
 app/database/database_settings_migration_test.py
+app/database/relation_timeline_minutes_migration_test.py
 app/database/migration_lock_test.py
 
 app/session/user_registration_test.py

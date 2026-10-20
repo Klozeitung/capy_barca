@@ -290,6 +290,74 @@ def test_automation_listing_does_not_query_per_automation(member_client, count_q
     _expect_flat("GET /api/automations", counts[2], counts[20])
 
 
+def _relation_write_scenario(db, owner: User, extra: int) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """
+    A source database read by a reader database through a relation: one
+    rollup reads the column that will be written, *extra* rollups read other
+    columns, and *extra* further databases have nothing to do with either.
+
+    Returns ``(source database, source entry, written column)``.
+    """
+    def _private_database(position: float) -> uuid.UUID:
+        database = repo.create_block(
+            db, type="database", position=position, parent_id=WORKSPACE_ROOT_ID,
+        )
+        database.owner_id = owner.id
+        db.flush()
+        perm_repo.set_permission(db, database.id, "private", [])
+        return database.id
+
+    source = _private_database(10.0)
+    written = repo.create_schema(db, database_id=source, name="Read", type="number", position=1.0)
+    others = [
+        repo.create_schema(db, database_id=source, name=f"Other {i}", type="number", position=2.0 + i)
+        for i in range(extra)
+    ]
+    reader = _private_database(11.0)
+    link = repo.create_schema(
+        db, database_id=reader, name="Link", type="relation", position=1.0,
+        config={"target_database_id": str(source)},
+    )
+    for i, column in enumerate([written, *others]):
+        repo.create_schema(
+            db, database_id=reader, name=f"Sum {i}", type="rollup", position=2.0 + i,
+            config={"relation_schema_id": str(link.id), "rollup_schema_id": str(column.id),
+                    "function": "sum"},
+        )
+    for i in range(extra):
+        unrelated = _private_database(20.0 + i)
+        repo.create_schema(db, database_id=unrelated, name="Note", type="text", position=1.0)
+    entry = repo.create_block(db, type="page", position=1.0, parent_id=source)
+    reading = repo.create_block(db, type="page", position=1.0, parent_id=reader)
+    db.flush()
+    repo.upsert_value(db, page_id=reading.id, schema_id=link.id,
+                      value={"related_ids": [str(entry.id)]})
+    db.commit()
+    return source, entry.id, written.id
+
+
+def test_value_write_does_not_query_per_database_or_unread_column(member_client, count_queries):
+    """
+    A write evaluates what reads the written column, wherever it is, and
+    nothing else: neither the rollups reading other columns through the same
+    relation, nor the schemas of every database one at a time.
+    """
+    client, user = member_client
+    counts = {}
+    for extra in (2, 10):
+        with db_module.SessionLocal() as db:
+            database_id, entry_id, schema_id = _relation_write_scenario(db, user, extra)
+        url = f"/api/databases/{database_id}/entries/{entry_id}/values/{schema_id}"
+        # The first write stores the rollups; the measured one changes them again.
+        assert client.put(url, json={"value": {"number": 1}}).status_code == 200
+        with count_queries() as counter:
+            response = client.put(url, json={"value": {"number": 2}})
+        assert response.status_code == 200
+        counts[extra] = counter.count
+
+    _expect_flat("PUT /api/databases/{id}/entries/{entry_id}/values/{schema_id}", counts[2], counts[10])
+
+
 # ─── Fixed overhead ──────────────────────────────────────────────────────────
 
 

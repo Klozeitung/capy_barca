@@ -76,6 +76,7 @@ Public API
 ----------
   evaluate(expression, context)   -> FormulaResult
   extract_prop_names(expression)  -> list[str]
+  uses_volatile_functions(expression) -> bool
   validate_syntax(expression)     -> None  (raises FormulaError on error)
 
 Resource limits
@@ -1432,6 +1433,24 @@ def _walk_props(node: Any, names: list[str], seen: set[str]) -> None:
     # Literals have no children
 
 
+# Functions whose result changes with the time of evaluation rather than with
+# the values a formula reads.
+_VOLATILE_FUNCTIONS = frozenset({"now", "today"})
+
+
+def _calls_volatile(node: Any) -> bool:
+    """Depth-first search for a call of one of ``_VOLATILE_FUNCTIONS``."""
+    if isinstance(node, FuncCall):
+        if node.name.lower() in _VOLATILE_FUNCTIONS:
+            return True
+        return any(_calls_volatile(arg) for arg in node.args)
+    if isinstance(node, BinOp):
+        return _calls_volatile(node.left) or _calls_volatile(node.right)
+    if isinstance(node, UnaryOp):
+        return _calls_volatile(node.operand)
+    return False
+
+
 # ─── Public API ───────────────────────────────────────────────────────────────
 
 
@@ -1495,6 +1514,26 @@ def extract_prop_names(expression: str) -> list[str]:
         raise
     except RecursionError:
         raise FormulaError("Expression is nested too deeply") from None
+
+
+def uses_volatile_functions(expression: str) -> bool:
+    """
+    Return whether *expression* calls a function whose result depends on the
+    time of evaluation (``now()``, ``today()``).
+
+    Such a formula can change without any property it reads changing, so the
+    computed-property engine evaluates it whenever it evaluates its entry at
+    all. An expression that cannot be parsed counts as not volatile: it only
+    ever yields its error.
+    """
+    try:
+        tokens = _lex(expression)
+        ast = _Parser(tokens).parse()
+        return _calls_volatile(ast)
+    except FormulaError:
+        return False
+    except RecursionError:
+        return False
 
 
 def _string_literal_end(src: str, start: int) -> int:

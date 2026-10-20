@@ -2419,7 +2419,7 @@ def test_upsert_relation_timeline_returns_the_value_a_read_returns(http_client):
     returned = resp.json()["value"]
 
     assert returned["_timeline"] == {
-        "→2045-07-16T23:59:59": {
+        "→2045-07-16T23:59:00": {
             "related_ids": [entry_b["id"]], "nuances": {entry_b["id"]: "label-a"},
         },
         "2045-07-17T00:00:00→": {
@@ -2935,7 +2935,7 @@ def test_pool_to_timeline_always_valid_before_first_since():
     }
     timeline = _pool_to_timeline(pool)
     assert timeline == {
-        "→2100-04-01T09:59:59": {"related_ids": ["a", "b"]},
+        "→2100-04-01T09:59:00": {"related_ids": ["a", "b"]},
         "2100-04-01T10:00:00→": {"related_ids": ["a", "b", "c"]},
     }
     assert _validate_timeline_value({"_timeline": timeline}) is None
@@ -2945,12 +2945,12 @@ def test_pool_to_timeline_always_valid_around_bounded_range():
     """Always-valid UIDs fill the periods before, during and after a bounded range."""
     pool = {
         "a": [""],
-        "c": ["2100-04-01T00:00:00→2100-12-31T23:59:59"],
+        "c": ["2100-04-01T00:00:00→2100-12-31T23:59:00"],
     }
     timeline = _pool_to_timeline(pool)
     assert timeline == {
-        "→2100-03-31T23:59:59": {"related_ids": ["a"]},
-        "2100-04-01T00:00:00→2100-12-31T23:59:59": {"related_ids": ["a", "c"]},
+        "→2100-03-31T23:59:00": {"related_ids": ["a"]},
+        "2100-04-01T00:00:00→2100-12-31T23:59:00": {"related_ids": ["a", "c"]},
         "2101-01-01T00:00:00→": {"related_ids": ["a"]},
     }
     assert _validate_timeline_value({"_timeline": timeline}) is None
@@ -2960,11 +2960,11 @@ def test_pool_to_timeline_always_valid_with_until_range_shares_leading_slot():
     """An "until" range and an always-valid UID share the leading slot."""
     pool = {
         "a": [""],
-        "c": ["→2100-03-31T23:59:59"],
+        "c": ["→2100-03-31T23:59:00"],
     }
     timeline = _pool_to_timeline(pool)
     assert timeline == {
-        "→2100-03-31T23:59:59": {"related_ids": ["a", "c"]},
+        "→2100-03-31T23:59:00": {"related_ids": ["a", "c"]},
         "2100-04-01T00:00:00→": {"related_ids": ["a"]},
     }
     assert _validate_timeline_value({"_timeline": timeline}) is None
@@ -2978,7 +2978,7 @@ def test_pool_to_timeline_always_valid_nuance_in_leading_slot():
         "c": {"2100-04-01T10:00:00→": "second"},
     }
     timeline = _pool_to_timeline(pool, nuance_pool)
-    assert timeline["→2100-04-01T09:59:59"]["nuances"] == {"a": "first"}
+    assert timeline["→2100-04-01T09:59:00"]["nuances"] == {"a": "first"}
     assert timeline["2100-04-01T10:00:00→"]["nuances"] == {"a": "first", "c": "second"}
 
 
@@ -3008,7 +3008,7 @@ def test_upsert_relation_timeline_always_valid_plus_since_yields_two_slots(http_
     row = next(e for e in entries if e["id"] == entry_a["id"])
     timeline = row["values"][schema["id"]]["_timeline"]
     assert timeline == {
-        "→2100-04-01T09:59:59": {"related_ids": [entry_b["id"]]},
+        "→2100-04-01T09:59:00": {"related_ids": [entry_b["id"]]},
         "2100-04-01T10:00:00→": {"related_ids": [entry_b["id"], entry_c["id"]]},
     }
 
@@ -3019,6 +3019,105 @@ def test_pool_to_timeline_invalid_timestamp_skipped():
     # Should not raise; unparseable timestamps are silently dropped
     result = _pool_to_timeline(pool)
     assert isinstance(result, dict)
+
+
+# ── _pool_to_timeline: minute resolution ─────────────────────────────────────
+
+def test_pool_to_timeline_end_and_next_start_in_consecutive_minutes_leave_no_gap():
+    """
+    Regression: an end covers its whole minute. The editor stores minutes, so
+    a range ending at 14:14 and the next starting at 14:15 are seamless. The
+    sweepline used to treat the end as an instant and place the next
+    change-point one second later, which produced a 59-second slot holding
+    only the links that neither ended nor started in that minute, and started
+    the slot after a final end one second (instead of one minute) later.
+    """
+    pool = {
+        "a": ["2000-07-28T08:00:00→2010-03-01T14:14:00", "2010-03-01T14:15:00→"],
+        "b": [
+            "2000-07-28T08:00:00→2020-05-05T16:40:00",
+            "2020-05-05T16:41:00→2045-07-17T18:05:00",
+        ],
+    }
+    nuance_pool = {
+        "a": {
+            "2000-07-28T08:00:00→2010-03-01T14:14:00": "first",
+            "2010-03-01T14:15:00→": "second",
+        },
+        "b": {
+            "2000-07-28T08:00:00→2020-05-05T16:40:00": "first",
+            "2020-05-05T16:41:00→2045-07-17T18:05:00": "second",
+        },
+    }
+    timeline = _pool_to_timeline(pool, nuance_pool)
+    assert timeline == {
+        "2000-07-28T08:00:00→2010-03-01T14:14:00": {
+            "related_ids": ["a", "b"], "nuances": {"a": "first", "b": "first"},
+        },
+        "2010-03-01T14:15:00→2020-05-05T16:40:00": {
+            "related_ids": ["a", "b"], "nuances": {"a": "second", "b": "first"},
+        },
+        "2020-05-05T16:41:00→2045-07-17T18:05:00": {
+            "related_ids": ["a", "b"], "nuances": {"a": "second", "b": "second"},
+        },
+        "2045-07-17T18:06:00→": {
+            "related_ids": ["a"], "nuances": {"a": "second"},
+        },
+    }
+    assert _validate_timeline_value({"_timeline": timeline}) is None
+
+
+def test_pool_to_timeline_slot_end_is_the_last_minute_it_covers():
+    """A slot ends one minute before the next change-point, in canonical form."""
+    pool = {"a": ["2000-01-01T00:00:00→"], "b": ["2000-06-01T12:00:00→"]}
+    timeline = _pool_to_timeline(pool)
+    assert list(timeline) == [
+        "2000-01-01T00:00:00→2000-06-01T11:59:00",
+        "2000-06-01T12:00:00→",
+    ]
+
+
+def test_pool_to_timeline_one_instant_in_two_forms_is_one_change_point():
+    """
+    Boundaries are compared as instants, not as text: a date without a time is
+    midnight, seconds are ignored, and both collapse onto the canonical key.
+    """
+    pool = {
+        "a": ["2000-01-01T00:00:00→2000-12-31T23:59:30"],
+        "b": ["2001-01-01→"],
+    }
+    timeline = _pool_to_timeline(pool)
+    assert timeline == {
+        "2000-01-01T00:00:00→2000-12-31T23:59:00": {"related_ids": ["a"]},
+        "2001-01-01T00:00:00→": {"related_ids": ["b"]},
+    }
+
+
+def test_pool_to_timeline_range_ending_before_its_start_is_ignored():
+    """An inverted range covers no time and adds no change-points."""
+    pool = {
+        "a": ["2001-01-01T00:00:00→2000-01-01T00:00:00"],
+        "b": ["1999-01-01T00:00:00→"],
+    }
+    assert _pool_to_timeline(pool) == {
+        "1999-01-01T00:00:00→": {"related_ids": ["b"]},
+    }
+
+
+def test_pool_to_timeline_end_at_the_last_representable_minute_stays_open():
+    """An end that cannot be followed by another minute never ends."""
+    pool = {"a": ["2000-01-01T00:00:00→9999-12-31T23:59:00"]}
+    assert _pool_to_timeline(pool) == {
+        "2000-01-01T00:00:00→": {"related_ids": ["a"]},
+    }
+
+
+def test_pool_to_timeline_no_leading_slot_before_the_earliest_minute():
+    """Nothing lies before the earliest representable minute."""
+    pool = {"a": [""], "b": ["0001-01-01T00:00:00→"]}
+    assert _pool_to_timeline(pool) == {
+        "0001-01-01T00:00:00→": {"related_ids": ["a", "b"]},
+    }
 
 
 # ── Nuance: _pool_to_timeline threading + sanitizers (pure) ───────────────────
@@ -3036,15 +3135,15 @@ def test_pool_to_timeline_nuance_carried_into_slot():
 def test_pool_to_timeline_nuance_varies_per_range():
     """The same uid carries different labels in different ranges."""
     pool = {"a": [
-        "2024-01-01T00:00:00→2024-12-31T23:59:59",
+        "2024-01-01T00:00:00→2024-12-31T23:59:00",
         "2025-01-01T00:00:00→",
     ]}
     nuance_pool = {"a": {
-        "2024-01-01T00:00:00→2024-12-31T23:59:59": "interim",
+        "2024-01-01T00:00:00→2024-12-31T23:59:00": "interim",
         "2025-01-01T00:00:00→": "confirmed",
     }}
     timeline = _pool_to_timeline(pool, nuance_pool)
-    assert timeline["2024-01-01T00:00:00→2024-12-31T23:59:59"]["nuances"] == {"a": "interim"}
+    assert timeline["2024-01-01T00:00:00→2024-12-31T23:59:00"]["nuances"] == {"a": "interim"}
     assert timeline["2025-01-01T00:00:00→"]["nuances"] == {"a": "confirmed"}
 
 
@@ -5272,3 +5371,117 @@ def test_applying_a_template_title_reaches_formula_readers(http_client):
     assert [chip["title"] for chip in _stored(http_client, people, person["id"], where["id"])["result"]] == [
         "Entry A",
     ]
+
+
+# ─── Narrowed recompute and change events ─────────────────────────────────────
+
+
+def _record_events(monkeypatch) -> list[tuple[str, str]]:
+    """Record every broadcast of the database router as (event type, block id)."""
+    import app.blocks.database_router as dr
+
+    events: list[tuple[str, str]] = []
+    original = dr.emit_block_event
+
+    def recording(**kwargs):
+        events.append((kwargs["event_type"], kwargs["block_id"]))
+        return original(**kwargs)
+
+    monkeypatch.setattr(dr, "emit_block_event", recording)
+    return events
+
+
+def test_a_write_that_creates_the_mirror_announces_it_first(http_client, monkeypatch):
+    """
+    Without a mirror name the mirror property is created by the first write,
+    not with the relation. Its database learns about it before the values.
+    """
+    db_a = _create_database(http_client)
+    db_b = _create_database(http_client)
+    link = _create_relation_schema(http_client, db_a, db_b, name="Link", direction="bilateral")
+    assert all(s["name"] != "Link" for s in http_client.get(f"/api/databases/{db_b}/schemas").json())
+    entry = _create_entry(http_client, db_a)
+    target = _create_entry(http_client, db_b)
+    events = _record_events(monkeypatch)
+
+    _upsert_value(http_client, db_a, entry["id"], link["id"], {"related_ids": [target["id"]]})
+
+    assert events.index(("database_schema_updated", db_b)) < events.index(
+        ("database_entries_updated", db_b),
+    )
+    assert _mirror_ids(http_client, db_b, target["id"], "Link") == [entry["id"]]
+
+
+def test_a_write_to_an_existing_mirror_announces_no_schema_change(http_client, monkeypatch):
+    db_a = _create_database(http_client)
+    db_b = _create_database(http_client)
+    link = _create_relation_schema(
+        http_client, db_a, db_b, name="Link", direction="bilateral", mirror_name="Link Back",
+    )
+    entry = _create_entry(http_client, db_a)
+    target = _create_entry(http_client, db_b)
+    events = _record_events(monkeypatch)
+
+    _upsert_value(http_client, db_a, entry["id"], link["id"], {"related_ids": [target["id"]]})
+
+    assert all(kind != "database_schema_updated" for kind, _ in events)
+
+
+def test_applying_a_template_that_creates_the_mirror_announces_it(http_client, monkeypatch):
+    db_a = _create_database(http_client)
+    db_b = _create_database(http_client)
+    link = _create_relation_schema(http_client, db_a, db_b, name="Link", direction="bilateral")
+    target = _create_entry(http_client, db_b)
+    entry = _create_entry(http_client, db_a)
+    template = _create_entry_template(http_client, db_a)
+    # Templates do not sync their relations, so the mirror still does not exist.
+    _upsert_value(http_client, db_a, template["id"], link["id"], {"related_ids": [target["id"]]})
+    events = _record_events(monkeypatch)
+
+    http_client.post(f"/api/databases/{db_a}/entry-templates/{template['id']}/apply/{entry['id']}")
+
+    assert ("database_schema_updated", db_b) in events
+    assert _mirror_ids(http_client, db_b, target["id"], "Link") == [entry["id"]]
+
+
+def test_a_formula_over_last_edited_follows_every_write(http_client):
+    db_id = _create_database(http_client)
+    note = _create_schema(http_client, db_id, name="Note", type_="text")
+    last = _create_schema(http_client, db_id, name="Edited", type_="last_edited_time")
+    edited = _create_formula_schema(http_client, db_id, "Edited at", "prop('Edited')")
+    entry = _create_entry(http_client, db_id)
+    before = _stored(http_client, db_id, entry["id"], edited["id"])["result"]
+
+    _upsert_value(http_client, db_id, entry["id"], note["id"], {"text": "Value A"})
+
+    after = _stored(http_client, db_id, entry["id"], edited["id"])["result"]
+    stamp = _stored(http_client, db_id, entry["id"], last["id"])["datetime"]
+    assert after != before
+    assert after == stamp
+
+
+def test_a_rollup_over_last_edited_of_linked_entries_follows_their_writes(http_client):
+    """
+    Reading the last edit of linked entries through a relation: before, the
+    edit time was not counted among the changed properties, and readers in
+    other databases kept the old value.
+    """
+    items = _create_database(http_client)
+    readers = _create_database(http_client)
+    note = _create_schema(http_client, items, name="Note", type_="text")
+    edited = _create_schema(http_client, items, name="Edited", type_="last_edited_time")
+    rel = _create_relation_schema(http_client, readers, items, name="Items")
+    latest = _create_rollup_schema(
+        http_client, readers, "Latest edit", rel["id"], edited["id"], "latest_date",
+    )
+    item = _create_entry(http_client, items)
+    reader = _create_entry(http_client, readers)
+    _upsert_value(http_client, readers, reader["id"], rel["id"], {"related_ids": [item["id"]]})
+    before = _stored(http_client, readers, reader["id"], latest["id"])["result"]
+
+    _upsert_value(http_client, items, item["id"], note["id"], {"text": "Value A"})
+
+    stamp = _stored(http_client, items, item["id"], edited["id"])["datetime"]
+    after = _stored(http_client, readers, reader["id"], latest["id"])["result"]
+    assert after != before
+    assert after.startswith(stamp[:19])

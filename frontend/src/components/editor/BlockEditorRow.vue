@@ -2,8 +2,9 @@
 /**
  * BlockEditorRow
  *
- * Renders a single text-type block as an auto-resizing contenteditable div.
- * Hosts the slash-command menu and the mention picker.
+ * Renders a single text-type block as a contenteditable div that takes the
+ * height of its content, on screen and in print alike. Hosts the
+ * slash-command menu and the mention picker.
  *
  * Supported types: paragraph, heading_1/2/3, bulleted_list_item,
  * numbered_list_item, to_do, toggle, quote, callout.
@@ -174,12 +175,6 @@ function readBlockText(block: Block): string {
   return (block.content?.text as string | undefined) ?? ''
 }
 
-function autoResize(el: HTMLElement): void {
-  if (el.offsetParent === null) return
-  el.style.height = 'auto'
-  el.style.height = `${el.scrollHeight}px`
-}
-
 // ── Cursor utilities ──────────────────────────────────────────────────────────
 
 function moveCursorToEnd(el: HTMLElement): void {
@@ -222,8 +217,6 @@ function insertTextAtCursor(text: string): void {
   range.collapse(true)
   sel.removeAllRanges()
   sel.addRange(range)
-  const el = editorEl.value
-  if (el) autoResize(el)
 }
 
 // ── Mention chip construction ─────────────────────────────────────────────────
@@ -450,7 +443,6 @@ async function loadContentFromStorage(storageText: string): Promise<void> {
   if (!isFocused.value) {
     // Second pass: chips for 404 IDs now render as locked.
     applyContentToDOMSync(storageText)
-    nextTick(() => { if (editorEl.value) autoResize(editorEl.value) })
   }
 }
 
@@ -492,7 +484,6 @@ onBeforeUnmount(() => {
 
 onMounted(async () => {
   await loadContentFromStorage(readBlockText(props.block))
-  if (editorEl.value) autoResize(editorEl.value)
 })
 
 // Sync external (WebSocket) updates only while this editor is not focused.
@@ -500,9 +491,7 @@ watch(
   () => props.block.content?.text,
   (newText) => {
     if (!isFocused.value) {
-      loadContentFromStorage((newText as string | undefined) ?? '').then(() => {
-        nextTick(() => { if (editorEl.value) autoResize(editorEl.value) })
-      })
+      loadContentFromStorage((newText as string | undefined) ?? '')
     }
   },
 )
@@ -529,7 +518,6 @@ watch(
 
 function onFocus(): void {
   isFocused.value = true
-  nextTick(() => { if (editorEl.value) autoResize(editorEl.value) })
 }
 
 function onBlur(): void {
@@ -651,7 +639,6 @@ async function checkMarkdownTrigger(): Promise<boolean> {
     const el = editorEl.value
     if (el) {
       applyContentToDOMSync(remaining)
-      autoResize(el)
       syncEmptyState()
       // Cursor to position 0 (immediately after the stripped prefix).
       const r = document.createRange()
@@ -670,7 +657,6 @@ async function onInput(): Promise<void> {
   const el = editorEl.value
   if (!el) return
 
-  autoResize(el)
   syncEmptyState()
 
   const sel = window.getSelection()
@@ -879,7 +865,6 @@ async function onKeydown(e: KeyboardEvent): Promise<void> {
           })
           await nextTick()
           if (editorEl.value) {
-            autoResize(editorEl.value)
             const r = document.createRange()
             const fc = editorEl.value.firstChild
             r.setStart(fc ?? editorEl.value, 0)
@@ -899,7 +884,6 @@ async function onKeydown(e: KeyboardEvent): Promise<void> {
           })
           await nextTick()
           if (editorEl.value) {
-            autoResize(editorEl.value)
             const r = document.createRange()
             const fc = editorEl.value.firstChild
             r.setStart(fc ?? editorEl.value, 0)
@@ -1053,7 +1037,6 @@ function applyMentionSelection(page: Block): void {
     range.collapse(true)
     const s = window.getSelection()
     if (s) { s.removeAllRanges(); s.addRange(range) }
-    if (el) autoResize(el)
   })
 
   syncEmptyState()
@@ -1083,9 +1066,6 @@ async function applySlashSelection(type: string): Promise<void> {
       }
     }
   }
-
-  const el = editorEl.value
-  if (el) autoResize(el)
 
   if (type === 'page') {
     await flushSave()
@@ -1274,7 +1254,7 @@ async function applySlashSelection(type: string): Promise<void> {
   word-break: break-word;
   cursor: text;
   overflow: hidden;
-  /* Height is managed by autoResize() via inline style.height. */
+  /* No height of its own: the div grows with its content. */
 }
 
 .editor-row__editor--static {
@@ -1435,7 +1415,13 @@ async function applySlashSelection(type: string): Promise<void> {
 
 /* ── Print ────────────────────────────────────────────────────────────────── */
 @media print {
+  /*
+   * Print reflows the text at another width and font size than the screen.
+   * A height set inline from the screen layout would cut it off or let it run
+   * into the next block, so the editor always takes its content's height.
+   */
   .editor-row__editor {
+    height: auto !important;
     overflow: visible !important;
     overflow-wrap: break-word !important;
     word-break: break-word !important;

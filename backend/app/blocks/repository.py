@@ -1117,6 +1117,29 @@ def list_schemas(db: Session, database_id: uuid.UUID) -> list[PropertySchema]:
     return list(db.scalars(stmt).all())
 
 
+def list_schemas_of_active_databases(
+    db: Session,
+) -> dict[uuid.UUID, list[PropertySchema]]:
+    """
+    Return the PropertySchemas of every active database in one query, grouped
+    by database.
+
+    The databases appear in the order of ``list_databases`` (by position) and
+    each database's schemas in the order of ``list_schemas``. A database
+    without any schema is absent from the result.
+    """
+    stmt = (
+        select(PropertySchema)
+        .join(Block, Block.id == PropertySchema.database_id)
+        .where(Block.type == "database", Block.state == "active")
+        .order_by(Block.position, Block.id, PropertySchema.position)
+    )
+    result: dict[uuid.UUID, list[PropertySchema]] = {}
+    for schema in db.scalars(stmt).all():
+        result.setdefault(schema.database_id, []).append(schema)
+    return result
+
+
 def list_relation_schemas_by_key_property(
     db: Session,
     key_property_id: uuid.UUID,
@@ -1420,11 +1443,11 @@ def list_relation_values_mentioning(
     database_id: uuid.UUID,
     schema_ids: set[uuid.UUID],
     entry_id: str,
-) -> list[tuple[uuid.UUID, Optional[dict]]]:
+) -> list[tuple[uuid.UUID, uuid.UUID, Optional[dict]]]:
     """
-    Return ``(page_id, value)`` for the values of *schema_ids* held by active
-    entries of *database_id* whose JSON text contains *entry_id* in quotes,
-    ordered by entry position.
+    Return ``(page_id, schema_id, value)`` for the values of *schema_ids* held
+    by active entries of *database_id* whose JSON text contains *entry_id* in
+    quotes, ordered by entry position.
 
     One query regardless of the size of the database. The match is on the
     serialised value, so it finds an id in a plain ``related_ids`` list as
@@ -1435,7 +1458,11 @@ def list_relation_values_mentioning(
     if not schema_ids:
         return []
     stmt = (
-        select(PropertyValue.page_id, PropertyValue.value)
+        select(
+            PropertyValue.page_id,
+            PropertyValue.property_schema_id,
+            PropertyValue.value,
+        )
         .join(Block, Block.id == PropertyValue.page_id)
         .where(
             Block.parent_id == database_id,
@@ -1443,9 +1470,12 @@ def list_relation_values_mentioning(
             PropertyValue.property_schema_id.in_(schema_ids),
             _like_contains(cast(PropertyValue.value, String), f'"{entry_id}"'),
         )
-        .order_by(Block.position, PropertyValue.page_id)
+        .order_by(Block.position, PropertyValue.page_id, PropertyValue.property_schema_id)
     )
-    return [(page_id, value) for page_id, value in db.execute(stmt)]
+    return [
+        (page_id, schema_id, value)
+        for page_id, schema_id, value in db.execute(stmt)
+    ]
 
 
 def upsert_value(

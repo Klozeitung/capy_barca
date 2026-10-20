@@ -497,6 +497,37 @@ def test_list_schemas_empty_for_new_database(db, database_block):
     assert schemas == []
 
 
+# ─── list_schemas_of_active_databases ─────────────────────────────────────────
+
+
+def test_list_schemas_of_active_databases_groups_in_one_query(
+    db, workspace, count_queries,
+):
+    later = repo.create_block(db, type="database", position=5.0, parent_id=workspace.id)
+    earlier = repo.create_block(db, type="database", position=1.0, parent_id=workspace.id)
+    empty = repo.create_block(db, type="database", position=3.0, parent_id=workspace.id)
+    trashed = repo.create_block(
+        db, type="database", position=2.0, parent_id=workspace.id, state="trash",
+    )
+    page = repo.create_block(db, type="page", position=4.0, parent_id=workspace.id)
+    b = repo.create_schema(db, database_id=later.id, name="B", type="text", position=2.0)
+    a = repo.create_schema(db, database_id=later.id, name="A", type="text", position=1.0)
+    c = repo.create_schema(db, database_id=earlier.id, name="C", type="number", position=1.0)
+    repo.create_schema(db, database_id=trashed.id, name="D", type="text", position=1.0)
+    db.commit()
+    expected = {earlier.id: [c.id], later.id: [a.id, b.id]}
+    empty_id, page_id = empty.id, page.id
+
+    with count_queries() as counter:
+        result = repo.list_schemas_of_active_databases(db)
+
+    assert counter.count == 1
+    assert list(result) == [earlier.id, later.id]
+    assert {k: [s.id for s in v] for k, v in result.items()} == expected
+    assert empty_id not in result
+    assert page_id not in result
+
+
 # ─── list_relation_schemas_by_key_property ────────────────────────────────────
 #
 # Keying stores a read-side pointer at config.keying.key_property_id, which no
@@ -691,8 +722,37 @@ def test_list_relation_values_mentioning_narrows_in_one_query(
         rows = repo.list_relation_values_mentioning(db, database_id, {rel_id}, target_id)
 
     assert counter.count == 1
-    assert [page_id for page_id, _ in rows] == [first.id, second.id]
-    assert rows[0][1] == {"related_ids": [target_id]}
+    assert [page_id for page_id, _, _ in rows] == [first.id, second.id]
+    assert rows[0][1] == rel_id
+    assert rows[0][2] == {"related_ids": [target_id]}
+
+
+def test_list_relation_values_mentioning_names_the_schema_of_each_value(
+    db, database_block,
+):
+    target_id = str(uuid.uuid4())
+    first = repo.create_schema(
+        db, database_id=database_block.id, name="Link A", type="relation", position=1.0,
+        config={"target_database_id": str(uuid.uuid4())},
+    )
+    second = repo.create_schema(
+        db, database_id=database_block.id, name="Link B", type="relation", position=2.0,
+        config={"target_database_id": str(uuid.uuid4())},
+    )
+    entry = repo.create_block(db, type="page", position=1.0, parent_id=database_block.id)
+    repo.upsert_value(db, page_id=entry.id, schema_id=first.id,
+                      value={"related_ids": [target_id]})
+    repo.upsert_value(db, page_id=entry.id, schema_id=second.id,
+                      value={"related_ids": [target_id]})
+    db.commit()
+
+    rows = repo.list_relation_values_mentioning(
+        db, database_block.id, {first.id, second.id}, target_id,
+    )
+
+    assert {(page_id, schema_id) for page_id, schema_id, _ in rows} == {
+        (entry.id, first.id), (entry.id, second.id),
+    }
 
 
 def test_list_relation_values_mentioning_without_schemas_asks_nothing(

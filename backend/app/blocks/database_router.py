@@ -155,6 +155,7 @@ from app.blocks.computed import (
     _ROLLUP_FUNCTIONS,
     READS_TITLE,
     CycleError,
+    SchemaIndex,
     SchemaLike,
     build_dependency_graph,
     compute_all_for_entry,
@@ -554,15 +555,18 @@ def _refresh_last_edited(
     database_id: uuid.UUID,
     entry_id: uuid.UUID,
     user_id: uuid.UUID | None = None,
-) -> None:
+) -> set[uuid.UUID]:
     """
     Update ``last_edited_by`` and ``last_edited_time`` schemas whenever a
     regular value upsert occurs on *entry_id*.
 
-    This is a no-op when neither schema type exists in the database.
+    Returns the IDs of the schemas written, so the caller counts them among
+    the changed properties when it brings computed values up to date. Empty
+    when neither schema type exists in the database.
     """
     schemas = repo.list_schemas(db, database_id)
     now_iso = datetime.now(timezone.utc).isoformat()
+    written: set[uuid.UUID] = set()
 
     for schema in schemas:
         if schema.type == "last_edited_by":
@@ -572,6 +576,7 @@ def _refresh_last_edited(
                 schema_id=schema.id,
                 value={"user_id": str(user_id)} if user_id else None,
             )
+            written.add(schema.id)
         elif schema.type == "last_edited_time":
             repo.upsert_value(
                 db,
@@ -579,6 +584,8 @@ def _refresh_last_edited(
                 schema_id=schema.id,
                 value={"datetime": now_iso},
             )
+            written.add(schema.id)
+    return written
 
 
 # ─── Cycle-detection helper ───────────────────────────────────────────────────
@@ -1256,6 +1263,21 @@ def _pool_to_timeline(pool: dict, nuance_pool: Optional[dict] = None) -> dict:
     * ``""`` (always-valid) – the UUID is linked for all time.
     * ``"start→"`` / ``"start→end"`` / ``"→end"`` – bounded ranges.
 
+    Resolution
+    ----------
+    Timeline boundaries have a resolution of one minute, the precision the
+    timeline editor enters them in.  A start covers its minute, and an end
+    covers its minute as well: a range ending at 14:14 is linked through
+    14:14:59, so a following range starting at 14:15 joins it without a gap.
+    Seconds and fractions in stored boundaries are ignored, as is a UTC offset
+    (boundaries are wall-clock times).  A date without a time is midnight.
+
+    Every boundary is parsed before it is compared, so the same instant written
+    in two forms (``2000-01-01`` and ``2000-01-01T00:00:00``) is one
+    change-point.  Derived slot keys always use the canonical
+    ``YYYY-MM-DDTHH:MM:00`` form with a zero-padded year, and a slot's end is the
+    last minute it covers.
+
     Rules
     -----
     * When **only** always-valid ranges exist the result is a single ``""``
@@ -1265,7 +1287,8 @@ def _pool_to_timeline(pool: dict, nuance_pool: Optional[dict] = None) -> dict:
       before the earliest change-point and a trailing open slot after the
       last bounded end.  The ``""`` sentinel is never emitted alongside
       bounded slots (the spec prohibits mixing).
-    * Invalid or unparseable timestamps are skipped silently.
+    * Invalid or unparseable timestamps are skipped silently, as are ranges
+      that end before they start (they cover no time).
 
     Nuance
     ------
@@ -1285,6 +1308,7 @@ def _pool_to_timeline(pool: dict, nuance_pool: Optional[dict] = None) -> dict:
     if not pool:
         return {}
 
+    minute = _TD(minutes=1)
     np_map: dict = nuance_pool or {}
 
     def _nuance_for(uid: str, range_str: str) -> Optional[str]:
@@ -1295,19 +1319,19 @@ def _pool_to_timeline(pool: dict, nuance_pool: Optional[dict] = None) -> dict:
         return label or None
 
     def _parse_ts(ts: str) -> Optional[_DT]:
+        """A boundary as a naive datetime truncated to the minute, or None."""
         try:
-            return _DT.fromisoformat(ts.replace("Z", "+00:00"))
-        except (ValueError, TypeError):
+            dt = _DT.fromisoformat(ts.replace("Z", "+00:00"))
+        except (ValueError, TypeError, AttributeError):
             return None
+        return dt.replace(tzinfo=None, second=0, microsecond=0)
 
     def _fmt_ts(dt: _DT) -> str:
-        # NOTE: strftime("%Y") does not zero-pad years < 1000 on glibc, so a
-        # date like year 44 would render as "44-..." instead of "0044-...".
-        # The sweepline mixes these derived change-points with the raw,
-        # 4-digit-padded client timestamps and orders them by plain string
-        # comparison; an unpadded year breaks that ordering ("44-..." sorts
-        # after "2020-...") and corrupts every slot boundary. Format the
-        # components explicitly to guarantee a fixed-width, zero-padded year.
+        # strftime("%Y") does not zero-pad years < 1000 on glibc, so a date
+        # like year 44 would render as "44-..." instead of "0044-...".  Slot
+        # keys are ordered by plain string comparison elsewhere (the frontend
+        # and _last_timeline_slot), and an unpadded year breaks that ordering.
+        # Format the components explicitly to guarantee a fixed-width year.
         return (
             f"{dt.year:04d}-{dt.month:02d}-{dt.day:02d}"
             f"T{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}"
@@ -1316,7 +1340,8 @@ def _pool_to_timeline(pool: dict, nuance_pool: Optional[dict] = None) -> dict:
     # ── Separate always-valid from time-bounded ranges ────────────────────────
     always_uids: list[str] = []
     always_nuance: dict[str, str] = {}
-    parsed: list[tuple[str, Optional[str], Optional[str], str]] = []
+    # (uid, start, end_exclusive, range_str); None means open on that side.
+    parsed: list[tuple[str, Optional[_DT], Optional[_DT], str]] = []
 
     for uid, uid_ranges in pool.items():
         for r in (uid_ranges or []):
@@ -1326,14 +1351,25 @@ def _pool_to_timeline(pool: dict, nuance_pool: Optional[dict] = None) -> dict:
                 lbl = _nuance_for(uid, "")
                 if lbl and uid not in always_nuance:
                     always_nuance[uid] = lbl
-            else:
-                s, e = _parse_pool_range(r)
-                # Skip entries whose timestamps cannot be parsed
-                if s is not None and _parse_ts(s) is None:
+                continue
+            s_raw, e_raw = _parse_pool_range(r)
+            start = _parse_ts(s_raw) if s_raw is not None else None
+            if s_raw is not None and start is None:
+                continue
+            end_exclusive: Optional[_DT] = None
+            if e_raw is not None:
+                end = _parse_ts(e_raw)
+                if end is None:
                     continue
-                if e is not None and _parse_ts(e) is None:
-                    continue
-                parsed.append((uid, s, e, r))
+                try:
+                    end_exclusive = end + minute
+                except OverflowError:
+                    # The end is the last representable minute: the range
+                    # never ends.
+                    end_exclusive = None
+            if start is not None and end_exclusive is not None and end_exclusive <= start:
+                continue
+            parsed.append((uid, start, end_exclusive, r))
 
     def _build_slot(bounded_pairs: list[tuple[str, str]]) -> dict:
         """Assemble a slot dict (related_ids + optional nuances) for a set of
@@ -1355,8 +1391,7 @@ def _pool_to_timeline(pool: dict, nuance_pool: Optional[dict] = None) -> dict:
             slot["nuances"] = nuances
         return slot
 
-    # ── No bounded ranges → single always-valid slot (or empty) ──────────────
-    if not parsed:
+    def _always_only() -> dict:
         if always_uids:
             slot: dict = {"related_ids": list(always_uids)}
             if always_nuance:
@@ -1364,35 +1399,30 @@ def _pool_to_timeline(pool: dict, nuance_pool: Optional[dict] = None) -> dict:
             return {"": slot}
         return {}
 
+    # ── No bounded ranges → single always-valid slot (or empty) ──────────────
+    if not parsed:
+        return _always_only()
+
     # ── Sweepline over bounded ranges ─────────────────────────────────────────
-    change_points: set[str] = set()
+    change_points: set[_DT] = set()
     for _uid, s, e, _r in parsed:
-        if s:
+        if s is not None:
             change_points.add(s)
-        if e:
-            dt_e = _parse_ts(e)
-            if dt_e is not None:
-                change_points.add(_fmt_ts(dt_e + _TD(seconds=1)))
+        if e is not None:
+            change_points.add(e)
 
     if not change_points:
-        if always_uids:
-            slot = {"related_ids": list(always_uids)}
-            if always_nuance:
-                slot["nuances"] = dict(always_nuance)
-            return {"": slot}
-        return {}
+        # Only ranges open on both sides, which cannot be written ("" is the
+        # always-valid form), but would cover all time.
+        return _always_only()
 
     sorted_cps = sorted(change_points)
 
-    def _bounded_active_at(ts: str) -> list[tuple[str, str]]:
-        result: list[tuple[str, str]] = []
-        for uid, s, e, r in parsed:
-            if s is not None and ts < s:
-                continue
-            if e is not None and ts > e:
-                continue
-            result.append((uid, r))
-        return result
+    def _bounded_active_at(ts: _DT) -> list[tuple[str, str]]:
+        return [
+            (uid, r) for uid, s, e, r in parsed
+            if (s is None or s <= ts) and (e is None or ts < e)
+        ]
 
     timeline: dict = {}
 
@@ -1403,18 +1433,22 @@ def _pool_to_timeline(pool: dict, nuance_pool: Optional[dict] = None) -> dict:
     # collapse into a single "t→" slot and lose the period in which only A
     # is linked.
     has_until = any(s is None for _uid, s, e, _r in parsed)
-    if (has_until or always_uids) and sorted_cps:
+    if has_until or always_uids:
         first_cp = sorted_cps[0]
-        dt_first = _parse_ts(first_cp)
-        if dt_first is not None:
-            before_end = _fmt_ts(dt_first - _TD(seconds=1))
+        try:
+            before_end: Optional[_DT] = first_cp - minute
+        except OverflowError:
+            # The first change-point is the earliest representable minute:
+            # no time lies before it.
+            before_end = None
+        if before_end is not None:
             before_pairs = [
                 (uid, r) for uid, s, e, r in parsed
-                if s is None and (e is None or e >= before_end)
+                if s is None and (e is None or e >= first_cp)
             ]
             slot = _build_slot(before_pairs)
             if slot["related_ids"]:
-                timeline[f"→{before_end}"] = slot
+                timeline[f"→{_fmt_ts(before_end)}"] = slot
 
     n = len(sorted_cps)
     for i, cp in enumerate(sorted_cps):
@@ -1424,12 +1458,8 @@ def _pool_to_timeline(pool: dict, nuance_pool: Optional[dict] = None) -> dict:
             continue
 
         if i < n - 1:
-            next_cp = sorted_cps[i + 1]
-            dt_next = _parse_ts(next_cp)
-            if dt_next is None:
-                continue
-            slot_end = _fmt_ts(dt_next - _TD(seconds=1))
-            slot_key = f"{cp}→{slot_end}"
+            slot_end = sorted_cps[i + 1] - minute
+            slot_key = f"{_fmt_ts(cp)}→{_fmt_ts(slot_end)}"
         else:
             # Last change-point: open if any bounded-active uid has no end,
             # or if there are always-valid uids (they never end).
@@ -1439,7 +1469,7 @@ def _pool_to_timeline(pool: dict, nuance_pool: Optional[dict] = None) -> dict:
                 for uid, s, e, _r in parsed
                 if uid in bounded_uids_now and (s is None or s <= cp)
             )
-            slot_key = f"{cp}→" if still_open else f"{cp}→{cp}"
+            slot_key = f"{_fmt_ts(cp)}→" if still_open else f"{_fmt_ts(cp)}→{_fmt_ts(cp)}"
 
         timeline[slot_key] = slot
 
@@ -3410,17 +3440,21 @@ def upsert_value(
     transaction (see ``_sync_bilateral_relation``).
 
     After every successful write:
-    1. All formula / rollup schemas in this database are re-evaluated for the
-       changed entry.
+    1. The formula / rollup schemas of the changed entry that read the written
+       property or its ``last_edited_*`` properties, directly or through
+       another computed property, are re-evaluated.
     2. Entries of this database and of other databases are re-evaluated where
        a rollup reads the written property, or a computed property of the
-       entry that changed with it, through a relation linking this entry. The
-       read map in ``app.blocks.computed`` decides which ones.
+       entry that changed with it, through a relation linking this entry, and
+       only in what reads it. The read map in ``app.blocks.computed`` decides
+       which ones.
     3. Entries whose mirror value the write changed (bilateral relations,
        parent and sub-items) are treated the same way for the mirror property,
        so their own rollups follow the link they gained or lost.
     4. A ``database_entries_updated`` WebSocket event is broadcast for every
-       affected database so open table views refresh automatically.
+       affected database so open table views refresh automatically. When the
+       write created a missing mirror property, ``database_schema_updated``
+       is broadcast to its database first.
 
     Raises 404 if the entry does not belong to this database, or if the
     schema does not belong to this database.
@@ -3593,6 +3627,8 @@ def upsert_value(
         # Those entries changed too, so what is computed from them is brought
         # up to date along with the entry itself.
         mirror_writes: list[tuple[Any, set[uuid.UUID]]] = []
+        # The database whose mirror property this write created, if any.
+        mirror_created_in: uuid.UUID | None = None
 
         # ── Bilateral sync ───────────────────────────────────────────────────
         # Suppressed for entry_template blocks: templates store relation values
@@ -3610,12 +3646,15 @@ def upsert_value(
             else:
                 new_related_ids = _extract_related_ids_now(stored_value)
                 new_flat_nuances = dict((stored_value or {}).get("nuances") or {})
+                mirror_missing = _get_mirror_schema(db, schema) is None
                 written = _sync_bilateral_relation(
                     db, schema, entry_id, new_related_ids, old_related_ids,
                     new_nuances=new_flat_nuances,
                 )
                 # Resolved after the sync, which may have created the mirror.
                 mirror_schema = _get_mirror_schema(db, schema)
+                if mirror_missing and mirror_schema is not None:
+                    mirror_created_in = mirror_schema.database_id
             if mirror_schema is not None:
                 mirror_writes.append((mirror_schema, written))
 
@@ -3644,19 +3683,25 @@ def upsert_value(
                 mirror_writes.append((parent_item_schema_ref, written))
                 mirror_writes.append((schema, previous_parents))
 
-        _refresh_last_edited(db, database_id, entry_id, current_user.id)
+        edited = _refresh_last_edited(db, database_id, entry_id, current_user.id)
 
         # Bring what is computed from the changed values up to date: the
         # entry's own formulas and rollups, then those of other entries that
         # read a changed property through a relation linking this entry (see
         # computed.recompute_after_value_change). Entries that received a
         # mirror value are handled the same way for the mirror property, so
-        # their own rollups follow the link they gained or lost.
-        affected = recompute_after_value_change(db, database_id, entry_id, {schema_id})
+        # their own rollups follow the link they gained or lost. The schemas
+        # of all databases are loaded once for all of these, after the syncs
+        # above, which may have created a mirror property.
+        index = SchemaIndex.load(db)
+        affected = recompute_after_value_change(
+            db, database_id, entry_id, {schema_id} | edited, index=index,
+        )
         for mirror_schema, pages in mirror_writes:
             for page_id in pages:
                 affected += recompute_after_value_change(
                     db, mirror_schema.database_id, page_id, {mirror_schema.id},
+                    index=index,
                 )
         affected_db_ids = list(dict.fromkeys(
             db_id for db_id in affected if db_id != database_id
@@ -3673,6 +3718,18 @@ def upsert_value(
     except Exception:
         db.rollback()
         raise
+
+    # A mirror property created by this write is announced before the values
+    # it holds, so open views of its database know the property when the
+    # entries event names it.
+    if mirror_created_in is not None:
+        emit_block_event(
+            db=db,
+            event_type="database_schema_updated",
+            block_id=str(mirror_created_in),
+            before=None,
+            after={"database_id": str(mirror_created_in)},
+        )
 
     # Broadcast database_entries_updated for this DB and all cascade-affected DBs.
     # Fires after commit so clients always fetch committed data.
@@ -3861,8 +3918,9 @@ def apply_entry_template(
     against the value the entry held before: entries it no longer links lose
     their back-reference, exactly as when the value is edited by hand.
     Computed values are then brought up to date the same way as after
-    ``upsert_value``, for everything the template changed, the title included,
-    and for the entries whose mirror value changed.
+    ``upsert_value``, for everything the template changed, the title and the
+    ``last_edited_*`` properties included, and for the entries whose mirror
+    value changed.
 
     Returns 204 No Content on success.
     Returns 404 if the database, template, or target entry is not found,
@@ -3905,6 +3963,8 @@ def apply_entry_template(
     # wrote as (mirror schema, entries); see upsert_value.
     changed_schema_ids: set[uuid.UUID] = set()
     mirror_writes: list[tuple[Any, set[uuid.UUID]]] = []
+    # Databases whose mirror property the application created.
+    mirrors_created_in: set[uuid.UUID] = set()
 
     try:
         # Copy block-level content (title, icon) from the template.
@@ -3959,12 +4019,15 @@ def apply_entry_template(
                 else:
                     new_related_ids = list(_extract_related_ids_now(pv.value))
                     new_flat_nuances = dict((pv.value or {}).get("nuances") or {})
+                    mirror_missing = _get_mirror_schema(db, schema) is None
                     written = _sync_bilateral_relation(
                         db, schema, entry_id, new_related_ids,
                         old_related_ids=_extract_related_ids_now(old_value),
                         new_nuances=new_flat_nuances,
                     )
                     mirror_schema = _get_mirror_schema(db, schema)
+                    if mirror_missing and mirror_schema is not None:
+                        mirrors_created_in.add(mirror_schema.database_id)
                 if mirror_schema is not None:
                     mirror_writes.append((mirror_schema, written))
                 _raw_target = (schema.config or {}).get("target_database_id")
@@ -3997,14 +4060,18 @@ def apply_entry_template(
                     mirror_writes.append((partner_schema, written))
                     mirror_writes.append((schema, previous_parents))
 
-        _refresh_last_edited(db, database_id, entry_id, current_user.id)
+        changed_schema_ids |= _refresh_last_edited(db, database_id, entry_id, current_user.id)
         # The same narrowed cascade as for a single value: readers of what
         # the template changed, the title included, and the mirror entries.
-        affected = recompute_after_value_change(db, database_id, entry_id, changed_schema_ids)
+        index = SchemaIndex.load(db)
+        affected = recompute_after_value_change(
+            db, database_id, entry_id, changed_schema_ids, index=index,
+        )
         for mirror_schema, pages in mirror_writes:
             for page_id in pages:
                 affected += recompute_after_value_change(
                     db, mirror_schema.database_id, page_id, {mirror_schema.id},
+                    index=index,
                 )
         db.commit()
 
@@ -4015,6 +4082,15 @@ def apply_entry_template(
         db.rollback()
         raise
 
+    # Mirror properties created by the application first, see upsert_value.
+    for created_in in mirrors_created_in:
+        emit_block_event(
+            db=db,
+            event_type="database_schema_updated",
+            block_id=str(created_in),
+            before=None,
+            after={"database_id": str(created_in)},
+        )
     emit_block_event(
         db=db,
         event_type="database_entries_updated",

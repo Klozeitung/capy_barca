@@ -94,11 +94,6 @@ const props = defineProps<{
   entry: DatabaseEntry
 }>()
 
-const emit = defineEmits<{
-  /** Re-fetch entries after a value mutation (e.g. relation bilateral sync). */
-  (e: 'refresh'): void
-}>()
-
 // ── Dependencies ──────────────────────────────────────────────────────────────
 
 const { t } = useI18n()
@@ -314,21 +309,17 @@ function onCellClick(schema: PropertySchema): void {
 
 // ── Relation change handler ───────────────────────────────────────────────────
 
+/**
+ * Write a relation, parent or sub-item value. The cell shows it at once; the
+ * mirror values and computed values the server changed besides arrive as a
+ * ``database_entries_updated`` event naming the entries, which the side view,
+ * the template editor and the views of the database load on their own.
+ */
 async function handleRelationChange(
   schema: PropertySchema,
   value: Record<string, unknown> | null,
 ): Promise<void> {
   await dbStore.upsertValue(props.databaseId, props.entry.id, schema.id, value)
-  if (schema.type === 'parent_item') {
-    // sub_item mirrors were updated server-side; refresh so the side view
-    // shows the updated parent and the table rebuilds its tree.
-    emit('refresh')
-    return
-  }
-  if (schema.type === 'relation' && schema.config?.direction === 'bilateral') {
-    await dbStore.fetchSchemas(props.databaseId)
-    emit('refresh')
-  }
 }
 
 // ── Property settings modal ───────────────────────────────────────────────────
