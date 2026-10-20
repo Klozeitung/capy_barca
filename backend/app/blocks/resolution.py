@@ -2,7 +2,7 @@
 Relation resolution.
 
 Relation values store only the ids of the linked entries. Whoever displays an
-entry also needs the titles behind those ids, and for keyed relations the key
+entry also needs the titles and icons behind those ids, and for keyed relations the key
 values the linked entries are ordered by. This module turns ids into that
 information, for one relation cell or for a whole page of entries at once.
 
@@ -50,18 +50,23 @@ _EXCLUDED_TYPES: frozenset[str] = frozenset({"entry_template"})
 
 @dataclass(frozen=True)
 class EntryTitle:
-    """What a relation chip needs to render one linked entry."""
+    """
+    What a relation chip needs to render one linked entry. ``icon`` is the
+    entry's own icon, None when it has none and the chip shows the default.
+    """
 
     id: uuid.UUID
     title: Optional[str]
     database_id: uuid.UUID
     value: Optional[dict] = None
+    icon: Optional[str] = None
 
     def as_dict(self) -> dict:
         return {
             "id": str(self.id),
             "title": self.title,
             "database_id": str(self.database_id),
+            "icon": self.icon,
         }
 
 
@@ -125,6 +130,7 @@ def resolve_titles(
             title=(block.content or {}).get("title"),
             database_id=database_id,
             value=values.get(block.id),
+            icon=block.icon,
         )
         for block in blocks
     ]
@@ -251,6 +257,7 @@ def resolve_relations(
                 id=block.id,
                 title=(block.content or {}).get("title"),
                 database_id=block.parent_id,
+                icon=block.icon,
             )
 
     _resolve_key_values(db, keyed, readable, resolution)

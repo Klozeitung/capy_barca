@@ -1776,6 +1776,49 @@ describe('useDatabaseStore._applyEntryEvent', () => {
     expect(store.getRelationTitle('e1')).toBe('Back')
   })
 
+  it('appearance_updated gives the relation chip and the rows the new icon', async () => {
+    const store = await storeWithChip()
+    store.entries['db-1'] = [makeEntry({ id: 'e1' })]
+    expect(store.getRelationIcon('e1')).toBeNull()
+
+    store._applyEntryEvent(makePayload('appearance_updated', {
+      block_id: 'e1',
+      after: makeBlock({ id: 'e1', icon: 'mdi:star-outline', content: { title: 'Ignored' } }),
+    }))
+
+    expect(store.getRelationIcon('e1')).toBe('mdi:star-outline')
+    expect(store.entries['db-1'][0].icon).toBe('mdi:star-outline')
+    // An appearance event does not touch the title.
+    expect(store.getRelationTitle('e1')).toBe('Old')
+  })
+
+  it('a removed icon leaves the chip without one', async () => {
+    const store = await storeWithChip()
+    store._applyEntryEvent(makePayload('appearance_updated', {
+      block_id: 'e1', after: makeBlock({ id: 'e1', icon: 'mdi:star-outline' }),
+    }))
+
+    store._applyEntryEvent(makePayload('reverted', {
+      block_id: 'e1', after: makeBlock({ id: 'e1', icon: null, content: { title: 'Old' } }),
+    }))
+
+    expect(store.getRelationIcon('e1')).toBeNull()
+  })
+
+  it('content_updated leaves the chip icon as it is', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce([
+      { id: 'e1', title: 'Old', database_id: 'db-target', icon: 'mdi:star-outline' },
+    ])
+    const store = useDatabaseStore()
+    await store.resolveEntryTitles('db-target', ['e1'])
+
+    store._applyEntryEvent(makePayload('content_updated', {
+      block_id: 'e1', after: makeBlock({ id: 'e1', content: { title: 'New' } }),
+    }))
+
+    expect(store.getRelationIcon('e1')).toBe('mdi:star-outline')
+  })
+
   it('a title removed by the edit becomes an untitled chip, not a stale one', async () => {
     const store = await storeWithChip()
 

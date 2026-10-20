@@ -546,6 +546,62 @@ def test_reverting_a_rename_recomputes_dependents(
     assert _entries_updated_for(captured_broadcasts) == {ids["places"], ids["people"]}
 
 
+def _formula_icons(ids) -> list:
+    from app.blocks import repository as repo
+
+    with s.SessionLocal() as db:
+        pv = repo.get_value(db, ids["person"], ids["formula"])
+        return [chip["icon"] for chip in pv.value["result"]]
+
+
+def test_a_new_entry_icon_recomputes_formulas_that_show_it(
+    http_client, linked_databases, captured_broadcasts,
+):
+    ids = linked_databases
+    assert _formula_icons(ids) == [None]
+
+    response = http_client.patch(
+        f"/api/blocks/{ids['place']}/appearance", json={"icon": "mdi:star-outline"},
+    )
+
+    assert response.status_code == 200
+    assert _formula_icons(ids) == ["mdi:star-outline"]
+    assert _entries_updated_for(captured_broadcasts) == {ids["places"], ids["people"]}
+    assert captured_broadcasts[0][0] == "appearance_updated"
+
+
+def test_unchanged_icon_or_a_cover_triggers_no_cascade(
+    http_client, linked_databases, captured_broadcasts,
+):
+    ids = linked_databases
+    http_client.patch(f"/api/blocks/{ids['place']}/appearance", json={"icon": "mdi:star-outline"})
+    captured_broadcasts.clear()
+
+    http_client.patch(f"/api/blocks/{ids['place']}/appearance", json={"icon": "mdi:star-outline"})
+    http_client.patch(
+        f"/api/blocks/{ids['place']}/appearance",
+        json={"cover": "gradient:linear-gradient(90deg,#f00,#00f)"},
+    )
+
+    assert _entries_updated_for(captured_broadcasts) == set()
+
+
+def test_reverting_an_icon_recomputes_dependents(
+    http_client, linked_databases, captured_broadcasts,
+):
+    ids = linked_databases
+    http_client.patch(f"/api/blocks/{ids['place']}/appearance", json={"icon": "mdi:star-outline"})
+    history = http_client.get(f"/api/blocks/{ids['place']}/history").json()
+    icon_event = next(e for e in history if e["event_type"] == "icon_changed")
+    captured_broadcasts.clear()
+
+    response = http_client.post(f"/api/blocks/{ids['place']}/revert/{icon_event['id']}")
+
+    assert response.status_code == 200
+    assert _formula_icons(ids) == [None]
+    assert _entries_updated_for(captured_broadcasts) == {ids["places"], ids["people"]}
+
+
 # ─── PATCH /api/blocks/{block_id}/appearance ─────────────────────────────────
 
 

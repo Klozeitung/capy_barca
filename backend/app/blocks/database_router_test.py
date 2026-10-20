@@ -3491,6 +3491,39 @@ def test_resolve_titles_resolves_requested_ids(http_client):
     assert by_id[e1["id"]]["database_id"] == db_id
 
 
+def test_resolve_titles_returns_the_entry_icons(http_client):
+    db_id = _create_database(http_client)
+    with_icon = _create_entry(http_client, db_id)
+    without_icon = _create_entry(http_client, db_id)
+    http_client.patch(f"/api/blocks/{with_icon['id']}/appearance", json={"icon": "mdi:star-outline"})
+
+    result = _resolve_titles(http_client, db_id, [with_icon["id"], without_icon["id"]])
+
+    icons = {r["id"]: r["icon"] for r in result}
+    assert icons == {with_icon["id"]: "mdi:star-outline", without_icon["id"]: None}
+
+
+def test_applying_a_template_icon_reaches_formula_chips_elsewhere(http_client):
+    places = _create_database(http_client)
+    people = _create_database(http_client)
+    tmpl = _create_entry_template(http_client, places)
+    http_client.patch(f"/api/blocks/{tmpl['id']}/appearance", json={"icon": "mdi:flag-outline"})
+    place = _create_entry(http_client, places)
+    rel = _create_schema(
+        http_client, people, name="Place", type_="relation",
+        config={"target_database_id": places},
+    )
+    formula = _create_formula_schema(http_client, people, "Where", "prop('Place')")
+    person = _create_entry(http_client, people)
+    _upsert_value(http_client, people, person["id"], rel["id"], {"related_ids": [place["id"]]})
+
+    http_client.post(f"/api/databases/{places}/entry-templates/{tmpl['id']}/apply/{place['id']}")
+
+    rows = http_client.get(f"/api/databases/{people}/entries").json()
+    row = next(e for e in rows if e["id"] == person["id"])
+    assert [chip["icon"] for chip in row["values"][formula["id"]]["result"]] == ["mdi:flag-outline"]
+
+
 def test_resolve_titles_untitled_entry_returns_null_title(http_client):
     db_id = _create_database(http_client)
     e1 = _create_entry(http_client, db_id)
@@ -3559,12 +3592,74 @@ def test_resolve_titles_ignores_display_limit(http_client):
     assert result[0]["title"] == "Beyond Limit"
 
 
-# ─── Formula prop() reference rename on property rename ───────────────────────
+# ─── Formula references: stored as ids, exchanged as names ────────────────────
 
 
-def test_rename_property_rewrites_formula_reference(http_client):
-    """Renaming a property must rewrite prop('Old') -> prop('New') in dependent
-    formulas, so the reference is not orphaned and the column does not go blank.
+def _stored_expression(schema_id: str) -> str:
+    """The expression of a formula as stored, bypassing the API."""
+    from app.blocks.models import PropertySchema
+    from app.session import session as s
+
+    with s.SessionLocal() as db:
+        return db.get(PropertySchema, uuid.UUID(schema_id)).config["expression"]
+
+
+def _formula_from_listing(http_client, db_id: str) -> dict:
+    return next(
+        s for s in http_client.get(f"/api/databases/{db_id}/schemas").json()
+        if s["type"] == "formula"
+    )
+
+
+def test_formula_is_stored_with_ids_and_returned_with_names(http_client):
+    db_id = _create_database(http_client)
+    price = _create_number_schema(http_client, db_id, "Price")
+    created = _create_formula_schema(http_client, db_id, "Double", "prop('Price') * 2")
+
+    assert created["config"]["expression"] == "prop('Price') * 2"
+    assert _stored_expression(created["id"]) == f"prop('{price['id']}') * 2"
+    assert _formula_from_listing(http_client, db_id)["config"]["expression"] == "prop('Price') * 2"
+
+
+def test_updated_formula_is_stored_with_ids(http_client):
+    db_id = _create_database(http_client)
+    qty = _create_number_schema(http_client, db_id, "Qty")
+    formula = _create_formula_schema(http_client, db_id, "Double", "1")
+
+    resp = http_client.patch(
+        f"/api/databases/{db_id}/schemas/{formula['id']}",
+        json={"config": {"expression": "prop('Qty') + 1"}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["config"]["expression"] == "prop('Qty') + 1"
+    assert _stored_expression(formula["id"]) == f"prop('{qty['id']}') + 1"
+
+
+def test_formula_reference_to_a_missing_property_binds_once_it_exists(http_client):
+    """An unknown name is kept as written and bound when the property appears."""
+    db_id = _create_database(http_client)
+    formula = _create_formula_schema(http_client, db_id, "Double", "prop('Later') * 2")
+    assert _stored_expression(formula["id"]) == "prop('Later') * 2"
+
+    later = _create_number_schema(http_client, db_id, "Later")
+    assert _stored_expression(formula["id"]) == f"prop('{later['id']}') * 2"
+
+
+def test_deleting_a_property_turns_formula_references_back_into_its_name(http_client):
+    db_id = _create_database(http_client)
+    price = _create_number_schema(http_client, db_id, "Price")
+    formula = _create_formula_schema(http_client, db_id, "Double", "prop('Price') * 2")
+
+    resp = http_client.delete(f"/api/databases/{db_id}/schemas/{price['id']}")
+    assert resp.status_code in (200, 204)
+
+    assert _stored_expression(formula["id"]) == "prop('Price') * 2"
+    assert _formula_from_listing(http_client, db_id)["config"]["expression"] == "prop('Price') * 2"
+
+
+def test_rename_property_keeps_formula_reference(http_client):
+    """A formula refers to the property by id, so a rename leaves it working
+    and the API shows the new name.
     """
     db_id = _create_database(http_client)
     price = _create_number_schema(http_client, db_id, "Price")
@@ -3579,25 +3674,21 @@ def test_rename_property_rewrites_formula_reference(http_client):
     )
     assert resp.status_code == 200
 
-    # The formula's stored expression must now reference the new name.
-    formula = next(
-        s for s in http_client.get(f"/api/databases/{db_id}/schemas").json()
-        if s["type"] == "formula"
-    )
+    formula = _formula_from_listing(http_client, db_id)
     assert formula["config"]["expression"] == "prop('Unit Price') * 2"
+    assert _stored_expression(formula["id"]) == f"prop('{price['id']}') * 2"
 
-    # And the reference must still resolve: changing the renamed property's
-    # value recomputes the formula through the new name (would be empty if the
-    # reference were still orphaned).
+    # The reference still resolves: changing the renamed property's value
+    # recomputes the formula.
     _upsert_value(http_client, db_id, entry["id"], price["id"], {"number": 7})
     entries = http_client.get(f"/api/databases/{db_id}/entries").json()
     row = next(e for e in entries if e["id"] == entry["id"])
     assert row["values"][formula["id"]]["result"] == pytest.approx(14.0)
 
 
-def test_rename_property_recomputes_dependent_formula_immediately(http_client):
-    """After the rename — with no further value edit — the dependent formula
-    column is recomputed in the same request, so it stays populated.
+def test_rename_property_leaves_dependent_formula_populated(http_client):
+    """After the rename, with no further value edit, the dependent formula
+    column still holds its result.
     """
     db_id = _create_database(http_client)
     price = _create_number_schema(http_client, db_id, "Price")
@@ -3622,8 +3713,8 @@ def test_rename_property_recomputes_dependent_formula_immediately(http_client):
 
 
 def test_rename_property_leaves_matching_string_literal_untouched(http_client):
-    """Only the prop() argument is rewritten; a string literal that merely
-    equals the old name must be preserved.
+    """Only the prop() argument follows the rename; a string literal that
+    merely equals the old name is preserved.
     """
     db_id = _create_database(http_client)
     status = _create_schema(http_client, db_id, name="Status", type_="text")
@@ -3638,10 +3729,7 @@ def test_rename_property_leaves_matching_string_literal_untouched(http_client):
     )
     assert resp.status_code == 200
 
-    formula = next(
-        s for s in http_client.get(f"/api/databases/{db_id}/schemas").json()
-        if s["type"] == "formula"
-    )
+    formula = _formula_from_listing(http_client, db_id)
     assert formula["config"]["expression"] == "if(prop('Phase') == 'Status', 'a', 'b')"
 
 
@@ -3660,11 +3748,39 @@ def test_rename_unreferenced_property_leaves_formula_unchanged(http_client):
     )
     assert resp.status_code == 200
 
-    formula = next(
-        s for s in http_client.get(f"/api/databases/{db_id}/schemas").json()
-        if s["type"] == "formula"
-    )
+    formula = _formula_from_listing(http_client, db_id)
     assert formula["config"]["expression"] == "prop('Price') * 2"
+
+
+def test_renaming_a_property_to_a_referenced_name_binds_the_reference(http_client):
+    """A reference written to a name no property had binds when one is renamed to it."""
+    db_id = _create_database(http_client)
+    amount = _create_number_schema(http_client, db_id, "Amount")
+    formula = _create_formula_schema(http_client, db_id, "Double", "prop('Total') * 2")
+    entry = _create_entry(http_client, db_id)
+    _upsert_value(http_client, db_id, entry["id"], amount["id"], {"number": 4})
+
+    resp = http_client.patch(
+        f"/api/databases/{db_id}/schemas/{amount['id']}", json={"name": "Total"},
+    )
+    assert resp.status_code == 200
+    assert _stored_expression(formula["id"]) == f"prop('{amount['id']}') * 2"
+
+    entries = http_client.get(f"/api/databases/{db_id}/entries").json()
+    row = next(e for e in entries if e["id"] == entry["id"])
+    assert row["values"][formula["id"]]["result"] == pytest.approx(8.0)
+
+
+def test_formula_syntax_lists_categories_and_entries(http_client):
+    resp = http_client.get("/api/databases/formula-syntax")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["categories"][0] == "basics"
+    keys = {e["key"] for e in body["entries"]}
+    assert {"prop", "if", "divide", "datebetween", "arithmetic"} <= keys
+    prop = next(e for e in body["entries"] if e["key"] == "prop")
+    assert prop["category"] == "basics"
+    assert prop["name"] == "prop"
 
 
 # ─── Relation keying ──────────────────────────────────────────────────────────
@@ -4330,6 +4446,7 @@ def test_get_entry_resolves_its_relations(http_client):
     when = _create_schema(http_client, bdb, name="When", type_="date")
     linked = _create_entry(http_client, bdb)
     http_client.patch(f"/api/blocks/{linked['id']}", json={"content": {"title": "Entry B"}})
+    http_client.patch(f"/api/blocks/{linked['id']}/appearance", json={"icon": "mdi:star-outline"})
     _upsert_value(http_client, bdb, linked["id"], when["id"], {"start": "2000-07-28"})
     link = _create_schema(http_client, adb, name="Link", type_="relation", config={
         "target_database_id": bdb,
@@ -4341,7 +4458,7 @@ def test_get_entry_resolves_its_relations(http_client):
     body = http_client.get(f"/api/databases/{adb}/entries/{entry['id']}").json()
 
     assert body["relations"][linked["id"]] == {
-        "id": linked["id"], "title": "Entry B", "database_id": bdb,
+        "id": linked["id"], "title": "Entry B", "database_id": bdb, "icon": "mdi:star-outline",
     }
     assert body["key_values"] == {when["id"]: {linked["id"]: {"start": "2000-07-28"}}}
 

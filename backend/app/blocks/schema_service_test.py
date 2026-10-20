@@ -1,10 +1,13 @@
 """
 Tests for the pure helpers of the schema service.
 
-The database steps (mirror propagation, timeline migration, formula
-reference rewrite) are covered end to end through the schema endpoints in
-``database_router_test.py``.
+The database steps (mirror propagation, timeline migration, binding formula
+references to property ids) are covered end to end through the schema
+endpoints in ``database_router_test.py``.
 """
+import uuid
+from types import SimpleNamespace
+
 import pytest
 from fastapi import HTTPException
 
@@ -93,3 +96,32 @@ def test_mirrored_nuance_swaps_the_framing_and_shares_the_options():
 def test_mirrored_nuance_of_a_disabled_source_is_disabled():
     assert schema_service._mirrored_nuance({"enabled": False, "options": []}) == {"enabled": False}
     assert schema_service._mirrored_nuance({}) == {"enabled": False}
+
+
+# ─── Formula references as the client sees them ──────────────────────────────
+
+
+def _schema(name, type_="number", config=None):
+    return SimpleNamespace(id=uuid.uuid4(), name=name, type=type_, config=config)
+
+
+def test_client_config_shows_a_formula_with_names_and_keeps_the_stored_one():
+    amount = _schema("Amount")
+    stored = {"expression": f"prop('{amount.id}') + 1", "format": "plain"}
+    formula = _schema("Next", "formula", stored)
+
+    shown = schema_service.client_config(formula, [amount, formula])
+
+    assert shown == {"expression": "prop('Amount') + 1", "format": "plain"}
+    assert formula.config["expression"] == f"prop('{amount.id}') + 1"
+
+
+def test_client_config_keeps_a_reference_to_no_property_as_written():
+    formula = _schema("Next", "formula", {"expression": "prop('Missing') + 1"})
+    assert schema_service.client_config(formula, [formula]) == {"expression": "prop('Missing') + 1"}
+
+
+def test_client_config_returns_other_configs_unchanged():
+    config = {"mode": "single", "options": []}
+    select = _schema("Choice", "select", config)
+    assert schema_service.client_config(select, [select]) is config

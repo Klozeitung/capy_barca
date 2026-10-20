@@ -188,7 +188,8 @@ _EMPTY_RESULTS: list[tuple[Case, object]] = [
 ]
 
 # GET /api/databases has no database id; its filtering is tested separately.
-_UNSCOPED = {("GET", _PREFIX)}
+# The formula syntax reference is the same for every database.
+_UNSCOPED = {("GET", _PREFIX), ("GET", f"{_PREFIX}/formula-syntax")}
 
 # Reserved for the database's owner and admins, so a write grant is not
 # enough; tested separately below.

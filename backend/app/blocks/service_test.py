@@ -1975,3 +1975,66 @@ def test_deep_duplicate_synched_origin_copies_its_row_to_the_mirror(db, workspac
     db.commit()
 
     assert perm_repo.get_permission_row(db, mirror.id).mode == "private"
+
+
+# ─── move carries formulas between databases ──────────────────────────────────
+
+
+def _formula_moving_with_entry(db, database, entry, number_name, formula_name):
+    """A number property and a formula on it in *database*, both valued on *entry*."""
+    number = repo.create_schema(
+        db, database_id=database.id, name=number_name, type="number", position=1.0,
+    )
+    formula = repo.create_schema(
+        db, database_id=database.id, name=formula_name, type="formula", position=2.0,
+        config={"expression": f"prop('{number.id}') * 2"},
+    )
+    db.commit()
+    repo.upsert_value(db, page_id=entry.id, schema_id=number.id, value={"number": 3})
+    repo.upsert_value(db, page_id=entry.id, schema_id=formula.id, value={"result": 6})
+    db.commit()
+    return number, formula
+
+
+def test_move_between_databases_binds_a_created_formula_to_the_target(
+    db, database_a, database_b, entry,
+):
+    """
+    A formula created in the target refers to the target's property, not to
+    the id of the source property it was written against.
+    """
+    _formula_moving_with_entry(db, database_a, entry, "Amount", "Double")
+
+    service.move(db, entry.id, new_parent_id=database_b.id, new_position=1.0)
+    db.commit()
+
+    target_number = repo.get_schema_by_name(db, database_b.id, "Amount")
+    target_formula = repo.get_schema_by_name(db, database_b.id, "Double")
+    assert target_formula.config["expression"] == f"prop('{target_number.id}') * 2"
+
+
+def test_move_db_to_non_db_writes_formula_memory_with_names(db, workspace, database_a, entry):
+    """The snapshot of a formula names its references; ids are database-bound."""
+    _formula_moving_with_entry(db, database_a, entry, "Amount", "Double")
+
+    service.move(db, entry.id, new_parent_id=workspace.id, new_position=10.0)
+    db.commit()
+    db.refresh(entry)
+
+    memory = {m["name"]: m for m in entry.content["schemaMemory"]}
+    assert memory["Double"]["config"] == {"expression": "prop('Amount') * 2"}
+
+
+def test_move_non_db_to_db_binds_a_formula_restored_from_memory(
+    db, workspace, database_a, database_b, entry,
+):
+    _formula_moving_with_entry(db, database_a, entry, "Amount", "Double")
+
+    service.move(db, entry.id, new_parent_id=workspace.id, new_position=10.0)
+    db.commit()
+    service.move(db, entry.id, new_parent_id=database_b.id, new_position=1.0)
+    db.commit()
+
+    target_number = repo.get_schema_by_name(db, database_b.id, "Amount")
+    target_formula = repo.get_schema_by_name(db, database_b.id, "Double")
+    assert target_formula.config["expression"] == f"prop('{target_number.id}') * 2"

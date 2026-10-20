@@ -60,6 +60,14 @@ import {
 } from '@/stores/database'
 import { getSchemaIcon } from '@/stores/propertyTypes'
 import { apiClient } from '@/api/client'
+import {
+  filterSyntaxEntries,
+  groupSyntaxEntries,
+  loadFormulaSyntax,
+  type FormulaSyntax,
+  type FormulaSyntaxEntry,
+  type FormulaSyntaxGroup,
+} from '@/composables/formulaSyntax'
 import { isKeyableProperty } from './cells/cellUtils'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
@@ -438,304 +446,46 @@ function insertSnippet(snippet: string): void {
 }
 
 // ── Formula help panel ────────────────────────────────────────────────────────
+//
+// The functions and operators come from the backend's formula registry (see
+// formulaSyntax); their descriptions and examples are locale text.
 
 const formulaHelpOpen = ref(false)
 const formulaHelpSearch = ref('')
+const formulaSyntax = ref<FormulaSyntax | null>(null)
+const formulaSyntaxFailed = ref(false)
 
-interface FormulaHelpEntry {
-  name: string
-  signature: string
-  description: string
-  example: string
-  category: 'logic' | 'math' | 'text' | 'list' | 'date' | 'operator'
-  insert: string
+async function ensureFormulaSyntax(): Promise<void> {
+  if (formulaSyntax.value) return
+  formulaSyntaxFailed.value = false
+  try {
+    formulaSyntax.value = await loadFormulaSyntax()
+  } catch {
+    formulaSyntaxFailed.value = true
+  }
 }
 
-const FORMULA_HELP: FormulaHelpEntry[] = [
-  // ── Logic ──────────────────────────────────────────────────────────────────
-  {
-    name: 'if',
-    signature: 'if(condition, thenValue, elseValue)',
-    description: 'Returns thenValue when condition is true, otherwise elseValue.',
-    example: "if(prop('Score') >= 90, 'A', 'B')",
-    category: 'logic',
-    insert: "if(, , )",
-  },
-  {
-    name: 'ifs',
-    signature: 'ifs(cond1, val1, cond2, val2, …, default?)',
-    description: 'Returns the value paired with the first true condition. Optional final default when no condition matches.',
-    example: "ifs(prop('Score') >= 90, 'A', prop('Score') >= 60, 'B', 'C')",
-    category: 'logic',
-    insert: "ifs(, , )",
-  },
-  {
-    name: 'and',
-    signature: 'and(a, b, …)',
-    description: 'Returns true only when all arguments are truthy.',
-    example: "and(prop('Done'), prop('Paid'))",
-    category: 'logic',
-    insert: 'and(, )',
-  },
-  {
-    name: 'or',
-    signature: 'or(a, b, …)',
-    description: 'Returns true when at least one argument is truthy.',
-    example: "or(prop('Draft'), prop('Review'))",
-    category: 'logic',
-    insert: 'or(, )',
-  },
-  {
-    name: 'not',
-    signature: 'not(value)',
-    description: 'Inverts a boolean value.',
-    example: "not(prop('Archived'))",
-    category: 'logic',
-    insert: 'not()',
-  },
-  // ── Math ───────────────────────────────────────────────────────────────────
-  {
-    name: 'abs',
-    signature: 'abs(number)',
-    description: 'Returns the absolute (non-negative) value of a number.',
-    example: 'abs(-42)',
-    category: 'math',
-    insert: 'abs()',
-  },
-  {
-    name: 'round',
-    signature: 'round(number, digits?)',
-    description: 'Rounds to the given number of decimal places (default 0).',
-    example: "round(prop('Price'), 2)",
-    category: 'math',
-    insert: 'round(, 2)',
-  },
-  {
-    name: 'ceil',
-    signature: 'ceil(number)',
-    description: 'Rounds up to the nearest integer.',
-    example: 'ceil(3.1)',
-    category: 'math',
-    insert: 'ceil()',
-  },
-  {
-    name: 'floor',
-    signature: 'floor(number)',
-    description: 'Rounds down to the nearest integer.',
-    example: 'floor(3.9)',
-    category: 'math',
-    insert: 'floor()',
-  },
-  // ── Text ───────────────────────────────────────────────────────────────────
-  {
-    name: 'concat',
-    signature: 'concat(a, b, …)',
-    description: 'Joins multiple values into one string.',
-    example: "concat('Hello ', prop('Name'))",
-    category: 'text',
-    insert: "concat(, )",
-  },
-  {
-    name: 'len',
-    signature: 'len(text)',
-    description: 'Returns the number of characters in a string.',
-    example: "len(prop('Notes'))",
-    category: 'text',
-    insert: 'len()',
-  },
-  {
-    name: 'contains',
-    signature: 'contains(text, substring)',
-    description: 'Returns true if text contains the given substring. Case-sensitive.',
-    example: "contains(prop('Account'), 'Main')",
-    category: 'text',
-    insert: "contains(, '')",
-  },
-  {
-    name: 'style',
-    signature: 'style(value, hint, …)',
-    description: 'Applies display hints to a value. Formatting: "b", "i", "u", "s", "c". Colors: "gray", "brown", "orange", "yellow", "green", "blue", "purple", "pink", "red". Add "_background" for background colors.',
-    example: "if(prop('Balance') < 0, style(prop('Balance'), 'red'), prop('Balance'))",
-    category: 'text',
-    insert: "style(, 'red')",
-  },
-  {
-    name: 'unstyle',
-    signature: 'unstyle(value)',
-    description: 'Removes all style hints from a styled value, returning the plain value.',
-    example: "unstyle(prop('Styled Column'))",
-    category: 'text',
-    insert: 'unstyle()',
-  },
-  {
-    name: 'equal',
-    signature: 'equal(a, b)',
-    description: 'Returns true if a equals b. Alias for the == operator (Notion compatibility).',
-    example: "equal(prop('Status'), 'Done')",
-    category: 'text',
-    insert: 'equal(, )',
-  },
-  {
-    name: 'divide',
-    signature: 'divide(a, b)',
-    description: 'Divides a by b. Alias for the / operator (Notion compatibility).',
-    example: "divide(prop('Total'), 4)",
-    category: 'math',
-    insert: 'divide(, )',
-  },
-  // ── List ───────────────────────────────────────────────────────────────────
-  {
-    name: 'at',
-    signature: 'at(list, index)',
-    description: 'Returns the element at the given index in a list (e.g. a show_original rollup). Supports negative indexing: -1 is the last element. Returns null when the index is out of range.',
-    example: "dateBetween(prop('Date'), at(prop('Dates'), 0), 'years')",
-    category: 'list',
-    insert: "at(, 0)",
-  },
-  // ── Date & Time ────────────────────────────────────────────────────────────
-  {
-    name: 'now',
-    signature: 'now()',
-    description: 'Returns the current date and time (UTC).',
-    example: "formatDate(now(), 'DD-MM-YYYY')",
-    category: 'date',
-    insert: 'now()',
-  },
-  {
-    name: 'today',
-    signature: 'today()',
-    description: "Returns today's date at midnight UTC (no time component).",
-    example: "dateBetween(prop('Deadline'), today(), 'days')",
-    category: 'date',
-    insert: 'today()',
-  },
-  {
-    name: 'parseDate',
-    signature: "parseDate(text)",
-    description: 'Parses an ISO date string into a date value. Accepts YYYY-MM-DD or full ISO 8601.',
-    example: "parseDate('2024-01-15')",
-    category: 'date',
-    insert: "parseDate('')",
-  },
-  {
-    name: 'dateAdd',
-    signature: "dateAdd(date, number, unit)",
-    description: 'Adds the given amount to a date. Units: "years", "quarters", "months", "weeks", "days", "hours", "minutes".',
-    example: "dateAdd(prop('Start'), 7, 'days')",
-    category: 'date',
-    insert: "dateAdd(, 1, 'days')",
-  },
-  {
-    name: 'dateSubtract',
-    signature: "dateSubtract(date, number, unit)",
-    description: 'Subtracts the given amount from a date. Same units as dateAdd.',
-    example: "dateSubtract(prop('Deadline'), 1, 'weeks')",
-    category: 'date',
-    insert: "dateSubtract(, 1, 'days')",
-  },
-  {
-    name: 'dateBetween',
-    signature: "dateBetween(date1, date2, unit)",
-    description: 'Returns the truncated integer difference date1 − date2 in the given unit. Positive when date1 is later.',
-    example: "dateBetween(now(), prop('Start'), 'days')",
-    category: 'date',
-    insert: "dateBetween(now(), , 'days')",
-  },
-  {
-    name: 'formatDate',
-    signature: "formatDate(date, format)",
-    description: 'Formats a date using Moment.js-style tokens: YYYY MM DD HH mm ss MMMM MMM DDDD DDD A a.',
-    example: "formatDate(now(), 'DD-MM-YYYY')",
-    category: 'date',
-    insert: "formatDate(, 'DD-MM-YYYY')",
-  },
-  {
-    name: 'date / month / year',
-    signature: 'date(d)  |  month(d)  |  year(d)',
-    description: 'Extracts the day of month (1–31), month number (1–12), or year from a date.',
-    example: "year(now())",
-    category: 'date',
-    insert: '',
-  },
-  {
-    name: 'hour / minute',
-    signature: 'hour(d)  |  minute(d)',
-    description: 'Extracts the hour (0–23) or minute (0–59) from a date.',
-    example: "hour(now())",
-    category: 'date',
-    insert: '',
-  },
-  {
-    name: 'day / week',
-    signature: 'day(d)  |  week(d)',
-    description: 'Returns the ISO day of week (1 = Monday, 7 = Sunday) or ISO week number (1–53).',
-    example: "day(now())",
-    category: 'date',
-    insert: '',
-  },
-  // ── Operators ──────────────────────────────────────────────────────────────
-  {
-    name: '+ / - / * / /',
-    signature: 'a + b  |  a - b  |  a * b  |  a / b',
-    description: 'Basic arithmetic. + also concatenates strings.',
-    example: "prop('Price') * prop('Qty')",
-    category: 'operator',
-    insert: '',
-  },
-  {
-    name: '% (modulo)',
-    signature: 'a % b',
-    description: 'Remainder of dividing a by b.',
-    example: "prop('Items') % 2",
-    category: 'operator',
-    insert: '% ',
-  },
-  {
-    name: '^ (power)',
-    signature: 'a ^ b',
-    description: 'Raises a to the power of b. Right-associative.',
-    example: '2 ^ 10',
-    category: 'operator',
-    insert: '^ ',
-  },
-  {
-    name: '== / != / < / <= / > / >=',
-    signature: 'a == b  |  a != b  |  a < b  …',
-    description: 'Comparison operators — return true or false.',
-    example: "prop('Score') >= 60",
-    category: 'operator',
-    insert: '',
-  },
-  {
-    name: 'and / or / not (keywords)',
-    signature: 'a and b  |  a or b  |  not a',
-    description: 'Logical operators usable as keywords between expressions.',
-    example: "prop('Done') and not prop('Archived')",
-    category: 'operator',
-    insert: '',
-  },
-]
-
-const CATEGORY_ORDER: FormulaHelpEntry['category'][] = ['logic', 'math', 'text', 'list', 'date', 'operator']
-
-const filteredHelpEntries = computed<FormulaHelpEntry[]>(() => {
-  const q = formulaHelpSearch.value.trim().toLowerCase()
-  if (!q) return FORMULA_HELP
-  return FORMULA_HELP.filter(
-    e =>
-      e.name.toLowerCase().includes(q) ||
-      e.description.toLowerCase().includes(q) ||
-      e.category.toLowerCase().includes(q),
-  )
+watch(formulaHelpOpen, open => {
+  if (open) void ensureFormulaSyntax()
 })
 
-const filteredHelpByCategory = computed(() => {
-  const map = new Map<FormulaHelpEntry['category'], FormulaHelpEntry[]>()
-  for (const cat of CATEGORY_ORDER) map.set(cat, [])
-  for (const entry of filteredHelpEntries.value) {
-    map.get(entry.category)!.push(entry)
-  }
-  return map
+function helpDescription(entry: FormulaSyntaxEntry): string {
+  return t(`db.formulaHelp.${entry.key}.description`)
+}
+
+function helpExample(entry: FormulaSyntaxEntry): string {
+  return t(`db.formulaHelp.${entry.key}.example`)
+}
+
+const filteredHelpGroups = computed<FormulaSyntaxGroup[]>(() => {
+  const syntax = formulaSyntax.value
+  if (!syntax) return []
+  const entries = filterSyntaxEntries(
+    syntax.entries,
+    formulaHelpSearch.value,
+    e => `${helpDescription(e)} ${t(`db.settings.formulaHelpCat_${e.category}`)}`,
+  )
+  return groupSyntaxEntries(syntax, entries)
 })
 
 // Schemas of this database (used for formula chip list and rollup relation picker)
@@ -1642,35 +1392,39 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
                 </button>
               </div>
 
-              <!-- No results -->
-              <p v-if="filteredHelpEntries.length === 0" class="psm__help-empty">
+              <!-- Loading / failed / no results -->
+              <p v-if="formulaSyntaxFailed" class="psm__help-empty">
+                {{ t('errors.loadFailed') }}
+              </p>
+              <p v-else-if="!formulaSyntax" class="psm__help-empty">
+                {{ t('db.settings.formulaHelpLoading') }}
+              </p>
+              <p v-else-if="filteredHelpGroups.length === 0" class="psm__help-empty">
                 {{ t('db.settings.formulaHelpEmpty') }}
               </p>
 
               <!-- Categories -->
-              <template v-for="cat in ['logic', 'math', 'text', 'list', 'date', 'operator']" :key="cat">
-                <template v-if="(filteredHelpByCategory.get(cat as any) ?? []).length > 0">
-                  <div class="psm__help-category">
-                    {{ t(`db.settings.formulaHelpCat_${cat}`) }}
+              <template v-for="group in filteredHelpGroups" :key="group.category">
+                <div class="psm__help-category">
+                  {{ t(`db.settings.formulaHelpCat_${group.category}`) }}
+                </div>
+                <div
+                  v-for="entry in group.entries"
+                  :key="entry.key"
+                  class="psm__help-entry"
+                  :class="{ 'psm__help-entry--no-insert': !entry.insert }"
+                  @click="entry.insert ? insertSnippet(entry.insert) : undefined"
+                >
+                  <div class="psm__help-entry__top">
+                    <code class="psm__help-signature">{{ entry.signature }}</code>
+                    <span v-if="entry.insert" class="psm__help-insert-hint">
+                      <Icon icon="mdi:keyboard-return" width="11" height="11" />
+                      {{ t('db.settings.formulaHelpInsert') }}
+                    </span>
                   </div>
-                  <div
-                    v-for="entry in filteredHelpByCategory.get(cat as any)"
-                    :key="entry.name"
-                    class="psm__help-entry"
-                    :class="{ 'psm__help-entry--no-insert': !entry.insert }"
-                    @click="entry.insert ? insertSnippet(entry.insert) : undefined"
-                  >
-                    <div class="psm__help-entry__top">
-                      <code class="psm__help-signature">{{ entry.signature }}</code>
-                      <span v-if="entry.insert" class="psm__help-insert-hint">
-                        <Icon icon="mdi:keyboard-return" width="11" height="11" />
-                        {{ t('db.settings.formulaHelpInsert') }}
-                      </span>
-                    </div>
-                    <p class="psm__help-desc">{{ entry.description }}</p>
-                    <code class="psm__help-example">{{ entry.example }}</code>
-                  </div>
-                </template>
+                  <p class="psm__help-desc">{{ helpDescription(entry) }}</p>
+                  <code class="psm__help-example">{{ helpExample(entry) }}</code>
+                </div>
               </template>
             </div>
           </div>

@@ -22,8 +22,13 @@ Logical         : and  or  not  (keyword operators)
 Unary           : -  not
 Grouping        : (expr)
 Property access : prop("Column Name")  or  prop('Column Name')
+                  Stored formulas name properties by id, prop("<schema id>"),
+                  so a rename does not break them; the API and the editor
+                  show names (see ``map_prop_references``). The evaluation
+                  context therefore carries every value under the property's
+                  id and its name.
 Functions       : abs(x)  round(x[, digits])  ceil(x)  floor(x)
-                  sum(a, …)  min(a, …)  max(a, …)  avg(a, …)
+                  sum(a, …)  min(a, …)  max(a, …)  avg(a, …)  divide(a, b)
                   len(s)  concat(s, …)  empty(x)  format(x)  toNumber(x)
                   contains(text, sub)  equal(a, b)  divide(a, b)
                   style(x, hint, …)  unstyle(x)
@@ -72,12 +77,18 @@ Operator precedence (high → low)
 ---------------------------------
   ^  >  unary  >  * / %  >  + -  >  comparisons  >  not  >  and  >  or
 
+Functions are registered with their handler, category and signature in one
+registry (``_function``); evaluation, validation and the editor's syntax
+reference all read it.
+
 Public API
 ----------
   evaluate(expression, context)   -> FormulaResult
   extract_prop_names(expression)  -> list[str]
+  map_prop_references(expression, mapping) -> str
   uses_volatile_functions(expression) -> bool
   validate_syntax(expression)     -> None  (raises FormulaError on error)
+  syntax_catalogue()              -> list[SyntaxEntry]
 
 Resource limits
 ---------------
@@ -114,7 +125,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime as _Datetime, timedelta as _timedelta, timezone as _tz
 from enum import Enum, auto
-from typing import Any, Optional
+from typing import Any, Callable, Mapping, Optional
 
 # ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -956,439 +967,603 @@ def _eval(node: Any, ctx: dict[str, FormulaValue]) -> FormulaValue:  # noqa: PLR
     raise FormulaError(f"Unknown AST node type: {type(node).__name__}")
 
 
-def _call(node: FuncCall, ctx: dict[str, FormulaValue]) -> FormulaValue:  # noqa: PLR0911,PLR0912
-    name = node.name.lower()
-    args = node.args
+# ─── Function registry ────────────────────────────────────────────────────────
+#
+# Every function a formula can call is registered here with its handler and the
+# metadata the formula editor's syntax reference shows. ``_call`` dispatches
+# through the registry, ``validate_syntax`` checks names against it, and
+# ``syntax_catalogue`` hands the editor the same list, so the three can never
+# disagree about which functions exist.
+#
+# A handler receives the unevaluated argument nodes and the property context;
+# it evaluates what it needs, which is how ``if`` and the logical functions
+# short-circuit.
 
-    # ── Property access ───────────────────────────────────────────────────────
+Handler = Callable[[list[Any], dict[str, FormulaValue]], FormulaValue]
 
-    if name == "prop":
-        if len(args) != 1:
-            raise FormulaError("prop() requires exactly one string argument")
-        key = _eval(args[0], ctx)
-        if not isinstance(key, str):
-            raise FormulaError("prop() argument must be a string literal")
-        return ctx.get(key)
+# Categories of the syntax reference, in display order.
+SYNTAX_CATEGORIES: tuple[str, ...] = ("basics", "logic", "math", "text", "list", "date", "operator")
 
-    # ── Logic / control flow ──────────────────────────────────────────────────
 
-    if name == "if":
-        if len(args) != 3:
-            raise FormulaError("if(condition, then_value, else_value) requires 3 arguments")
-        return _eval(args[1] if _eval(args[0], ctx) else args[2], ctx)
+@dataclass(frozen=True)
+class FunctionSpec:
+    """A formula function: how it is called and what the reference shows."""
 
-    if name == "ifs":
-        if len(args) < 2:
-            raise FormulaError(
-                "ifs() requires at least 2 arguments (one condition-value pair)"
-            )
-        i = 0
-        while i + 1 < len(args):
-            if _eval(args[i], ctx):
-                return _eval(args[i + 1], ctx)
-            i += 2
-        # Trailing single argument is the default value
-        if i < len(args):
-            return _eval(args[i], ctx)
+    name: str
+    category: str
+    signature: str
+    # Text the editor inserts for the function; empty when there is no useful
+    # skeleton to insert.
+    insert: str
+    handler: Handler
+
+
+_FUNCTIONS: dict[str, FunctionSpec] = {}
+
+
+def _function(name: str, category: str, signature: str, insert: str = "") -> Callable[[Handler], Handler]:
+    """Register the decorated handler as the function *name* (case-insensitive)."""
+    def register(handler: Handler) -> Handler:
+        _FUNCTIONS[name.lower()] = FunctionSpec(name, category, signature, insert, handler)
+        return handler
+    return register
+
+
+def _call(node: FuncCall, ctx: dict[str, FormulaValue]) -> FormulaValue:
+    spec = _FUNCTIONS.get(node.name.lower())
+    if spec is None:
+        raise FormulaError(f"Unknown function '{node.name}'")
+    return spec.handler(node.args, ctx)
+
+
+def _unstyled(value: FormulaValue) -> FormulaValue:
+    """*value* without a ``style()`` wrapper."""
+    return value.value if isinstance(value, _Styled) else value
+
+
+# ── Property access ───────────────────────────────────────────────────────────
+
+
+@_function("prop", "basics", "prop('Property')", "prop('')")
+def _fn_prop(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) != 1:
+        raise FormulaError("prop() requires exactly one string argument")
+    key = _eval(args[0], ctx)
+    if not isinstance(key, str):
+        raise FormulaError("prop() argument must be a string literal")
+    return ctx.get(key)
+
+
+# ── Logic / control flow ──────────────────────────────────────────────────────
+
+
+@_function("if", "logic", "if(condition, thenValue, elseValue)", "if(, , )")
+def _fn_if(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) != 3:
+        raise FormulaError("if(condition, then_value, else_value) requires 3 arguments")
+    return _eval(args[1] if _eval(args[0], ctx) else args[2], ctx)
+
+
+@_function("ifs", "logic", "ifs(cond1, val1, cond2, val2, …, default)", "ifs(, , )")
+def _fn_ifs(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) < 2:
+        raise FormulaError(
+            "ifs() requires at least 2 arguments (one condition-value pair)"
+        )
+    i = 0
+    while i + 1 < len(args):
+        if _eval(args[i], ctx):
+            return _eval(args[i + 1], ctx)
+        i += 2
+    # Trailing single argument is the default value
+    if i < len(args):
+        return _eval(args[i], ctx)
+    return None
+
+
+@_function("and", "logic", "and(a, b, …)", "and(, )")
+def _fn_and(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) < 2:
+        raise FormulaError("and() requires at least two arguments")
+    result: FormulaValue = _eval(args[0], ctx)
+    for a in args[1:]:
+        if not result:
+            return result
+        result = _eval(a, ctx)
+    return result
+
+
+@_function("or", "logic", "or(a, b, …)", "or(, )")
+def _fn_or(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) < 2:
+        raise FormulaError("or() requires at least two arguments")
+    result: FormulaValue = _eval(args[0], ctx)
+    for a in args[1:]:
+        if result:
+            return result
+        result = _eval(a, ctx)
+    return result
+
+
+@_function("not", "logic", "not(value)", "not()")
+def _fn_not(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    # ``not`` is lexed as a keyword, so ``not(x)`` normally parses as the unary
+    # operator; the function stays registered for a call that reaches here.
+    if len(args) != 1:
+        raise FormulaError("not() requires exactly one argument")
+    return not bool(_eval(args[0], ctx))
+
+
+@_function("empty", "logic", "empty(value)", "empty()")
+def _fn_empty(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) != 1:
+        raise FormulaError("empty() requires exactly one argument")
+    val = _unstyled(_eval(args[0], ctx))
+    if val is None or val == "":
+        return True
+    # A relation prop returns a list of related IDs; an empty list means
+    # no entries are linked.  A show_original rollup also returns a list.
+    if isinstance(val, (list, dict)):
+        return len(val) == 0
+    return False
+
+
+@_function("equal", "logic", "equal(a, b)", "equal(, )")
+def _fn_equal(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    # Notion-compatible alias for the == operator.
+    if len(args) != 2:
+        raise FormulaError("equal() requires exactly two arguments")
+    return _unstyled(_eval(args[0], ctx)) == _unstyled(_eval(args[1], ctx))
+
+
+# ── Math ──────────────────────────────────────────────────────────────────────
+
+
+def _unary_number(args: list[Any], ctx: dict[str, FormulaValue], name: str) -> Optional[float | int]:
+    """The single numeric argument of *name*, or None when it is empty."""
+    if len(args) != 1:
+        raise FormulaError(f"{name}() requires exactly one argument")
+    v = _eval(args[0], ctx)
+    if _is_empty(v):
         return None
+    return _require_num(v, name)
 
-    if name == "not":
-        if len(args) != 1:
-            raise FormulaError("not() requires exactly one argument")
-        return not bool(_eval(args[0], ctx))
 
-    if name == "and":
-        if len(args) < 2:
-            raise FormulaError("and() requires at least two arguments")
-        result: FormulaValue = _eval(args[0], ctx)
-        for a in args[1:]:
-            if not result:
-                return result
-            result = _eval(a, ctx)
-        return result
+@_function("abs", "math", "abs(x)", "abs()")
+def _fn_abs(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    v = _unary_number(args, ctx, "abs")
+    return None if v is None else abs(v)
 
-    if name == "or":
-        if len(args) < 2:
-            raise FormulaError("or() requires at least two arguments")
-        result = _eval(args[0], ctx)
-        for a in args[1:]:
-            if result:
-                return result
-            result = _eval(a, ctx)
-        return result
 
-    # ── Math ──────────────────────────────────────────────────────────────────
+@_function("round", "math", "round(x, digits)", "round(, 0)")
+def _fn_round(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) not in (1, 2):
+        raise FormulaError("round() requires 1 or 2 arguments")
+    v = _eval(args[0], ctx)
+    if _is_empty(v):
+        return None
+    val = _require_num(v, "round")
+    digits = int(_require_num(_eval(args[1], ctx), "round digits")) if len(args) == 2 else 0
+    result = round(val, digits)
+    return int(result) if digits == 0 else result
 
-    if name == "abs":
-        if len(args) != 1:
-            raise FormulaError("abs() requires exactly one argument")
-        v = _eval(args[0], ctx)
-        if _is_empty(v):
+
+@_function("ceil", "math", "ceil(x)", "ceil()")
+def _fn_ceil(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    v = _unary_number(args, ctx, "ceil")
+    return None if v is None else math.ceil(v)
+
+
+@_function("floor", "math", "floor(x)", "floor()")
+def _fn_floor(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    v = _unary_number(args, ctx, "floor")
+    return None if v is None else math.floor(v)
+
+
+@_function("divide", "math", "divide(a, b)", "divide(, )")
+def _fn_divide(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    # Notion-compatible alias for the / operator.
+    if len(args) != 2:
+        raise FormulaError("divide(a, b) requires exactly two arguments")
+    lv = _eval(args[0], ctx)
+    rv = _eval(args[1], ctx)
+    if _is_empty(lv) and _is_empty(rv):
+        return None
+    r = _require_num(rv, "divide")
+    if r == 0:
+        raise FormulaError("Division by zero")
+    return _require_num(lv, "divide") / r
+
+
+def _aggregate_numbers(args: list[Any], ctx: dict[str, FormulaValue], name: str) -> list[float | int]:
+    """
+    The numeric values among *args* of the variadic function *name*.
+
+    Empty values (None / "") are skipped so they never skew an aggregate. This
+    mirrors the count_empty / count_not_empty rollup split and keeps
+    avg/min/max correct when some related entries are unset.
+    """
+    if len(args) < 1:
+        raise FormulaError(f"{name}() requires at least one argument")
+    nums: list[float | int] = []
+    for a in args:
+        v = _unstyled(_eval(a, ctx))
+        if v is None or v == "":
+            continue
+        nums.append(_require_num(v, name))
+    return nums
+
+
+@_function("sum", "math", "sum(a, b, …)", "sum(, )")
+def _fn_sum(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    nums = _aggregate_numbers(args, ctx, "sum")
+    return sum(nums) if nums else None
+
+
+@_function("min", "math", "min(a, b, …)", "min(, )")
+def _fn_min(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    nums = _aggregate_numbers(args, ctx, "min")
+    return min(nums) if nums else None
+
+
+@_function("max", "math", "max(a, b, …)", "max(, )")
+def _fn_max(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    nums = _aggregate_numbers(args, ctx, "max")
+    return max(nums) if nums else None
+
+
+@_function("avg", "math", "avg(a, b, …)", "avg(, )")
+def _fn_avg(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    nums = _aggregate_numbers(args, ctx, "avg")
+    return sum(nums) / len(nums) if nums else None
+
+
+@_function("toNumber", "math", "toNumber(value)", "toNumber()")
+def _fn_tonumber(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) != 1:
+        raise FormulaError("toNumber() requires exactly one argument")
+    val = _unstyled(_eval(args[0], ctx))
+    if val is None or val == "":
+        return None
+    if isinstance(val, bool):
+        return 1 if val else 0
+    if isinstance(val, (int, float)):
+        return val
+    if isinstance(val, str):
+        try:
+            return int(val)
+        except ValueError:
+            pass
+        try:
+            return float(val)
+        except ValueError:
             return None
-        return abs(_require_num(v, "abs"))
+    return None
 
-    if name == "round":
-        if len(args) not in (1, 2):
-            raise FormulaError("round() requires 1 or 2 arguments")
-        v = _eval(args[0], ctx)
-        if _is_empty(v):
-            return None
-        val = _require_num(v, "round")
-        digits = int(_require_num(_eval(args[1], ctx), "round digits")) if len(args) == 2 else 0
-        result = round(val, digits)
-        return int(result) if digits == 0 else result
 
-    if name == "ceil":
-        if len(args) != 1:
-            raise FormulaError("ceil() requires exactly one argument")
-        v = _eval(args[0], ctx)
-        if _is_empty(v):
-            return None
-        return math.ceil(_require_num(v, "ceil"))
+# ── Text ──────────────────────────────────────────────────────────────────────
 
-    if name == "floor":
-        if len(args) != 1:
-            raise FormulaError("floor() requires exactly one argument")
-        v = _eval(args[0], ctx)
-        if _is_empty(v):
-            return None
-        return math.floor(_require_num(v, "floor"))
 
-    # ── Text ──────────────────────────────────────────────────────────────────
+@_function("len", "text", "len(text)", "len()")
+def _fn_len(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) != 1:
+        raise FormulaError("len() requires exactly one argument")
+    val = _unstyled(_eval(args[0], ctx))
+    if val is None:
+        return 0
+    if not isinstance(val, str):
+        raise FormulaError(f"len() requires a string, got {type(val).__name__}")
+    return len(val)
 
-    if name == "len":
-        if len(args) != 1:
-            raise FormulaError("len() requires exactly one argument")
-        val = _eval(args[0], ctx)
-        if isinstance(val, _Styled):
-            val = val.value
-        if val is None:
-            return 0
-        if not isinstance(val, str):
-            raise FormulaError(f"len() requires a string, got {type(val).__name__}")
-        return len(val)
 
-    if name == "concat":
-        if len(args) < 1:
-            raise FormulaError("concat() requires at least one argument")
-        parts: list[str] = []
-        for a in args:
-            v = _eval(a, ctx)
-            if isinstance(v, _Styled):
-                v = v.value
-            parts.append("" if v is None else str(v))
-        return "".join(parts)
+@_function("concat", "text", "concat(a, b, …)", "concat(, )")
+def _fn_concat(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) < 1:
+        raise FormulaError("concat() requires at least one argument")
+    parts: list[str] = []
+    for a in args:
+        v = _unstyled(_eval(a, ctx))
+        parts.append("" if v is None else str(v))
+    return "".join(parts)
 
-    if name == "empty":
-        if len(args) != 1:
-            raise FormulaError("empty() requires exactly one argument")
-        val = _eval(args[0], ctx)
-        if isinstance(val, _Styled):
-            val = val.value
-        if val is None or val == "":
-            return True
-        # A relation prop returns a list of related IDs; an empty list means
-        # no entries are linked.  A show_original rollup also returns a list.
-        if isinstance(val, (list, dict)):
-            return len(val) == 0
-        return False
 
-    if name == "format":
-        if len(args) != 1:
-            raise FormulaError("format() requires exactly one argument")
-        val = _eval(args[0], ctx)
-        if isinstance(val, _Styled):
-            val = val.value
+def _format_scalar(v: Any) -> str:
+    """Format a single scalar value to a string."""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, float) and v == int(v):
+        return str(int(v))
+    if isinstance(v, _Datetime):
+        return v.isoformat()
+    return str(v)
 
-        def _fmt_scalar(v: Any) -> str:
-            """Format a single scalar value to a string."""
-            if v is None:
-                return ""
-            if isinstance(v, bool):
-                return "true" if v else "false"
-            if isinstance(v, float) and v == int(v):
-                return str(int(v))
-            if isinstance(v, _Datetime):
-                return v.isoformat()
-            return str(v)
 
-        if val is None:
+@_function("format", "text", "format(value)", "format()")
+def _fn_format(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) != 1:
+        raise FormulaError("format() requires exactly one argument")
+    val = _unstyled(_eval(args[0], ctx))
+    if val is None:
+        return ""
+    # List: from show_original rollup or relation prop.
+    # Single-element lists are unwrapped so comparisons like
+    #   format(prop("Status")) == "Done"   work naturally.
+    # Multi-element lists are joined with ", ".
+    # None elements (missing values) are skipped.
+    if isinstance(val, list):
+        parts = [_format_scalar(v) for v in val if v is not None]
+        return parts[0] if len(parts) == 1 else ", ".join(parts)
+    # Dict: from percent_per_option.  Rendered as "Key: val" pairs.
+    if isinstance(val, dict):
+        if not val:
             return ""
-        # List: from show_original rollup or relation prop.
-        # Single-element lists are unwrapped so comparisons like
-        #   format(prop("Status")) == "Done"   work naturally.
-        # Multi-element lists are joined with ", ".
-        # None elements (missing values) are skipped.
-        if isinstance(val, list):
-            parts = [_fmt_scalar(v) for v in val if v is not None]
-            return parts[0] if len(parts) == 1 else ", ".join(parts)
-        # Dict: from percent_per_option.  Rendered as "Key: val" pairs.
-        if isinstance(val, dict):
-            if not val:
-                return ""
-            return ", ".join(f"{k}: {_fmt_scalar(v)}" for k, v in val.items())
-        return _fmt_scalar(val)
+        return ", ".join(f"{k}: {_format_scalar(v)}" for k, v in val.items())
+    return _format_scalar(val)
 
-    if name == "tonumber":
-        if len(args) != 1:
-            raise FormulaError("toNumber() requires exactly one argument")
-        val = _eval(args[0], ctx)
-        if isinstance(val, _Styled):
-            val = val.value
-        if val is None or val == "":
-            return None
-        if isinstance(val, bool):
-            return 1 if val else 0
-        if isinstance(val, (int, float)):
-            return val
-        if isinstance(val, str):
-            try:
-                return int(val)
-            except ValueError:
-                pass
-            try:
-                return float(val)
-            except ValueError:
-                return None
+
+@_function("contains", "text", "contains(text, search)", "contains(, '')")
+def _fn_contains(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) != 2:
+        raise FormulaError("contains() requires exactly two arguments")
+    text = _unstyled(_eval(args[0], ctx))
+    sub = _unstyled(_eval(args[1], ctx))
+    if text is None or sub is None:
+        return False
+    return str(sub) in str(text)
+
+
+@_function("style", "text", "style(value, 'hint', …)", "style(, '')")
+def _fn_style(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) < 2:
+        raise FormulaError(
+            "style() requires at least two arguments: style(value, hint, …)"
+        )
+    val = _eval(args[0], ctx)
+    # Merge with any existing styles if the value is already styled.
+    if isinstance(val, _Styled):
+        existing = list(val.styles)
+        val = val.value
+    else:
+        existing = []
+    hints: list[str] = []
+    for a in args[1:]:
+        h = _eval(a, ctx)
+        if not isinstance(h, str):
+            raise FormulaError("style() hints must be string literals")
+        hints.append(h)
+    return _Styled(value=val, styles=existing + hints)
+
+
+@_function("unstyle", "text", "unstyle(value)", "unstyle()")
+def _fn_unstyle(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) != 1:
+        raise FormulaError("unstyle() requires exactly one argument")
+    return _unstyled(_eval(args[0], ctx))
+
+
+# ── List access ───────────────────────────────────────────────────────────────
+
+
+@_function("at", "list", "at(list, index)", "at(, 0)")
+def _fn_at(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) != 2:
+        raise FormulaError("at(list, index) requires exactly two arguments")
+    lst = _unstyled(_eval(args[0], ctx))
+    idx_val = _unstyled(_eval(args[1], ctx))
+    if lst is None:
         return None
-
-    if name == "contains":
-        if len(args) != 2:
-            raise FormulaError("contains() requires exactly two arguments")
-        text = _eval(args[0], ctx)
-        sub  = _eval(args[1], ctx)
-        if isinstance(text, _Styled): text = text.value
-        if isinstance(sub,  _Styled): sub  = sub.value
-        if text is None or sub is None:
-            return False
-        return str(sub) in str(text)
-
-    if name == "style":
-        if len(args) < 2:
-            raise FormulaError(
-                "style() requires at least two arguments: style(value, hint, …)"
-            )
-        val = _eval(args[0], ctx)
-        # Merge with any existing styles if the value is already styled.
-        if isinstance(val, _Styled):
-            existing = list(val.styles)
-            val = val.value
-        else:
-            existing = []
-        hints: list[str] = []
-        for a in args[1:]:
-            h = _eval(a, ctx)
-            if not isinstance(h, str):
-                raise FormulaError("style() hints must be string literals")
-            hints.append(h)
-        return _Styled(value=val, styles=existing + hints)
-
-    if name == "unstyle":
-        if len(args) != 1:
-            raise FormulaError("unstyle() requires exactly one argument")
-        val = _eval(args[0], ctx)
-        return val.value if isinstance(val, _Styled) else val
-
-    if name == "equal":
-        # Notion-compatible alias for the == operator.
-        if len(args) != 2:
-            raise FormulaError("equal() requires exactly two arguments")
-        lv = _eval(args[0], ctx)
-        rv = _eval(args[1], ctx)
-        if isinstance(lv, _Styled): lv = lv.value
-        if isinstance(rv, _Styled): rv = rv.value
-        return lv == rv
-
-    if name == "divide":
-        # Notion-compatible alias for the / operator.
-        if len(args) != 2:
-            raise FormulaError("divide(a, b) requires exactly two arguments")
-        lv = _eval(args[0], ctx)
-        rv = _eval(args[1], ctx)
-        if _is_empty(lv) and _is_empty(rv):
-            return None
-        r = _require_num(rv, "divide")
-        if r == 0:
-            raise FormulaError("Division by zero")
-        return _require_num(lv, "divide") / r
-
-    # ── Variadic math ─────────────────────────────────────────────────────────
-
-    if name in ("sum", "min", "max", "avg"):
-        if len(args) < 1:
-            raise FormulaError(f"{name}() requires at least one argument")
-        nums: list[float | int] = []
-        for a in args:
-            v = _eval(a, ctx)
-            if isinstance(v, _Styled):
-                v = v.value
-            # Skip empty values (None / "") so they never skew an aggregate.
-            # This mirrors the count_empty / count_not_empty rollup split and
-            # keeps avg/min/max correct when some related entries are unset.
-            if v is None or v == "":
-                continue
-            nums.append(_require_num(v, name))
-        if not nums:
-            return None
-        if name == "sum":
-            return sum(nums)
-        if name == "min":
-            return min(nums)
-        if name == "max":
-            return max(nums)
-        if name == "avg":
-            return sum(nums) / len(nums)
-
-    # ── List access ───────────────────────────────────────────────────────────
-
-    if name == "at":
-        if len(args) != 2:
-            raise FormulaError("at(list, index) requires exactly two arguments")
-        lst = _eval(args[0], ctx)
-        if isinstance(lst, _Styled):
-            lst = lst.value
-        idx_val = _eval(args[1], ctx)
-        if isinstance(idx_val, _Styled):
-            idx_val = idx_val.value
-        if lst is None:
-            return None
-        if not isinstance(lst, list):
-            raise FormulaError(
-                f"at(): first argument must be a list, got {type(lst).__name__}"
-            )
-        if idx_val is None:
-            return None
-        idx = int(_require_num(idx_val, "at index"))
-        if idx < -len(lst) or idx >= len(lst):
-            return None
-        return lst[idx]
-
-    # ── Date & time ───────────────────────────────────────────────────────────
-
-    if name == "now":
-        if len(args) != 0:
-            raise FormulaError("now() takes no arguments")
-        return _Datetime.now(_tz.utc)
-
-    if name == "today":
-        if len(args) != 0:
-            raise FormulaError("today() takes no arguments")
-        return _Datetime.now(_tz.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-
-    if name == "datestart":
-        if len(args) != 1:
-            raise FormulaError("dateStart() requires exactly one argument")
-        val = _eval(args[0], ctx)
-        # Dict shape from a date property: extract start
-        if isinstance(val, dict):
-            start = val.get("start")
-            if start is None:
-                raise FormulaError("dateStart(): date property has no start value")
-            return _to_datetime(start, "dateStart")
-        # Plain string or datetime: treat as the start itself
-        return _to_datetime(val, "dateStart")
-
-    if name == "dateend":
-        if len(args) != 1:
-            raise FormulaError("dateEnd() requires exactly one argument")
-        val = _eval(args[0], ctx)
-        # Dict shape from a date property: extract end (may be None)
-        if isinstance(val, dict):
-            end = val.get("end")
-            if end is None:
-                return None
-            return _to_datetime(end, "dateEnd")
-        # Plain string or datetime: no end concept, return None
+    if not isinstance(lst, list):
+        raise FormulaError(
+            f"at(): first argument must be a list, got {type(lst).__name__}"
+        )
+    if idx_val is None:
         return None
-
-    if name == "parsedate":
-        if len(args) != 1:
-            raise FormulaError("parseDate() requires exactly one argument")
-        raw = _eval(args[0], ctx)
-        if not isinstance(raw, str):
-            raise FormulaError(
-                f"parseDate() requires a string, got {type(raw).__name__}"
-            )
-        return _to_datetime(raw, "parseDate")
-
-    if name == "dateadd":
-        if len(args) != 3:
-            raise FormulaError("dateAdd(date, number, unit) requires 3 arguments")
-        dt     = _to_datetime(_eval(args[0], ctx), "dateAdd")
-        amount = int(_require_num(_eval(args[1], ctx), "dateAdd amount"))
-        unit   = _eval(args[2], ctx)
-        if not isinstance(unit, str):
-            raise FormulaError("dateAdd: unit must be a string")
-        return _date_add(dt, amount, unit)
-
-    if name == "datesubtract":
-        if len(args) != 3:
-            raise FormulaError("dateSubtract(date, number, unit) requires 3 arguments")
-        dt     = _to_datetime(_eval(args[0], ctx), "dateSubtract")
-        amount = int(_require_num(_eval(args[1], ctx), "dateSubtract amount"))
-        unit   = _eval(args[2], ctx)
-        if not isinstance(unit, str):
-            raise FormulaError("dateSubtract: unit must be a string")
-        return _date_add(dt, -amount, unit)
-
-    if name == "datebetween":
-        if len(args) != 3:
-            raise FormulaError("dateBetween(date1, date2, unit) requires 3 arguments")
-        dt1  = _to_datetime(_eval(args[0], ctx), "dateBetween date1")
-        dt2  = _to_datetime(_eval(args[1], ctx), "dateBetween date2")
-        unit = _eval(args[2], ctx)
-        if not isinstance(unit, str):
-            raise FormulaError("dateBetween: unit must be a string")
-        return _date_diff(dt1, dt2, unit)
-
-    if name == "formatdate":
-        if len(args) != 2:
-            raise FormulaError("formatDate(date, format) requires 2 arguments")
-        dt  = _to_datetime(_eval(args[0], ctx), "formatDate")
-        fmt = _eval(args[1], ctx)
-        if not isinstance(fmt, str):
-            raise FormulaError("formatDate: format must be a string")
-        return _format_date(dt, fmt)
-
-    if name in ("date", "month", "year", "day", "hour", "minute", "week"):
-        if len(args) != 1:
-            raise FormulaError(f"{name}() requires exactly one argument")
-        dt = _to_datetime(_eval(args[0], ctx), name)
-        if name == "date":    return dt.day
-        if name == "month":   return dt.month
-        if name == "year":    return dt.year
-        if name == "day":     return dt.weekday() + 1   # 1 = Monday, 7 = Sunday
-        if name == "hour":    return dt.hour
-        if name == "minute":  return dt.minute
-        if name == "week":    return dt.isocalendar()[1]
-
-    raise FormulaError(f"Unknown function '{node.name}'")
+    idx = int(_require_num(idx_val, "at index"))
+    if idx < -len(lst) or idx >= len(lst):
+        return None
+    return lst[idx]
 
 
-# ─── Known-function registry (used by validate_syntax) ───────────────────────
+# ── Date & time ───────────────────────────────────────────────────────────────
 
-_KNOWN_FUNCTIONS: frozenset[str] = frozenset({
-    "prop",
-    # Logic / control flow
-    "if", "ifs", "not", "and", "or",
-    # Math
-    "abs", "round", "ceil", "floor",
-    # Text / utility
-    "len", "concat", "empty", "format", "tonumber",
-    "contains", "style", "unstyle",
-    # Math (variadic)
-    "sum", "min", "max", "avg",
-    # List access
-    "at",
-    # Aliases / compatibility (Notion parity)
-    "equal", "divide",
-    # Date & time
-    "now", "today",
-    "dateadd", "datesubtract", "datebetween",
-    "formatdate", "parsedate",
-    "datestart", "dateend",
-    "date", "month", "year", "day", "hour", "minute", "week",
-})
+
+@_function("now", "date", "now()", "now()")
+def _fn_now(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) != 0:
+        raise FormulaError("now() takes no arguments")
+    return _Datetime.now(_tz.utc)
+
+
+@_function("today", "date", "today()", "today()")
+def _fn_today(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) != 0:
+        raise FormulaError("today() takes no arguments")
+    return _Datetime.now(_tz.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+@_function("dateStart", "date", "dateStart(date)", "dateStart()")
+def _fn_datestart(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) != 1:
+        raise FormulaError("dateStart() requires exactly one argument")
+    val = _eval(args[0], ctx)
+    # Dict shape from a date property: extract start
+    if isinstance(val, dict):
+        start = val.get("start")
+        if start is None:
+            raise FormulaError("dateStart(): date property has no start value")
+        return _to_datetime(start, "dateStart")
+    # Plain string or datetime: treat as the start itself
+    return _to_datetime(val, "dateStart")
+
+
+@_function("dateEnd", "date", "dateEnd(date)", "dateEnd()")
+def _fn_dateend(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) != 1:
+        raise FormulaError("dateEnd() requires exactly one argument")
+    val = _eval(args[0], ctx)
+    # Dict shape from a date property: extract end (may be None)
+    if isinstance(val, dict):
+        end = val.get("end")
+        if end is None:
+            return None
+        return _to_datetime(end, "dateEnd")
+    # Plain string or datetime: no end concept, return None
+    return None
+
+
+@_function("parseDate", "date", "parseDate(text)", "parseDate('')")
+def _fn_parsedate(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) != 1:
+        raise FormulaError("parseDate() requires exactly one argument")
+    raw = _eval(args[0], ctx)
+    if not isinstance(raw, str):
+        raise FormulaError(
+            f"parseDate() requires a string, got {type(raw).__name__}"
+        )
+    return _to_datetime(raw, "parseDate")
+
+
+def _shifted_date(args: list[Any], ctx: dict[str, FormulaValue], name: str, sign: int) -> FormulaValue:
+    """``dateAdd`` (*sign* 1) and ``dateSubtract`` (*sign* -1)."""
+    if len(args) != 3:
+        raise FormulaError(f"{name}(date, number, unit) requires 3 arguments")
+    dt = _to_datetime(_eval(args[0], ctx), name)
+    amount = int(_require_num(_eval(args[1], ctx), f"{name} amount"))
+    unit = _eval(args[2], ctx)
+    if not isinstance(unit, str):
+        raise FormulaError(f"{name}: unit must be a string")
+    return _date_add(dt, sign * amount, unit)
+
+
+@_function("dateAdd", "date", "dateAdd(date, amount, unit)", "dateAdd(, 1, 'days')")
+def _fn_dateadd(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    return _shifted_date(args, ctx, "dateAdd", 1)
+
+
+@_function("dateSubtract", "date", "dateSubtract(date, amount, unit)", "dateSubtract(, 1, 'days')")
+def _fn_datesubtract(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    return _shifted_date(args, ctx, "dateSubtract", -1)
+
+
+@_function("dateBetween", "date", "dateBetween(date1, date2, unit)", "dateBetween(, , 'days')")
+def _fn_datebetween(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) != 3:
+        raise FormulaError("dateBetween(date1, date2, unit) requires 3 arguments")
+    dt1 = _to_datetime(_eval(args[0], ctx), "dateBetween date1")
+    dt2 = _to_datetime(_eval(args[1], ctx), "dateBetween date2")
+    unit = _eval(args[2], ctx)
+    if not isinstance(unit, str):
+        raise FormulaError("dateBetween: unit must be a string")
+    return _date_diff(dt1, dt2, unit)
+
+
+@_function("formatDate", "date", "formatDate(date, format)", "formatDate(, 'DD.MM.YYYY')")
+def _fn_formatdate(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    if len(args) != 2:
+        raise FormulaError("formatDate(date, format) requires 2 arguments")
+    dt = _to_datetime(_eval(args[0], ctx), "formatDate")
+    fmt = _eval(args[1], ctx)
+    if not isinstance(fmt, str):
+        raise FormulaError("formatDate: format must be a string")
+    return _format_date(dt, fmt)
+
+
+def _date_part(args: list[Any], ctx: dict[str, FormulaValue], name: str) -> _Datetime:
+    """The single date argument of the date-part function *name*."""
+    if len(args) != 1:
+        raise FormulaError(f"{name}() requires exactly one argument")
+    return _to_datetime(_eval(args[0], ctx), name)
+
+
+@_function("date", "date", "date(date)", "date()")
+def _fn_date(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    return _date_part(args, ctx, "date").day
+
+
+@_function("month", "date", "month(date)", "month()")
+def _fn_month(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    return _date_part(args, ctx, "month").month
+
+
+@_function("year", "date", "year(date)", "year()")
+def _fn_year(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    return _date_part(args, ctx, "year").year
+
+
+@_function("day", "date", "day(date)", "day()")
+def _fn_day(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    return _date_part(args, ctx, "day").weekday() + 1   # 1 = Monday, 7 = Sunday
+
+
+@_function("hour", "date", "hour(date)", "hour()")
+def _fn_hour(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    return _date_part(args, ctx, "hour").hour
+
+
+@_function("minute", "date", "minute(date)", "minute()")
+def _fn_minute(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    return _date_part(args, ctx, "minute").minute
+
+
+@_function("week", "date", "week(date)", "week()")
+def _fn_week(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
+    return _date_part(args, ctx, "week").isocalendar()[1]
+
+
+# Names of the registered functions, lower-case, as ``validate_syntax`` checks
+# them.
+_KNOWN_FUNCTIONS: frozenset[str] = frozenset(_FUNCTIONS)
+
+
+# ─── Syntax reference ─────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class SyntaxEntry:
+    """
+    One entry of the formula editor's syntax reference.
+
+    ``key`` names the entry for its translated description and example in the
+    frontend locales (``db.formulaHelp.<key>``): the lower-case function name,
+    or a fixed key for the parts of the syntax that are no function.
+    """
+
+    key: str
+    name: str
+    category: str
+    signature: str
+    insert: str
+
+
+# Syntax that is no function: literals, grouping and the operators.
+_SYNTAX_ELEMENTS: tuple[SyntaxEntry, ...] = (
+    SyntaxEntry("literals", "Literals", "basics", "42  3.5  'text'  \"text\"  true  false  null", ""),
+    SyntaxEntry("grouping", "( )", "basics", "(a + b) * c", ""),
+    SyntaxEntry("arithmetic", "+ - * /", "operator", "a + b  |  a - b  |  a * b  |  a / b", ""),
+    SyntaxEntry("text_concat", "+ (text)", "operator", "'text' + value", ""),
+    SyntaxEntry("modulo", "%", "operator", "a % b", "% "),
+    SyntaxEntry("power", "^", "operator", "a ^ b", "^ "),
+    SyntaxEntry("negation", "- (unary)", "operator", "-a", ""),
+    SyntaxEntry("comparison", "== != < <= > >=", "operator", "a == b  |  a != b  |  a < b  |  a >= b", ""),
+    SyntaxEntry("logical", "and or not", "operator", "a and b  |  a or b  |  not a", ""),
+)
+
+
+def syntax_catalogue() -> list[SyntaxEntry]:
+    """
+    Every entry of the syntax reference: the registered functions, then the
+    rest of the syntax, ordered by category (``SYNTAX_CATEGORIES``) and, within
+    one, by registration.
+    """
+    functions = [
+        SyntaxEntry(key, spec.name, spec.category, spec.signature, spec.insert)
+        for key, spec in _FUNCTIONS.items()
+    ]
+    entries = functions + list(_SYNTAX_ELEMENTS)
+    order = {category: index for index, category in enumerate(SYNTAX_CATEGORIES)}
+    return sorted(entries, key=lambda e: order[e.category])
 
 
 def _check_known_functions(node: Any) -> None:
@@ -1566,24 +1741,27 @@ def _encode_string_literal(value: str, quote: str) -> str:
     return f"{quote}{escaped}{quote}"
 
 
-def rename_prop_in_expression(expression: str, old_name: str, new_name: str) -> str:
+def map_prop_references(expression: str, mapping: Mapping[str, str]) -> str:
     """
-    Return *expression* with every ``prop("old_name")`` reference rewritten to
-    use *new_name*, leaving all other string literals and the surrounding
-    formatting untouched.
+    Return *expression* with the argument of every ``prop('…')`` call that
+    appears in *mapping* replaced by its mapped value, leaving all other string
+    literals and the surrounding formatting untouched.
 
-    Only a string literal that sits immediately after a ``prop`` identifier and
-    its opening parenthesis is rewritten, so a literal that merely happens to
-    equal *old_name* elsewhere — e.g. a compared value ``== "old_name"`` — is
-    left alone. Matching is exact (case- and whitespace-sensitive), mirroring
-    how ``prop()`` resolves names at evaluation time.
+    This is how the references of a formula move between the form it is stored
+    in (property ids) and the form the editor shows (property names), in both
+    directions. Only a string literal that sits immediately after a ``prop``
+    identifier and its opening parenthesis is rewritten, so a literal that
+    merely equals a mapped value elsewhere, a compared value
+    ``== "Status"`` say, is left alone. Matching is exact (case- and
+    whitespace-sensitive), as ``prop()`` resolves at evaluation time. A
+    ``prop()`` whose argument is computed (``prop(concat('A', 'B'))``) has no
+    literal to rewrite and stays as it is.
 
-    The original quote character and the rest of the source are preserved;
-    *new_name* is re-encoded for that quote. A malformed expression that no
-    longer lexes is returned unchanged, so a property rename can never fail
-    because of a pre-existing broken formula.
+    The original quote character is kept and the new value re-encoded for it.
+    A malformed expression that no longer lexes is returned unchanged, so
+    translating never fails because of a broken formula.
     """
-    if old_name == new_name or not expression:
+    if not expression or not mapping:
         return expression
     try:
         tokens = _lex(expression)
@@ -1596,15 +1774,16 @@ def rename_prop_in_expression(expression: str, old_name: str, new_name: str) -> 
         name_tok, lparen_tok, str_tok = tokens[i], tokens[i + 1], tokens[i + 2]
         if (
             name_tok.type is TT.IDENT
-            and name_tok.value == "prop"
+            and name_tok.value.lower() == "prop"
             and lparen_tok.type is TT.LPAREN
             and str_tok.type is TT.STRING
-            and str_tok.value == old_name
+            and str_tok.value in mapping
+            and mapping[str_tok.value] != str_tok.value
         ):
             start = str_tok.pos
             end = _string_literal_end(expression, start)
             quote = expression[start]
-            spans.append((start, end, _encode_string_literal(new_name, quote)))
+            spans.append((start, end, _encode_string_literal(mapping[str_tok.value], quote)))
 
     if not spans:
         return expression

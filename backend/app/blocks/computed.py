@@ -7,6 +7,9 @@ computed values for a single database entry.
 
 Public API
 ----------
+  formula_reference_index(schemas)                 -> prop() reference lookup
+  formula_expression_with_ids(expression, schemas) -> stored form
+  formula_expression_with_names(expression, schemas) -> editor form
   build_dependency_graph(schemas)                  -> graph
   build_cross_readers(db, schemas, source_db_id)   -> readers per relation
   build_cross_read_map(db, schemas, source_db_id)  -> read map
@@ -28,7 +31,18 @@ Dependency graph semantics
 The evaluation order is the reverse topological order (dependencies first).
 
 For formula schemas the dependencies are extracted from the expression via
-``formula_engine.extract_prop_names``, then resolved to schema UUIDs by name.
+``formula_engine.extract_prop_names`` and resolved through
+``formula_reference_index``.
+
+Formula references
+------------------
+A stored formula names the properties it reads by id, ``prop('<schema id>')``,
+so renaming a property does not break it; the API and the editor show names
+(``formula_expression_with_names`` / ``formula_expression_with_ids``). A
+reference is resolved by id first and by name second. The name covers a
+reference written before its property existed, and a ``prop()`` whose argument
+is computed, which no translation can reach; the evaluation context therefore
+carries every value under both.
 
 For rollup schemas the dependency is the relation schema pointed to by
 ``config.relation_schema_id``.
@@ -39,7 +53,8 @@ The graph above stays within one database. What a computed property reads
 *through* a relation, in the database the relation points at, is described by
 the read map (``build_cross_read_map``): for every relation of a database it
 names the properties of the linked entries that its rollups read, and
-``READS_TITLE`` for formulas, which pass the linked entries' titles through.
+``READS_TITLE`` for formulas, which pass the linked entries' titles and icons
+through.
 After a value change, the map tells which entries elsewhere actually depend
 on the properties that changed, so only those are evaluated again
 (``recompute_after_value_change``).
@@ -81,6 +96,7 @@ from app.blocks.formula_engine import (
     FormulaError,
     evaluate,
     extract_prop_names,
+    map_prop_references,
     uses_volatile_functions,
 )
 
@@ -102,6 +118,41 @@ class SchemaLike:
     config: Optional[dict]
 
 
+# ─── Formula references ───────────────────────────────────────────────────────
+
+
+def formula_reference_index(schemas: list[Any]) -> dict[str, Any]:
+    """
+    The schema each ``prop()`` argument can name among *schemas*: its id as a
+    string, and its name. An id wins over a name that happens to be spelled
+    like it.
+    """
+    index: dict[str, Any] = {s.name: s for s in schemas}
+    index.update({str(s.id): s for s in schemas})
+    return index
+
+
+def formula_expression_with_ids(expression: str, schemas: list[Any]) -> str:
+    """
+    *expression* with every ``prop('Name')`` naming one of *schemas* turned
+    into ``prop('<id>')``, the form formulas are stored in. References that
+    are ids already, or name no schema, stay as they are; a name spelled like
+    the id of one of *schemas* is read as that id, as at evaluation.
+    """
+    ids = {str(s.id) for s in schemas}
+    return map_prop_references(
+        expression, {s.name: str(s.id) for s in schemas if s.name not in ids},
+    )
+
+
+def formula_expression_with_names(expression: str, schemas: list[Any]) -> str:
+    """
+    *expression* with every ``prop('<id>')`` naming one of *schemas* turned
+    into ``prop('Name')``, the form the API and the editor show.
+    """
+    return map_prop_references(expression, {str(s.id): s.name for s in schemas})
+
+
 # ─── Dependency graph ─────────────────────────────────────────────────────────
 
 
@@ -117,7 +168,7 @@ def build_dependency_graph(schemas: list[Any]) -> dict[uuid.UUID, set[uuid.UUID]
     schemas:
         All PropertySchema (or SchemaLike) objects for a database.
     """
-    name_to_id: dict[str, uuid.UUID] = {s.name: s.id for s in schemas}
+    references = formula_reference_index(schemas)
     graph: dict[uuid.UUID, set[uuid.UUID]] = {}
 
     for schema in schemas:
@@ -138,9 +189,9 @@ def build_dependency_graph(schemas: list[Any]) -> dict[uuid.UUID, set[uuid.UUID]
                 continue
             deps: set[uuid.UUID] = set()
             for name in names:
-                dep_id = name_to_id.get(name)
-                if dep_id is not None and dep_id != schema.id:
-                    deps.add(dep_id)
+                dep = references.get(name)
+                if dep is not None and dep.id != schema.id:
+                    deps.add(dep.id)
             graph[schema.id] = deps
 
         elif schema.type == "rollup":
@@ -459,6 +510,28 @@ _RELATION_COL_TYPES = frozenset({"relation", "parent_item", "sub_item"})
 _RAW_DISPLAY_FUNCTIONS = frozenset({"show_original", "first_value", "last_value"})
 
 
+def _entry_descriptor(db: Session, rid_str: str) -> Optional[dict]:
+    """
+    The chip descriptor ``{"id", "title", "database_id", "icon"}`` of the
+    entry *rid_str*, as formulas and rollups store it in a relation result;
+    None for an id that is malformed or not an active block. ``icon`` is
+    None for an entry without its own icon.
+    """
+    try:
+        target_uuid = uuid.UUID(rid_str)
+    except (ValueError, TypeError):
+        return None
+    block = repo.get_block(db, target_uuid)
+    if block is None or block.state != "active":
+        return None
+    return {
+        "id": str(block.id),
+        "title": (block.content or {}).get("title") or "",
+        "database_id": str(block.parent_id) if block.parent_id else None,
+        "icon": block.icon,
+    }
+
+
 def _resolve_relation_entries(
     scalars: list[Any],
     resolve_entry: Callable[[str], Optional[dict]],
@@ -468,8 +541,8 @@ def _resolve_relation_entries(
     flat list of entry descriptors for clickable chips.
 
     ``resolve_entry`` maps an entry ID string to a descriptor dict
-    ``{"id", "title", "database_id"}`` for an active entry, or ``None`` for a
-    missing/trashed entry (which is skipped).
+    ``{"id", "title", "database_id", "icon"}`` for an active entry, or
+    ``None`` for a missing/trashed entry (which is skipped).
     """
     out: list[dict] = []
     for scalar in scalars:
@@ -741,16 +814,22 @@ def _formula_context(
     values_map: dict[uuid.UUID, Optional[dict]],
 ) -> dict[str, Any]:
     """
-    Build ``{property_name: scalar}`` dict for formula evaluation.
+    Build the context of a formula evaluation: every property's scalar under
+    its id (as a string) and under its name, so ``prop()`` resolves a stored
+    id as well as a name (see "Formula references" above). An id wins over a
+    name spelled like it.
 
     Passes each schema's ``config`` to ``_extract_scalar`` so that
     timeline relation properties resolve to their current (last-slot) value
     rather than the raw ``_timeline`` object.
     """
-    return {
-        s.name: _extract_scalar(s.type, values_map.get(s.id), s.config)
+    scalars = {
+        s.id: _extract_scalar(s.type, values_map.get(s.id), s.config)
         for s in schemas
     }
+    context: dict[str, Any] = {s.name: scalars[s.id] for s in schemas}
+    context.update({str(s.id): scalars[s.id] for s in schemas})
+    return context
 
 
 def _serialise_formula_result(value: Any) -> Any:
@@ -821,21 +900,9 @@ def _compute_formula(
     # show_original rollup prop), normalise to a descriptor list and mark the
     # stored value with relation=True so FormulaCell renders clickable chips
     # instead of raw UUIDs.
-    def _resolve_entry(rid_str: str) -> Optional[dict]:
-        try:
-            target_uuid = uuid.UUID(rid_str)
-        except (ValueError, TypeError):
-            return None
-        block = repo.get_block(db, target_uuid)
-        if block is None or block.state != "active":
-            return None
-        return {
-            "id": str(block.id),
-            "title": (block.content or {}).get("title") or "",
-            "database_id": str(block.parent_id) if block.parent_id else None,
-        }
-
-    resolved, is_relation = _resolve_formula_relation(serialised, _resolve_entry)
+    resolved, is_relation = _resolve_formula_relation(
+        serialised, lambda rid: _entry_descriptor(db, rid),
+    )
 
     val: dict = {
         "result": resolved,
@@ -948,21 +1015,7 @@ def _compute_rollup(
     # can render clickable relation chips instead of raw UUIDs. Counting/
     # aggregating functions keep the ID lists so their semantics are unchanged.
     if (col_type in _RELATION_COL_TYPES or target_is_relation_formula) and function in _RAW_DISPLAY_FUNCTIONS:
-        def _resolve_entry(rid_str: str) -> Optional[dict]:
-            try:
-                target_uuid = uuid.UUID(rid_str)
-            except (ValueError, TypeError):
-                return None
-            block = repo.get_block(db, target_uuid)
-            if block is None or block.state != "active":
-                return None
-            return {
-                "id": str(block.id),
-                "title": (block.content or {}).get("title") or "",
-                "database_id": str(block.parent_id) if block.parent_id else None,
-            }
-
-        entries = _resolve_relation_entries(scalars, _resolve_entry)
+        entries = _resolve_relation_entries(scalars, lambda rid: _entry_descriptor(db, rid))
         if function == "show_original":
             result: Any = entries
         elif function == "first_value":
@@ -1163,8 +1216,9 @@ def _relation_target_database_id(rel_schema: Any) -> Optional[uuid.UUID]:
     return None
 
 
-# Stands for "the titles of the linked entries" in a read map. A formula that
-# passes a relation through stores the linked entries' titles in its result.
+# Stands for "the titles and icons of the linked entries" in a read map. A
+# formula that passes a relation through stores the linked entries' titles and
+# icons in its result.
 READS_TITLE = uuid.UUID(int=0)
 
 
@@ -1196,7 +1250,7 @@ def build_cross_readers(
     whom.
     """
     by_id: dict[uuid.UUID, Any] = {s.id: s for s in schemas}
-    by_name: dict[str, Any] = {s.name: s for s in schemas}
+    references = formula_reference_index(schemas)
 
     def _points_at_source(rel_schema: Any) -> bool:
         return _relation_target_database_id(rel_schema) == source_database_id
@@ -1232,7 +1286,7 @@ def build_cross_readers(
             except FormulaError:
                 continue
             for name in names:
-                dep = by_name.get(name)
+                dep = references.get(name)
                 if (
                     dep is not None
                     and dep.type in _RELATION_COL_TYPES

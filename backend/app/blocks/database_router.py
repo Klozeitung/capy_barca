@@ -70,6 +70,13 @@ using Kahn's topological-sort algorithm. A detected cycle returns 422. When
 a computed config changes, every entry of the database is re-evaluated in
 the same transaction.
 
+Formulas are stored with property ids and exchanged with names: every schema
+this router returns shows a formula's ``prop()`` references as names, and a
+formula sent with names is stored with ids. Renaming a property therefore
+leaves formulas intact; deleting one turns the references to it back into its
+name (see ``schema_service``, "Formula references"). ``GET /formula-syntax``
+lists the functions and syntax a formula can use, for the editor's reference.
+
 Database settings
 -----------------
 Settings of the whole database, as opposed to one of its views, live in
@@ -102,6 +109,8 @@ from app.blocks.database_payloads import (
     DatabaseListResponse,
     DatabaseSettingsResponse,
     DatabaseSettingsUpdate,
+    FormulaSyntaxEntry,
+    FormulaSyntaxResponse,
     FormulaValidateRequest,
     FormulaValidateResponse,
     KeyReferenceResponse,
@@ -110,7 +119,12 @@ from app.blocks.database_payloads import (
     SchemaResponse,
     SchemaUpdate,
 )
-from app.blocks.formula_engine import FormulaError, validate_syntax
+from app.blocks.formula_engine import (
+    SYNTAX_CATEGORIES,
+    FormulaError,
+    syntax_catalogue,
+    validate_syntax,
+)
 from app.blocks.models import DatabaseSettings
 from app.blocks.relation_sync import (
     assert_relation_cross_side_lock,
@@ -124,6 +138,22 @@ from app.session.deps import get_current_user
 from app.users.model import User
 
 database_router = APIRouter(prefix="/api/databases", tags=["databases"])
+
+
+def _schema_response(schema, schemas: list) -> SchemaResponse:
+    """
+    *schema* as the API returns it, with a formula's references as names of
+    *schemas*, the properties of its database.
+    """
+    return SchemaResponse(
+        id=schema.id,
+        database_id=schema.database_id,
+        name=schema.name,
+        type=schema.type,
+        config=schema_service.client_config(schema, schemas),
+        position=schema.position,
+        group=schema.group,
+    )
 
 
 # ─── Database list endpoint ───────────────────────────────────────────────────
@@ -172,9 +202,13 @@ def list_schemas(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Return all property schemas for a database, ordered by position."""
+    """
+    Return all property schemas for a database, ordered by position, formulas
+    with their references as names.
+    """
     get_database_or_raise(db, database_id, current_user, Access.READ)
-    return repo.list_schemas(db, database_id)
+    schemas = repo.list_schemas(db, database_id)
+    return [_schema_response(s, schemas) for s in schemas]
 
 
 @database_router.get(
@@ -263,6 +297,10 @@ def create_schema(
 
     The options of a select property and the nuance options of a relation are
     stored in canonical form, each with an id (see ``app.blocks.options``).
+
+    A formula is stored with its references as property ids. Creating a
+    property also binds references other formulas made to its name before it
+    existed.
     """
     get_database_or_raise(db, database_id, current_user, Access.WRITE)
     if payload.type == "relation":
@@ -292,6 +330,7 @@ def create_schema(
             visible_in_view_id=payload.visible_in_view_id,
         )
         schema.group = payload.group
+        schema_service.bind_formula_references(db, database_id)
         mirror_created_in = schema_service.create_eager_mirror(db, schema, payload.config)
         db.commit()
     except IntegrityError:
@@ -309,7 +348,7 @@ def create_schema(
     if mirror_created_in is not None:
         emit_schema_updated(db, mirror_created_in)
 
-    return schema
+    return _schema_response(schema, repo.list_schemas(db, database_id))
 
 
 @database_router.patch(
@@ -435,14 +474,16 @@ def update_schema(
         if retyped_out_of_keyable:
             clear_keying_for_property(db, schema_id)
 
-        # The references are rewritten before the recompute below, so the
-        # corrected expressions are the ones evaluated.
-        rewrote_formula = (
-            payload.name is not None
-            and updated.name != old_name
-            and schema_service.rename_formula_references(db, database_id, old_name, updated.name)
+        # Formulas store property ids, so a rename leaves them intact. A
+        # formula saved with names, and references written by name to what
+        # this property is now called, are bound to ids here, before the
+        # recompute below evaluates them.
+        renamed = payload.name is not None and updated.name != old_name
+        bound = (
+            (renamed or (effective_type == "formula" and config_changed))
+            and schema_service.bind_formula_references(db, database_id)
         )
-        if computed_config_changed or rewrote_formula:
+        if computed_config_changed or (renamed and bound):
             schema_service.recompute_entries(db, database_id)
 
         migrated |= schema_service.propagate_to_mirror(
@@ -467,7 +508,7 @@ def update_schema(
         raise
 
     emit_entries_updated_for(db, migrated)
-    return updated
+    return _schema_response(updated, repo.list_schemas(db, database_id))
 
 
 @database_router.get(
@@ -519,6 +560,9 @@ def delete_schema(
     Deleting a relation property leaves the mirror in the target database in
     place, so it needs no access to the target.
 
+    Formulas referring to the property keep the reference as its name: they
+    stay readable and bind again once a property with that name exists.
+
     Returns 204 No Content on success.
     """
     get_database_or_raise(db, database_id, current_user, Access.WRITE)
@@ -530,6 +574,7 @@ def delete_schema(
         )
     try:
         clear_keying_for_property(db, schema_id)
+        schema_service.unbind_formula_references(db, schema)
         repo.delete_schema(db, schema)
         db.commit()
     except Exception:
@@ -642,10 +687,43 @@ def seed_readonly_schemas(
         for s in created:
             db.refresh(s)
 
-    return created
+    schemas = repo.list_schemas(db, database_id) if created else []
+    return [_schema_response(s, schemas) for s in created]
 
 
-# ─── Formula validate endpoint ────────────────────────────────────────────────
+# ─── Formula endpoints ────────────────────────────────────────────────────────
+
+
+@database_router.get(
+    "/formula-syntax",
+    response_model=FormulaSyntaxResponse,
+)
+def get_formula_syntax(
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return the functions and the rest of the syntax a formula can use, in
+    the order of the editor's syntax reference.
+
+    The list is read from the formula engine's function registry, so it
+    always names exactly the functions evaluation knows. Descriptions and
+    examples are not part of it: the frontend shows them in the user's
+    language from its locales, keyed by ``key``. The same for every database,
+    so no database access is involved.
+    """
+    return FormulaSyntaxResponse(
+        categories=list(SYNTAX_CATEGORIES),
+        entries=[
+            FormulaSyntaxEntry(
+                key=entry.key,
+                name=entry.name,
+                category=entry.category,
+                signature=entry.signature,
+                insert=entry.insert,
+            )
+            for entry in syntax_catalogue()
+        ],
+    )
 
 
 @database_router.post(

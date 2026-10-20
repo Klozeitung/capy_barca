@@ -374,6 +374,7 @@ def test_page_carries_resolved_relations_and_key_values(http_client):
         "target_database_id": target,
         "keying": {"enabled": True, "key_property_id": when["id"]},
     })
+    http_client.patch(f"/api/blocks/{linked}/appearance", json={"icon": "mdi:star-outline"})
     holder = _entry(http_client, source, "Entry A")
     _value(http_client, source, holder, link["id"], {"related_ids": [linked]})
     view_id = _views(http_client, source)["views"][0]["id"]
@@ -382,6 +383,7 @@ def test_page_carries_resolved_relations_and_key_values(http_client):
 
     assert page["relations"][linked]["title"] == "Entry B"
     assert page["relations"][linked]["database_id"] == target
+    assert page["relations"][linked]["icon"] == "mdi:star-outline"
     assert page["key_values"][when["id"]][linked] == {"start": "2000-07-28"}
 
 

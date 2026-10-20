@@ -50,7 +50,7 @@ import { useI18n } from 'vue-i18n'
 import { Icon } from '@iconify/vue'
 import type { DatabaseEntry, PropertySchema } from '@/stores/database'
 import { useAuthStore } from '@/stores/auth'
-import { getCellValue, formatCanonicalDate, formatDateRangeResult, isDateRangeResult, ISO_DATE_RE, ISO_DATETIME_RE, type DateRangeResult } from './cellUtils'
+import { chipIcon, getCellValue, formatCanonicalDate, formatDateRangeResult, isDateRangeResult, ISO_DATE_RE, ISO_DATETIME_RE, type DateRangeResult } from './cellUtils'
 import SideView from '@/components/main/SideView.vue'
 
 const props = defineProps<{
@@ -77,6 +77,8 @@ interface RelationChip {
   id: string
   title: string
   database_id: string | null
+  /** The linked entry's own icon; absent in results stored before icons were. */
+  icon?: string | null
 }
 
 const isRelation = computed<boolean>(() => cellData.value?.relation === true)
@@ -230,7 +232,7 @@ const formulaInlineStyle = computed<Record<string, string>>(() => {
         :class="{ 'formula-cell__rel-chip--clickable': !!chip.database_id }"
         @click.stop="openEntry(chip)"
       >
-        <Icon icon="mdi:file-document-outline" width="11" height="11" class="formula-cell__rel-chip-icon" />
+        <Icon :icon="chipIcon(chip.icon)" width="11" height="11" class="formula-cell__rel-chip-icon" />
         <span class="formula-cell__rel-chip-text">{{ chip.title || chip.id }}</span>
       </span>
     </template>

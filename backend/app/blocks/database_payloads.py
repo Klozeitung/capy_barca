@@ -98,6 +98,26 @@ class FormulaValidateResponse(BaseModel):
     prop_names: list[str] = []
 
 
+class FormulaSyntaxEntry(BaseModel):
+    """
+    One entry of the formula syntax reference.
+
+    ``key`` names its description and example in the frontend locales;
+    ``insert`` is the text the editor inserts, empty when there is none.
+    """
+    key: str
+    name: str
+    category: str
+    signature: str
+    insert: str
+
+
+class FormulaSyntaxResponse(BaseModel):
+    """The formula syntax reference, with its categories in display order."""
+    categories: list[str]
+    entries: list[FormulaSyntaxEntry]
+
+
 class QueryFilter(BaseModel):
     """A single filter condition as sent by the frontend."""
     schema_id: str
@@ -171,9 +191,10 @@ class EntryTitleResponse(BaseModel):
     """
     Lightweight relation-target descriptor used to render relation chips.
 
-    Carries only what a chip needs (``id``, ``title``, ``database_id``); the
-    title is read from ``Block.content['title']`` and may be ``None`` for an
-    untitled entry.
+    Carries only what a chip needs (``id``, ``title``, ``database_id``,
+    ``icon``); the title is read from ``Block.content['title']`` and may be
+    ``None`` for an untitled entry, the icon is ``None`` for an entry without
+    one, which the chip shows with the default icon.
 
     ``value`` holds the raw property value requested via ``value_schema_id``
     and is ``None`` whenever none was requested, the property does not resolve,
@@ -183,6 +204,7 @@ class EntryTitleResponse(BaseModel):
     title: Optional[str]
     database_id: uuid.UUID
     value: Optional[dict] = None
+    icon: Optional[str] = None
 
 
 class EntryDetailResponse(BaseModel):

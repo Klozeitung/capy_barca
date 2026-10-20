@@ -300,8 +300,8 @@ def resolve_entry_titles(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Resolve a set of entry IDs to lightweight ``{id, title, database_id}``
-    descriptors for rendering relation chips.
+    Resolve a set of entry IDs to lightweight ``{id, title, database_id,
+    icon}`` descriptors for rendering relation chips.
 
     Relation cells store only the target entry IDs.  Resolving their titles
     from the paginated entry listing breaks down once a relation points past
@@ -348,6 +348,7 @@ def resolve_entry_titles(
             title=title.title,
             database_id=title.database_id,
             value=title.value,
+            icon=title.icon,
         )
         for title in resolution.resolve_titles(
             db, database_id, payload.ids, payload.value_schema_id

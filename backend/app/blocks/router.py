@@ -287,23 +287,27 @@ def _block_to_dict(block) -> dict:
     }
 
 
-def _cascade_entry_title_change(db: Session, block, before_content: Optional[dict]) -> list[str]:
+def _cascade_entry_chip_change(db: Session, block, before: dict) -> list[str]:
     """
-    Recompute what depends on a database entry's title after it changed.
+    Recompute what depends on a database entry's title or icon after either
+    changed.
 
-    Relation chips render the linked entry's title, and formulas and rollups
-    that pass a relation through store those titles in their result. A rename
-    therefore has to recompute every entry whose computed values read this
-    entry, in this database and in others, before the transaction commits.
+    Relation chips render the linked entry's title and icon, and formulas and
+    rollups that pass a relation through store both in their result. A rename
+    or a new icon therefore has to recompute every entry whose computed values
+    read this entry, in this database and in others, before the transaction
+    commits.
 
-    Returns the IDs of the databases whose entries now differ, the entry's own
-    database included, so the caller can broadcast ``database_entries_updated``
-    for each after the commit. Returns an empty list when *block* is not an
-    entry of a database or its title did not change.
+    *before* is the block as ``_block_to_dict`` serialised it before the
+    change. Returns the IDs of the databases whose entries now differ, the
+    entry's own database included, so the caller can broadcast
+    ``database_entries_updated`` for each after the commit. Returns an empty
+    list when *block* is not an entry of a database or neither its title nor
+    its icon changed.
     """
-    before_title = (before_content or {}).get("title")
+    before_title = (before.get("content") or {}).get("title")
     after_title = (block.content or {}).get("title")
-    if before_title == after_title:
+    if before_title == after_title and before.get("icon") == block.icon:
         return []
     if block.parent_id is None or block.type == "entry_template":
         return []
@@ -530,9 +534,7 @@ def update_block(
         before_snapshot = _block_to_dict(before_block)
         update_kwargs = payload.model_dump(exclude_none=True)
         block = service.update_block_fields(db, block_id, **update_kwargs)
-        affected_db_ids = _cascade_entry_title_change(
-            db, block, before_snapshot.get("content"),
-        )
+        affected_db_ids = _cascade_entry_chip_change(db, block, before_snapshot)
         db.commit()
         db.refresh(block)
         emit_block_event(
@@ -556,7 +558,13 @@ def update_appearance(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Update the icon and/or cover of a block."""
+    """
+    Update the icon and/or cover of a block.
+
+    A new icon on a database entry also recomputes the formulas and rollups
+    that show it on relation chips elsewhere, and notifies the open views of
+    every database whose entries changed as a result.
+    """
     try:
         before_block = repo.get_block(db, block_id)
         if before_block is None:
@@ -569,6 +577,7 @@ def update_appearance(
             icon=payload.icon,
             cover=payload.cover,
         )
+        affected_db_ids = _cascade_entry_chip_change(db, block, before_snapshot)
         db.commit()
         emit_block_event(
             db=db,
@@ -577,6 +586,7 @@ def update_appearance(
             before=before_snapshot,
             after=_block_to_dict(block),
         )
+        _broadcast_entries_updated(db, affected_db_ids)
         return _written(block)
     except HTTPException:
         raise
@@ -1107,7 +1117,8 @@ def revert_event(
     Only fields present in the ``before`` snapshot are modified. Structural
     changes (move, delete) are not reverted via this endpoint – use the
     dedicated move/restore endpoints for those. A revert that changes a
-    database entry's title cascades like a rename through ``update_block``.
+    database entry's title or icon cascades like a rename through
+    ``update_block``.
     """
     block = repo.get_block(db, block_id)
     if block is None:
@@ -1134,9 +1145,7 @@ def revert_event(
         if "cover" in before:
             block.cover = before["cover"]
         db.flush()
-        affected_db_ids = _cascade_entry_title_change(
-            db, block, before_snapshot.get("content"),
-        )
+        affected_db_ids = _cascade_entry_chip_change(db, block, before_snapshot)
         db.commit()
         db.refresh(block)
         emit_block_event(

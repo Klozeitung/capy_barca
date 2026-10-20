@@ -412,7 +412,7 @@
       "subItemPairHint": "This property is part of the sub-item system and cannot be reconfigured. Only the name may be changed.",
       "formulaExpression": "Expression",
       "formulaExpressionPlaceholder": "e.g. prop('Price') * prop('Qty')",
-      "formulaExpressionHint": "Reference columns with prop('Name'). Supports +, -, *, /, ^, comparisons and functions: if(), round(), abs(), ceil(), floor(), len(), concat().",
+      "formulaExpressionHint": "Reference properties with prop('Name'). Renaming a property keeps the formula working; deleting it leaves its name in the formula. The syntax reference below lists every function and operator.",
       "formulaPropsLabel": "Available properties",
       "formulaPropsEmpty": "No properties in this database yet.",
       "formulaStatusValid": "Valid",
@@ -422,6 +422,8 @@
       "formulaHelpSearch": "Search functions…",
       "formulaHelpInsert": "Insert",
       "formulaHelpEmpty": "No matching functions.",
+      "formulaHelpLoading": "Loading…",
+      "formulaHelpCat_basics": "Basics",
       "formulaHelpCat_logic": "Logic",
       "formulaHelpCat_math": "Math",
       "formulaHelpCat_text": "Text",
@@ -490,6 +492,208 @@
       "keyingBlockedByMirror": "Not available: the mirror property is timelined or nuanced.",
       "keyingBlocksOthers": "Not available while this relation is keyed.",
       "keyingMirrorKeyed": "Not available: the mirror property is keyed. A keyed relation restricts the other side to vanilla or keyed."
+    },
+    "formulaHelp": {
+      "prop": {
+        "description": "Reads the value of a property of the same entry. Insert it with the property chips above; renaming a property keeps the formula working.",
+        "example": "prop('Price') * 2"
+      },
+      "literals": {
+        "description": "Numbers, text in single or double quotes, true, false and null (empty).",
+        "example": "if(prop('Done'), 'yes', null)"
+      },
+      "grouping": {
+        "description": "Parentheses decide what is calculated first.",
+        "example": "(prop('Price') + 5) * prop('Qty')"
+      },
+      "if": {
+        "description": "Returns thenValue when the condition is true, otherwise elseValue.",
+        "example": "if(prop('Score') >= 90, 'A', 'B')"
+      },
+      "ifs": {
+        "description": "Returns the value paired with the first true condition. An optional last argument is the default when no condition matches.",
+        "example": "ifs(prop('Score') >= 90, 'A', prop('Score') >= 60, 'B', 'C')"
+      },
+      "and": {
+        "description": "True only when all arguments are true.",
+        "example": "and(prop('Done'), prop('Paid'))"
+      },
+      "or": {
+        "description": "True when at least one argument is true.",
+        "example": "or(prop('Draft'), prop('Review'))"
+      },
+      "not": {
+        "description": "Inverts a true/false value.",
+        "example": "not(prop('Archived'))"
+      },
+      "empty": {
+        "description": "True when the value is empty: no value, empty text, or a relation or list without items.",
+        "example": "empty(prop('Notes'))"
+      },
+      "equal": {
+        "description": "True when a equals b. Same as the == operator.",
+        "example": "equal(prop('Status'), 'Done')"
+      },
+      "abs": {
+        "description": "The absolute (non-negative) value of a number.",
+        "example": "abs(-42)"
+      },
+      "round": {
+        "description": "Rounds to the given number of decimal places (default 0).",
+        "example": "round(prop('Price'), 2)"
+      },
+      "ceil": {
+        "description": "Rounds up to the next whole number.",
+        "example": "ceil(3.1)"
+      },
+      "floor": {
+        "description": "Rounds down to the previous whole number.",
+        "example": "floor(3.9)"
+      },
+      "divide": {
+        "description": "Divides a by b. Same as the / operator.",
+        "example": "divide(prop('Total'), 4)"
+      },
+      "sum": {
+        "description": "Adds up all arguments. Empty values are skipped.",
+        "example": "sum(prop('A'), prop('B'), prop('C'))"
+      },
+      "min": {
+        "description": "The smallest of the arguments. Empty values are skipped.",
+        "example": "min(prop('A'), prop('B'))"
+      },
+      "max": {
+        "description": "The largest of the arguments. Empty values are skipped.",
+        "example": "max(prop('A'), prop('B'))"
+      },
+      "avg": {
+        "description": "The average of the arguments. Empty values are skipped.",
+        "example": "avg(prop('A'), prop('B'), prop('C'))"
+      },
+      "tonumber": {
+        "description": "Turns text or true/false into a number (true = 1, false = 0). Text that is no number gives an empty result.",
+        "example": "toNumber('42') + 1"
+      },
+      "len": {
+        "description": "The number of characters in a text.",
+        "example": "len(prop('Notes'))"
+      },
+      "concat": {
+        "description": "Joins all arguments into one text.",
+        "example": "concat('No. ', prop('Number'))"
+      },
+      "format": {
+        "description": "Turns a value into text. A list becomes its items separated by commas.",
+        "example": "format(prop('Status')) == 'Done'"
+      },
+      "contains": {
+        "description": "True when the text contains the search text. Case-sensitive.",
+        "example": "contains(prop('Title'), 'draft')"
+      },
+      "style": {
+        "description": "Adds display hints to a value: b, i, u, s and c for formatting, gray, brown, orange, yellow, green, blue, purple, pink or red for the text color, and the same colors with _background for the background.",
+        "example": "if(prop('Balance') < 0, style(prop('Balance'), 'red'), prop('Balance'))"
+      },
+      "unstyle": {
+        "description": "Removes all display hints from a value.",
+        "example": "unstyle(prop('Styled'))"
+      },
+      "at": {
+        "description": "The item at the given position of a list, counting from 0. Negative positions count from the end (-1 is the last item). Empty when there is no such item.",
+        "example": "at(prop('Dates'), 0)"
+      },
+      "now": {
+        "description": "The current date and time (UTC).",
+        "example": "formatDate(now(), 'DD.MM.YYYY HH:mm')"
+      },
+      "today": {
+        "description": "Today's date at midnight UTC.",
+        "example": "dateBetween(prop('Deadline'), today(), 'days')"
+      },
+      "datestart": {
+        "description": "The start of a date property, or the date itself.",
+        "example": "dateStart(prop('Period'))"
+      },
+      "dateend": {
+        "description": "The end of a date property with an end date; empty otherwise.",
+        "example": "dateEnd(prop('Period'))"
+      },
+      "parsedate": {
+        "description": "Reads a date from text in ISO form (YYYY-MM-DD or a full ISO date and time).",
+        "example": "parseDate('2000-07-28')"
+      },
+      "dateadd": {
+        "description": "Adds an amount to a date. Units: years, quarters, months, weeks, days, hours, minutes.",
+        "example": "dateAdd(prop('Start'), 7, 'days')"
+      },
+      "datesubtract": {
+        "description": "Subtracts an amount from a date. Same units as dateAdd.",
+        "example": "dateSubtract(prop('Deadline'), 1, 'weeks')"
+      },
+      "datebetween": {
+        "description": "The number of whole units from date2 to date1; positive when date1 is later. Units as for dateAdd.",
+        "example": "dateBetween(now(), prop('Start'), 'days')"
+      },
+      "formatdate": {
+        "description": "Writes a date as text. Tokens: YYYY YY MMMM MMM MM M DDDD DDD DD D HH H hh h mm m ss s A a.",
+        "example": "formatDate(prop('Start'), 'DD.MM.YYYY')"
+      },
+      "date": {
+        "description": "The day of the month (1 to 31).",
+        "example": "date(now())"
+      },
+      "month": {
+        "description": "The month (1 to 12).",
+        "example": "month(now())"
+      },
+      "year": {
+        "description": "The year.",
+        "example": "year(now())"
+      },
+      "day": {
+        "description": "The day of the week (1 = Monday, 7 = Sunday).",
+        "example": "day(now())"
+      },
+      "hour": {
+        "description": "The hour (0 to 23).",
+        "example": "hour(now())"
+      },
+      "minute": {
+        "description": "The minute (0 to 59).",
+        "example": "minute(now())"
+      },
+      "week": {
+        "description": "The ISO week number (1 to 53).",
+        "example": "week(now())"
+      },
+      "arithmetic": {
+        "description": "Addition, subtraction, multiplication and division.",
+        "example": "prop('Price') * prop('Qty')"
+      },
+      "text_concat": {
+        "description": "+ with text on either side joins the two into one text.",
+        "example": "'No. ' + prop('Number')"
+      },
+      "modulo": {
+        "description": "The remainder of dividing a by b.",
+        "example": "prop('Items') % 2"
+      },
+      "power": {
+        "description": "Raises a to the power of b.",
+        "example": "2 ^ 10"
+      },
+      "negation": {
+        "description": "Turns a number into its negative.",
+        "example": "-prop('Amount')"
+      },
+      "comparison": {
+        "description": "Compare two values; the result is true or false.",
+        "example": "prop('Score') >= 60"
+      },
+      "logical": {
+        "description": "and, or and not between expressions.",
+        "example": "prop('Done') and not prop('Archived')"
+      }
     },
     "viewSettings": {
       "title": "View settings",
@@ -881,6 +1085,7 @@
     "databasesOverview": "A database stores entries as rows and properties as typed columns (text, number, date, select, relation, rollup, and more). The same data can appear through different views — table, calendar, and others — each with its own filters and sorting. Columns, the name column included, can be hidden per view in the view settings; rename the name column by double-clicking its header. Rename the options of a select property in its settings; entries keep them. Views are shared by everyone; each database and each embedded database remembers on its own which view it shows. In the \"Database\" tab of the view settings, the owner of the database or an admin sets a default icon for new entries.",
     "databasesDates": "Your date format is set under Settings → Date and applies everywhere; a single date property can override it in its own settings. Date fields cover the years 1 to 9999.",
     "databasesGroups": "In the properties side panel you can organise properties into groups. Custom groups fold and unfold, rename on double-click, and reorder by drag-and-drop via the handle on the right of the group header. The default group always stays on top.",
+    "databasesFormulas": "Formula properties calculate a value from other properties of the same entry, referenced with prop('Name'). The syntax reference in the property settings lists every function and operator. Renaming a property keeps the formulas that use it working.",
     "databasesKeying": "A relation property can be keyed: choose a property of the target database to sort the relation's entries by. The chosen value is shown beside each entry.",
     "databasesViewDescription": "Each view can have its own description: click the area below the toolbar to write it, click elsewhere to save. It is included in exports — beneath the title in PDF, on the header of the name column in CSV and Excel (or of the first column while the name column is hidden).",
     "databasesCollaboration": "Changes by other users appear right away. If someone changes a value you are editing or changed within the last minute, the later change applies and you get a notice. After an interrupted connection, open pages and views load again. While a field shows a spinner, your value is being saved; until the server has answered, the field takes no further input. Leaving the page at that moment makes the browser ask first."

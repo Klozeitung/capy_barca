@@ -412,7 +412,7 @@
       "subItemPairHint": "Diese Eigenschaft gehört zum Unterelement-System und kann nicht umkonfiguriert werden. Nur der Name lässt sich ändern.",
       "formulaExpression": "Formelausdruck",
       "formulaExpressionPlaceholder": "z. B. prop('Preis') * prop('Menge')",
-      "formulaExpressionHint": "Spalten werden mit prop('Name') referenziert. Unterstützt +, -, *, /, ^, Vergleiche und Funktionen: if(), round(), abs(), ceil(), floor(), len(), concat().",
+      "formulaExpressionHint": "Eigenschaften werden mit prop('Name') referenziert. Beim Umbenennen einer Eigenschaft bleibt die Formel intakt; wird sie gelöscht, bleibt ihr Name in der Formel stehen. Die Syntaxreferenz unten listet alle Funktionen und Operatoren.",
       "formulaPropsLabel": "Verfügbare Eigenschaften",
       "formulaPropsEmpty": "Noch keine Eigenschaften in dieser Datenbank.",
       "formulaStatusValid": "Gültig",
@@ -422,6 +422,8 @@
       "formulaHelpSearch": "Funktionen suchen…",
       "formulaHelpInsert": "Einfügen",
       "formulaHelpEmpty": "Keine passenden Funktionen.",
+      "formulaHelpLoading": "Wird geladen…",
+      "formulaHelpCat_basics": "Grundlagen",
       "formulaHelpCat_logic": "Logik",
       "formulaHelpCat_math": "Mathematik",
       "formulaHelpCat_text": "Text",
@@ -490,6 +492,208 @@
       "keyingBlockedByMirror": "Nicht verfügbar: Die Gegenseite hat eine Timeline oder Nuancen.",
       "keyingBlocksOthers": "Nicht verfügbar, solange diese Relation gekeyt ist.",
       "keyingMirrorKeyed": "Nicht verfügbar: Die Gegenseite ist gekeyt. Eine gekeyte Relation lässt auf der anderen Seite nur vanilla oder gekeyt zu."
+    },
+    "formulaHelp": {
+      "prop": {
+        "description": "Liest den Wert einer Eigenschaft desselben Eintrags. Einfügen über die Eigenschafts-Chips oben; beim Umbenennen einer Eigenschaft bleibt die Formel intakt.",
+        "example": "prop('Preis') * 2"
+      },
+      "literals": {
+        "description": "Zahlen, Text in einfachen oder doppelten Anführungszeichen, true, false und null (leer).",
+        "example": "if(prop('Erledigt'), 'ja', null)"
+      },
+      "grouping": {
+        "description": "Klammern legen fest, was zuerst berechnet wird.",
+        "example": "(prop('Preis') + 5) * prop('Menge')"
+      },
+      "if": {
+        "description": "Gibt thenValue zurück, wenn die Bedingung wahr ist, sonst elseValue.",
+        "example": "if(prop('Punkte') >= 90, 'A', 'B')"
+      },
+      "ifs": {
+        "description": "Gibt den Wert zur ersten wahren Bedingung zurück. Ein optionales letztes Argument gilt, wenn keine Bedingung zutrifft.",
+        "example": "ifs(prop('Punkte') >= 90, 'A', prop('Punkte') >= 60, 'B', 'C')"
+      },
+      "and": {
+        "description": "Wahr, wenn alle Argumente wahr sind.",
+        "example": "and(prop('Erledigt'), prop('Bezahlt'))"
+      },
+      "or": {
+        "description": "Wahr, wenn mindestens ein Argument wahr ist.",
+        "example": "or(prop('Entwurf'), prop('Prüfung'))"
+      },
+      "not": {
+        "description": "Kehrt einen Wahr/Falsch-Wert um.",
+        "example": "not(prop('Archiviert'))"
+      },
+      "empty": {
+        "description": "Wahr, wenn der Wert leer ist: kein Wert, leerer Text oder eine Relation bzw. Liste ohne Einträge.",
+        "example": "empty(prop('Notizen'))"
+      },
+      "equal": {
+        "description": "Wahr, wenn a gleich b ist. Entspricht dem Operator ==.",
+        "example": "equal(prop('Status'), 'Fertig')"
+      },
+      "abs": {
+        "description": "Der Betrag (nicht negative Wert) einer Zahl.",
+        "example": "abs(-42)"
+      },
+      "round": {
+        "description": "Rundet auf die angegebene Zahl von Nachkommastellen (Standard 0).",
+        "example": "round(prop('Preis'), 2)"
+      },
+      "ceil": {
+        "description": "Rundet auf die nächste ganze Zahl auf.",
+        "example": "ceil(3.1)"
+      },
+      "floor": {
+        "description": "Rundet auf die vorige ganze Zahl ab.",
+        "example": "floor(3.9)"
+      },
+      "divide": {
+        "description": "Teilt a durch b. Entspricht dem Operator /.",
+        "example": "divide(prop('Summe'), 4)"
+      },
+      "sum": {
+        "description": "Addiert alle Argumente. Leere Werte werden übersprungen.",
+        "example": "sum(prop('A'), prop('B'), prop('C'))"
+      },
+      "min": {
+        "description": "Das kleinste der Argumente. Leere Werte werden übersprungen.",
+        "example": "min(prop('A'), prop('B'))"
+      },
+      "max": {
+        "description": "Das größte der Argumente. Leere Werte werden übersprungen.",
+        "example": "max(prop('A'), prop('B'))"
+      },
+      "avg": {
+        "description": "Der Durchschnitt der Argumente. Leere Werte werden übersprungen.",
+        "example": "avg(prop('A'), prop('B'), prop('C'))"
+      },
+      "tonumber": {
+        "description": "Wandelt Text oder Wahr/Falsch in eine Zahl um (true = 1, false = 0). Text, der keine Zahl ist, ergibt ein leeres Ergebnis.",
+        "example": "toNumber('42') + 1"
+      },
+      "len": {
+        "description": "Die Anzahl der Zeichen eines Texts.",
+        "example": "len(prop('Notizen'))"
+      },
+      "concat": {
+        "description": "Verbindet alle Argumente zu einem Text.",
+        "example": "concat('Nr. ', prop('Nummer'))"
+      },
+      "format": {
+        "description": "Wandelt einen Wert in Text um. Eine Liste wird zu ihren Einträgen, durch Kommas getrennt.",
+        "example": "format(prop('Status')) == 'Fertig'"
+      },
+      "contains": {
+        "description": "Wahr, wenn der Text den Suchtext enthält. Groß- und Kleinschreibung zählt.",
+        "example": "contains(prop('Titel'), 'Entwurf')"
+      },
+      "style": {
+        "description": "Versieht einen Wert mit Anzeigehinweisen: b, i, u, s und c zur Formatierung, gray, brown, orange, yellow, green, blue, purple, pink oder red für die Textfarbe und dieselben Farben mit _background für den Hintergrund.",
+        "example": "if(prop('Saldo') < 0, style(prop('Saldo'), 'red'), prop('Saldo'))"
+      },
+      "unstyle": {
+        "description": "Entfernt alle Anzeigehinweise von einem Wert.",
+        "example": "unstyle(prop('Formatiert'))"
+      },
+      "at": {
+        "description": "Der Eintrag an der angegebenen Position einer Liste, gezählt ab 0. Negative Positionen zählen vom Ende (-1 ist der letzte Eintrag). Leer, wenn es keinen solchen Eintrag gibt.",
+        "example": "at(prop('Termine'), 0)"
+      },
+      "now": {
+        "description": "Das aktuelle Datum mit Uhrzeit (UTC).",
+        "example": "formatDate(now(), 'DD.MM.YYYY HH:mm')"
+      },
+      "today": {
+        "description": "Das heutige Datum um Mitternacht UTC.",
+        "example": "dateBetween(prop('Frist'), today(), 'days')"
+      },
+      "datestart": {
+        "description": "Der Beginn einer Datumseigenschaft bzw. das Datum selbst.",
+        "example": "dateStart(prop('Zeitraum'))"
+      },
+      "dateend": {
+        "description": "Das Ende einer Datumseigenschaft mit Enddatum, sonst leer.",
+        "example": "dateEnd(prop('Zeitraum'))"
+      },
+      "parsedate": {
+        "description": "Liest ein Datum aus Text im ISO-Format (YYYY-MM-DD oder vollständiges ISO-Datum mit Uhrzeit).",
+        "example": "parseDate('2000-07-28')"
+      },
+      "dateadd": {
+        "description": "Addiert eine Menge zu einem Datum. Einheiten: years, quarters, months, weeks, days, hours, minutes.",
+        "example": "dateAdd(prop('Beginn'), 7, 'days')"
+      },
+      "datesubtract": {
+        "description": "Zieht eine Menge von einem Datum ab. Einheiten wie bei dateAdd.",
+        "example": "dateSubtract(prop('Frist'), 1, 'weeks')"
+      },
+      "datebetween": {
+        "description": "Die Anzahl ganzer Einheiten von date2 bis date1; positiv, wenn date1 später liegt. Einheiten wie bei dateAdd.",
+        "example": "dateBetween(now(), prop('Beginn'), 'days')"
+      },
+      "formatdate": {
+        "description": "Schreibt ein Datum als Text. Platzhalter: YYYY YY MMMM MMM MM M DDDD DDD DD D HH H hh h mm m ss s A a.",
+        "example": "formatDate(prop('Beginn'), 'DD.MM.YYYY')"
+      },
+      "date": {
+        "description": "Der Tag im Monat (1 bis 31).",
+        "example": "date(now())"
+      },
+      "month": {
+        "description": "Der Monat (1 bis 12).",
+        "example": "month(now())"
+      },
+      "year": {
+        "description": "Das Jahr.",
+        "example": "year(now())"
+      },
+      "day": {
+        "description": "Der Wochentag (1 = Montag, 7 = Sonntag).",
+        "example": "day(now())"
+      },
+      "hour": {
+        "description": "Die Stunde (0 bis 23).",
+        "example": "hour(now())"
+      },
+      "minute": {
+        "description": "Die Minute (0 bis 59).",
+        "example": "minute(now())"
+      },
+      "week": {
+        "description": "Die ISO-Kalenderwoche (1 bis 53).",
+        "example": "week(now())"
+      },
+      "arithmetic": {
+        "description": "Addition, Subtraktion, Multiplikation und Division.",
+        "example": "prop('Preis') * prop('Menge')"
+      },
+      "text_concat": {
+        "description": "+ mit Text auf einer Seite verbindet beide zu einem Text.",
+        "example": "'Nr. ' + prop('Nummer')"
+      },
+      "modulo": {
+        "description": "Der Rest der Division von a durch b.",
+        "example": "prop('Anzahl') % 2"
+      },
+      "power": {
+        "description": "Potenziert a mit b.",
+        "example": "2 ^ 10"
+      },
+      "negation": {
+        "description": "Kehrt das Vorzeichen einer Zahl um.",
+        "example": "-prop('Betrag')"
+      },
+      "comparison": {
+        "description": "Vergleichen zwei Werte; das Ergebnis ist true oder false.",
+        "example": "prop('Punkte') >= 60"
+      },
+      "logical": {
+        "description": "and, or und not zwischen Ausdrücken.",
+        "example": "prop('Erledigt') and not prop('Archiviert')"
+      }
     },
     "viewSettings": {
       "title": "Ansicht-Einstellungen",
@@ -881,6 +1085,7 @@
     "databasesOverview": "Eine Datenbank speichert Einträge als Zeilen und Properties als typisierte Spalten (Text, Zahl, Datum, Auswahl, Relation, Rollup und mehr). Dieselben Daten lassen sich über verschiedene Ansichten zeigen — Tabelle, Kalender und weitere — jeweils mit eigenen Filtern und Sortierung. Spalten, auch die Name-Spalte, lassen sich pro Ansicht in den Ansicht-Einstellungen ausblenden; die Name-Spalte benennst du per Doppelklick auf ihren Spaltenkopf um. Optionen einer Auswahl benennst du in den Eigenschafts-Einstellungen um; die Einträge behalten sie dabei. Ansichten gelten für alle; welche gerade gezeigt wird, merkt sich jede Datenbank und jede eingebettete Datenbank selbst. Im Reiter „Datenbank“ der Ansicht-Einstellungen legen der Eigentümer der Datenbank oder ein Administrator ein Standard-Icon für neue Einträge fest.",
     "databasesDates": "Das Datumsformat legst du unter Einstellungen → Datum fest; es gilt überall, eine einzelne Datums-Property kann es in ihren Einstellungen überschreiben. Datumsfelder decken die Jahre 1 bis 9999 ab.",
     "databasesGroups": "In der Eigenschaften-Seitenleiste lassen sich Properties zu Gruppen zusammenfassen. Eigene Gruppen kannst du ein- und ausklappen, per Doppelklick umbenennen und über den Ziehpunkt rechts im Gruppenkopf per Drag-and-drop neu anordnen. Die Standardgruppe bleibt immer oben.",
+    "databasesFormulas": "Formel-Eigenschaften berechnen einen Wert aus anderen Eigenschaften desselben Eintrags, referenziert mit prop('Name'). Die Syntaxreferenz in den Eigenschaftseinstellungen listet alle Funktionen und Operatoren. Beim Umbenennen einer Eigenschaft funktionieren die Formeln, die sie verwenden, weiter.",
     "databasesKeying": "Eine Relations-Eigenschaft kann gekeyt werden: Wähle eine Eigenschaft der Zieldatenbank, nach der die Einträge der Relation sortiert werden. Der gewählte Wert wird neben jedem Eintrag angezeigt.",
     "databasesViewDescription": "Jede Ansicht kann eine eigene Beschreibung haben: Klicke in den Bereich unter der Toolbar, um sie zu schreiben, und klicke daneben, um sie zu speichern. Sie wird mit exportiert — im PDF unter dem Titel, in CSV und Excel im Kopf der Name-Spalte (bzw. der ersten Spalte, solange die Name-Spalte ausgeblendet ist).",
     "databasesCollaboration": "Änderungen anderer Benutzer erscheinen sofort. Ändert jemand einen Wert, den du gerade bearbeitest oder in der letzten Minute geändert hast, gilt die spätere Änderung, und du erhältst einen Hinweis. War die Verbindung unterbrochen, werden offene Seiten und Ansichten danach neu geladen. Solange ein Feld einen Ladekreis zeigt, wird dein Wert gespeichert; bis die Antwort des Servers da ist, nimmt das Feld keine weitere Eingabe an. Verlässt du die Seite in diesem Moment, fragt der Browser nach."

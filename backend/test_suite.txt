@@ -23,6 +23,8 @@ app/database/wopi_tokens_migration_test.py
 app/database/recent_icons_migration_test.py
 app/database/database_settings_migration_test.py
 app/database/relation_timeline_minutes_migration_test.py
+app/database/formula_property_ids_migration_test.py
+app/database/relation_chip_icons_migration_test.py
 app/database/migration_lock_test.py
 
 app/session/user_registration_test.py
@@ -52,6 +54,7 @@ app/blocks/types_test.py
 app/blocks/computed_test.py
 app/blocks/timeline_test.py
 app/blocks/formula_engine_test.py
+app/blocks/formula_help_locales_test.py
 app/blocks/resolution_test.py
 app/blocks/views_test.py
 app/blocks/views_router_test.py

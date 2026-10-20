@@ -163,7 +163,7 @@ This project is a work in progress. It is used by its developer since February 2
 
 As Timelining and Nuancing are rather complicated features, rollups and formulas will work without taking nuances into account and will default to "last state" for timelined properties - for now.
 
-Despite heavy testing (~2790 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet. Thus, this honest disclaimer is in order:
+Despite heavy testing (~2860 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet. Thus, this honest disclaimer is in order:
 
 Do not use for irreplaceable Data without regularly creating backups. Use at own risk.
 

@@ -23,7 +23,7 @@ import { useI18n } from 'vue-i18n'
 import { Icon } from '@iconify/vue'
 import type { DatabaseEntry, PropertySchema } from '@/stores/database'
 import { useAuthStore } from '@/stores/auth'
-import { getCellValue, maybeFormatRollupDate } from './cellUtils'
+import { chipIcon, getCellValue, maybeFormatRollupDate } from './cellUtils'
 import SideView from '@/components/main/SideView.vue'
 
 const props = defineProps<{
@@ -95,7 +95,7 @@ const errorMessage = computed(() => cellData.value?.error ?? '')
 // Relation rollups (show_original / first_value / last_value over a relation
 // target) carry resolved entry descriptors and a `relation: true` flag so the
 // cell can render clickable chips that open the entry.
-interface RelationChip { id: string; title: string; database_id: string | null }
+interface RelationChip { id: string; title: string; database_id: string | null; icon?: string | null }
 
 const isRelation = computed<boolean>(() => cellData.value?.relation === true)
 
@@ -233,7 +233,7 @@ const optionEntries = computed<{ label: string; pct: string }[]>(() => {
           :title="chip.title || undefined"
           @click.stop="openEntry(chip)"
         >
-          <Icon icon="mdi:file-outline" width="10" height="10" class="rollup-cell__rel-chip-icon" />
+          <Icon :icon="chipIcon(chip.icon)" width="10" height="10" class="rollup-cell__rel-chip-icon" />
           <span class="rollup-cell__rel-chip-text">{{ chip.title || '—' }}</span>
         </span>
       </span>
@@ -372,6 +372,7 @@ const optionEntries = computed<{ label: string; pct: string }[]>(() => {
   border-radius: 3px;
   padding: 1px 6px;
   font-size: 0.78rem;
+  line-height: 1.4;
   color: var(--color-text);
   max-width: 130px;
   cursor: pointer;
@@ -396,6 +397,11 @@ const optionEntries = computed<{ label: string; pct: string }[]>(() => {
 .rollup-cell--wrap .rollup-cell__rel-chip {
   max-width: 100%;
   align-items: flex-start;
+}
+
+/* Centre the 10px icon on the first line of a wrapping title. */
+.rollup-cell--wrap .rollup-cell__rel-chip-icon {
+  margin-top: calc((1.4em - 10px) / 2);
 }
 
 .rollup-cell--wrap .rollup-cell__rel-chip-text {

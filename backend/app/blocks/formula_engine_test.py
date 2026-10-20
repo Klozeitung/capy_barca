@@ -18,7 +18,8 @@ from app.blocks.formula_engine import (
     FormulaResult,
     evaluate,
     extract_prop_names,
-    rename_prop_in_expression,
+    map_prop_references,
+    syntax_catalogue,
     uses_volatile_functions,
     validate_syntax,
 )
@@ -1867,83 +1868,140 @@ def test_at_non_list_first_arg_raises():
 def test_at_validate_syntax_accepted():
     validate_syntax("at(prop('Dates'), 0)")
 
-# ─── rename_prop_in_expression ────────────────────────────────────────────────
+# ─── map_prop_references ──────────────────────────────────────────────────────
 
 
-def test_rename_prop_basic_double_quote():
-    assert rename_prop_in_expression('prop("Old") + 1', "Old", "New") == 'prop("New") + 1'
+def test_map_prop_basic_double_quote():
+    assert map_prop_references('prop("Old") + 1', {"Old": "New"}) == 'prop("New") + 1'
 
 
-def test_rename_prop_basic_single_quote_preserved():
-    assert rename_prop_in_expression("prop('Old') + 1", "Old", "New") == "prop('New') + 1"
+def test_map_prop_basic_single_quote_preserved():
+    assert map_prop_references("prop('Old') + 1", {"Old": "New"}) == "prop('New') + 1"
 
 
-def test_rename_prop_multiple_occurrences():
+def test_map_prop_multiple_occurrences():
     expr = 'prop("Old") + prop("Old") * prop("Other")'
     assert (
-        rename_prop_in_expression(expr, "Old", "New")
+        map_prop_references(expr, {"Old": "New"})
         == 'prop("New") + prop("New") * prop("Other")'
     )
 
 
-def test_rename_prop_leaves_unrelated_string_literals_untouched():
+def test_map_prop_leaves_unrelated_string_literals_untouched():
     # A compared value that merely equals the old name must NOT be rewritten —
-    # only the prop() argument is. This is the whole point of token-based rename.
+    # only the prop() argument is. This is the whole point of token-based mapping.
     expr = 'if(prop("Status") == "Status", "Status", prop("Other"))'
     assert (
-        rename_prop_in_expression(expr, "Status", "Phase")
+        map_prop_references(expr, {"Status": "Phase"})
         == 'if(prop("Phase") == "Status", "Status", prop("Other"))'
     )
 
 
-def test_rename_prop_no_match_returns_unchanged():
+def test_map_prop_no_match_returns_unchanged():
     expr = 'prop("Other") + 1'
-    assert rename_prop_in_expression(expr, "Old", "New") == expr
+    assert map_prop_references(expr, {"Old": "New"}) == expr
 
 
-def test_rename_prop_identity_when_names_equal():
+def test_map_prop_identity_when_names_equal():
     expr = 'prop("Name")'
-    assert rename_prop_in_expression(expr, "Name", "Name") == expr
+    assert map_prop_references(expr, {"Name": "Name"}) == expr
 
 
-def test_rename_prop_preserves_surrounding_formatting():
+def test_map_prop_preserves_surrounding_formatting():
     expr = "if(  prop('Old')  >= 45 , 'x', 'y' )"
     assert (
-        rename_prop_in_expression(expr, "Old", "New")
+        map_prop_references(expr, {"Old": "New"})
         == "if(  prop('New')  >= 45 , 'x', 'y' )"
     )
 
 
-def test_rename_prop_name_with_spaces_and_parens():
+def test_map_prop_name_with_spaces_and_parens():
     expr = 'prop("Category") == "Value A"'
     assert (
-        rename_prop_in_expression(expr, "Category", "Category (Primary)")
+        map_prop_references(expr, {"Category": "Category (Primary)"})
         == 'prop("Category (Primary)") == "Value A"'
     )
 
 
-def test_rename_prop_new_name_with_quote_is_escaped_and_relexes():
+def test_map_prop_new_name_with_quote_is_escaped_and_relexes():
     # A new name containing the same quote char must be escaped so the result
     # still lexes back to that exact name.
-    out = rename_prop_in_expression('prop("Old")', "Old", 'A "B" C')
+    out = map_prop_references('prop("Old")', {"Old": 'A "B" C'})
     assert extract_prop_names(out) == ['A "B" C']
 
 
-def test_rename_prop_malformed_expression_returned_unchanged():
+def test_map_prop_malformed_expression_returned_unchanged():
     # An expression that no longer lexes (unterminated string) is left as-is so
-    # a rename never fails on a pre-existing broken formula.
+    # translating never fails on a pre-existing broken formula.
     expr = 'prop("Old'
-    assert rename_prop_in_expression(expr, "Old", "New") == expr
+    assert map_prop_references(expr, {"Old": "New"}) == expr
 
 
-def test_rename_prop_empty_expression():
-    assert rename_prop_in_expression("", "Old", "New") == ""
+def test_map_prop_empty_expression():
+    assert map_prop_references("", {"Old": "New"}) == ""
 
 
-def test_rename_prop_result_still_evaluates():
-    # End-to-end: after rename the formula resolves against the new context key.
-    out = rename_prop_in_expression("prop('Old') + 5", "Old", "New")
+def test_map_prop_result_still_evaluates():
+    # End-to-end: after mapping the formula resolves against the new context key.
+    out = map_prop_references("prop('Old') + 5", {"Old": "New"})
     assert ev(out, {"New": 10}) == 15
+
+
+def test_map_prop_translates_several_references_at_once():
+    expr = "prop('Name A') * prop(\"Name B\") + prop('Unknown')"
+    assert map_prop_references(expr, {"Name A": "id-a", "Name B": "id-b"}) == (
+        "prop('id-a') * prop(\"id-b\") + prop('Unknown')"
+    )
+
+
+def test_map_prop_matches_prop_case_insensitively():
+    assert map_prop_references("PROP('Old')", {"Old": "New"}) == "PROP('New')"
+
+
+def test_map_prop_leaves_computed_arguments_alone():
+    expr = "prop(concat('Ol', 'd'))"
+    assert map_prop_references(expr, {"Old": "New"}) == expr
+
+
+def test_map_prop_round_trip_between_names_and_ids():
+    expr = "if(prop('Name A') > 1, prop('Name B'), 'Name A')"
+    to_ids = {"Name A": "id-a", "Name B": "id-b"}
+    stored = map_prop_references(expr, to_ids)
+    assert extract_prop_names(stored) == ["id-a", "id-b"]
+    assert map_prop_references(stored, {v: k for k, v in to_ids.items()}) == expr
+
+
+# ─── Function registry and syntax reference ───────────────────────────────────
+
+
+def test_every_function_is_in_the_syntax_reference_once():
+    from app.blocks.formula_engine import _FUNCTIONS, _KNOWN_FUNCTIONS
+
+    keys = [entry.key for entry in syntax_catalogue()]
+    assert len(keys) == len(set(keys))
+    assert _KNOWN_FUNCTIONS == frozenset(_FUNCTIONS)
+    assert _KNOWN_FUNCTIONS <= set(keys)
+
+
+def test_syntax_reference_is_ordered_by_category():
+    from app.blocks.formula_engine import SYNTAX_CATEGORIES
+
+    categories = [entry.category for entry in syntax_catalogue()]
+    assert set(categories) <= set(SYNTAX_CATEGORIES)
+    assert categories == sorted(categories, key=SYNTAX_CATEGORIES.index)
+
+
+def test_function_entries_show_their_own_name():
+    from app.blocks.formula_engine import _FUNCTIONS
+
+    for entry in syntax_catalogue():
+        if entry.key in _FUNCTIONS:
+            assert entry.signature.startswith(f"{entry.name}(")
+            assert entry.insert == "" or entry.insert.startswith(f"{entry.name}(")
+
+
+def test_unknown_function_is_reported_with_its_name():
+    assert err("noSuchFunction(1)") == "Unknown function 'noSuchFunction'"
 
 
 # ─── Resource limits ──────────────────────────────────────────────────────────

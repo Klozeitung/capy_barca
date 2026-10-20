@@ -27,6 +27,9 @@ from app.blocks.computed import (
     compute_all_for_entry,
     compute_cross_db_dependents,
     compute_same_db_rollup_dependents,
+    formula_expression_with_ids,
+    formula_expression_with_names,
+    formula_reference_index,
     has_any_cycle,
     recompute_after_value_change,
     topological_order,
@@ -560,6 +563,19 @@ def test_graph_formula_ignores_unknown_props():
     assert graph[total.id] == set()
 
 
+def test_graph_formula_resolves_id_references():
+    price = _schema("Price", "number")
+    total = _schema("Total", "formula", {"expression": f"prop('{price.id}') * 2"})
+    graph = build_dependency_graph([price, total])
+    assert graph[total.id] == {price.id}
+
+
+def test_graph_formula_no_self_reference_by_id_in_deps():
+    s = _schema("X", "formula", {"expression": "1"})
+    s.config = {"expression": f"prop('{s.id}') + 1"}
+    assert s.id not in build_dependency_graph([s])[s.id]
+
+
 def test_graph_formula_no_self_reference_in_deps():
     s = _schema("X", "formula", {"expression": "prop('X') + 1"})
     graph = build_dependency_graph([s])
@@ -644,6 +660,48 @@ def test_topological_order_empty():
     assert topological_order({}) == []
 
 
+# ─── Formula references: names and ids ────────────────────────────────────────
+
+
+def test_reference_index_resolves_names_and_ids():
+    price = _schema("Price", "number")
+    index = formula_reference_index([price])
+    assert index["Price"] is price
+    assert index[str(price.id)] is price
+
+
+def test_reference_index_lets_an_id_win_over_a_name_spelled_like_it():
+    price = _schema("Price", "number")
+    impostor = _schema(str(price.id), "text")
+    assert formula_reference_index([price, impostor])[str(price.id)] is price
+
+
+def test_expression_with_ids_and_back_with_names():
+    price = _schema("Price", "number")
+    qty = _schema("Qty", "number")
+    schemas = [price, qty]
+    stored = formula_expression_with_ids("prop('Price') * prop(\"Qty\") + prop('Gone')", schemas)
+    assert stored == f"prop('{price.id}') * prop(\"{qty.id}\") + prop('Gone')"
+    assert formula_expression_with_names(stored, schemas) == (
+        "prop('Price') * prop(\"Qty\") + prop('Gone')"
+    )
+
+
+def test_expression_with_ids_reads_a_name_spelled_like_an_id_as_that_id():
+    price = _schema("Price", "number")
+    impostor = _schema(str(price.id), "text")
+    stored = f"prop('{price.id}')"
+    assert formula_expression_with_ids(stored, [price, impostor]) == stored
+
+
+def test_expression_with_ids_leaves_other_strings_alone():
+    status = _schema("Status", "text")
+    expression = "if(prop('Status') == 'Status', 'a', 'b')"
+    assert formula_expression_with_ids(expression, [status]) == (
+        f"if(prop('{status.id}') == 'Status', 'a', 'b')"
+    )
+
+
 # ─── compute_all_for_entry (integration) ─────────────────────────────────────
 
 
@@ -674,6 +732,50 @@ def test_formula_simple_multiplication(db, database_block, entry):
     assert pv.value["result"] == pytest.approx(29.97)
     assert pv.value["result_type"] == "number"
     assert "error" not in pv.value
+
+
+def test_formula_reads_properties_by_id_and_by_name(db, database_block, entry):
+    price = repo.create_schema(
+        db, database_id=database_block.id, name="Price", type="number",
+        position=1.0, config={"format": "plain"},
+    )
+    qty = repo.create_schema(
+        db, database_id=database_block.id, name="Qty", type="number",
+        position=2.0, config={"format": "plain"},
+    )
+    total = repo.create_schema(
+        db, database_id=database_block.id, name="Total", type="formula",
+        position=3.0, config={"expression": f"prop('{price.id}') * prop('Qty')"},
+    )
+    db.commit()
+    repo.upsert_value(db, page_id=entry.id, schema_id=price.id, value={"number": 4})
+    repo.upsert_value(db, page_id=entry.id, schema_id=qty.id, value={"number": 3})
+    db.commit()
+
+    compute_all_for_entry(db, database_block.id, entry.id)
+    db.commit()
+
+    assert repo.get_value(db, entry.id, total.id).value["result"] == pytest.approx(12.0)
+
+
+def test_formula_by_id_survives_a_rename(db, database_block, entry):
+    price = repo.create_schema(
+        db, database_id=database_block.id, name="Price", type="number",
+        position=1.0, config={"format": "plain"},
+    )
+    total = repo.create_schema(
+        db, database_id=database_block.id, name="Total", type="formula",
+        position=2.0, config={"expression": f"prop('{price.id}') + 1"},
+    )
+    db.commit()
+    repo.upsert_value(db, page_id=entry.id, schema_id=price.id, value={"number": 4})
+    repo.update_schema(db, price, name="Cost")
+    db.commit()
+
+    compute_all_for_entry(db, database_block.id, entry.id)
+    db.commit()
+
+    assert repo.get_value(db, entry.id, total.id).value["result"] == pytest.approx(5.0)
 
 
 def test_formula_missing_prop_treated_as_zero(db, database_block, entry):
@@ -1126,6 +1228,7 @@ def test_formula_relation_prop_resolves_to_chips(db, database_block, entry):
     # Create a second entry that will be the relation target
     target = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
     target.content = {"title": "Target Entry"}
+    target.icon = "mdi:star-outline"
     db.commit()
 
     rel_schema = repo.create_schema(
@@ -1155,7 +1258,57 @@ def test_formula_relation_prop_resolves_to_chips(db, database_block, entry):
     assert len(pv.value["result"]) == 1
     assert pv.value["result"][0]["id"] == str(target.id)
     assert pv.value["result"][0]["title"] == "Target Entry"
+    assert pv.value["result"][0]["icon"] == "mdi:star-outline"
     assert "error" not in pv.value
+
+
+@pytest.mark.parametrize("function, expected", [
+    ("show_original", [{"icon": "mdi:star-outline"}, {"icon": None}]),
+    ("first_value", {"icon": "mdi:star-outline"}),
+])
+def test_rollup_over_a_relation_carries_the_icons_of_the_linked_entries(
+    db, database_block, entry, function, expected,
+):
+    """Rollup chips show the icon of each entry, None for one without its own."""
+    middle = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
+    with_icon = repo.create_block(db, type="page", position=3.0, parent_id=database_block.id)
+    with_icon.content = {"title": "Entry A"}
+    with_icon.icon = "mdi:star-outline"
+    without_icon = repo.create_block(db, type="page", position=4.0, parent_id=database_block.id)
+    without_icon.content = {"title": "Entry B"}
+    first = repo.create_schema(
+        db, database_id=database_block.id, name="First", type="relation",
+        position=1.0, config={"target_database_id": str(database_block.id)},
+    )
+    second = repo.create_schema(
+        db, database_id=database_block.id, name="Second", type="relation",
+        position=2.0, config={"target_database_id": str(database_block.id)},
+    )
+    rollup = repo.create_schema(
+        db, database_id=database_block.id, name="Through", type="rollup", position=3.0,
+        config={
+            "relation_schema_id": str(first.id),
+            "rollup_schema_id": str(second.id),
+            "function": function,
+        },
+    )
+    repo.upsert_value(
+        db, page_id=entry.id, schema_id=first.id, value={"related_ids": [str(middle.id)]},
+    )
+    repo.upsert_value(
+        db, page_id=middle.id, schema_id=second.id,
+        value={"related_ids": [str(with_icon.id), str(without_icon.id)]},
+    )
+    db.commit()
+
+    compute_all_for_entry(db, database_block.id, entry.id)
+    db.commit()
+
+    result = repo.get_value(db, entry.id, rollup.id).value["result"]
+    if isinstance(expected, list):
+        assert [{"icon": chip["icon"]} for chip in result] == expected
+    else:
+        assert {"icon": result["icon"]} == expected
 
 
 def test_formula_empty_relation_prop_stays_empty(db, database_block, entry):

@@ -217,7 +217,8 @@ export interface DatabaseSettings {
  * Lightweight relation-target descriptor returned by
  * POST /api/databases/{id}/entries/resolve-titles.
  *
- * Relation cells store only the linked entry IDs; their chips need a title.
+ * Relation cells store only the linked entry IDs; their chips need a title
+ * and an icon.
  * Resolving titles from the paginated `entries` cache breaks once a relation
  * points past a database's display limit, so these descriptors are fetched and
  * cached separately, independently of any pagination.
@@ -226,6 +227,8 @@ export interface RelationTitle {
   id: string
   title: string | null
   database_id: string
+  /** The entry's own icon; null when it has none and the chip shows the default. */
+  icon?: string | null
   /**
    * Raw value of the property requested via ``value_schema_id``, present only
    * on a key-value resolve. Null when none was requested, the property does
@@ -1557,6 +1560,7 @@ export const useDatabaseStore = defineStore('database', () => {
    *   copied into every cached row and into its relation-chip descriptor.
    *   This is what makes a rename show on chips in other views at once, on
    *   this client and on every other one.
+   * * ``appearance_updated`` / ``reverted`` – the same for the entry's icon.
    * * ``state_changed`` – trashing drops the chip; restoring resolves it again.
    * * ``purged`` – the chip is dropped for good.
    *
@@ -1569,17 +1573,30 @@ export const useDatabaseStore = defineStore('database', () => {
 
     switch (payload.event_type) {
       case 'content_updated':
+      case 'appearance_updated':
       case 'reverted': {
-        const after = payload.after as { content?: Record<string, unknown> | null } | null
-        if (!after || !('content' in after)) return
-        const content = after.content ?? null
-        _forEachCachedEntry(id, null, (row) => {
-          row.content = content
-        })
+        const after = payload.after as {
+          content?: Record<string, unknown> | null
+          icon?: string | null
+        } | null
+        if (!after) return
         const descriptor = relationTitles.value[id]
-        if (descriptor) {
-          const title = content?.title
-          descriptor.title = typeof title === 'string' ? title : null
+        if (payload.event_type !== 'appearance_updated' && 'content' in after) {
+          const content = after.content ?? null
+          _forEachCachedEntry(id, null, (row) => {
+            row.content = content
+          })
+          if (descriptor) {
+            const title = content?.title
+            descriptor.title = typeof title === 'string' ? title : null
+          }
+        }
+        if (payload.event_type !== 'content_updated' && 'icon' in after) {
+          const icon = after.icon ?? null
+          _forEachCachedEntry(id, null, (row) => {
+            row.icon = icon
+          })
+          if (descriptor) descriptor.icon = icon
         }
         return
       }
@@ -1778,6 +1795,14 @@ export const useDatabaseStore = defineStore('database', () => {
     return relationTitles.value[id]?.title ?? null
   }
 
+  /**
+   * The own icon of a related entry, or ``null`` when it has none or the id
+   * has not (yet) resolved; callers fall back to the default chip icon.
+   */
+  function getRelationIcon(id: string): string | null {
+    return relationTitles.value[id]?.icon ?? null
+  }
+
   /** True once a resolve round-trip has completed for *id* (found or not). */
   function isRelationResolved(id: string): boolean {
     return resolvedRelationIds.value.has(id)
@@ -1856,6 +1881,7 @@ export const useDatabaseStore = defineStore('database', () => {
     // Relation-chip title resolution
     resolveEntryTitles,
     getRelationTitle,
+    getRelationIcon,
     isRelationResolved,
     hasRelationEntry,
 

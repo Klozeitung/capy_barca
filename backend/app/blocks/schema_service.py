@@ -9,8 +9,22 @@ Computed properties
 Formula and rollup configs are validated (syntax, known rollup function) and
 checked for circular dependencies with Kahn's topological sort before they
 are stored (:func:`check_computed_config`). When a computed config changes,
-or a rename rewrites the ``prop()`` references of formulas, every entry of the
-database is re-evaluated (:func:`recompute_entries`).
+or a rename lets references written by name bind to a property, every entry of
+the database is re-evaluated (:func:`recompute_entries`).
+
+Formula references
+------------------
+Formulas are stored with property ids, ``prop('<schema id>')``, and shown
+with names (see ``app.blocks.computed``, "Formula references"). Whenever a
+formula is saved, or a property created or renamed, the references that
+name a property of the database are stored as its id
+(:func:`bind_formula_references`); a rename therefore never breaks a formula.
+Before a property is deleted, the references to it go back to its name
+(:func:`unbind_formula_references`): the formula stays readable, yields empty
+as before, and binds again once a property with that name exists. The API
+returns formulas with names (:func:`client_config`), and a property that
+leaves its database takes them along in that portable form
+(:func:`portable_config`).
 
 Bilateral relations
 -------------------
@@ -43,9 +57,11 @@ from app.blocks.computed import (
     SchemaLike,
     build_dependency_graph,
     compute_all_for_entry,
+    formula_expression_with_ids,
+    formula_expression_with_names,
     has_any_cycle,
 )
-from app.blocks.formula_engine import FormulaError, rename_prop_in_expression, validate_syntax
+from app.blocks.formula_engine import FormulaError, map_prop_references, validate_syntax
 from app.blocks.models import PropertySchema
 from app.blocks.readonly_properties import READONLY_TYPES
 from app.blocks.relation_sync import KEYABLE_PROPERTY_TYPES, ensure_bilateral_mirror
@@ -256,35 +272,80 @@ def create_eager_mirror(
 # ─── Formulas ─────────────────────────────────────────────────────────────────
 
 
-def rename_formula_references(
-    db: Session,
-    database_id: uuid.UUID,
-    old_name: str,
-    new_name: str,
-) -> bool:
-    """
-    Point the ``prop()`` references of every formula in *database_id* at a
-    renamed property. Returns True when an expression changed.
+def _with_expression(schema, expression: str) -> dict:
+    """A copy of *schema*'s config with *expression* as its formula."""
+    config = dict(schema.config or {})
+    config["expression"] = expression
+    return config
 
-    Formulas reference properties by name (``prop("Name")``), so renaming a
-    property would orphan every ``prop("OldName")``: it silently resolves to
-    empty and the dependent formula column goes blank. Rollups are unaffected,
-    they reference their columns by id.
+
+def _expression(schema) -> str:
+    """The formula expression of *schema*, or '' for anything else."""
+    if schema.type != "formula":
+        return ""
+    expression = (schema.config or {}).get("expression")
+    return expression if isinstance(expression, str) else ""
+
+
+def bind_formula_references(db: Session, database_id: uuid.UUID) -> bool:
     """
-    rewrote = False
-    for sch in repo.list_schemas(db, database_id):
-        if sch.type != "formula":
+    Store the ``prop()`` references of every formula in *database_id* that
+    name one of its properties as that property's id. Returns True when an
+    expression changed.
+
+    Covers a formula just saved with names, and references written before
+    their property existed or was renamed to what they name.
+    """
+    schemas = repo.list_schemas(db, database_id)
+    changed = False
+    for schema in schemas:
+        expression = _expression(schema)
+        if not expression:
             continue
-        cfg = dict(sch.config or {})
-        expr = cfg.get("expression")
-        if not isinstance(expr, str) or not expr:
+        stored = formula_expression_with_ids(expression, schemas)
+        if stored != expression:
+            repo.update_schema(db, schema, config=_with_expression(schema, stored))
+            changed = True
+    return changed
+
+
+def unbind_formula_references(db: Session, deleted: PropertySchema) -> None:
+    """
+    Turn the references to *deleted* in the formulas of its database back
+    into its name, before it is deleted.
+    """
+    mapping = {str(deleted.id): deleted.name}
+    for schema in repo.list_schemas(db, deleted.database_id):
+        if schema.id == deleted.id:
             continue
-        new_expr = rename_prop_in_expression(expr, old_name, new_name)
-        if new_expr != expr:
-            cfg["expression"] = new_expr
-            repo.update_schema(db, sch, config=cfg)
-            rewrote = True
-    return rewrote
+        expression = _expression(schema)
+        if not expression:
+            continue
+        unbound = map_prop_references(expression, mapping)
+        if unbound != expression:
+            repo.update_schema(db, schema, config=_with_expression(schema, unbound))
+
+
+def client_config(schema, schemas: list) -> Optional[dict]:
+    """
+    *schema*'s config as the API returns it: a formula's references as the
+    names of *schemas* (the properties of its database). The stored config
+    is not touched.
+    """
+    expression = _expression(schema)
+    if not expression:
+        return schema.config
+    return _with_expression(schema, formula_expression_with_names(expression, schemas))
+
+
+def portable_config(db: Session, schema) -> Optional[dict]:
+    """
+    *schema*'s config for use in another database: a formula's references as
+    names, which the target database binds to its own properties.
+    """
+    if not _expression(schema):
+        return schema.config
+    return client_config(schema, repo.list_schemas(db, schema.database_id))
 
 
 def recompute_entries(db: Session, database_id: uuid.UUID) -> None:

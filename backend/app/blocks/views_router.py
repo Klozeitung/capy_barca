@@ -128,9 +128,14 @@ class EntryPayload(BaseModel):
 
 
 class RelationTitle(BaseModel):
+    """
+    A linked entry as its relation chip shows it. ``icon`` is the entry's own
+    icon, None when it has none and the chip shows the default.
+    """
     id: uuid.UUID
     title: Optional[str]
     database_id: uuid.UUID
+    icon: Optional[str] = None
 
 
 class PageResponse(BaseModel):

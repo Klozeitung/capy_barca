@@ -199,9 +199,9 @@ def recompute_after_writes(
     whose entries were recomputed.
 
     *changed* names the properties of *entry_id* that changed (``READS_TITLE``
-    for the title). The entries in *mirror_writes* are treated the same way
-    for their mirror property, so their own rollups follow the link they
-    gained or lost. The schemas of all databases are loaded once for all of
+    for the title or the icon). The entries in *mirror_writes* are treated the
+    same way for their mirror property, so their own rollups follow the link
+    they gained or lost. The schemas of all databases are loaded once for all of
     these, after the mirror syncs, which may have created a mirror property.
     """
     index = SchemaIndex.load(db)
@@ -492,8 +492,10 @@ def apply_template(
     if template.content:
         target.content = dict(template.content)
         changed_schema_ids.add(READS_TITLE)
-    if template.icon:
+    if template.icon and template.icon != target.icon:
         target.icon = template.icon
+        # Relation chips elsewhere show the icon as well as the title.
+        changed_schema_ids.add(READS_TITLE)
     db.flush()
 
     for pv in template_pvs:

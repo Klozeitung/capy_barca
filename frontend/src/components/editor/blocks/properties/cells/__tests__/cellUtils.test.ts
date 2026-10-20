@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { displayValue, formatPeriodKey, getTimelineDisplayMode } from '../cellUtils'
+import { DEFAULT_ENTRY_ICON, chipIcon, displayValue, formatPeriodKey, getTimelineDisplayMode } from '../cellUtils'
 import type { DatabaseEntry, PropertySchema } from '@/stores/database'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -982,5 +982,17 @@ describe('formatSelectValue', () => {
       formatSelectValue({ options: ['gone', 'o1'] }, targetSchema('select', { options, mode: 'multiple' })),
     ).toBe('Value A')
     expect(formatSelectValue({ option: 'gone' }, targetSchema('select', { options }))).toBe('')
+  })
+})
+
+describe('chipIcon', () => {
+  it("shows the entry's own icon", () => {
+    expect(chipIcon('mdi:star-outline')).toBe('mdi:star-outline')
+  })
+
+  it('falls back to the default icon when there is none or it is not known yet', () => {
+    expect(chipIcon(null)).toBe(DEFAULT_ENTRY_ICON)
+    expect(chipIcon(undefined)).toBe(DEFAULT_ENTRY_ICON)
+    expect(chipIcon('')).toBe(DEFAULT_ENTRY_ICON)
   })
 })

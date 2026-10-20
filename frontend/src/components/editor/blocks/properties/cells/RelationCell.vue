@@ -13,7 +13,7 @@
  * entry carries exactly the typed title, so an existing entry is never
  * duplicated. Results are fetched afresh on every open and never cached.
  *
- * Chip titles, however, are resolved through the store's dedicated
+ * Chip titles and icons, however, are resolved through the store's dedicated
  * ``resolveEntryTitles`` path (POST /entries/resolve-titles), not from the
  * paginated entry cache. This decouples chip rendering from a target
  * database's display limit so a chip renders even when the linked entry sits
@@ -61,6 +61,7 @@ import {
   getKeyingConfig,
   sortIdsByKey,
   formatKeyValue,
+  chipIcon,
 } from './cellUtils'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
@@ -499,6 +500,11 @@ function getEntryTitle(id: string): string {
   return (found?.content?.title as string | undefined) || t('main.untitled')
 }
 
+function getEntryIcon(id: string): string {
+  // Same order as the title: resolver first, then the search results.
+  return chipIcon(dbStore.getRelationIcon(id) ?? filteredEntries.value.find(e => e.id === id)?.icon)
+}
+
 // ── Mutations ─────────────────────────────────────────────────────────────────
 
 /**
@@ -644,7 +650,7 @@ function closeSideView(): void {
                 :title="getEntryTitle(id)"
                 @click.stop="openRelatedEntry(id)"
               >
-                <Icon icon="mdi:file-outline" width="10" height="10" class="rel-cell__tag-icon" />
+                <Icon :icon="getEntryIcon(id)" width="10" height="10" class="rel-cell__tag-icon" />
                 <span class="rel-cell__tag-text">{{ getEntryTitle(id) }}</span>
               </span>
               <span
@@ -692,7 +698,7 @@ function closeSideView(): void {
                 :title="getEntryTitle(row.id)"
                 @click.stop="openRelatedEntry(row.id)"
               >
-                <Icon icon="mdi:file-outline" width="10" height="10" class="rel-cell__tag-icon" />
+                <Icon :icon="getEntryIcon(row.id)" width="10" height="10" class="rel-cell__tag-icon" />
                 <span class="rel-cell__tag-text">{{ getEntryTitle(row.id) }}</span>
               </span>
               <button
@@ -749,7 +755,7 @@ function closeSideView(): void {
             :title="getEntryTitle(id)"
             @click.stop="openRelatedEntry(id)"
           >
-            <Icon icon="mdi:file-outline" width="10" height="10" class="rel-cell__tag-icon" />
+            <Icon :icon="getEntryIcon(id)" width="10" height="10" class="rel-cell__tag-icon" />
             <span class="rel-cell__tag-text">{{ getEntryTitle(id) }}</span>
           </span>
           <span
@@ -865,6 +871,7 @@ function closeSideView(): void {
               width="14"
               height="14"
             />
+            <Icon :icon="chipIcon(e.icon)" width="12" height="12" class="rel-cell__picker-entry-icon" />
             {{ (e.content?.title as string | undefined) || t('main.untitled') }}
           </button>
 
@@ -1094,6 +1101,9 @@ function closeSideView(): void {
   border-radius: 3px;
   padding: 2px 5px;
   font-size: 0.73rem;
+  /* A fixed line height, so the icons can be centred on the first line of a
+     title that wraps in stack mode. */
+  line-height: 1.4;
   color: var(--color-text);
   max-width: 130px;
 }
@@ -1113,6 +1123,11 @@ function closeSideView(): void {
 }
 
 .rel-cell__tag-icon {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.rel-cell__picker-entry-icon {
   flex-shrink: 0;
   color: var(--color-text-muted);
 }
@@ -1149,6 +1164,17 @@ function closeSideView(): void {
   overflow: visible;
   text-overflow: clip;
   word-break: break-word;
+}
+
+/* Top-aligned chips centre their 10px icons on the first line of the title
+   instead of pinning them to its top edge. */
+.rel-cell__tags--stack .rel-cell__tag-icon,
+.rel-cell__slot-chips--stack .rel-cell__tag-icon,
+.rel-cell__keyed-list--stack .rel-cell__tag-icon,
+.rel-cell__tags--stack .rel-cell__tag-remove,
+.rel-cell__slot-chips--stack .rel-cell__tag-remove,
+.rel-cell__keyed-list--stack .rel-cell__tag-remove {
+  margin-top: calc((1.4em - 10px) / 2);
 }
 
 .rel-cell__tag-remove {

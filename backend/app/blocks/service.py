@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.blocks import events as ev
 from app.blocks import relation_lock
 from app.blocks import repository as repo
+from app.blocks import schema_service
 from app.blocks.models import Block, PropertySchema, WORKSPACE_ROOT_ID
 from app.blocks.types import validate_block_type
 
@@ -224,6 +225,8 @@ def _write_schema_memory(db: Session, block: Block) -> None:
 
     Relation-type properties are excluded from the snapshot because they
     reference external block IDs that are database-bound and not portable.
+    A formula is snapshotted with its references as property names, since
+    the ids it stores belong to the database it leaves.
     Before writing the snapshot, the mirror side of every bilateral relation
     is cleaned up via :func:`_clear_bilateral_relations`.
 
@@ -249,7 +252,7 @@ def _write_schema_memory(db: Session, block: Block) -> None:
             {
                 "name": src_schema.name,
                 "type": src_schema.type,
-                "config": src_schema.config,
+                "config": schema_service.portable_config(db, src_schema),
                 "position": src_schema.position,
                 "value": pv.value,
             }
@@ -283,7 +286,9 @@ def _migrate_to_database(
         which is not portable).
 
     In both cases, ``schemaMemory`` is cleared from ``content`` once the
-    migration completes.
+    migration completes. A formula created in the target carries its
+    references as names; once all schemas exist they are bound to the
+    target's property ids.
 
     Parameters
     ----------
@@ -296,6 +301,7 @@ def _migrate_to_database(
     """
     content = dict(block.content) if block.content else {}
     schema_memory: list[dict] | None = content.get("schemaMemory")
+    created_schema = False
 
     if schema_memory is not None:
         # Block is arriving from a non-database parent: use the memory
@@ -318,6 +324,7 @@ def _migrate_to_database(
                     position=entry["position"],
                     config=entry.get("config"),
                 )
+                created_schema = True
             repo.upsert_value(
                 db,
                 page_id=block.id,
@@ -344,8 +351,9 @@ def _migrate_to_database(
                     name=src_schema.name,
                     type=src_schema.type,
                     position=src_schema.position,
-                    config=src_schema.config,
+                    config=schema_service.portable_config(db, src_schema),
                 )
+                created_schema = True
             repo.upsert_value(
                 db,
                 page_id=block.id,
@@ -359,6 +367,9 @@ def _migrate_to_database(
         if "schemaMemory" in content:
             content.pop("schemaMemory")
             repo.update_block(db, block, content=content)
+
+    if created_schema:
+        schema_service.bind_formula_references(db, target_db_id)
 
 
 # ─── Position helpers ─────────────────────────────────────────────────────────

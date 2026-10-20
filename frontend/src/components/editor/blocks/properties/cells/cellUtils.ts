@@ -6,6 +6,7 @@
  * - getTimelineDisplayMode  – read the persisted display mode from a schema
  * - resolveTimelineValue    – extract the "now" (last slot) value from a _timeline object
  * - getAllTimelineRelatedIds – collect all related IDs across all timeline slots
+ * - chipIcon                – the icon a relation chip shows for a linked entry
  * - getKeyingConfig         – read a relation schema's keying config
  * - sortIdsByKey            – order linked relation ids by their key value
  * - formatKeyValue          – render a key value for the relation cell's left zone
@@ -30,6 +31,19 @@ import {
   type SelectOption,
 } from '@/stores/database'
 import { useAuthStore } from '@/stores/auth'
+
+// ── Relation chips ────────────────────────────────────────────────────────────
+
+/** Icon of an entry that has none of its own, as table rows show it. */
+export const DEFAULT_ENTRY_ICON = 'mdi:file-outline'
+
+/**
+ * The icon a relation chip shows for a linked entry: the entry's own icon,
+ * or the default one when it has none or it is not known yet.
+ */
+export function chipIcon(icon: string | null | undefined): string {
+  return icon || DEFAULT_ENTRY_ICON
+}
 
 // ── v-focus directive ─────────────────────────────────────────────────────────
 
