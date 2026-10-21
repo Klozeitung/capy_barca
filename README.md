@@ -17,7 +17,7 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 - **Backup and restore** portable `.capy` backup files covering database, uploads, and configuration; full restore via a single script
 - **Multi-user** admin and member roles, optional self-registration, permission model per block (everyone / private / whitelist) and inheritance system
 - **Supported Languages**: English, German
-- **Exports**: Export your data (the current view) to pdf or csv with ease.
+- **Exports**: Export your data (the current view) to PDF or CSV
 
 ### Advanced features
 
@@ -31,7 +31,7 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 - **Nuanced Relations**: relation properties are able to track qualifiers, so called "Nuances". Example: In Notion, you could only put "organisation X" into the relation property "organisation" in a character database. CapyBarca allows you to qualify that relation. Now you not only can set it to "**organisation X** *as* **rank A**", but you can combine nuancing and timelining, enabling you to track the career of your character within not only one, but any number of organisations. Of course, nuancing (and timelining) has a lot more nifty use cases.
 - **Keyed Relations**: A rollup within a relation property, providing data from the target relation entries to sort them by. For example, a plot property normally suffers from all plot beats being sorted by seniority, i.e. the order you added them to the list. Your plot beats will show up in a non chronological order. By keying them to their own date properties, they will now be listed next to their respective dates in chronological order - or whatever order you like to apply.
 
-*A grain of salt: To ensure full reliability, rollups and formulas currently only use the most recent value of timelined properties.*
+*A grain of salt: For now, rollups and formulas only use the most recent value of timelined properties and ignore nuances.*
 
 ---
 
@@ -42,7 +42,7 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 - [Tailscale](https://tailscale.com/download) connected and running, with HTTPS certificates enabled
 - PostgreSQL with ICU support, which CapyBarca needs for sorting text. The official `postgres` image that `docker-compose.yml` uses includes it; check this only if you replace the database service with your own PostgreSQL installation
 
-CapyBarca is designed for private self-hosting over Tailscale. It uses Tailscale's HTTPS certificate infrastructure and is not intended to be exposed on the public internet. This is a deliberate safety layer as the software is still in pre release. A non tailscale option will be added by version 1.*, until then it is strongly advised to not strip the additional security layer that tailscale provides to your data stored within CapyBarca.
+CapyBarca is designed for private self-hosting over Tailscale. It uses Tailscale's HTTPS certificate infrastructure and is not intended to be exposed on the public internet. This is a deliberate safety layer as the software is still in pre-release. A non Tailscale option will be added by version 1.*, until then it is strongly advised to not strip the additional security layer that tailscale provides to your data stored within CapyBarca.
 
 ---
 
@@ -155,10 +155,11 @@ All containers run as an unprivileged user rather than as root. `setup.sh` align
 
 ## Trivia
 
-- The dev's daughter is a huge fan of capybaras. The dev made the mistake of thinking out loud when pondering on how to name this project. The dev couldn't refuse his daughter's pleading eyes. The dev did, however, tweak it a bit in reference to Hannibal Barca. Both, the dev and his daughter, are happy with the result.
-- This project began spring 2025 with 3 months worth of html+js spaghetti code, ran its course over 6 months of a first vue+py iteration, got reworked from the ground up with heavy testing baked in from the very beginning and was copied to this public repository when it was deemed stable enough. CapyBarca is used by its developer since early 2026 as full replacement of his Notion workspace.
+- The dev's daughter is a huge fan of capybaras. The dev made the mistake of thinking out loud when pondering on how to name this project. The dev couldn't refuse his daughter's pleading eyes. The dev did, however, tweak it a bit in reference to Hannibal Barca. Both the dev and his daughter are happy with the result.
+- This project began in spring 2025 with 3 months worth of html/js spaghetti code, followed by a first Vue/Python iteration which in turn got reworked six months later from the ground up with heavy testing baked in from the very beginning. It was copied to this public repository when it was deemed stable enough. CapyBarca has been used by its developer since early 2026 as full replacement of his Notion workspace.
+- CapyBarca has not yet been tested across a broad range of systems, nor by a community that will inevitably use it in ways no developer anticipates. For the dev’s own use, it holds up well. Simple databases like a personal calendar, notes and ideas run just as smoothly as a dense network of databases orbiting a twin star system: a character database with several hundred entries and over 100 properties of all kinds, paired with a steadily growing plot database.
 
---- 
+---
 
 ## Transparency
 
@@ -170,7 +171,7 @@ The Anthropic LLM "Claude" assisted in creating this software.
 
 Despite heavy testing (~2870 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet.
 
-Do not use for irreplaceable Data without regularly creating backups. Use at own risk.
+Do not use for irreplaceable data without regularly creating backups. Use at your own risk.
 
 ---
 
