@@ -302,14 +302,15 @@ export function keyComparable(
 /**
  * Compare two key scalars.
  *
- * Numbers compare numerically; strings via ``localeCompare`` so text keys
- * honour the locale's collation. Canonical ISO dates are lexicographically
- * ordered and the backend zero-pads every component, so the same string
- * comparison is correct for them.
+ * Numbers compare numerically; strings via ``localeCompare`` in natural
+ * order, as the server sorts text: digit runs compare as numbers ("2" before
+ * "10") and letters as in a dictionary. Canonical ISO dates have zero-padded
+ * components of fixed width, so the same comparison orders them
+ * chronologically.
  */
-function compareKeyScalars(a: string | number, b: string | number): number {
+export function compareKeyScalars(a: string | number, b: string | number): number {
   if (typeof a === 'number' && typeof b === 'number') return a - b
-  return String(a).localeCompare(String(b))
+  return String(a).localeCompare(String(b), undefined, { numeric: true })
 }
 
 /**

@@ -1,6 +1,6 @@
 {
   "name": "capybarca",
-  "version": "0.16.8.0",
+  "version": "0.16.8.1",
   "private": true,
   "type": "module",
   "scripts": {

@@ -25,6 +25,7 @@ app/database/database_settings_migration_test.py
 app/database/relation_timeline_minutes_migration_test.py
 app/database/formula_property_ids_migration_test.py
 app/database/relation_chip_icons_migration_test.py
+app/database/natural_sort_collation_migration_test.py
 app/database/migration_lock_test.py
 
 app/session/user_registration_test.py

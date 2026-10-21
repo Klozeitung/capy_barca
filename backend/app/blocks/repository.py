@@ -209,6 +209,17 @@ def _ref_date_iso(
     return value if value else None
 
 
+# Collation for sorting text (migration 0029): digit runs compare as numbers
+# and letters as in a dictionary, so "1, 2, 10" and "a, A, b" instead of the
+# byte order "1, 10, 2" and "A, B, a".
+NATURAL_SORT_COLLATION = 'natural_sort'
+
+
+def _natural(expr):
+    """*expr* sorted in natural order (see ``NATURAL_SORT_COLLATION``)."""
+    return expr.collate(NATURAL_SORT_COLLATION)
+
+
 # Rollup aggregation functions whose ``result`` is a numeric scalar. Sorting a
 # rollup column by one of these must cast ``result`` to a float so that values
 # order numerically (10 < 20 < 100) rather than lexicographically. Every other
@@ -227,18 +238,19 @@ def _select_sort_expression(option_expr, schema_config: Optional[dict]):
     Sort key of a single-select value.
 
     Values store option ids, which say nothing about order. By default the
-    options sort alphabetically by label, ignoring case; with the property's
+    options sort alphabetically by label, ignoring case, in natural order
+    (numbers within a label compare as numbers); with the property's
     manual-order toggle on they sort in the order the options are configured.
     Ids without an option, and empty values, sort last.
     """
     choices = options.option_list('select', schema_config)
     if not choices:
-        return option_expr
+        return _natural(option_expr)
     if (schema_config or {}).get(options.MANUAL_SORT_KEY) is True:
         whens = {o['id']: index for index, o in enumerate(choices)}
-    else:
-        whens = {o['id']: o['label'].lower() for o in choices}
-    return case(whens, value=option_expr, else_=None)
+        return case(whens, value=option_expr, else_=None)
+    whens = {o['id']: o['label'].lower() for o in choices}
+    return _natural(case(whens, value=option_expr, else_=None))
 
 
 def _value_key(schema_type: str) -> str:
@@ -665,7 +677,9 @@ def query_entries(
 
     Filtering uses correlated EXISTS subqueries — one per filter — so there
     is no join-fanout between multiple filter conditions.  Sorting uses
-    LEFT JOINs on PropertyValue, one per unique sort schema.
+    LEFT JOINs on PropertyValue, one per unique sort schema. Text sorts in
+    natural order (``NATURAL_SORT_COLLATION``); numbers and dates sort by
+    value.
 
     The caller is responsible for loading PropertyValues separately via
     list_values_for_pages().
@@ -707,7 +721,7 @@ def query_entries(
 
     for s in sorts:
         if s.schema_id == '__name__':
-            title_expr = Block.content['title'].as_string()
+            title_expr = _natural(Block.content['title'].as_string())
             order_exprs.append(
                 title_expr.asc().nullslast()
                 if s.direction == 'asc'
@@ -755,13 +769,13 @@ def query_entries(
             if rollup_fn in _NUMERIC_ROLLUP_FUNCTIONS:
                 val_expr = PV.value['result'].as_float()
             else:
-                val_expr = PV.value['result'].as_string()
+                val_expr = _natural(PV.value['result'].as_string())
         elif schema_type == 'select':
             val_expr = _select_sort_expression(
                 PV.value['option'].as_string(), s.schema_config,
             )
         else:
-            val_expr = PV.value[_value_key(schema_type)].as_string()
+            val_expr = _natural(PV.value[_value_key(schema_type)].as_string())
 
         order_exprs.append(
             val_expr.asc().nullslast()

@@ -1052,6 +1052,52 @@ def test_query_entries_sort_by_name_desc(db, database_block):
     assert titles == sorted(titles, key=str.lower, reverse=True)
 
 
+def _sorted_titles(db, database_block, direction="asc") -> list:
+    s = repo.SortDescriptor(schema_id="__name__", schema_type=None, direction=direction)
+    entries, _ = repo.query_entries(db, database_block.id, [], [s])
+    return [(e.content or {}).get("title") for e in entries]
+
+
+def test_names_with_numbers_sort_numerically(db, database_block):
+    for position, title in enumerate(("20", "3", "10", "1", "19", "2"), start=1):
+        _make_entry(db, database_block, title, position=float(position))
+
+    assert _sorted_titles(db, database_block) == ["1", "2", "3", "10", "19", "20"]
+    assert _sorted_titles(db, database_block, "desc") == ["20", "19", "10", "3", "2", "1"]
+
+
+def test_numbered_names_sort_by_their_number(db, database_block):
+    for position, number in enumerate((10, 1, 2, 9), start=1):
+        _make_entry(db, database_block, f"{number}. Unit X", position=float(position))
+
+    assert _sorted_titles(db, database_block) == [
+        "1. Unit X", "2. Unit X", "9. Unit X", "10. Unit X",
+    ]
+
+
+def test_names_sort_like_a_dictionary_and_untitled_last(db, database_block):
+    for position, title in enumerate(("beta", "Beta", None, "alpha", "Alpha"), start=1):
+        _make_entry(db, database_block, title, position=float(position))
+
+    assert _sorted_titles(db, database_block) == ["alpha", "Alpha", "beta", "Beta", None]
+
+
+def test_text_properties_sort_numerically(db, database_block):
+    schema = repo.create_schema(
+        db, database_id=database_block.id, name="Code", type="text", position=1.0,
+    )
+    db.commit()
+    for position, text in enumerate(("Item 10", "Item 2", "Item 1"), start=1):
+        entry = _make_entry(db, database_block, position=float(position))
+        repo.upsert_value(db, page_id=entry.id, schema_id=schema.id, value={"text": text})
+    db.commit()
+
+    s = repo.SortDescriptor(schema_id=str(schema.id), schema_type="text", direction="asc")
+    entries, _ = repo.query_entries(db, database_block.id, [], [s])
+    texts = [repo.get_value(db, e.id, schema.id).value["text"] for e in entries]
+    assert texts == ["Item 1", "Item 2", "Item 10"]
+
+
 def test_query_entries_sort_by_number_schema(db, workspace, database_block):
     schema = repo.create_schema(
         db, database_id=database_block.id, name="Score", type="number", position=1.0
@@ -1628,6 +1674,29 @@ def test_select_sorts_alphabetically_by_label_ignoring_case(db, database_block):
     schema, entries = _select_sort_setup(db, database_block, manual=False)
     assert _order(db, database_block, schema) == [
         entries["o-alpha"].id, entries["o-beta"].id, entries["o-gamma"].id, entries[None].id,
+    ]
+
+
+def test_select_labels_with_numbers_sort_numerically(db, database_block):
+    config = {"options": [
+        {"id": "o-10", "label": "10. Unit X"},
+        {"id": "o-2", "label": "2. Unit X"},
+        {"id": "o-1", "label": "1. Unit X"},
+    ]}
+    schema = repo.create_schema(
+        db, database_id=database_block.id, name="Unit", type="select", position=1.0,
+        config=config,
+    )
+    db.commit()
+    entries = {}
+    for position, option_id in enumerate(("o-10", "o-2", "o-1"), start=1):
+        entry = _make_entry(db, database_block, position=float(position))
+        repo.upsert_value(db, page_id=entry.id, schema_id=schema.id, value={"option": option_id})
+        entries[option_id] = entry
+    db.commit()
+
+    assert _order(db, database_block, schema) == [
+        entries["o-1"].id, entries["o-2"].id, entries["o-10"].id,
     ]
 
 

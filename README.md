@@ -27,9 +27,11 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 
 ### CapyBarca specific features
 
-- **Property timelining** any database property can be given a timeline: values are stored as date-ranged slots rather than a single value. Example: In Notion, you could only put "City A" in a relation property for a character in a world-building database, but if that location were to change, you wouldn't be able to see the previous cities the character resided in. With CapyBarca you can display a full history within a single property ("timelining a property"). Atm rollups and formulas will only use the most recent value but specific and broad querying is a planned feature.
+- **Property timelining** any database property can be given a timeline: values are stored as date-ranged slots rather than a single value. Example: In Notion, you could only put "City A" in a relation property for a character in a world-building database, but if that location were to change, you wouldn't be able to see the previous cities the character resided in. With CapyBarca you can display a full history within a single property ("timelining a property").
 - **Nuanced Relations**: relation properties are able to track qualifiers, so called "Nuances". Example: In Notion, you could only put "organisation X" into the relation property "organisation" in a character database. CapyBarca allows you to qualify that relation. Now you not only can set it to "**organisation X** *as* **rank A**", but you can combine nuancing and timelining, enabling you to track the career of your character within not only one, but any number of organisations. Of course, nuancing (and timelining) has a lot more nifty use cases.
 - **Keyed Relations**: A rollup within a relation property, providing data from the target relation entries to sort them by. For example, a plot property normally suffers from all plot beats being sorted by seniority, i.e. the order you added them to the list. Your plot beats will show up in a non chronological order. By keying them to their own date properties, they will now be listed next to their respective dates in chronological order - or whatever order you like to apply.
+
+*A grain of salt: To ensure full reliability, rollups and formulas currently only use the most recent value of timelined properties.*
 
 ---
 
@@ -38,6 +40,7 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 - Linux server (x86-64)
 - [Docker](https://docs.docker.com/engine/install/) with Compose v2
 - [Tailscale](https://tailscale.com/download) connected and running, with HTTPS certificates enabled
+- PostgreSQL with ICU support, which CapyBarca needs for sorting text. The official `postgres` image that `docker-compose.yml` uses includes it; check this only if you replace the database service with your own PostgreSQL installation
 
 CapyBarca is designed for private self-hosting over Tailscale. It uses Tailscale's HTTPS certificate infrastructure and is not intended to be exposed on the public internet. This is a deliberate safety layer as the software is still in pre release. A non tailscale option will be added by version 1.*, until then it is strongly advised to not strip the additional security layer that tailscale provides to your data stored within CapyBarca.
 
@@ -150,20 +153,22 @@ All containers run as an unprivileged user rather than as root. `setup.sh` align
 
 ---
 
+## Trivia
+
+- The dev's daughter is a huge fan of capybaras. The dev made the mistake of thinking out loud when pondering on how to name this project. The dev couldn't refuse his daughter's pleading eyes. The dev did, however, tweak it a bit in reference to Hannibal Barca. Both, the dev and his daughter, are happy with the result.
+- This project began spring 2025 with 3 months worth of html+js spaghetti code, ran its course over 6 months of a first vue+py iteration, got reworked from the ground up with heavy testing baked in from the very beginning and was copied to this public repository when it was deemed stable enough. CapyBarca is used by its developer since early 2026 as full replacement of his Notion workspace.
+
+--- 
+
 ## Transparency
 
-- **AI Usage Disclosure**: The Anthropic LLM "Claude" was used in creating this software.
-- **System Testing**: CapyBarca is not yet tested for broad system compatibility. "Runs fine on mine" is all the dev can say at this point.
+The Anthropic LLM "Claude" assisted in creating this software.
 
 ---
 
 ## Project Status
 
-This project is a work in progress. It is used by its developer since February 2026 as full replacement of Notion. Having been worked on in a private repo, it was copied to this public repository when it was deemed to be useful and stable enough.
-
-As Timelining and Nuancing are rather complicated features, rollups and formulas will work without taking nuances into account and will default to "last state" for timelined properties - for now.
-
-Despite heavy testing (~2860 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet. Thus, this honest disclaimer is in order:
+Despite heavy testing (~2870 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet.
 
 Do not use for irreplaceable Data without regularly creating backups. Use at own risk.
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { DEFAULT_ENTRY_ICON, chipIcon, displayValue, formatPeriodKey, getTimelineDisplayMode } from '../cellUtils'
+import { DEFAULT_ENTRY_ICON, chipIcon, compareKeyScalars, displayValue, formatPeriodKey, getTimelineDisplayMode } from '../cellUtils'
 import type { DatabaseEntry, PropertySchema } from '@/stores/database'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -994,5 +994,24 @@ describe('chipIcon', () => {
     expect(chipIcon(null)).toBe(DEFAULT_ENTRY_ICON)
     expect(chipIcon(undefined)).toBe(DEFAULT_ENTRY_ICON)
     expect(chipIcon('')).toBe(DEFAULT_ENTRY_ICON)
+  })
+})
+
+describe('compareKeyScalars', () => {
+  const sorted = (values: (string | number)[]) => [...values].sort(compareKeyScalars)
+
+  it('orders digit runs in text as numbers', () => {
+    expect(sorted(['20', '3', '10', '1', '19', '2'])).toEqual(['1', '2', '3', '10', '19', '20'])
+    expect(sorted(['10. Unit X', '2. Unit X', '1. Unit X'])).toEqual(['1. Unit X', '2. Unit X', '10. Unit X'])
+  })
+
+  it('keeps canonical dates chronological', () => {
+    expect(sorted(['2045-07-17', '2000-07-28T10:00', '2000-07-28'])).toEqual([
+      '2000-07-28', '2000-07-28T10:00', '2045-07-17',
+    ])
+  })
+
+  it('compares numbers by value', () => {
+    expect(sorted([10, 2, 1])).toEqual([1, 2, 10])
   })
 })

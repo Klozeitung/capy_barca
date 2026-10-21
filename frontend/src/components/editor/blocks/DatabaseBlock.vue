@@ -1415,7 +1415,6 @@ async function toggleWrapColumn(colKey: string): Promise<void> {
                   'db__row--drop-above': getRowDropState(entry.id).above,
                   'db__row--drop-below': getRowDropState(entry.id).below,
                   'db__row--drop-onto':  getRowDropState(entry.id).onto,
-                  'db__row--sub-item':   depth > 0,
                 }"
                 @dragstart="onRowDragStart($event, entry)"
                 @dragend="onRowDragEnd(entry)"
@@ -2064,58 +2063,17 @@ async function toggleWrapColumn(colKey: string): Promise<void> {
   height: 16px;
   flex-shrink: 0;
 }
-.db__row--sub-item > td {
-  background: color-mix(in srgb, var(--color-surface) 40%, var(--color-hover) 60%);
-}
-
-.db__row--sub-item:hover > td {
-  background: var(--color-hover);
-}
 
 /*
  * Pinned cells must stay opaque, or the scrolled cells show through them.
- * The row tints above are translucent (--color-hover, the accent mix), so on
- * pinned cells they are painted as layers over the opaque canvas colour. For
- * a sub-item row under the pointer, the hover tint lies over the sub-item
- * tint, which is how the two read on the row's other cells as well.
+ * The drop tint is translucent (an accent mix), so on pinned cells it is
+ * painted as a layer over the opaque canvas colour.
  */
 .db__row--drop-onto > td.db__td--frozen {
   background:
     linear-gradient(
       color-mix(in srgb, var(--color-accent) 6%, transparent),
       color-mix(in srgb, var(--color-accent) 6%, transparent)
-    ),
-    var(--color-bg);
-}
-
-.db__row--sub-item > td.db__td--frozen {
-  background:
-    linear-gradient(
-      color-mix(in srgb, var(--color-surface) 40%, var(--color-hover) 60%),
-      color-mix(in srgb, var(--color-surface) 40%, var(--color-hover) 60%)
-    ),
-    var(--color-bg);
-}
-
-.db__row--sub-item.db__row--drop-onto > td.db__td--frozen {
-  background:
-    linear-gradient(
-      color-mix(in srgb, var(--color-accent) 6%, transparent),
-      color-mix(in srgb, var(--color-accent) 6%, transparent)
-    ),
-    linear-gradient(
-      color-mix(in srgb, var(--color-surface) 40%, var(--color-hover) 60%),
-      color-mix(in srgb, var(--color-surface) 40%, var(--color-hover) 60%)
-    ),
-    var(--color-bg);
-}
-
-.db__row--sub-item:hover > td.db__td--frozen {
-  background:
-    linear-gradient(var(--color-hover), var(--color-hover)),
-    linear-gradient(
-      color-mix(in srgb, var(--color-surface) 40%, var(--color-hover) 60%),
-      color-mix(in srgb, var(--color-surface) 40%, var(--color-hover) 60%)
     ),
     var(--color-bg);
 }
