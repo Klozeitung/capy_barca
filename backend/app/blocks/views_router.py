@@ -2,7 +2,8 @@
 View router.
 
 HTTP interface for database views: listing and editing them, remembering
-which view a placement shows, and rendering pages of a view. The logic lives
+which view a placement shows, and rendering pages of a view or listing the
+ids they hold. The logic lives
 in ``app.blocks.views``; this module parses requests, enforces access and
 shapes responses.
 
@@ -26,6 +27,7 @@ DELETE /api/databases/{database_id}/views/{view_id}
 PUT    /api/databases/{database_id}/views/order
 PUT    /api/databases/{database_id}/views/selection
 POST   /api/databases/{database_id}/views/{view_id}/entries
+POST   /api/databases/{database_id}/views/{view_id}/entry-ids
 """
 import uuid
 from typing import Any, Optional
@@ -151,6 +153,21 @@ class PageResponse(BaseModel):
     offset: int
     relations: dict[str, RelationTitle]
     key_values: dict[str, dict[str, Any]]
+
+
+class EntryRef(BaseModel):
+    """An entry on a page, by id, with its position among its siblings."""
+
+    id: uuid.UUID
+    position: float
+
+
+class PageIdsResponse(BaseModel):
+    """The entries on a page of a view, in display order, and the view's total."""
+
+    entries: list[EntryRef]
+    total: int
+    offset: int
 
 
 # ─── Endpoints ───────────────────────────────────────────────────────────────
@@ -310,6 +327,31 @@ def render_page(
         db,
         view,
         current_user,
+        offset=payload.offset,
+        limit=payload.limit,
+        search=payload.search,
+    )
+
+
+@views_router.post("/{database_id}/views/{view_id}/entry-ids", response_model=PageIdsResponse)
+def page_entry_ids(
+    database_id: uuid.UUID,
+    view_id: uuid.UUID,
+    payload: PageRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    The entries on a page of a view as id and position, in display order,
+    and the total number of matching entries. Takes the same request as a
+    page and selects the same entries; values and relations are left out, so
+    a client can load just the entries it does not show yet.
+    """
+    views.require_readable(db, database_id, current_user)
+    view = views.get_view_or_404(db, database_id, view_id)
+    return views.page_entry_ids(
+        db,
+        view,
         offset=payload.offset,
         limit=payload.limit,
         search=payload.search,

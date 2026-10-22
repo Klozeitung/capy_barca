@@ -338,6 +338,61 @@ def test_page_cost_does_not_grow_with_the_page_size(db, admin, count_queries):
     assert large.count == small.count
 
 
+def test_page_ids_match_the_entries_of_the_page(db, admin):
+    database = _database(db)
+    for title in ("Entry C", "Entry A", "Entry B", "Entry D"):
+        _entry(db, database, title)
+    [view] = views.ensure_views(db, database.id)
+    views.update_view(db, view, sorts=[{"schemaId": views.NAME_COL_KEY, "direction": "asc"}])
+
+    page = views.render_page(db, view, admin, offset=1, limit=2, search="Entry")
+    ids = views.page_entry_ids(db, view, offset=1, limit=2, search="Entry")
+
+    assert ids["entries"] == [
+        {"id": e["id"], "position": e["position"]} for e in page["entries"]
+    ]
+    assert ids["total"] == page["total"] == 4
+    assert ids["offset"] == page["offset"] == 1
+    assert _titles(page) == ["Entry B", "Entry C"]
+
+
+def test_page_ids_of_an_unpaged_view_cover_every_entry(db):
+    database = _database(db)
+    for i in range(3):
+        _entry(db, database, f"Entry {i}")
+    [view] = views.ensure_views(db, database.id)
+    views.update_view(db, view, view_type="calendar")
+
+    ids = views.page_entry_ids(db, view, offset=2, limit=1)
+
+    assert len(ids["entries"]) == 3
+    assert ids["offset"] == 0
+
+
+def test_page_ids_skip_the_values_and_relations_of_a_page(db, admin, count_queries):
+    database = _database(db)
+    target = _database(db)
+    link = _schema(db, database, "Link", "relation", {"target_database_id": str(target.id)})
+    for i in range(30):
+        linked = _entry(db, target, f"Linked {i}")
+        entry = _entry(db, database, f"Entry {i}")
+        repo.upsert_value(db, page_id=entry.id, schema_id=link.id, value={"related_ids": [str(linked.id)]})
+    db.commit()
+    [view] = views.ensure_views(db, database.id)
+    db.commit()
+
+    views.page_entry_ids(db, view, limit=3)
+    with count_queries() as small:
+        views.page_entry_ids(db, view, limit=3)
+    with count_queries() as large:
+        views.page_entry_ids(db, view, limit=30)
+    with count_queries() as page:
+        views.render_page(db, view, admin, limit=30)
+
+    assert large.count == small.count
+    assert large.count < page.count
+
+
 def test_deleting_the_database_removes_its_views(db):
     database = _database(db)
     views.ensure_views(db, database.id)

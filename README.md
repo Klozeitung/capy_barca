@@ -42,7 +42,7 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 - [Tailscale](https://tailscale.com/download) connected and running, with HTTPS certificates enabled
 - PostgreSQL with ICU support, which CapyBarca needs for sorting text. The official `postgres` image that `docker-compose.yml` uses includes it; check this only if you replace the database service with your own PostgreSQL installation
 
-CapyBarca is designed for private self-hosting over Tailscale. It uses Tailscale's HTTPS certificate infrastructure and is not intended to be exposed on the public internet. This is a deliberate safety layer as the software is still in pre-release. A non Tailscale option will be added by version 1.*, until then it is strongly advised to not strip the additional security layer that tailscale provides to your data stored within CapyBarca.
+CapyBarca is designed for private self-hosting over Tailscale. It uses Tailscale's HTTPS certificate infrastructure and is not intended to be exposed on the public internet. This is a deliberate safety layer as the software is still in pre-release. A non-Tailscale option will be added by version 1.*, until then it is strongly advised to not strip the additional security layer that Tailscale provides to your data stored within CapyBarca.
 
 ---
 
@@ -156,8 +156,8 @@ All containers run as an unprivileged user rather than as root. `setup.sh` align
 ## Trivia
 
 - The dev's daughter is a huge fan of capybaras. The dev made the mistake of thinking out loud when pondering on how to name this project. The dev couldn't refuse his daughter's pleading eyes. The dev did, however, tweak it a bit in reference to Hannibal Barca. Both the dev and his daughter are happy with the result.
-- This project began in spring 2025 with 3 months worth of html/js spaghetti code, followed by a first Vue/Python iteration which in turn got reworked six months later from the ground up with heavy testing baked in from the very beginning. It was copied to this public repository when it was deemed stable enough. CapyBarca has been used by its developer since early 2026 as full replacement of his Notion workspace.
-- CapyBarca has not yet been tested across a broad range of systems, nor by a community that will inevitably use it in ways no developer anticipates. For the dev’s own use, it holds up well. Simple databases like a personal calendar, notes and ideas run just as smoothly as a dense network of databases orbiting a twin star system: a character database with several hundred entries and over 100 properties of all kinds, paired with a steadily growing plot database.
+- This project began in spring 2025 with 3 months' worth of html/js spaghetti code, followed by a first Vue/Python iteration which in turn got reworked six months later from the ground up with heavy testing baked in from the very beginning. It was copied to this public repository when it was deemed stable enough. CapyBarca has been used by its developer since early 2026 as a full replacement of his Notion workspace.
+- CapyBarca has not yet been tested across a broad range of systems, nor by a community that will inevitably use it in ways no developer anticipates. For the dev's own use, it holds up well. Simple databases like a personal calendar, notes and ideas run just as smoothly as a dense network of databases orbiting a twin star system: a character database with several hundred entries and over 100 properties of all kinds, paired with a steadily growing plot database.
 
 ---
 
@@ -169,7 +169,7 @@ The Anthropic LLM "Claude" assisted in creating this software.
 
 ## Project Status
 
-Despite heavy testing (~2870 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet.
+Despite heavy testing (~2910 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet.
 
 Do not use for irreplaceable data without regularly creating backups. Use at your own risk.
 

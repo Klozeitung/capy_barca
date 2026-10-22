@@ -10,7 +10,7 @@
  * entries      – keyed by databaseId → the complete, unpaginated entry list,
  *                present only once ``fetchEntries`` has loaded it
  * queryResults – keyed by a caller-chosen result key → the entries one view
- *                has loaded so far, see ``loadViewPage``
+ *                has loaded so far, see ``loadViewPage`` and ``syncViewPage``
  * entryDetails – keyed by entry ID → single entries loaded by ``fetchEntry``
  *                for the side view and the entry page
  * allDatabases – flat list of DatabaseInfo (id + title), used by relation pickers
@@ -573,6 +573,19 @@ export interface ViewPageResponse extends RelationResolution {
   offset: number
 }
 
+/** One entry of a page by id, with its position among its siblings. */
+export interface EntryRef {
+  id: string
+  position: number
+}
+
+/** Response of POST /views/{id}/entry-ids. */
+export interface ViewPageIdsResponse {
+  entries: EntryRef[]
+  total: number
+  offset: number
+}
+
 /** Response of GET /entries/{id}. */
 export interface EntryDetailResponse extends RelationResolution {
   entry: DatabaseEntry
@@ -627,7 +640,7 @@ export function eventTouchesEntry(details: EntriesEventDetails, entryId: string)
 /** How long after editing a value someone else's change to it is reported. */
 export const OVERWRITE_NOTICE_WINDOW_MS = 60_000
 
-/** Which part of a view to load; see ``loadViewPage``. */
+/** Which part of a view to load; see ``loadViewPage`` and ``syncViewPage``. */
 export interface ViewPageRequest {
   offset: number
   /** Null loads every entry; views on a time axis are never paged anyway. */
@@ -913,6 +926,13 @@ export const useDatabaseStore = defineStore('database', () => {
   /** Composite keys for which a key-value round-trip has completed. */
   const resolvedKeyValueIds = ref<Set<string>>(new Set())
 
+  /**
+   * Database of the linked entry behind each cached key value, by composite
+   * key. A change event names its database, and an event that does not list
+   * the changed entries refreshes every key value of that database.
+   */
+  const _keyValueDatabases = new Map<string, string>()
+
   /** Cache key for the key-value maps above. */
   function keyValueCacheKey(keyPropertyId: string, entryId: string): string {
     return `${keyPropertyId}:${entryId}`
@@ -1121,7 +1141,7 @@ export const useDatabaseStore = defineStore('database', () => {
     )
   }
 
-  /** Latest request per result key; see ``loadViewPage``. */
+  /** Latest request per result key; see ``loadViewPage`` and ``syncViewPage``. */
   const _pageGenerations = new Map<string, number>()
 
   /**
@@ -1183,6 +1203,66 @@ export const useDatabaseStore = defineStore('database', () => {
     return { entries: queryResults.value[resultKey].entries, total: page.total }
   }
 
+  /**
+   * Bring the part of a view held under *resultKey* up to date by comparing
+   * ids, after entries were added, removed, moved or reordered.
+   *
+   * The server answers *request* with the ids and positions of the entries
+   * the view holds there, in display order. Rows already held stay the same
+   * objects and take the new position; only the entries not held yet are
+   * loaded, with their values and resolved relations, through the batch
+   * endpoint ``refreshEntries`` uses. Rows the view no longer holds are
+   * dropped. Values of rows already held are not loaded again: changes to
+   * them arrive as events of their own.
+   *
+   * An entry deleted between the two requests is left out, and ``total``
+   * still counts it until the next change. Without a result for the key,
+   * the page is loaded in full by ``loadViewPage``. Overlapping calls for one
+   * key are resolved as there: only the latest changes the stored result.
+   */
+  async function syncViewPage(
+    databaseId: string,
+    viewId: string,
+    request: ViewPageRequest,
+    resultKey: string,
+  ): Promise<{ entries: DatabaseEntry[]; total: number }> {
+    const held = queryResults.value[resultKey]
+    if (!held || held.databaseId !== databaseId) {
+      return loadViewPage(databaseId, viewId, request, resultKey)
+    }
+    const generation = (_pageGenerations.get(resultKey) ?? 0) + 1
+    _pageGenerations.set(resultKey, generation)
+    const isCurrent = () => _pageGenerations.get(resultKey) === generation
+
+    const page = await apiClient.post<ViewPageIdsResponse>(
+      `/api/databases/${databaseId}/views/${viewId}/entry-ids`,
+      { offset: request.offset, limit: request.limit, search: request.search },
+    )
+    const current = () => ({ entries: queryResults.value[resultKey]?.entries ?? [], total: page.total })
+    if (!isCurrent()) return current()
+
+    const known = new Map(queryResults.value[resultKey].entries.map((e) => [e.id, e]))
+    const lacking = page.entries.map((ref) => ref.id).filter((id) => !known.has(id))
+    const fetched = new Map<string, DatabaseEntry>()
+    for (let start = 0; start < lacking.length; start += ENTRY_BATCH_LIMIT) {
+      const result = await _requestBatch(databaseId, lacking.slice(start, start + ENTRY_BATCH_LIMIT))
+      for (const entry of result.entries) fetched.set(entry.id, entry)
+    }
+    if (!isCurrent()) return current()
+
+    // Rows may have been replaced by an update in place while the batch ran.
+    const latest = new Map(queryResults.value[resultKey].entries.map((e) => [e.id, e]))
+    const rows: DatabaseEntry[] = []
+    for (const ref of page.entries) {
+      const row = latest.get(ref.id) ?? fetched.get(ref.id)
+      if (!row) continue
+      row.position = ref.position
+      rows.push(row)
+    }
+    queryResults.value[resultKey] = { databaseId, entries: rows }
+    return { entries: queryResults.value[resultKey].entries, total: page.total }
+  }
+
   /** Drop the view query result held under *resultKey*. */
   function releaseQueryResult(resultKey: string): void {
     delete queryResults.value[resultKey]
@@ -1239,10 +1319,14 @@ export const useDatabaseStore = defineStore('database', () => {
         const keyProperty = keyPropertyOf(schema)
         if (!keyProperty) continue
         const values = resolution.key_values[keyProperty] ?? {}
+        const target = typeof schema.config?.target_database_id === 'string'
+          ? schema.config.target_database_id
+          : databaseId
         for (const id of ids) {
           const cacheKey = keyValueCacheKey(keyProperty, id)
           relationKeyValues.value[cacheKey] = values[id] ?? null
           resolvedKeyValueIds.value.add(cacheKey)
+          _keyValueDatabases.set(cacheKey, resolution.relations[id]?.database_id ?? target)
         }
       }
     }
@@ -1372,7 +1456,9 @@ export const useDatabaseStore = defineStore('database', () => {
         )
     if (wanted.length === 0) return
     for (const id of wanted) {
-      resolvedKeyValueIds.value.add(keyValueCacheKey(keyPropertyId, id))
+      const cacheKey = keyValueCacheKey(keyPropertyId, id)
+      resolvedKeyValueIds.value.add(cacheKey)
+      _keyValueDatabases.set(cacheKey, databaseId)
     }
     try {
       const result = await apiClient.post<RelationTitle[]>(
@@ -1421,7 +1507,9 @@ export const useDatabaseStore = defineStore('database', () => {
   /**
    * Create an entry. It starts with the database's default entry icon, which
    * the backend sets. The caller reloads what it displays; nothing else is
-   * fetched here, least of all the whole database.
+   * fetched here, least of all the whole database. Other views of the
+   * database learn of the entry from the ``database_entries_updated`` event
+   * the backend sends.
    */
   async function createEntry(databaseId: string): Promise<DatabaseEntry> {
     return apiClient.post<DatabaseEntry>(`/api/databases/${databaseId}/entries`)
@@ -1640,26 +1728,7 @@ export const useDatabaseStore = defineStore('database', () => {
     const unique = [...new Set(ids)]
     const missing: string[] = []
     for (let start = 0; start < unique.length; start += ENTRY_BATCH_LIMIT) {
-      const chunk = unique.slice(start, start + ENTRY_BATCH_LIMIT)
-      const key = `${databaseId}|${[...chunk].sort().join(',')}`
-      let request = _batchRequests.get(key)
-      if (!request) {
-        const snapshot = _beginSnapshot()
-        const promise = apiClient
-          .post<EntryBatchResponse>(`/api/databases/${databaseId}/entries/batch`, { ids: chunk })
-          .then((result) => {
-            ingestResolution(databaseId, result.entries, result)
-            _keepLocalWrites(result.entries, snapshot)
-            return result
-          })
-          .finally(() => {
-            _batchRequests.delete(key)
-            _endSnapshot(snapshot)
-          })
-        request = { promise, snapshot }
-        _batchRequests.set(key, request)
-      }
-      const result = await request.promise
+      const result = await _requestBatch(databaseId, unique.slice(start, start + ENTRY_BATCH_LIMIT))
       for (const fresh of result.entries) {
         _forEachCachedEntry(fresh.id, databaseId, (row) => {
           row.values = { ...fresh.values }
@@ -1672,6 +1741,35 @@ export const useDatabaseStore = defineStore('database', () => {
       missing.push(...result.missing)
     }
     return missing
+  }
+
+  /**
+   * POST /entries/batch for *ids*, at most ``ENTRY_BATCH_LIMIT`` of them.
+   *
+   * Callers asking for the same ids of the same database at the same time
+   * share one request. The relations of the entries go into the chip caches,
+   * and cells this client wrote meanwhile keep their local value.
+   */
+  function _requestBatch(databaseId: string, ids: string[]): Promise<EntryBatchResponse> {
+    const key = `${databaseId}|${[...ids].sort().join(',')}`
+    let request = _batchRequests.get(key)
+    if (!request) {
+      const snapshot = _beginSnapshot()
+      const promise = apiClient
+        .post<EntryBatchResponse>(`/api/databases/${databaseId}/entries/batch`, { ids })
+        .then((result) => {
+          ingestResolution(databaseId, result.entries, result)
+          _keepLocalWrites(result.entries, snapshot)
+          return result
+        })
+        .finally(() => {
+          _batchRequests.delete(key)
+          _endSnapshot(snapshot)
+        })
+      request = { promise, snapshot }
+      _batchRequests.set(key, request)
+    }
+    return request.promise
   }
 
   /** Record which cell the view *owner* edits; null for both means none. */
@@ -1715,11 +1813,42 @@ export const useDatabaseStore = defineStore('database', () => {
     }
   }
 
+  /**
+   * Load the key values of keyed relations again that *details* may have
+   * changed.
+   *
+   * A keyed relation shows and sorts its linked entries by a property of
+   * theirs, read from ``relationKeyValues``. When that property changes on a
+   * linked entry, the event names the linked entry's database, not the
+   * database of the relation, so no view of the relation loads anything.
+   * The cached values are therefore checked here: those whose entry and key
+   * property the event lists are loaded again, and all of the event's
+   * database when it lists no entries. Cells re-sort as the values arrive.
+   */
+  function _refreshKeyValues(details: EntriesEventDetails): void {
+    const byProperty = new Map<string, string[]>()
+    for (const cacheKey of resolvedKeyValueIds.value) {
+      if (_keyValueDatabases.get(cacheKey) !== details.database_id) continue
+      const separator = cacheKey.indexOf(':')
+      const keyProperty = cacheKey.slice(0, separator)
+      const entryId = cacheKey.slice(separator + 1)
+      if (details.entries && !(details.entries[entryId] ?? []).includes(keyProperty)) continue
+      const ids = byProperty.get(keyProperty) ?? []
+      ids.push(entryId)
+      byProperty.set(keyProperty, ids)
+    }
+    for (const [keyProperty, ids] of byProperty) {
+      resolveEntryKeyValues(details.database_id, ids, keyProperty, true)
+    }
+  }
+
   function _onWsBlockEvent(e: Event): void {
     const payload = (e as CustomEvent<BlockEventPayload>).detail
     _applyEntryEvent(payload)
     const details = entriesEventDetails(payload)
-    if (details) _reportOverwrites(details)
+    if (!details) return
+    _reportOverwrites(details)
+    _refreshKeyValues(details)
   }
 
   window.addEventListener(WS_BLOCK_EVENT, _onWsBlockEvent)
@@ -1858,6 +1987,7 @@ export const useDatabaseStore = defineStore('database', () => {
     fetchEntries,
     fetchEntry,
     loadViewPage,
+    syncViewPage,
     releaseQueryResult,
     searchEntries,
     createEntry,

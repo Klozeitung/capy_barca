@@ -14,8 +14,11 @@
  * database block itself, or the linked block passed as ``placementId``).
  * Entries arrive a page at a time from the backend, which applies the view's
  * filters and sorts and resolves every relation on the page. Loading more
- * appends the next batch; after a change, the range already loaded is
- * fetched again.
+ * appends the next batch. After a change, the range already loaded is
+ * compared with the server's by id and only the entries missing from it are
+ * loaded; changed values of loaded entries are fetched for just those
+ * entries. Refreshes of one view run one at a time, and those that arrive
+ * meanwhile are merged into one (``useCoalescedRefresh``).
  *
  * Composables
  * -----------
@@ -28,6 +31,7 @@
  * useStickyColumns    – sticky header and frozen columns
  * useRowDragDrop      – row reorder and sub-item drop
  * useAddRow           – new entries with values derived from the filters
+ * useCoalescedRefresh – one refresh at a time, merging those that pile up
  *
  * Subcomponents
  * -------------
@@ -81,6 +85,7 @@ import { useSubItemTree } from '@/composables/useSubItemTree'
 import { useStickyColumns } from '@/composables/useStickyColumns'
 import { useRowDragDrop } from '@/composables/useRowDragDrop'
 import { useAddRow } from '@/composables/useAddRow'
+import { useCoalescedRefresh } from '@/composables/useCoalescedRefresh'
 
 // ── Subcomponents ─────────────────────────────────────────────────────────────
 import DatabaseViewTabs from './subcomponents/DatabaseViewTabs.vue'
@@ -255,7 +260,7 @@ function hideTip(): void {
 
 // Stable reference for filter/sort/view-switch initiated loads. These start
 // over with the first page, whereas WS-driven refreshes and row operations
-// reload the range already loaded.
+// bring the range already loaded up to date.
 let _resetQueryFn: () => Promise<void> = async () => {}
 
 const vm = useViewManager({
@@ -325,13 +330,56 @@ async function _loadEntries(offset: number, limit: number | null, append: boolea
   totalEntries.value     = result.total
 }
 
+/** Size of the range already loaded, at least one page. */
+function _loadedRangeLimit(): number {
+  return Math.max(PAGE_SIZE, displayedEntries.value.length)
+}
+
 /**
- * Reload the range already loaded, after a change to the entries: the user's
- * own, or one another client reported. At least one page is loaded, so a
- * view that was empty shows a new entry.
+ * Compare the range already loaded with the server's by id: add the entries
+ * missing from it, drop the ones the view no longer holds, and put them in
+ * the server's order. Values of loaded entries are not fetched here.
  */
-async function queryFromActiveView(): Promise<void> {
-  await _loadEntries(0, Math.max(PAGE_SIZE, displayedEntries.value.length), false)
+async function _syncEntries(): Promise<void> {
+  const view = activeView.value
+  if (!view) return
+  const result = await dbStore.syncViewPage(
+    props.blockId,
+    view.id,
+    {
+      offset: 0,
+      limit: isUnlimitedView.value ? null : _loadedRangeLimit(),
+      search: nameSearchQuery.value.trim(),
+    },
+    queryResultKey,
+  )
+  if (activeView.value?.id !== view.id) return
+  displayedEntries.value = result.entries
+  totalEntries.value     = result.total
+}
+
+const _refresh = useCoalescedRefresh((kind) =>
+  kind === 'full' ? _loadEntries(0, _loadedRangeLimit(), false) : _syncEntries(),
+)
+
+/**
+ * Bring the range already loaded up to date after a change to which entries
+ * the view holds or to their order: the user's own, or one another client
+ * reported. At least one page is covered, so a view that was empty shows a
+ * new entry.
+ */
+function queryFromActiveView(): Promise<void> {
+  return _refresh.request('sync')
+}
+
+/**
+ * Load the range already loaded again in full, values included, when it may
+ * be stale in ways no event described: after the connection was down, after
+ * an event that did not list the changed entries, or after a property was
+ * deleted.
+ */
+function reloadActiveView(): Promise<void> {
+  return _refresh.request('full')
 }
 
 /** Start over with the first page, after the view or its filters changed. */
@@ -577,27 +625,25 @@ function _viewDependsOn(schemaIds: Set<string>): boolean {
 /**
  * Entries of this database changed, here or elsewhere.
  *
- * When the event names the changed entries and none of the changes can move
- * a row in or out of the view or change the order, only the loaded ones among
- * them are fetched and updated in place. Otherwise, or when entries were
- * added or removed, the loaded range is loaded again.
+ * An event that does not name the changed entries loads the range again in
+ * full. Otherwise, when entries were added, removed or reordered, or a change
+ * can move a row in or out of the view or change the order, the loaded range
+ * is compared with the server's by id. Independently, the loaded entries among
+ * the changed ones are fetched and updated in place.
  */
 function _applyEntriesEvent(details: EntriesEventDetails): void {
-  if (!details.entries || details.listing) {
-    queryFromActiveView()
+  if (!details.entries) {
+    reloadActiveView()
     return
   }
   const changed = new Set(Object.values(details.entries).flat())
-  if (_viewDependsOn(changed)) {
-    queryFromActiveView()
-    return
-  }
+  if (details.listing || _viewDependsOn(changed)) queryFromActiveView()
   const loaded = new Set(displayedEntries.value.map((e) => e.id))
   const ids = Object.keys(details.entries).filter((id) => loaded.has(id))
   if (ids.length === 0) return
   dbStore.refreshEntries(props.blockId, ids)
     .then((missing) => { if (missing.length > 0) queryFromActiveView() })
-    .catch(() => queryFromActiveView())
+    .catch(() => reloadActiveView())
 }
 
 function _onDbEntriesUpdated(e: Event): void {
@@ -611,7 +657,7 @@ async function _onResync(): Promise<void> {
     dbStore.fetchSchemas(props.blockId),
     viewsStore.refreshViews(props.blockId),
   ])
-  await queryFromActiveView()
+  await reloadActiveView()
 }
 
 /**
@@ -748,7 +794,7 @@ function cancelDeleteSchema()                  { deletingSchemaId.value = null }
 async function confirmDeleteSchema(schemaId: string): Promise<void> {
   deletingSchemaId.value = null
   await dbStore.deleteSchema(props.blockId, schemaId)
-  await queryFromActiveView()
+  await reloadActiveView()
 }
 
 function cancelKeyDelete(): void {
@@ -933,7 +979,7 @@ async function onEntryIconUpdate(newIcon: string | null): Promise<void> {
   if (!id) return
   await blockStore.updateAppearance(id, { icon: newIcon ?? undefined })
   // Optimistically sync the icon into displayedEntries so the cell updates
-  // immediately without waiting for the next full queryFromActiveView().
+  // immediately without waiting for the change event.
   const row = displayedEntries.value.find(e => e.id === id)
   if (row) row.icon = newIcon ?? null
 }
@@ -941,7 +987,7 @@ async function onEntryIconUpdate(newIcon: string | null): Promise<void> {
 /**
  * Resolve the display icon for a row entry.
  * Prefer blockStore.blocks so that a freshly-set icon appears instantly even
- * before the next queryFromActiveView() refreshes displayedEntries.
+ * before the change event updates displayedEntries.
  */
 function entryIcon(entry: DatabaseEntry): string {
   return blockStore.blocks[entry.id]?.icon ?? entry.icon ?? 'mdi:file-outline'

@@ -429,6 +429,37 @@ def test_create_multiple_entries_increments_position(http_client):
     assert e2["position"] > e1["position"]
 
 
+def test_create_entry_announces_the_new_entry_to_views_of_the_database(
+    http_client, monkeypatch,
+):
+    """
+    Besides ``created`` for the block, the database is announced as a listing
+    change, so views of it pick the entry up wherever it was created from.
+    """
+    import app.blocks.database_events as events_module
+    from app.blocks import entry_changes
+
+    db_id = _create_database(http_client)
+    events: list[tuple[str, str, dict]] = []
+
+    def recording(**kwargs):
+        details = {}
+        if kwargs["event_type"] == "database_entries_updated":
+            details = entry_changes.describe(kwargs["db"], kwargs["block_id"])
+        events.append((kwargs["event_type"], kwargs["block_id"], details))
+        return 0
+
+    monkeypatch.setattr(events_module, "emit_block_event", recording)
+
+    entry = _create_entry(http_client, db_id)
+
+    assert [(kind, block) for kind, block, _ in events] == [
+        ("created", entry["id"]),
+        ("database_entries_updated", db_id),
+    ]
+    assert events[1][2]["listing"] is True
+
+
 # ─── Database settings and the default entry icon ────────────────────────────
 
 

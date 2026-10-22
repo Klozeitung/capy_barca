@@ -14,6 +14,7 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { useDatabaseTemplatesStore } from '@/stores/databaseTemplates'
 import { useNoticesStore } from '@/stores/notices'
+import { sortIdsByKey, type KeyingConfig } from '@/components/editor/blocks/properties/cells/cellUtils'
 import type { Block } from '@/stores/blocks'
 import type { BlockEventPayload } from '@/stores/ws'
 
@@ -2036,6 +2037,226 @@ describe('useDatabaseStore.refreshEntries', () => {
     await Promise.all([first, second])
 
     expect(apiClient.post).toHaveBeenCalledOnce()
+  })
+})
+
+describe('useDatabaseStore.syncViewPage', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    vi.mocked(apiClient.post).mockReset()
+  })
+
+  const refs = (...items: [string, number][]) => items.map(([id, position]) => ({ id, position }))
+
+  function ids(entries: [string, number][], total = entries.length) {
+    return { entries: refs(...entries), total, offset: 0 }
+  }
+
+  function batch(entries: ReturnType<typeof makeEntry>[], missing: string[] = []) {
+    return { entries, missing, relations: {}, key_values: {} }
+  }
+
+  async function storeWithRows(...rowIds: string[]) {
+    vi.mocked(apiClient.post).mockResolvedValueOnce(
+      page(rowIds.map((id, i) => makeEntry({ id, position: i + 1 }))),
+    )
+    const store = useDatabaseStore()
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
+    return store
+  }
+
+  it('asks the ids endpoint and loads only the entries not held yet', async () => {
+    const store = await storeWithRows('a', 'b')
+    const held = store.queryResults['view-a'].entries[0]
+    vi.mocked(apiClient.post)
+      .mockResolvedValueOnce(ids([['a', 1], ['n', 1.5], ['b', 2]], 3))
+      .mockResolvedValueOnce(batch([makeEntry({ id: 'n', position: 1.5, content: { title: 'Entry N' } })]))
+
+    const result = await store.syncViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
+
+    expect(apiClient.post).toHaveBeenNthCalledWith(
+      2, '/api/databases/db-1/views/view-1/entry-ids', FIRST_PAGE,
+    )
+    expect(apiClient.post).toHaveBeenLastCalledWith('/api/databases/db-1/entries/batch', { ids: ['n'] })
+    expect(result.entries.map((e) => e.id)).toEqual(['a', 'n', 'b'])
+    expect(result.entries[0]).toBe(held)
+    expect(result.entries).toBe(store.queryResults['view-a'].entries)
+    expect(result.total).toBe(3)
+  })
+
+  it('drops rows the view no longer holds and follows the new order and positions', async () => {
+    const store = await storeWithRows('a', 'b', 'c')
+    vi.mocked(apiClient.post).mockResolvedValueOnce(ids([['c', 0.5], ['a', 1]]))
+
+    const result = await store.syncViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
+
+    expect(result.entries.map((e) => [e.id, e.position])).toEqual([['c', 0.5], ['a', 1]])
+    // Nothing was missing, so no entries were loaded.
+    expect(apiClient.post).toHaveBeenCalledTimes(2)
+  })
+
+  it('leaves out an entry deleted between the two requests', async () => {
+    const store = await storeWithRows('a')
+    vi.mocked(apiClient.post)
+      .mockResolvedValueOnce(ids([['a', 1], ['gone', 2]]))
+      .mockResolvedValueOnce(batch([], ['gone']))
+
+    const result = await store.syncViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
+
+    expect(result.entries.map((e) => e.id)).toEqual(['a'])
+  })
+
+  it('loads the page in full when the key holds nothing yet', async () => {
+    const store = useDatabaseStore()
+    vi.mocked(apiClient.post).mockResolvedValueOnce(page([makeEntry({ id: 'a' })]))
+
+    const result = await store.syncViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
+
+    expect(apiClient.post).toHaveBeenCalledWith('/api/databases/db-1/views/view-1/entries', FIRST_PAGE)
+    expect(result.entries.map((e) => e.id)).toEqual(['a'])
+  })
+
+  it('does not overwrite a result a newer load stored meanwhile', async () => {
+    const store = await storeWithRows('a')
+    const slow = deferred()
+    vi.mocked(apiClient.post)
+      .mockReturnValueOnce(slow.promise)
+      .mockResolvedValueOnce(page([makeEntry({ id: 'z' })]))
+
+    const sync = store.syncViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
+    await store.loadViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
+    slow.resolve(ids([['a', 1], ['b', 2]]))
+    await sync
+
+    expect(store.queryResults['view-a'].entries.map((e) => e.id)).toEqual(['z'])
+  })
+
+  it('an entry loaded while one of its cells is pending keeps the new value', async () => {
+    const store = await storeWithRows('a')
+    const put = deferred()
+    vi.mocked(apiClient.put).mockReturnValueOnce(put.promise)
+    vi.mocked(apiClient.post)
+      .mockResolvedValueOnce(ids([['a', 1], ['n', 2]]))
+      .mockResolvedValueOnce(batch([makeEntry({ id: 'n', values: { s1: { text: 'Old' } } })]))
+
+    const write = store.upsertValue('db-1', 'n', 's1', { text: 'New' })
+    const result = await store.syncViewPage('db-1', 'view-1', FIRST_PAGE, 'view-a')
+
+    expect(result.entries[1].values['s1']).toEqual({ text: 'New' })
+    put.resolve({ value: { text: 'New' } })
+    await write
+  })
+})
+
+describe('keyed relations follow changes of their key values', () => {
+  // Database A relates to database B, keyed on a date property of B.
+  const DATE = 'when'
+  const dateSchema = {
+    id: DATE, database_id: 'db-b', name: 'Date', type: 'date', config: {}, position: 1, group: 'Standard',
+  } as PropertySchema
+  const keying = { keyPropertyId: DATE, order: 'asc', emptyFirst: false } as KeyingConfig
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    vi.mocked(apiClient.post).mockReset()
+  })
+
+  afterEach(() => {
+    useDatabaseStore().$dispose()
+  })
+
+  function keyValues(values: Record<string, string | null>) {
+    return Object.entries(values).map(([id, start]) => ({
+      id, title: null, database_id: 'db-b', value: start === null ? null : { start },
+    }))
+  }
+
+  async function storeWithKeyValues(values: Record<string, string | null>) {
+    vi.mocked(apiClient.post).mockResolvedValueOnce(keyValues(values))
+    const store = useDatabaseStore()
+    await store.resolveEntryKeyValues('db-b', Object.keys(values), DATE)
+    vi.mocked(apiClient.post).mockClear()
+    return store
+  }
+
+  it('a changed key value of a linked entry is loaded again', async () => {
+    const store = await storeWithKeyValues({ b1: '2000-07-28', b2: '2045-07-17' })
+    vi.mocked(apiClient.post).mockResolvedValueOnce(keyValues({ b1: '2046-01-01' }))
+
+    dispatch(entriesEvent({ database_id: 'db-b', entries: { b1: [DATE] } }))
+
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/api/databases/db-b/entries/resolve-titles', { ids: ['b1'], value_schema_id: DATE },
+    )
+    await vi.waitFor(() => expect(store.getRelationKeyValue(DATE, 'b1')).toEqual({ start: '2046-01-01' }))
+    expect(store.getRelationKeyValue(DATE, 'b2')).toEqual({ start: '2045-07-17' })
+  })
+
+  it('the linked entries are sorted by the new value without reloading the view', async () => {
+    const store = await storeWithKeyValues({ b1: '2000-07-28', b2: '2045-07-17' })
+    const order = () => sortIdsByKey(['b1', 'b2'], (id) => store.getRelationKeyValue(DATE, id), dateSchema, keying)
+    expect(order()).toEqual(['b1', 'b2'])
+    vi.mocked(apiClient.post).mockResolvedValueOnce(keyValues({ b1: '2046-01-01' }))
+
+    dispatch(entriesEvent({ database_id: 'db-b', entries: { b1: [DATE] } }))
+
+    await vi.waitFor(() => expect(order()).toEqual(['b2', 'b1']))
+  })
+
+  it('changes to other properties, entries or databases load nothing', async () => {
+    await storeWithKeyValues({ b1: '2000-07-28' })
+
+    dispatch(entriesEvent({ database_id: 'db-b', entries: { b1: ['other', '__name__'] } }))
+    dispatch(entriesEvent({ database_id: 'db-b', entries: { b9: [DATE] } }))
+    dispatch(entriesEvent({ database_id: 'db-c', entries: { b1: [DATE] } }))
+
+    expect(apiClient.post).not.toHaveBeenCalled()
+  })
+
+  it('an event that lists no entries loads every key value of its database again', async () => {
+    const store = await storeWithKeyValues({ b1: '2000-07-28', b2: null })
+    vi.mocked(apiClient.post).mockResolvedValueOnce(keyValues({ b1: '2000-07-28', b2: '2045-07-17' }))
+
+    dispatch(entriesEvent({ database_id: 'db-b' }))
+
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/api/databases/db-b/entries/resolve-titles', { ids: ['b1', 'b2'], value_schema_id: DATE },
+    )
+    await vi.waitFor(() => expect(store.getRelationKeyValue(DATE, 'b2')).toEqual({ start: '2045-07-17' }))
+  })
+
+  it('key values that arrived with a page follow changes as well', async () => {
+    const store = useDatabaseStore()
+    store.schemas['db-a'] = [{
+      id: 'link', database_id: 'db-a', name: 'Link', type: 'relation', position: 1, group: 'Standard',
+      config: { target_database_id: 'db-b', keying: { enabled: true, key_property_id: DATE } },
+    }]
+    vi.mocked(apiClient.post).mockResolvedValueOnce(page(
+      [makeEntry({ id: 'a1', values: { link: { related_ids: ['b1'] } } })],
+      1,
+      { key_values: { [DATE]: { b1: { start: '2000-07-28' } } } },
+    ))
+    await store.loadViewPage('db-a', 'view-1', FIRST_PAGE, 'view-a')
+    vi.mocked(apiClient.post).mockClear()
+    vi.mocked(apiClient.post).mockResolvedValueOnce(keyValues({ b1: '2046-01-01' }))
+
+    dispatch(entriesEvent({ database_id: 'db-b', entries: { b1: [DATE] } }))
+
+    await vi.waitFor(() => expect(store.getRelationKeyValue(DATE, 'b1')).toEqual({ start: '2046-01-01' }))
+  })
+
+  it('a self-relation keyed on its own database follows its entries', async () => {
+    const store = useDatabaseStore()
+    vi.mocked(apiClient.post).mockResolvedValueOnce(keyValues({ a2: '2000-07-28' }))
+    await store.resolveEntryKeyValues('db-a', ['a2'], DATE)
+    vi.mocked(apiClient.post).mockClear()
+    vi.mocked(apiClient.post).mockResolvedValueOnce(keyValues({ a2: '2045-07-17' }))
+
+    dispatch(entriesEvent({ database_id: 'db-a', entries: { a2: [DATE] } }))
+
+    await vi.waitFor(() => expect(store.getRelationKeyValue(DATE, 'a2')).toEqual({ start: '2045-07-17' }))
   })
 })
 

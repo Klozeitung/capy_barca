@@ -73,6 +73,12 @@ def _page(client, database_id, view_id, **body) -> dict:
     return resp.json()
 
 
+def _ids(client, database_id, view_id, **body) -> dict:
+    resp = client.post(f"/api/databases/{database_id}/views/{view_id}/entry-ids", json=body)
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
 def _titles(page) -> list[str]:
     return [e["content"]["title"] for e in page["entries"]]
 
@@ -410,6 +416,92 @@ def test_filter_on_a_formula_uses_the_type_it_produces(http_client):
     assert _titles(page) == ["Entry B"]
 
 
+# ─── Entry ids of a page ─────────────────────────────────────────────────────
+
+
+def test_entry_ids_follow_the_order_and_paging_of_the_page(http_client):
+    database_id = _database(http_client)
+    status = _schema(http_client, database_id, "Status")
+    for title, state in (
+        ("Entry A", "open"), ("Entry B", "done"), ("Entry C", "open"), ("Entry D", "open"),
+    ):
+        _value(http_client, database_id, _entry(http_client, database_id, title), status["id"], {"text": state})
+    view_id = _views(http_client, database_id)["views"][0]["id"]
+    _patch(
+        http_client, database_id, view_id,
+        filter_groups=[{"conjunction": "and", "filters": [
+            {"schemaId": status["id"], "operator": "eq", "value": "open"},
+        ]}],
+        sorts=[{"schemaId": "__name__", "direction": "desc"}],
+    )
+
+    page = _page(http_client, database_id, view_id, offset=1, limit=2)
+    ids = _ids(http_client, database_id, view_id, offset=1, limit=2)
+
+    assert _titles(page) == ["Entry C", "Entry A"]
+    assert ids == {
+        "entries": [{"id": e["id"], "position": e["position"]} for e in page["entries"]],
+        "total": 3,
+        "offset": 1,
+    }
+
+
+def test_entry_ids_apply_the_search(http_client):
+    database_id = _database(http_client)
+    wanted = _entry(http_client, database_id, "Entry A")
+    _entry(http_client, database_id, "Other B")
+    view_id = _views(http_client, database_id)["views"][0]["id"]
+
+    assert [e["id"] for e in _ids(http_client, database_id, view_id, search="entry")["entries"]] == [
+        wanted,
+    ]
+
+
+def test_entry_ids_include_an_entry_created_after_the_page(http_client):
+    database_id = _database(http_client)
+    first = _entry(http_client, database_id, "Entry A")
+    view_id = _views(http_client, database_id)["views"][0]["id"]
+    _page(http_client, database_id, view_id)
+
+    second = _entry(http_client, database_id, "Entry B")
+
+    ids = _ids(http_client, database_id, view_id)
+
+    assert [e["id"] for e in ids["entries"]] == [first, second]
+    assert ids["total"] == 2
+
+
+def test_entry_ids_carry_the_position_a_move_gave_the_entry(http_client):
+    database_id = _database(http_client)
+    first = _entry(http_client, database_id, "Entry A")
+    _entry(http_client, database_id, "Entry B")
+    view_id = _views(http_client, database_id)["views"][0]["id"]
+
+    http_client.post(
+        f"/api/blocks/{first}/move", json={"new_parent_id": database_id, "new_position": 7.5},
+    )
+
+    entries = _ids(http_client, database_id, view_id)["entries"]
+    assert entries[-1] == {"id": first, "position": 7.5}
+
+
+def test_entry_ids_of_a_view_of_another_database_answer_404(http_client):
+    first = _database(http_client)
+    second = _database(http_client)
+    foreign = _views(http_client, second)["views"][0]["id"]
+    resp = http_client.post(f"/api/databases/{first}/views/{foreign}/entry-ids", json={})
+    assert resp.status_code == 404
+
+
+def test_entry_ids_refuse_a_negative_offset(http_client):
+    database_id = _database(http_client)
+    view_id = _views(http_client, database_id)["views"][0]["id"]
+    resp = http_client.post(
+        f"/api/databases/{database_id}/views/{view_id}/entry-ids", json={"offset": -1},
+    )
+    assert resp.status_code == 422
+
+
 # ─── Property lifecycle ──────────────────────────────────────────────────────
 
 
@@ -523,6 +615,12 @@ def test_a_member_without_access_cannot_read_pages(private_database, member_clie
     assert resp.status_code == 404
 
 
+def test_a_member_without_access_cannot_read_entry_ids(private_database, member_client):
+    database_id, view_id = private_database
+    resp = member_client.post(f"/api/databases/{database_id}/views/{view_id}/entry-ids", json={})
+    assert resp.status_code == 404
+
+
 # ─── Read access ─────────────────────────────────────────────────────────────
 
 
@@ -551,6 +649,8 @@ def test_a_reader_may_read_views_and_pages(private_database, reader_client):
     database_id, view_id = private_database
     assert reader_client.get(f"/api/databases/{database_id}/views").status_code == 200
     resp = reader_client.post(f"/api/databases/{database_id}/views/{view_id}/entries", json={})
+    assert resp.status_code == 200
+    resp = reader_client.post(f"/api/databases/{database_id}/views/{view_id}/entry-ids", json={})
     assert resp.status_code == 200
 
 

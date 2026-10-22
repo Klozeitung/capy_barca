@@ -11,7 +11,9 @@ The backend owns views completely. It stores and validates them, keeps them
 consistent when properties are added or deleted, and executes them: asked for
 a page of a view, it reads the view's filters and sorts itself, runs the
 query, and returns the entries together with everything needed to display
-their relations. The frontend only edits views and asks for pages.
+their relations. The frontend only edits views and asks for pages, or only
+for the ids and positions on a page when it needs to know which entries the
+page holds now.
 
 Structure
 ---------
@@ -615,6 +617,43 @@ def entry_payloads(db: Session, entries: list[Block]) -> list[dict]:
     ]
 
 
+def _query_page(
+    db: Session,
+    view: DatabaseView,
+    *,
+    offset: int,
+    limit: Optional[int],
+    search: str,
+) -> tuple[list[Block], int, int, list[PropertySchema]]:
+    """
+    Run the query behind a page of *view*.
+
+    Filters and sorts come from the view; *search* narrows the result by entry
+    name in addition. Views laid out on a time axis are never paged: *offset*
+    and *limit* are ignored for them and every entry up to ``MAX_PAGE_SIZE``
+    is returned. Returns the entries, the number of entries the view holds,
+    the offset actually applied, and the schemas of the database.
+    """
+    schemas = repo.list_schemas(db, view.database_id)
+    groups, sorts = _query_descriptors(db, schemas, view.filter_groups or [], view.sorts or [])
+
+    query = search.strip()
+    if query:
+        name_filter = repo.resolve_filter_descriptor(
+            {}, schema_id=NAME_COL_KEY, operator="contains", value=query,
+        )
+        groups.append(repo.FilterGroupDescriptor(conjunction="and", filters=[name_filter]))
+
+    if view.view_type in UNPAGED_VIEW_TYPES or limit is None:
+        offset, limit = 0, MAX_PAGE_SIZE
+    else:
+        offset = max(0, offset)
+        limit = min(max(1, limit), MAX_PAGE_SIZE)
+
+    entries, total = repo.query_entries(db, view.database_id, groups, sorts, limit, offset)
+    return entries, total, offset, schemas
+
+
 def render_page(
     db: Session,
     view: DatabaseView,
@@ -635,23 +674,9 @@ def render_page(
     The page carries the resolution of every relation its entries hold, so
     nothing has to be asked for separately.
     """
-    schemas = repo.list_schemas(db, view.database_id)
-    groups, sorts = _query_descriptors(db, schemas, view.filter_groups or [], view.sorts or [])
-
-    query = search.strip()
-    if query:
-        name_filter = repo.resolve_filter_descriptor(
-            {}, schema_id=NAME_COL_KEY, operator="contains", value=query,
-        )
-        groups.append(repo.FilterGroupDescriptor(conjunction="and", filters=[name_filter]))
-
-    if view.view_type in UNPAGED_VIEW_TYPES or limit is None:
-        offset, limit = 0, MAX_PAGE_SIZE
-    else:
-        offset = max(0, offset)
-        limit = min(max(1, limit), MAX_PAGE_SIZE)
-
-    entries, total = repo.query_entries(db, view.database_id, groups, sorts, limit, offset)
+    entries, total, offset, schemas = _query_page(
+        db, view, offset=offset, limit=limit, search=search,
+    )
     payloads = entry_payloads(db, entries)
     resolved = resolution.resolve_relations(db, schemas, (p["values"] for p in payloads), user)
     return {
@@ -659,4 +684,32 @@ def render_page(
         "total": total,
         "offset": offset,
         **resolved.as_payload(),
+    }
+
+
+def page_entry_ids(
+    db: Session,
+    view: DatabaseView,
+    *,
+    offset: int = 0,
+    limit: Optional[int] = None,
+    search: str = "",
+) -> dict:
+    """
+    The entries on a page of a view as id and position, in display order.
+
+    The same query as :func:`render_page`, without the values and the
+    relations. A client that already shows part of the page compares the ids
+    with its rows and loads only the entries it lacks, instead of the whole
+    page, after a change to which entries the view holds or to their order.
+    The position comes along because moving or renumbering entries changes it
+    without changing anything else about them.
+    """
+    entries, total, offset, _schemas = _query_page(
+        db, view, offset=offset, limit=limit, search=search,
+    )
+    return {
+        "entries": [{"id": entry.id, "position": entry.position} for entry in entries],
+        "total": total,
+        "offset": offset,
     }

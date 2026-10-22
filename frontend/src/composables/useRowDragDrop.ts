@@ -9,7 +9,10 @@
  *   bottom 25% → below  (sibling reorder: insert after the target)
  *
  * Without the sub-item pair a drop onto a row reorders like a drop below it.
- * After every drop the loaded range is loaded again.
+ * After a reorder the loaded rows are brought up to date (``requery``). A drop
+ * that makes a sub-item loads nothing: the value is written locally at once,
+ * the tree is built from the ``parent_item`` values of the loaded rows, and
+ * what the server changed besides arrives as a change event.
  *
  * Usage:
  *   const rowDrag = useRowDragDrop({ databaseId, editable, parentItemSchema, rows, setParent, requery })
@@ -59,7 +62,7 @@ export function useRowDragDrop(options: {
   rows: Readonly<Ref<DatabaseEntry[]>>
   /** Make *childId* a sub-item of *parentId*. */
   setParent: (childId: string, parentId: string) => Promise<void>
-  /** Load the rows again after a drop. */
+  /** Bring the rows up to date after a reorder. */
   requery: () => Promise<void>
 }) {
   const { databaseId, editable, parentItemSchema, rows, setParent, requery } = options
@@ -128,10 +131,10 @@ export function useRowDragDrop(options: {
         // A sub-item through parent_item; the blocks are not reparented.
         drag.endDrag()
         await setParent(draggedId, entry.id)
-      } else {
-        const [before, after] = positionsAround(rows.value, entry, false)
-        await drag.dropBetween(databaseId, before, after)
+        return
       }
+      const [before, after] = positionsAround(rows.value, entry, false)
+      await drag.dropBetween(databaseId, before, after)
       await requery()
       return
     }

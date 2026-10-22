@@ -984,6 +984,149 @@ def test_rebalance_children_normalises_positions(http_client):
     assert positions == [1.0, 2.0, 3.0]
 
 
+# ─── Announcing changed entry lists ──────────────────────────────────────────
+#
+# Open views of a database load what they show again when entries are added,
+# moved, reordered or restored there. Those changes are announced with
+# ``database_entries_updated`` through ``app.blocks.database_events``, which is
+# where these tests listen.
+
+
+@pytest.fixture
+def listing_announcements(monkeypatch):
+    """Record the databases announced through ``app.blocks.database_events``."""
+    import app.blocks.database_events as events_module
+
+    announced: list[str] = []
+
+    def _capture(*, event_type, block_id, before, after, **_kwargs):
+        if event_type == "database_entries_updated":
+            announced.append(block_id)
+        return 0
+
+    monkeypatch.setattr(events_module, "emit_block_event", _capture)
+    return announced
+
+
+def _seed_database(*entry_positions: float) -> tuple[str, list[str]]:
+    """A database under the workspace root with one entry per position."""
+    from app.blocks import repository as repo
+
+    with s.SessionLocal() as db:
+        database = repo.create_block(
+            db, type="database", position=1.0, parent_id=WORKSPACE_ROOT_ID,
+        )
+        entries = [
+            repo.create_block(db, type="page", position=position, parent_id=database.id)
+            for position in entry_positions
+        ]
+        db.commit()
+        return str(database.id), [str(e.id) for e in entries]
+
+
+def test_creating_a_block_in_a_database_announces_it(http_client, listing_announcements):
+    database, _ = _seed_database()
+
+    http_client.post("/api/blocks", json={"type": "page", "parent_id": database})
+
+    assert listing_announcements == [database]
+
+
+def test_creating_a_block_outside_a_database_announces_nothing(
+    http_client, listing_announcements,
+):
+    page = _create(http_client, "page", WORKSPACE_ROOT_ID)
+
+    http_client.post("/api/blocks", json={"type": "paragraph", "parent_id": page})
+
+    assert listing_announcements == []
+
+
+def test_reordering_an_entry_announces_its_database(http_client, listing_announcements):
+    database, (first, _second) = _seed_database(1.0, 2.0)
+
+    http_client.post(
+        f"/api/blocks/{first}/move", json={"new_parent_id": database, "new_position": 3.0},
+    )
+
+    assert listing_announcements == [database]
+
+
+def test_moving_an_entry_to_another_database_announces_both(
+    http_client, listing_announcements,
+):
+    source, (entry,) = _seed_database(1.0)
+    target, _ = _seed_database()
+
+    http_client.post(
+        f"/api/blocks/{entry}/move", json={"new_parent_id": target, "new_position": 1.0},
+    )
+
+    assert sorted(listing_announcements) == sorted([source, target])
+
+
+def test_duplicating_an_entry_announces_its_database(http_client, listing_announcements):
+    database, (entry,) = _seed_database(1.0)
+
+    assert http_client.post(f"/api/blocks/{entry}/duplicate").status_code == 201
+
+    assert listing_announcements == [database]
+
+
+def test_restoring_an_entry_announces_its_database(http_client, listing_announcements):
+    database, (entry,) = _seed_database(1.0)
+    http_client.delete(f"/api/blocks/{entry}")
+    listing_announcements.clear()
+
+    assert http_client.post(f"/api/blocks/{entry}/restore").status_code == 200
+
+    assert listing_announcements == [database]
+
+
+def test_rebalancing_entries_announces_their_database(http_client, listing_announcements):
+    database, _ = _seed_database(0.1, 0.15, 0.2)
+
+    response = http_client.post(f"/api/blocks/{database}/rebalance-children")
+
+    assert response.json()["rebalanced"] != []
+    assert listing_announcements == [database]
+
+
+def test_a_new_position_through_patch_announces_the_database(
+    http_client, listing_announcements,
+):
+    database, (entry, _other) = _seed_database(1.0, 2.0)
+
+    http_client.patch(f"/api/blocks/{entry}", json={"position": 3.0})
+
+    assert listing_announcements == [database]
+
+
+def test_renaming_an_entry_announces_no_listing_change(
+    http_client, listing_announcements, captured_broadcasts,
+):
+    database, (entry,) = _seed_database(1.0)
+
+    http_client.patch(f"/api/blocks/{entry}", json={"content": {"title": "Entry B"}})
+
+    # The rename is announced by the router itself, once.
+    assert listing_announcements == []
+    assert _entries_updated_for(captured_broadcasts) == {database}
+
+
+def test_rename_and_new_position_announce_the_database_once(
+    http_client, listing_announcements, captured_broadcasts,
+):
+    database, (entry, _other) = _seed_database(1.0, 2.0)
+
+    http_client.patch(
+        f"/api/blocks/{entry}", json={"content": {"title": "Entry B"}, "position": 3.0},
+    )
+
+    assert listing_announcements == []
+    assert _entries_updated_for(captured_broadcasts) == {database}
+
+
 # ─── POST /api/blocks/{block_id}/cover ───────────────────────────────────────
 
 

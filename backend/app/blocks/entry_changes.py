@@ -126,6 +126,17 @@ def _forget(session: Session) -> None:
     session.info.pop(_PENDING_KEY, None)
 
 
+def changed_listings(session: Session) -> set[uuid.UUID]:
+    """
+    Every parent whose list of children *session* changed since its last
+    rollback: blocks created, deleted, moved in or out, reordered, trashed or
+    restored under it. Parents of any type are included; callers pick the
+    databases among them.
+    """
+    pending = session.info.get(_PENDING_KEY)
+    return set(pending.listings) if pending is not None else set()
+
+
 def set_actor(session: Session, user: Any) -> None:
     """Remember the user on whose behalf *session* writes."""
     session.info[_ACTOR_KEY] = user

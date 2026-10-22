@@ -168,6 +168,41 @@ def test_moving_an_entry_flags_both_databases(db):
     assert entry_changes.describe(db, other.id)["listing"] is True
 
 
+def test_changed_listings_name_every_parent_whose_children_changed(db):
+    database, other = _database(db), _database(db)
+    entry = _entry(db, database)
+    _fresh(db)
+
+    entry.parent_id = other.id
+    db.commit()
+
+    assert entry_changes.changed_listings(db) == {database.id, other.id}
+
+
+def test_changed_listings_ignore_value_and_title_changes(db):
+    database = _database(db)
+    text = _schema(db, database)
+    entry = _entry(db, database)
+    _fresh(db)
+
+    repo.upsert_value(db, page_id=entry.id, schema_id=text.id, value={"text": "a"})
+    entry.content = {"title": "Entry B"}
+    db.commit()
+
+    assert entry_changes.changed_listings(db) == set()
+
+
+def test_changed_listings_are_empty_after_a_rollback(db):
+    database = _database(db)
+    _fresh(db)
+
+    repo.create_block(db, type="page", position=2.0, parent_id=database.id)
+    db.flush()
+    db.rollback()
+
+    assert entry_changes.changed_listings(db) == set()
+
+
 # ─── Lifetime and actor ──────────────────────────────────────────────────────
 
 

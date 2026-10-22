@@ -91,6 +91,7 @@ from app.blocks.database_events import (
     emit_entries_updated,
     emit_entries_updated_for,
     emit_entry_created,
+    emit_listing_changes,
     emit_schema_updated,
 )
 from app.blocks.database_payloads import (
@@ -449,6 +450,10 @@ def create_entry(
     After creating the entry, readonly properties are populated and all
     formula / rollup schemas are evaluated (initial values are null /
     empty-context results).
+
+    After the commit ``created`` is broadcast for the new block and
+    ``database_entries_updated`` for the database, so its open views pick the
+    entry up wherever it was created from.
     """
     get_database_or_raise(db, database_id, current_user, Access.WRITE)
     try:
@@ -460,6 +465,7 @@ def create_entry(
         compute_all_for_entry(db, database_id, block.id)
         db.commit()
         emit_entry_created(db, database_id, block)
+        emit_listing_changes(db)
         return EntryResponse(
             id=block.id,
             position=block.position,

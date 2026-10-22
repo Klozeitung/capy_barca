@@ -33,9 +33,13 @@ Convention
   ``db.commit()``, passing their session so the recipient check costs no
   extra connection. The event is then queued for each recipient on the event
   loop; the handler never waits for a client to read it.
-* ``upsert_preference`` and ``rebalance_children`` are mutations but do not
-  broadcast: preferences are per-client UI state; rebalance is an internal
-  position normalisation that the client already handles locally.
+* Handlers that add, move, reorder or restore blocks also call
+  ``emit_listing_changes``, which announces every database whose list of
+  entries the request changed with ``database_entries_updated``, so open views
+  of it pick up entries created, moved or restored anywhere.
+* ``upsert_preference`` is a mutation but does not broadcast: preferences are
+  per-client UI state. ``rebalance_children`` sends no event of its own; it
+  only announces the database whose entries it renumbered.
 """
 import logging
 import shutil
@@ -51,6 +55,7 @@ from app.blocks import repository as repo
 from app.blocks import service
 from app.blocks import tree as page_tree
 from app.blocks.computed import compute_cross_db_dependents, compute_same_db_rollup_dependents
+from app.blocks.database_events import emit_listing_changes
 from app.blocks.service import BlockConflict, BlockNotFound
 from app.blocks.types import validate_block_type
 from app.permissions import repository as perm_repo
@@ -378,7 +383,12 @@ def create_block(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Create a new block under the given parent."""
+    """
+    Create a new block under the given parent.
+
+    A block created in a database is an entry of it, and the database is
+    announced as well.
+    """
     # The new block takes its place in the tree underneath the parent, so the
     # parent is the object the caller has to be allowed to change.
     require_block_access(db, payload.parent_id, current_user, level=WRITE)
@@ -402,6 +412,7 @@ def create_block(
             before=None,
             after=_block_to_dict(block),
         )
+        emit_listing_changes(db)
         return _written(block)
     except Exception as exc:
         db.rollback()
@@ -524,7 +535,8 @@ def update_block(
 
     Renaming a database entry also recomputes the formulas and rollups that
     show its title elsewhere, and notifies the open views of every database
-    whose entries changed as a result.
+    whose entries changed as a result. A new position or state of an entry
+    announces its database too.
     """
     before_block = repo.get_block(db, block_id)
     if before_block is None:
@@ -545,6 +557,7 @@ def update_block(
             after=_block_to_dict(block),
         )
         _broadcast_entries_updated(db, affected_db_ids)
+        emit_listing_changes(db, announced=affected_db_ids)
         return _written(block)
     except Exception as exc:
         db.rollback()
@@ -749,7 +762,12 @@ def move_block(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Move a block to a new parent and position."""
+    """
+    Move a block to a new parent and position.
+
+    Moving an entry within a database, into one or out of one announces every
+    database concerned.
+    """
     try:
         before_block = repo.get_block(db, block_id)
         if before_block is None:
@@ -774,6 +792,7 @@ def move_block(
             before=before_snapshot,
             after=_block_to_dict(block),
         )
+        emit_listing_changes(db)
         return _written(block)
     except HTTPException:
         raise
@@ -800,6 +819,9 @@ def duplicate_block(
     access to the parent it lands in (to the block itself for a block
     without a parent). Each copy takes over the explicit permission row of
     its original, so the copy reaches no account the original did not.
+
+    A copy that lands in a database is an entry of it, and the database is
+    announced as well.
 
     Raises 404 if the block does not exist.
     """
@@ -840,6 +862,7 @@ def duplicate_block(
             before=None,
             after=_block_to_dict(new_block),
         )
+        emit_listing_changes(db)
         return _written(new_block)
     except Exception as exc:
         db.rollback()
@@ -904,7 +927,11 @@ def restore_block(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Restore a trashed block and all its trashed descendants."""
+    """
+    Restore a trashed block and all its trashed descendants.
+
+    Restored entries announce their databases.
+    """
     require_block_access(db, block_id, current_user, level=WRITE)
     try:
         restored = service.restore(db, block_id)
@@ -917,6 +944,7 @@ def restore_block(
                 before={"state": "trash"},
                 after={"state": "active"},
             )
+        emit_listing_changes(db)
         return RestoreResponse(restored=restored)
     except Exception as exc:
         db.rollback()
@@ -989,6 +1017,9 @@ def rebalance_children(
     This endpoint is primarily for administrative use. Under normal operation
     the service layer triggers rebalancing automatically whenever the minimum
     sibling gap falls below the precision threshold.
+
+    Rebalancing the entries of a database announces it, so clients do not
+    keep positions that no longer exist.
     """
     try:
         repo.get_block_or_raise(db, block_id)
@@ -998,6 +1029,7 @@ def rebalance_children(
     try:
         rebalanced = service.rebalance_positions(db, block_id)
         db.commit()
+        emit_listing_changes(db)
         return {"rebalanced": rebalanced}
     except Exception as exc:
         db.rollback()
