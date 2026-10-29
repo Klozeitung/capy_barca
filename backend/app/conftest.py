@@ -101,6 +101,7 @@ import app.session.user_login as user_login_module  # noqa: E402
 import app.session.user_registration as user_registration_module  # noqa: E402
 import app.setup_router as setup_router_module  # noqa: E402
 import app.users.model  # noqa: E402,F401 – registers User with Base
+import app.settings.model  # noqa: E402,F401 – registers AppSetting with Base
 from app.database.database import normalize_database_url  # noqa: E402
 
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -248,6 +249,7 @@ def admin_user():
         password_hash="x",
         role="admin",
         is_active=True,
+        can_print=False,
     )
 
 

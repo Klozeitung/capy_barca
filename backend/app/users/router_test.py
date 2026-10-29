@@ -1,5 +1,6 @@
 """
-Tests for the user management router (GET/POST /api/users, DELETE, PATCH).
+Tests for the user management router (GET/POST /api/users, DELETE, PATCH),
+including the print permission (PATCH /api/users/{user_id}/can-print).
 
 All tests run against the PostgreSQL test database provided by the autouse
 ``isolated_db`` fixture in conftest.py.
@@ -98,6 +99,10 @@ def test_get_me_returns_401_unauthenticated():
 def test_get_me_returns_default_date_format(admin_client):
     data = admin_client.get("/api/users/me").json()
     assert data["date_format"] == "DD.MM.YYYY"
+
+
+def test_get_me_reports_no_print_permission_by_default(member_client):
+    assert member_client.get("/api/users/me").json()["can_print"] is False
 
 
 # ── PATCH /api/users/me/date-format ──────────────────────────────────────────
@@ -465,7 +470,7 @@ def test_list_users_contains_created_users(admin_client):
 def test_create_user_returns_201_for_admin(admin_client):
     response = admin_client.post(
         "/api/users",
-        json={"username": "new_member", "password": "langes_pw_1", "role": "member"},
+        json={"username": "new_member", "password": "long_pw_1", "role": "member"},
     )
     assert response.status_code == 201
 
@@ -473,7 +478,7 @@ def test_create_user_returns_201_for_admin(admin_client):
 def test_create_user_returns_403_for_member(member_client):
     response = member_client.post(
         "/api/users",
-        json={"username": "new_member", "password": "langes_pw_1", "role": "member"},
+        json={"username": "new_member", "password": "long_pw_1", "role": "member"},
     )
     assert response.status_code == 403
 
@@ -481,11 +486,11 @@ def test_create_user_returns_403_for_member(member_client):
 def test_create_user_duplicate_returns_409(admin_client):
     admin_client.post(
         "/api/users",
-        json={"username": "doppelt", "password": "langes_pw_1", "role": "member"},
+        json={"username": "duplicate", "password": "long_pw_1", "role": "member"},
     )
     response = admin_client.post(
         "/api/users",
-        json={"username": "doppelt", "password": "anderes_pw_1", "role": "member"},
+        json={"username": "duplicate", "password": "other_pw_1", "role": "member"},
     )
     assert response.status_code == 409
 
@@ -493,7 +498,7 @@ def test_create_user_duplicate_returns_409(admin_client):
 def test_create_user_invalid_role_returns_422(admin_client):
     response = admin_client.post(
         "/api/users",
-        json={"username": "new_member", "password": "langes_pw_1", "role": "superuser"},
+        json={"username": "new_member", "password": "long_pw_1", "role": "superuser"},
     )
     assert response.status_code == 422
 
@@ -531,3 +536,53 @@ def test_deactivate_returns_403_for_member(member_client):
         db.commit()
         user_id = user.id
     assert member_client.delete(f"/api/users/{user_id}").status_code == 403
+
+
+# ── PATCH /api/users/{user_id}/can-print ──────────────────────────────────────
+
+def _member_id(username: str = "print_target") -> uuid.UUID:
+    with s.SessionLocal() as db:
+        user = create_user(db, username, "secret", role="member")
+        db.commit()
+        return user.id
+
+
+def test_admin_grants_the_print_permission(admin_client):
+    user_id = _member_id()
+    response = admin_client.patch(f"/api/users/{user_id}/can-print", json={"can_print": True})
+    assert response.status_code == 200
+    assert response.json()["can_print"] is True
+    listed = {u["id"]: u for u in admin_client.get("/api/users").json()}
+    assert listed[str(user_id)]["can_print"] is True
+
+
+def test_admin_withdraws_the_print_permission(admin_client):
+    user_id = _member_id()
+    admin_client.patch(f"/api/users/{user_id}/can-print", json={"can_print": True})
+    response = admin_client.patch(f"/api/users/{user_id}/can-print", json={"can_print": False})
+    assert response.json()["can_print"] is False
+
+
+def test_a_new_account_has_no_print_permission(admin_client):
+    response = admin_client.post(
+        "/api/users",
+        json={"username": "new_member", "password": "long_pw_1", "role": "member"},
+    )
+    assert response.json()["can_print"] is False
+
+
+def test_can_print_returns_403_for_member(member_client):
+    user_id = _member_id()
+    response = member_client.patch(f"/api/users/{user_id}/can-print", json={"can_print": True})
+    assert response.status_code == 403
+
+
+def test_can_print_unknown_user_returns_404(admin_client):
+    response = admin_client.patch(f"/api/users/{uuid.uuid4()}/can-print", json={"can_print": True})
+    assert response.status_code == 404
+
+
+def test_can_print_requires_a_boolean(admin_client):
+    user_id = _member_id()
+    response = admin_client.patch(f"/api/users/{user_id}/can-print", json={"can_print": "maybe"})
+    assert response.status_code == 422

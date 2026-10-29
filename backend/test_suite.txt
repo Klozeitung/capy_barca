@@ -26,6 +26,7 @@ app/database/relation_timeline_minutes_migration_test.py
 app/database/formula_property_ids_migration_test.py
 app/database/relation_chip_icons_migration_test.py
 app/database/natural_sort_collation_migration_test.py
+app/database/api_settings_migration_test.py
 app/database/migration_lock_test.py
 
 app/session/user_registration_test.py
@@ -37,6 +38,9 @@ app/session/deps_test.py
 app/security/limiter_test.py
 app/setup_router_test.py
 app/users/router_test.py
+app/settings/secret_box_test.py
+app/settings/custom_printer_test.py
+app/settings/router_test.py
 app/permissions/router_test.py
 app/permissions/repository_test.py
 

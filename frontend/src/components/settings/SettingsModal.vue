@@ -9,9 +9,12 @@
  * Sections
  * --------
  *  language – Language   (locale switcher, available to all users)
+ *  date     – Date       (display date format of the account)
  *  storage  – Storage    (capacity cards)
  *  backup   – Backup     (admin-only: backup script download + instructions)
- *  users    – Users      (admin-only: user management)
+ *  users    – Users      (admin-only: user management, print permission)
+ *  api      – API        (admin-only: local AI and custom printer, see
+ *                         ApiSettingsSection)
  */
 import { ref, computed, watch, onMounted } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -20,6 +23,7 @@ import { useSettingsModal } from '@/composables/useSettingsModal'
 import { useAuthStore } from '@/stores/auth'
 import { apiClient, ApiError } from '@/api/client'
 import { setLocale } from '@/plugins/i18n'
+import ApiSettingsSection from './ApiSettingsSection.vue'
 
 const { t } = useI18n()
 const { closeSettings } = useSettingsModal()
@@ -38,6 +42,7 @@ interface UserRow {
   username: string
   role: string
   is_active: boolean
+  can_print: boolean
 }
 
 // ── State: general ─────────────────────────────────────────────────────────────
@@ -122,6 +127,7 @@ const resetPwFeedback = ref<{ id: string; msg: string; ok: boolean } | null>(nul
 
 const confirmDeactivate = ref<string | null>(null)   // user_id pending confirm
 const roleChanging = ref<string | null>(null)        // user_id having role changed
+const canPrintChanging = ref<string | null>(null)    // user_id having print permission changed
 
 // New user creation
 const showNewUser = ref(false)
@@ -219,6 +225,21 @@ async function toggleRole(user: UserRow): Promise<void> {
     // silently ignore – row will keep old role
   } finally {
     roleChanging.value = null
+  }
+}
+
+async function toggleCanPrint(user: UserRow): Promise<void> {
+  canPrintChanging.value = user.id
+  try {
+    const updated = await apiClient.patch<UserRow>(`/api/users/${user.id}/can-print`, {
+      can_print: !user.can_print,
+    })
+    const idx = usersData.value.findIndex((u) => u.id === user.id)
+    if (idx !== -1) usersData.value[idx] = updated
+  } catch {
+    // silently ignore – row will keep the old permission
+  } finally {
+    canPrintChanging.value = null
   }
 }
 
@@ -324,7 +345,7 @@ function handleBackdropClick(e: MouseEvent): void {
         <div class="settings-modal__header">
           <span class="settings-modal__title">
             <Icon icon="mdi:cog-outline" width="16" height="16" />
-            Einstellungen
+            {{ t('settings.title') }}
           </span>
           <button class="settings-modal__close" :aria-label="t('settings.close')" @click="closeSettings">
             <Icon icon="mdi:close" width="16" height="16" />
@@ -397,6 +418,27 @@ function handleBackdropClick(e: MouseEvent): void {
             >
               <Icon icon="mdi:account-group-outline" width="15" height="15" class="settings-nav__icon" />
               <span>{{ t('settings.users') }}</span>
+              <Icon
+                v-if="!auth.isAdmin"
+                icon="mdi:lock-outline"
+                width="12"
+                height="12"
+                class="settings-nav__lock"
+              />
+            </button>
+
+            <button
+              class="settings-nav__item"
+              :class="{
+                'settings-nav__item--active': activeSection === 'api',
+                'settings-nav__item--locked': !auth.isAdmin,
+              }"
+              :disabled="!auth.isAdmin"
+              :title="!auth.isAdmin ? t('settings.usersAdminOnly') : undefined"
+              @click="auth.isAdmin && (activeSection = 'api')"
+            >
+              <Icon icon="mdi:api" width="15" height="15" class="settings-nav__icon" />
+              <span>{{ t('settings.api') }}</span>
               <Icon
                 v-if="!auth.isAdmin"
                 icon="mdi:lock-outline"
@@ -633,6 +675,30 @@ function handleBackdropClick(e: MouseEvent): void {
                           />
                         </button>
 
+                        <!-- Print permission toggle; admins may always print -->
+                        <button
+                          v-if="user.role === 'admin'"
+                          class="user-action-btn user-action-btn--active"
+                          disabled
+                          :title="t('settings.usersCanPrintAdmin')"
+                        >
+                          <Icon icon="mdi:printer-outline" width="15" height="15" />
+                        </button>
+                        <button
+                          v-else
+                          class="user-action-btn"
+                          :class="{ 'user-action-btn--active': user.can_print }"
+                          :disabled="canPrintChanging === user.id"
+                          :title="user.can_print ? t('settings.usersCanPrintRevoke') : t('settings.usersCanPrintGrant')"
+                          :aria-pressed="user.can_print"
+                          @click="toggleCanPrint(user)"
+                        >
+                          <Icon
+                            :icon="user.can_print ? 'mdi:printer-outline' : 'mdi:printer-off-outline'"
+                            width="15" height="15"
+                          />
+                        </button>
+
                         <!-- PW reset toggle -->
                         <button
                           class="user-action-btn"
@@ -720,7 +786,7 @@ function handleBackdropClick(e: MouseEvent): void {
                         autocomplete="new-password"
                       />
                       <p v-if="newPassword && newPassword.length < 8" class="users-new__hint">
-                        Mind. 8 Zeichen erforderlich
+                        {{ t('settings.usersResetPwTooShort') }}
                       </p>
                       <select v-model="newRole" class="users-new__select">
                         <option value="member">{{ t('settings.usersRoleMember') }}</option>
@@ -736,7 +802,7 @@ function handleBackdropClick(e: MouseEvent): void {
                     </p>
                     <div class="users-new__footer">
                       <button class="users-new__cancel" @click="showNewUser = false">
-                        Abbrechen
+                        {{ t('actions.cancel') }}
                       </button>
                       <button
                         class="users-new__save"
@@ -750,6 +816,12 @@ function handleBackdropClick(e: MouseEvent): void {
                 </div>
 
               </template>
+            </template>
+
+            <!-- ── API ──────────────────────────────────────────────────── -->
+            <template v-else-if="activeSection === 'api'">
+              <h2 class="settings-view__heading">{{ t('settings.api') }}</h2>
+              <ApiSettingsSection />
             </template>
 
           </div>

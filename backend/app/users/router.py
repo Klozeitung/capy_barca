@@ -58,6 +58,7 @@ class UserResponse(BaseModel):
     role: str
     is_active: bool
     date_format: str
+    can_print: bool
 
     model_config = {"from_attributes": True}
 
@@ -89,6 +90,10 @@ class AdminResetPasswordRequest(BaseModel):
 
 class ChangeRoleRequest(BaseModel):
     role: str = Field(pattern="^(admin|member)$")
+
+
+class ChangeCanPrintRequest(BaseModel):
+    can_print: bool
 
 
 # An icon as the frontend's icon picker names it: one of the bundled Iconify
@@ -260,6 +265,26 @@ def change_user_role(
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     user_repo.update_role(db, user, payload.role)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@users_router.patch("/{user_id}/can-print", response_model=UserResponse)
+def change_user_can_print(
+    user_id: uuid.UUID,
+    payload: ChangeCanPrintRequest,
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Allow or forbid a user to send Quick Print to the custom printer (admin
+    only). Admins may print regardless of the flag.
+    """
+    user = user_repo.get_by_id(db, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.can_print = payload.can_print
     db.commit()
     db.refresh(user)
     return user

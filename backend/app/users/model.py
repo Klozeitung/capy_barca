@@ -18,6 +18,9 @@ class User(Base):
     password_hash = Column(Text, nullable=False)
     role = Column(Text, nullable=False, server_default="member")
     is_active = Column(Boolean, nullable=False, server_default=sa.true())
+    # May send Quick Print to the custom printer. Admins may regardless of this
+    # flag (see ``app.settings.router.may_print``).
+    can_print = Column(Boolean, nullable=False, default=False, server_default=sa.false())
     # Preferred display date format (one of the canonical display tokens, e.g.
     # "DD.MM.YYYY"). The backend stores and exchanges dates exclusively in
     # canonical ISO 8601; this token only governs how the frontend renders

@@ -32,6 +32,8 @@
  * useRowDragDrop      – row reorder and sub-item drop
  * useAddRow           – new entries with values derived from the filters
  * useCoalescedRefresh – one refresh at a time, merging those that pile up
+ * useQuickPrint       – Quick Print of a row from its handle menu, with the
+ *                       view's visible columns in the view's order
  *
  * Subcomponents
  * -------------
@@ -86,6 +88,7 @@ import { useStickyColumns } from '@/composables/useStickyColumns'
 import { useRowDragDrop } from '@/composables/useRowDragDrop'
 import { useAddRow } from '@/composables/useAddRow'
 import { useCoalescedRefresh } from '@/composables/useCoalescedRefresh'
+import { useQuickPrint } from '@/composables/useQuickPrint'
 
 // ── Subcomponents ─────────────────────────────────────────────────────────────
 import DatabaseViewTabs from './subcomponents/DatabaseViewTabs.vue'
@@ -903,6 +906,23 @@ async function contextMenuDuplicateEntry(): Promise<void> {
   if (!id) return
   await dbStore.duplicateEntry(props.blockId, id)
   await queryFromActiveView()
+}
+
+// ── Quick Print ───────────────────────────────────────────────────────────────
+
+const { printEntry } = useQuickPrint()
+
+/**
+ * Quick Print of the row: the properties of the view's visible columns, in
+ * the view's order. The name column is left out; the title heads the print.
+ */
+function contextMenuQuickPrint(): void {
+  const id = rowContextMenu.value.entryId
+  closeRowContextMenu()
+  hideTip()
+  if (!id) return
+  const columns = orderedColumns.value.flatMap(c => (c.schema ? [c.schema] : []))
+  printEntry(props.blockId, id, columns)
 }
 
 async function contextMenuDeleteEntry(): Promise<void> {
@@ -1966,6 +1986,15 @@ async function toggleWrapColumn(colKey: string): Promise<void> {
         <button v-if="editable" class="db__row-ctx-item" @click="contextMenuDuplicateEntry">
           <Icon icon="mdi:content-copy" width="13" height="13" />
           {{ t('actions.duplicate') }}
+        </button>
+        <button
+          class="db__row-ctx-item"
+          @mouseenter="showTip($event, t('quickPrint.tooltip'))"
+          @mouseleave="hideTip"
+          @click="contextMenuQuickPrint"
+        >
+          <Icon icon="mdi:printer-outline" width="13" height="13" />
+          {{ t('quickPrint.label') }}
         </button>
         <button v-if="editable" class="db__row-ctx-item db__row-ctx-item--danger" @click="contextMenuDeleteEntry">
           <Icon icon="mdi:trash-can-outline" width="13" height="13" />

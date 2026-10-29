@@ -58,6 +58,11 @@ import {
 } from '@/stores/database'
 import { isReadonlyPropertyType, getSchemaIcon } from '@/stores/propertyTypes'
 import {
+  DEFAULT_GROUP,
+  PREF_GROUP_ORDER,
+  PREF_VISIBILITY,
+  isSchemaVisible as isSchemaVisibleFor,
+  orderSchemaGroups,
   removeGroupFromFolded,
   removeGroupFromOrder,
   reorderGroups,
@@ -82,10 +87,7 @@ import RelationCell from '@/components/editor/blocks/properties/cells/RelationCe
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const DEFAULT_GROUP = 'Standard'
-const PREF_GROUP_ORDER = 'property_group_order'
 const PREF_GROUPS_FOLDED = 'property_groups_folded'
-const PREF_VISIBILITY = 'property_sideview_visibility'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
@@ -154,39 +156,12 @@ function loadVisibility(): void {
   )
 }
 
-function getVisibility(schemaId: string): VisibilityMode {
-  return visibilityMap.value[schemaId] ?? 'show'
-}
-
 /**
  * Returns true if a schema should be displayed for the current entry,
  * given its visibility mode.
  */
 function isSchemaVisible(schema: PropertySchema): boolean {
-  const mode = getVisibility(schema.id)
-  if (mode === 'hide') return false
-  if (mode === 'hide_empty') {
-    const val = props.entry.values[schema.id]
-    if (val === undefined || val === null) return false
-    // Check for "effectively empty" values.
-    if (typeof val === 'object') {
-      const v = val as Record<string, unknown>
-      // Text/number/url/email/phone: { value: '' }
-      if ('value' in v && (v.value === '' || v.value === null || v.value === undefined)) return false
-      // Relation: { related_ids: [] }
-      if ('related_ids' in v && Array.isArray(v.related_ids) && v.related_ids.length === 0) return false
-      // File: { files: [] }
-      if ('files' in v && Array.isArray(v.files) && v.files.length === 0) return false
-      // Checkbox: { checked: false } – debatable, but false = "empty" makes sense
-      if ('checked' in v && v.checked === false) return false
-      // Select: { selected: '' } or { selected: [] }
-      if ('selected' in v) {
-        if (v.selected === '' || v.selected === null) return false
-        if (Array.isArray(v.selected) && v.selected.length === 0) return false
-      }
-    }
-  }
-  return true
+  return isSchemaVisibleFor(schema, visibilityMap.value[schema.id], props.entry)
 }
 
 // ── Visibility modal ──────────────────────────────────────────────────────────
@@ -206,72 +181,15 @@ interface SchemaGroup {
   folded: boolean
 }
 
-const groupedSchemas = computed<SchemaGroup[]>(() => {
-  // 1. Collect all group names from schemas.
-  const groupMap = new Map<string, PropertySchema[]>()
-  for (const s of schemas.value) {
-    const g = s.group || DEFAULT_GROUP
-    if (!groupMap.has(g)) groupMap.set(g, [])
-    groupMap.get(g)!.push(s)
-  }
-
-  // Also include empty groups from saved order that have no schemas anymore.
-  for (const g of groupOrder.value) {
-    if (!groupMap.has(g)) groupMap.set(g, [])
-  }
-
-  // 2. Sort schemas within each group by position.
-  for (const arr of groupMap.values()) {
-    arr.sort((a, b) => a.position - b.position)
-  }
-
-  // 2b. Apply visibility filtering per schema.
-  for (const [g, arr] of groupMap) {
-    groupMap.set(g, arr.filter(isSchemaVisible))
-  }
-
-  // 3. Build ordered group list: default first, then by persisted order,
-  //    then any remaining groups alphabetically.
-  const ordered: SchemaGroup[] = []
-
-  // Default group always first.
-  if (groupMap.has(DEFAULT_GROUP)) {
-    ordered.push({
-      name: DEFAULT_GROUP,
-      isDefault: true,
-      schemas: groupMap.get(DEFAULT_GROUP)!,
-      folded: false, // never foldable
-    })
-    groupMap.delete(DEFAULT_GROUP)
-  }
-
-  // Persisted order for custom groups.
-  for (const g of groupOrder.value) {
-    if (g === DEFAULT_GROUP) continue
-    if (groupMap.has(g)) {
-      ordered.push({
-        name: g,
-        isDefault: false,
-        schemas: groupMap.get(g)!,
-        folded: !!foldedMap.value[g],
-      })
-      groupMap.delete(g)
-    }
-  }
-
-  // Remaining groups not yet in order (newly created via schema).
-  const remaining = [...groupMap.keys()].sort()
-  for (const g of remaining) {
-    ordered.push({
-      name: g,
-      isDefault: false,
-      schemas: groupMap.get(g)!,
-      folded: !!foldedMap.value[g],
-    })
-  }
-
-  return ordered
-})
+const groupedSchemas = computed<SchemaGroup[]>(() =>
+  orderSchemaGroups(schemas.value, groupOrder.value, DEFAULT_GROUP, isSchemaVisible).map(
+    (group) => ({
+      ...group,
+      // The default group is never foldable.
+      folded: group.isDefault ? false : !!foldedMap.value[group.name],
+    }),
+  ),
+)
 
 // ── Initialise ────────────────────────────────────────────────────────────────
 

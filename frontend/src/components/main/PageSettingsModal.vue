@@ -25,12 +25,17 @@
  *
  * Cover requests go through ``apiClient``, so an expired session and a
  * refusal for read-only access are handled as everywhere else.
+ *
+ * Export offers the PDF (the browser's print dialog) and Quick Print, which
+ * sends title, properties and text blocks to the custom printer, or downloads
+ * them as .txt where none is set up (see ``useQuickPrint``).
  */
 import { ref, computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { apiClient } from '@/api/client'
 import { useEditable } from '@/composables/useEditable'
+import { useQuickPrint } from '@/composables/useQuickPrint'
 import { useBlockStore, type Block } from '@/stores/blocks'
 import PermissionsSection from './PermissionsSection.vue'
 
@@ -52,6 +57,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const blockStore = useBlockStore()
 const editable = useEditable()
+const { printing, printPage } = useQuickPrint()
 
 // ── Sidebar sections ──────────────────────────────────────────────────────────
 
@@ -155,6 +161,12 @@ function onBackdropClick(e: MouseEvent): void {
 function exportAsPdf(): void {
   emit('close')
   setTimeout(() => window.print(), 150)
+}
+
+/** Quick Print of this page; the modal stays open until it is done. */
+async function quickPrint(): Promise<void> {
+  await printPage(props.block)
+  emit('close')
 }
 </script>
 
@@ -305,6 +317,26 @@ function exportAsPdf(): void {
                   <button class="psm__btn" @click="exportAsPdf">
                     <Icon icon="mdi:file-pdf-box" width="14" height="14" />
                     PDF
+                  </button>
+                </div>
+                <div class="psm__row">
+                  <div class="psm__row-label">
+                    <span class="psm__row-name">{{ t('pageSettings.quickPrint') }}</span>
+                    <span class="psm__row-hint">{{ t('pageSettings.quickPrintHint') }}</span>
+                  </div>
+                  <button
+                    class="psm__btn"
+                    :disabled="printing"
+                    :title="t('quickPrint.tooltip')"
+                    @click="quickPrint"
+                  >
+                    <Icon
+                      :icon="printing ? 'mdi:loading' : 'mdi:printer-outline'"
+                      width="14"
+                      height="14"
+                      :class="{ spin: printing }"
+                    />
+                    {{ printing ? t('quickPrint.printing') : t('quickPrint.label') }}
                   </button>
                 </div>
               </div>

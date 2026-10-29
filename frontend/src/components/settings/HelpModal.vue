@@ -16,6 +16,7 @@
  *  files     – What the server accepts for uploads and how it hands files
  *              back out again.
  *  permissions – Access modes and the read and edit levels.
+ *  print     – What Quick Print outputs and how a printer is set up.
  */
 import { ref, computed } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -33,6 +34,7 @@ const SECTIONS = [
   { key: 'databases',   labelKey: 'help.sectionDatabases',   icon: 'mdi:database-cog-outline' },
   { key: 'files',       labelKey: 'help.sectionFiles',       icon: 'mdi:tray-arrow-up' },
   { key: 'permissions', labelKey: 'help.sectionPermissions', icon: 'mdi:shield-lock-outline' },
+  { key: 'print',       labelKey: 'help.sectionPrint',       icon: 'mdi:printer-outline' },
 ] as const
 
 type SectionKey = typeof SECTIONS[number]['key']
@@ -305,6 +307,15 @@ const permissionModes = [
                 </div>
                 <p class="hm__permissions-intro">{{ t('help.permissionsLevels') }}</p>
                 <p class="hm__permissions-note">{{ t('help.permissionsNote') }}</p>
+              </div>
+            </template>
+
+            <!-- ── Quick Print ──────────────────────────────────────────── -->
+            <template v-else-if="activeSection === 'print'">
+              <div class="hm__group">
+                <p class="hm__group-label">{{ t('help.printTitle') }}</p>
+                <p class="hm__permissions-intro">{{ t('help.printWhat') }}</p>
+                <p class="hm__permissions-intro">{{ t('help.printSetup') }}</p>
               </div>
             </template>
 

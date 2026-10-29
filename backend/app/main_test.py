@@ -9,7 +9,7 @@ client = TestClient(app)
 
 def test_app_is_initialized():
     assert app.title == "CapyBarca API"
-    assert app.version == "0.16.9.0"
+    assert app.version == "0.16.10.0"
 
 
 @pytest.mark.parametrize("secret", ["", "   ", "changeme"])
@@ -289,3 +289,9 @@ def test_comments_route_is_registered():
     """
     response = client.get(f"/api/blocks/{uuid.uuid4()}/comments")
     assert response.status_code == 401
+
+
+def test_settings_and_print_routes_are_registered():
+    """Without auth both must return 401, not 404."""
+    assert client.get("/api/settings/api").status_code == 401
+    assert client.get("/api/print/status").status_code == 401

@@ -4,8 +4,11 @@ import {
   removeGroupFromOrder,
   removeGroupFromFolded,
   reorderGroups,
+  isPropertyValueEmpty,
+  isSchemaVisible,
+  orderSchemaGroups,
 } from '../propertySectionHelpers'
-import type { PropertySchema } from '@/stores/database'
+import type { PropertySchema, DatabaseEntry } from '@/stores/database'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -113,5 +116,103 @@ describe('reorderGroups', () => {
     const order = ['A', 'B']
     expect(reorderGroups(order, 'A', 'A')).not.toBe(order)
     expect(reorderGroups(order, 'Ghost', 'A')).not.toBe(order)
+  })
+})
+
+// ── isPropertyValueEmpty ──────────────────────────────────────────────────────
+
+describe('isPropertyValueEmpty', () => {
+  it.each([
+    [undefined],
+    [null],
+    [{ value: '' }],
+    [{ value: null }],
+    [{ related_ids: [] }],
+    [{ files: [] }],
+    [{ checked: false }],
+    [{ selected: '' }],
+    [{ selected: [] }],
+  ])('treats %j as empty', (val) => {
+    expect(isPropertyValueEmpty(val as Record<string, unknown> | null | undefined)).toBe(true)
+  })
+
+  it.each([
+    [{ value: 'Text A' }],
+    [{ value: 0 }],
+    [{ related_ids: ['e-1'] }],
+    [{ checked: true }],
+    [{ selected: 'opt-1' }],
+    [{ start: '2000-07-28' }],
+  ])('treats %j as filled', (val) => {
+    expect(isPropertyValueEmpty(val)).toBe(false)
+  })
+})
+
+// ── isSchemaVisible ───────────────────────────────────────────────────────────
+
+function entry(values: DatabaseEntry['values']): DatabaseEntry {
+  return { id: 'e-1', position: 0, content: null, icon: null, state: 'active', values }
+}
+
+describe('isSchemaVisible', () => {
+  const filled = entry({ a: { value: 'Text A' } })
+  const empty = entry({})
+
+  it('shows by default', () => {
+    expect(isSchemaVisible(schema('a'), undefined, empty)).toBe(true)
+    expect(isSchemaVisible(schema('a'), 'show', empty)).toBe(true)
+  })
+
+  it('hides regardless of the value', () => {
+    expect(isSchemaVisible(schema('a'), 'hide', filled)).toBe(false)
+  })
+
+  it('hides only empty values in hide_empty mode', () => {
+    expect(isSchemaVisible(schema('a'), 'hide_empty', filled)).toBe(true)
+    expect(isSchemaVisible(schema('a'), 'hide_empty', empty)).toBe(false)
+  })
+})
+
+// ── orderSchemaGroups ─────────────────────────────────────────────────────────
+
+function positioned(id: string, position: number, group?: string): PropertySchema {
+  return { ...schema(id, group), position }
+}
+
+describe('orderSchemaGroups', () => {
+  const all = [
+    positioned('b', 2),
+    positioned('a', 1),
+    positioned('x', 1, 'Zeta'),
+    positioned('y', 1, 'Beta'),
+    positioned('z', 1, 'Alpha'),
+  ]
+
+  it('puts the default group first, then the stored order, then the rest alphabetically', () => {
+    const groups = orderSchemaGroups(all, ['Zeta'], DEFAULT_GROUP, () => true)
+    expect(groups.map(g => g.name)).toEqual([DEFAULT_GROUP, 'Zeta', 'Alpha', 'Beta'])
+    expect(groups[0].isDefault).toBe(true)
+    expect(groups.slice(1).every(g => !g.isDefault)).toBe(true)
+  })
+
+  it('orders properties by position within a group', () => {
+    const [standard] = orderSchemaGroups(all, [], DEFAULT_GROUP, () => true)
+    expect(standard.schemas.map(s => s.id)).toEqual(['a', 'b'])
+  })
+
+  it('leaves out invisible properties but keeps their group', () => {
+    const groups = orderSchemaGroups(all, [], DEFAULT_GROUP, s => s.id !== 'z')
+    expect(groups.find(g => g.name === 'Alpha')?.schemas).toEqual([])
+  })
+
+  it('keeps stored groups that hold no property anymore', () => {
+    const groups = orderSchemaGroups([], ['Ghost'], DEFAULT_GROUP, () => true)
+    expect(groups).toEqual([{ name: 'Ghost', isDefault: false, schemas: [] }])
+  })
+
+  it('does not reorder the input array', () => {
+    const input = [positioned('b', 2), positioned('a', 1)]
+    orderSchemaGroups(input, [], DEFAULT_GROUP, () => true)
+    expect(input.map(s => s.id)).toEqual(['b', 'a'])
   })
 })
