@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildQuickPrintText,
+  checkboxMark,
+  checkboxPrintValue,
   collectTextBlocks,
   quickPrintFilename,
   resolveMentions,
@@ -121,7 +123,32 @@ describe('collectTextBlocks', () => {
         text('d', 'Code A', 'code'),
       ],
     })
-    expect(await collectTextBlocks('root', childrenOf)).toEqual(['Heading A', 'Item A', 'Todo A', 'Code A'])
+    expect(await collectTextBlocks('root', childrenOf)).toEqual(['Heading A', 'Item A', '[ ] Todo A', 'Code A'])
+  })
+
+  it('prefixes to-dos with their checkbox mark', async () => {
+    const childrenOf = tree({
+      root: [
+        block('a', 'to_do', { content: { text: 'Todo A', checked: false } }),
+        block('b', 'to_do', { content: { text: 'Todo B', checked: true } }),
+        block('c', 'to_do', { content: { text: 'Todo C' } }),
+      ],
+    })
+    expect(await collectTextBlocks('root', childrenOf)).toEqual(
+      ['[ ] Todo A', '[x] Todo B', '[ ] Todo C'],
+    )
+  })
+
+  it('skips to-dos without text, checked or not', async () => {
+    const childrenOf = tree({
+      root: [
+        block('a', 'to_do', { content: { text: '', checked: true } }),
+        block('b', 'to_do', { content: { text: '  ', checked: false } }),
+        block('c', 'to_do', { content: { checked: true } }),
+        text('d', 'Text A'),
+      ],
+    })
+    expect(await collectTextBlocks('root', childrenOf)).toEqual(['Text A'])
   })
 
   it('descends into toggles, layouts and columns', async () => {
@@ -171,6 +198,44 @@ describe('collectTextBlocks', () => {
       o: [text('a', 'Text A'), block('m', 'synched_mirror', { reference_id: 'o' })],
     })
     expect(await collectTextBlocks('root', childrenOf)).toEqual(['Text A'])
+  })
+})
+
+// ── Checkbox marks ────────────────────────────────────────────────────────────
+
+describe('checkboxMark', () => {
+  it('marks checked and unchecked', () => {
+    expect(checkboxMark(true)).toBe('[x]')
+    expect(checkboxMark(false)).toBe('[ ]')
+  })
+})
+
+describe('checkboxPrintValue', () => {
+  it.each([
+    ['true', '[x]'],
+    ['false', '[ ]'],
+    ['', '[ ]'],
+    ['  ', '[ ]'],
+  ])('prints %j as %j', (displayed, printed) => {
+    expect(checkboxPrintValue(displayed)).toBe(printed)
+  })
+
+  it('turns the marks inside timeline slots into checkbox marks', () => {
+    expect(checkboxPrintValue('2000-07-28 → 2045-07-17: ☑ · 2045-07-17 →: ☐')).toBe(
+      '2000-07-28 → 2045-07-17: [x] · 2045-07-17 →: [ ]',
+    )
+  })
+
+  it('keeps both states in the print', () => {
+    const text = buildQuickPrintText(
+      'Task A',
+      [
+        { label: 'Done', value: checkboxPrintValue('true') },
+        { label: 'Flag', value: checkboxPrintValue('false') },
+      ],
+      [],
+    )
+    expect(text).toBe('# Task A\n\n...... Done\n[x]\n\n...... Flag\n[ ]')
   })
 })
 

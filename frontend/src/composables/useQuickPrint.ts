@@ -28,8 +28,9 @@
  * Text blocks are every block that carries text (paragraphs, headings, list
  * items, to-dos, toggles, quotes, callouts, code), including those nested in
  * toggles, columns and synced blocks. Inline mentions print as the title of
- * the mentioned page. Nothing else is converted: character sets, line widths
- * and markup are the printer's business.
+ * the mentioned page. A to-do starts with ``[ ]`` or ``[x]``; a checkbox
+ * property prints the same marks, in both states. Nothing else is converted:
+ * character sets, line widths and markup are the printer's business.
  *
  * Sending goes through the backend (``POST /api/print``), which checks the
  * print permission and forwards the text with the arguments the admin set up.
@@ -66,6 +67,12 @@ export const PROPERTY_INDENT = '...... '
 
 /** Prefix of the title line. */
 export const TITLE_PREFIX = '# '
+
+/** Mark of an unchecked to-do or checkbox property; ASCII, so every device prints it. */
+export const CHECKBOX_OPEN = '[ ]'
+
+/** Mark of a checked to-do or checkbox property. */
+export const CHECKBOX_DONE = '[x]'
 
 /** One property line pair: its name and its displayed value. */
 export interface PrintProperty {
@@ -110,6 +117,25 @@ export function resolveMentions(text: string, titleFor: (id: string) => string):
   return text.replace(MENTION_RE, (_, id: string) => titleFor(id))
 }
 
+/** *checked* as a checkbox mark. */
+export function checkboxMark(checked: boolean): string {
+  return checked ? CHECKBOX_DONE : CHECKBOX_OPEN
+}
+
+/**
+ * The printed value of a checkbox property, from its displayed value.
+ *
+ * The display writes ``true`` / ``false``, and ``☑`` / ``☐`` in the slots of
+ * a timeline; both become checkbox marks. A checkbox without any stored value
+ * is unchecked, so it prints as such instead of being left out.
+ */
+export function checkboxPrintValue(displayed: string): string {
+  const trimmed = displayed.trim()
+  if (trimmed === '' || trimmed === 'false') return CHECKBOX_OPEN
+  if (trimmed === 'true') return CHECKBOX_DONE
+  return displayed.split('☑').join(CHECKBOX_DONE).split('☐').join(CHECKBOX_OPEN)
+}
+
 /**
  * The print text: title, properties with a value, then the text blocks, each
  * part separated by a blank line.
@@ -135,6 +161,8 @@ export function buildQuickPrintText(
  *
  * Descends into text blocks (their nested children) and into layouts,
  * columns and synced blocks; a synced mirror is read through its origin.
+ * A to-do is prefixed with its checkbox mark; one without text is skipped
+ * like any empty block.
  * Sub-pages, databases and media are skipped with everything below them.
  * Trashed blocks are ignored. Each block is visited once, so a mirror that
  * points back up the tree cannot loop.
@@ -152,7 +180,11 @@ export async function collectTextBlocks(
       visited.add(block.id)
       if (TEXT_BLOCK_TYPES.has(block.type)) {
         const text = (block.content?.text as string | undefined) ?? ''
-        if (text.trim()) texts.push(text)
+        if (text.trim()) {
+          texts.push(block.type === 'to_do'
+            ? `${checkboxMark(block.content?.checked === true)} ${text}`
+            : text)
+        }
         await walk(block.id)
       } else if (block.type === 'synched_mirror') {
         if (block.reference_id && !visited.has(block.reference_id)) {
@@ -245,16 +277,22 @@ export function useQuickPrint() {
     }
   }
 
-  /** *schemas* of *entry* as name and displayed value. */
+  /**
+   * *schemas* of *entry* as name and displayed value. Checkbox properties
+   * print as checkbox marks, unchecked ones included.
+   */
   async function propertiesOf(entry: DatabaseEntry, schemas: PropertySchema[]): Promise<PrintProperty[]> {
     await usersStore.loadUsers()
     const keyResolver = await keyResolverFor(schemas)
     const resolveTitle = (id: string): string | null =>
       dbStore.hasRelationEntry(id) ? (dbStore.getRelationTitle(id) || t('main.untitled')) : null
-    return schemas.map((schema) => ({
-      label: schema.name,
-      value: displayValue(entry, schema, usersStore.resolveUser, resolveTitle, keyResolver),
-    }))
+    return schemas.map((schema) => {
+      const displayed = displayValue(entry, schema, usersStore.resolveUser, resolveTitle, keyResolver)
+      return {
+        label: schema.name,
+        value: schema.type === 'checkbox' ? checkboxPrintValue(displayed) : displayed,
+      }
+    })
   }
 
   function download(text: string, title: string): void {
