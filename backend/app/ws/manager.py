@@ -31,13 +31,22 @@ A client counts as too slow when one send takes longer than
 :data:`SEND_TIMEOUT` seconds or when its outbox holds :data:`OUTBOX_LIMIT`
 messages. Its connection is then dropped and closed with code 1013 ("try
 again later"); the client reconnects on its own. Everyone else is unaffected.
+
+Ending sessions
+---------------
+Each connection also remembers the key of the session it was opened with.
+When sessions end while their connections are open (a password change ends
+the account's other sessions), :meth:`ConnectionManager.close_sessions` closes
+exactly those connections with code 4401, the code the handshake answers an
+invalid session with, so the client treats it as being signed out instead of
+reconnecting.
 """
 import asyncio
 import contextlib
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Set
+from typing import Callable, Dict, Iterable, Optional, Set
 
 from fastapi import WebSocket
 
@@ -60,14 +69,23 @@ CLOSE_TIMEOUT = 2.0
 # Close code for a dropped slow client: "try again later" (RFC 6455 registry).
 CLOSE_TOO_SLOW = 1013
 
+# Close code for a connection whose session has ended. Application-defined
+# (codes from 4000 on are reserved for that), mirrors HTTP 401 and is the code
+# the handshake answers an invalid session with (``app.ws.router``).
+CLOSE_SESSION_ENDED = 4401
+
 
 @dataclass
 class _Connection:
-    """One registered socket: its account, its outbox and its sending task."""
+    """
+    One registered socket: its account, the key of the session it was opened
+    with, its outbox and its sending task.
+    """
 
     user_id: uuid.UUID
     outbox: "asyncio.Queue[str]"
     sender: Optional["asyncio.Task[None]"] = None
+    session_key: Optional[str] = None
 
 
 class ConnectionManager:
@@ -79,16 +97,27 @@ class ConnectionManager:
         # before they finish.
         self._closing: Set["asyncio.Task[None]"] = set()
 
-    async def connect(self, websocket: WebSocket, user_id: uuid.UUID) -> None:
+    async def connect(
+        self,
+        websocket: WebSocket,
+        user_id: uuid.UUID,
+        session_key: Optional[str] = None,
+    ) -> None:
         """
         Accept the WebSocket handshake and register the connection.
 
-        *user_id* is the account the session cookie resolved to. It is recorded
-        rather than re-derived later, because the cookie is only available
-        during the handshake. The connection's sending task starts here.
+        *user_id* is the account the session cookie resolved to, *session_key*
+        the key that session is stored under (``app.session.session.token_key``).
+        Both are recorded rather than re-derived later, because the cookie is
+        only available during the handshake. The connection's sending task
+        starts here.
         """
         await websocket.accept()
-        connection = _Connection(user_id=user_id, outbox=asyncio.Queue(maxsize=OUTBOX_LIMIT))
+        connection = _Connection(
+            user_id=user_id,
+            outbox=asyncio.Queue(maxsize=OUTBOX_LIMIT),
+            session_key=session_key,
+        )
         self._connections[websocket] = connection
         connection.sender = asyncio.create_task(self._send_loop(websocket, connection))
         logger.debug(
@@ -182,6 +211,25 @@ class ConnectionManager:
             return False
         return True
 
+    def close_sessions(self, session_keys: Iterable[str]) -> int:
+        """
+        Close the connections opened with one of *session_keys* and return
+        how many there were.
+
+        Closed with ``CLOSE_SESSION_ENDED``; messages still waiting for them
+        are discarded. Must be called on the event loop that serves the
+        connections.
+        """
+        keys = set(session_keys)
+        if not keys:
+            return 0
+        closed = 0
+        for websocket, connection in list(self._connections.items()):
+            if connection.session_key is not None and connection.session_key in keys:
+                self._drop(websocket, close=True, code=CLOSE_SESSION_ENDED)
+                closed += 1
+        return closed
+
     async def flush(self) -> None:
         """Wait until every message queued so far has been sent or discarded."""
         for connection in list(self._connections.values()):
@@ -212,9 +260,16 @@ class ConnectionManager:
             finally:
                 connection.outbox.task_done()
 
-    def _drop(self, websocket: WebSocket, *, close: bool = True) -> None:
+    def _drop(
+        self,
+        websocket: WebSocket,
+        *,
+        close: bool = True,
+        code: int = CLOSE_TOO_SLOW,
+    ) -> None:
         """
-        Unregister *websocket*, discard its outbox and, if asked, close it.
+        Unregister *websocket*, discard its outbox and, if asked, close it
+        with *code*.
 
         The close runs as its own task with a time limit, so dropping never
         waits on the client either. Safe to call from the connection's own
@@ -235,15 +290,15 @@ class ConnectionManager:
             connection.outbox.get_nowait()
             connection.outbox.task_done()
         if close:
-            task = asyncio.get_running_loop().create_task(self._close(websocket))
+            task = asyncio.get_running_loop().create_task(self._close(websocket, code))
             self._closing.add(task)
             task.add_done_callback(self._closing.discard)
 
     @staticmethod
-    async def _close(websocket: WebSocket) -> None:
+    async def _close(websocket: WebSocket, code: int = CLOSE_TOO_SLOW) -> None:
         """Close a dropped connection; give up quietly if the client cannot take it."""
         with contextlib.suppress(Exception):
-            await asyncio.wait_for(websocket.close(code=CLOSE_TOO_SLOW), CLOSE_TIMEOUT)
+            await asyncio.wait_for(websocket.close(code=code), CLOSE_TIMEOUT)
 
 
 # Module-level singleton shared by the router and the broadcaster.

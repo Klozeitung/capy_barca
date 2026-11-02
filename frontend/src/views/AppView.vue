@@ -1,12 +1,25 @@
 <script setup lang="ts">
-import { ref, onUnmounted } from 'vue'
+/**
+ * AppView
+ *
+ * The signed-in application: navigation, the open page and the dialogs that
+ * belong to the whole application. On mount it loads the account's profile,
+ * which applies the account's language and, for an account that has not
+ * chosen one yet, opens the PreferencesPrompt. The uploaded icons are loaded
+ * here as well, before any page renders them; creating their store is what
+ * lets Iconify ask for them.
+ */
+import { ref, onMounted, onUnmounted } from 'vue'
 import NavView from '@/components/nav/NavView.vue'
 import MainView from '@/components/main/MainView.vue'
 import SettingsModal from '@/components/settings/SettingsModal.vue'
 import HelpModal from '@/components/settings/HelpModal.vue'
 import NoticeToasts from '@/components/main/NoticeToasts.vue'
 import AlertShiftDialog from '@/components/main/AlertShiftDialog.vue'
+import PreferencesPrompt from '@/components/main/PreferencesPrompt.vue'
 import { useUiStore } from '@/stores/ui'
+import { useAuthStore } from '@/stores/auth'
+import { useCustomIconsStore } from '@/stores/customIcons'
 import { useSettingsModal } from '@/composables/useSettingsModal'
 import { useHelpModal } from '@/composables/useHelpModal'
 
@@ -15,6 +28,8 @@ defineProps<{
 }>()
 
 const ui = useUiStore()
+const auth = useAuthStore()
+const customIcons = useCustomIconsStore()
 const { isOpen: settingsOpen } = useSettingsModal()
 const { isOpen: helpOpen } = useHelpModal()
 const isResizing = ref(false)
@@ -36,6 +51,11 @@ function onResizeEnd(): void {
   document.removeEventListener('mousemove', onResizeMove)
   document.removeEventListener('mouseup', onResizeEnd)
 }
+
+onMounted(() => {
+  void auth.loadProfile()
+  void customIcons.ensureLoaded()
+})
 
 onUnmounted(() => {
   document.removeEventListener('mousemove', onResizeMove)
@@ -63,6 +83,7 @@ onUnmounted(() => {
     <HelpModal v-if="helpOpen" />
     <NoticeToasts />
     <AlertShiftDialog />
+    <PreferencesPrompt v-if="auth.needsPreferences" />
   </div>
 </template>
 

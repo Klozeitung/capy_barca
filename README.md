@@ -16,7 +16,7 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 - **Databases** structured tables with custom property types (text, select, date, relation, formula, rollup, and more), filters, sorting, and multiple views per database
 - **Backup and restore** portable `.capy` backup files covering database, uploads, and configuration; full restore via a single script
 - **Multi-user** admin and member roles, optional self-registration, permission model per block (everyone / private / whitelist) and inheritance system
-- **Supported Languages**: English, German
+- **Supported Languages**: English, German, chosen per account; a new account is asked for its language and date format after the first login
 - **Exports**: Export your data (the current view) to PDF or CSV
 
 ### Advanced features
@@ -24,6 +24,7 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 - **Automations** rule-based triggers that act on database entries
 - **Alerts** personal reminders on database entries (one alerts property per database); each user sees only their own, and a due alert shows a notice in every open session until it is closed
 - **Comments** inline comments on pages and database entries
+- **Custom icons** admins upload images (PNG, JPEG, GIF, WebP) under Settings → Icons, which every user can then pick wherever icons are offered
 - **Collaborative editing** real-time document collaboration via integrated Collabora Online (WOPI)
 - **Android app** a mobile client for phones, where the browser interface designed for desktop and tablet is cramped; see [Android app](#android-app)
 
@@ -175,7 +176,7 @@ The browser interface is designed for desktop and tablet. On a phone, the Androi
 - Download it on the phone from **Settings → Downloads** inside the web app; every account can do so. Install it by opening the file and allowing installation from that source, then sign in with the address you use in the browser
 - The debug build installs alongside a later release build rather than replacing it
 
-capybarca-android-0.6.0.0-debug.apk is compatible with CapyBarca 0.16.9.0 - 0.17.1.2
+capybarca-android-0.6.0.0-debug.apk is compatible with CapyBarca 0.16.9.0 - 0.17.2.0. Custom icons uploaded in the web app are not shown in the app yet.
 
 The app is pre-release software like CapyBarca itself. Use it at your own risk.
 
@@ -197,7 +198,7 @@ The Anthropic LLM "Claude" assisted in creating this software.
 
 ## Project Status
 
-Despite heavy testing (~3200 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet.
+Despite heavy testing (~3300 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet.
 
 Do not use for irreplaceable data without regularly creating backups. Use at your own risk.
 

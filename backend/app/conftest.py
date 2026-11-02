@@ -104,6 +104,7 @@ import app.blocks.models  # noqa: E402,F401 – registers Block, PropertySchema,
 import app.permissions.model  # noqa: E402,F401 – registers BlockPermission, BlockPermissionGrant
 import app.comments.comments_models  # noqa: E402,F401 – registers Comment with Base
 import app.media.model  # noqa: E402,F401 – registers MediaFile with Base
+import app.icons.model  # noqa: E402,F401 – registers CustomIcon with Base
 import app.database.database as db_module  # noqa: E402
 import app.session.deps as deps_module  # noqa: E402
 import app.session.session as s  # noqa: E402

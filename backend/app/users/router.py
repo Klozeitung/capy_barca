@@ -5,9 +5,16 @@ Password fields use the shared types from ``app.users.password_rules`` rather
 than plain strings, so that the minimum length and bcrypt's 72-byte ceiling are
 stated once for the whole application instead of per endpoint.
 
-A password change, own or by an admin, withdraws every WOPI token of the
-account (``app.wopi.registry``), so an open document editor stops reading and
-saving with the old credentials.
+A password change ends sessions: the account's own change ends every other
+session of the account and keeps the one it was made in, an admin's reset ends
+all of them. Their WebSocket connections are closed once the change has
+committed. It also withdraws every WOPI token of the account
+(``app.wopi.registry``), so an open document editor stops reading and saving
+with the old credentials.
+
+The language an account uses is stored with it (``/me/language``). It stays
+empty until the account chooses one, which tells the web app to ask for
+language and date format after login.
 
 Each user keeps the icons they picked most recently
 (``/me/recent-icons``), which the icon picker offers first. The list is
@@ -19,16 +26,19 @@ import uuid
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.icons.names import ICON_PATTERN
 from app.security.limiter import limiter
+from app.session import session as session_store
 from app.session.deps import get_current_user, get_db, require_admin, require_session
 from app.users import repository as user_repo
 from app.users.model import User
 from app.users.password_rules import ExistingPassword, NewPassword
 from app.wopi import registry as wopi_registry
+from app.ws.broadcaster import close_session_connections
 
 users_router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -42,6 +52,9 @@ _PASSWORD_CHANGE_RATE_LIMIT = os.getenv("PASSWORD_CHANGE_RATE_LIMIT", "5/minute"
 # and exchanged as ISO 8601. The per-property "global" sentinel is a database
 # property concept and is intentionally NOT a valid user-level value here.
 DateFormatToken = Literal["DD.MM.YYYY", "MM.DD.YYYY", "YYYY-MM-DD", "YYYY-DD-MM"]
+
+# Languages the web app ships locales for.
+LanguageCode = Literal["de", "en"]
 
 
 # ─── Schemas ──────────────────────────────────────────────────────────────────
@@ -60,6 +73,7 @@ class UserResponse(BaseModel):
     date_format: str
     can_print: bool
     timezone: Optional[str] = None
+    language: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -76,6 +90,10 @@ class ChangeUsernameRequest(BaseModel):
 
 class ChangeDateFormatRequest(BaseModel):
     date_format: DateFormatToken
+
+
+class ChangeLanguageRequest(BaseModel):
+    language: LanguageCode
 
 
 class ChangeTimezoneRequest(BaseModel):
@@ -101,18 +119,13 @@ class ChangeCanPrintRequest(BaseModel):
     can_print: bool
 
 
-# An icon as the frontend's icon picker names it: one of the bundled Iconify
-# sets, a colon, and the icon's name within the set.
-_ICON_PATTERN = r"^(mdi|tabler|lucide):[a-z0-9]+(-[a-z0-9]+)*$"
-
-
 class RecentIcon(BaseModel):
     icon: str
     used_at: datetime
 
 
 class RecordIconUseRequest(BaseModel):
-    icon: str = Field(max_length=128, pattern=_ICON_PATTERN)
+    icon: str = Field(max_length=128, pattern=ICON_PATTERN)
 
 
 # ─── Own profile ──────────────────────────────────────────────────────────────
@@ -164,18 +177,24 @@ def change_own_username(
 def change_own_password(
     request: Request,
     payload: ChangePasswordRequest,
+    session: Optional[str] = Cookie(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Change own password. Requires the correct current password. Withdraws
-    the account's WOPI tokens in the same transaction.
+    Change own password. Requires the correct current password.
+
+    Ends every other session of the account and withdraws its WOPI tokens in
+    the same transaction; the session the change is made in stays. The
+    connections of the ended sessions are closed after the commit.
     """
     if not user_repo.verify_password(payload.current_password, current_user.password_hash):
         raise HTTPException(status_code=401, detail="The current password is incorrect")
     user_repo.update_password(db, current_user, payload.new_password)
+    ended = session_store.revoke_user_sessions(db, current_user.id, keep_token=session)
     wopi_registry.revoke_for_user(db, current_user.id)
     db.commit()
+    close_session_connections(ended)
 
 
 @users_router.patch("/me/date-format", response_model=UserResponse)
@@ -194,6 +213,24 @@ def change_own_date_format(
     db.commit()
     db.refresh(current_user)
     return current_user
+
+
+@users_router.patch("/me/language", response_model=UserResponse)
+def change_own_language(
+    payload: ChangeLanguageRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Set the language the current user uses the application in.
+
+    Languages without a locale are rejected by request validation (422).
+    """
+    user = db.get(User, current_user.id) or current_user
+    user_repo.update_language(db, user, payload.language)
+    db.commit()
+    db.refresh(user)
+    return user
 
 
 @users_router.patch("/me/timezone", response_model=UserResponse)
@@ -330,14 +367,19 @@ def admin_reset_password(
 ):
     """
     Admin force-reset another user's password (no current password required).
-    Withdraws that account's WOPI tokens in the same transaction.
+
+    Ends every session of that account and withdraws its WOPI tokens in the
+    same transaction; the connections of the ended sessions are closed after
+    the commit.
     """
     user = user_repo.get_by_id(db, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     user_repo.update_password(db, user, payload.new_password)
+    ended = session_store.revoke_user_sessions(db, user.id)
     wopi_registry.revoke_for_user(db, user.id)
     db.commit()
+    close_session_connections(ended)
 
 
 @users_router.delete("/{user_id}", status_code=204)

@@ -37,6 +37,7 @@ import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { Icon, getIcon, loadIcon } from '@iconify/vue'
 import { useBlockStore, type Block } from '@/stores/blocks'
+import { useCustomIconsStore } from '@/stores/customIcons'
 import { useSlashMenu } from '@/composables/useSlashMenu'
 import { useMentionMenu } from '@/composables/useMentionMenu'
 import { resolveColor } from '@/composables/blockColors'
@@ -113,6 +114,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const router = useRouter()
 const blockStore = useBlockStore()
+const customIcons = useCustomIconsStore()
 const slashMenu = useSlashMenu()
 const mentionMenu = useMentionMenu()
 const editable = provideEditable(() => props.block)
@@ -979,9 +981,11 @@ function closeCalloutIconPicker(): void {
   calloutIconPickerRect.value = null
 }
 
+// The callout's icon lives in its content, which deleting an uploaded icon
+// does not rewrite; a deleted one shows the default instead.
 const calloutIcon = computed<string>(() => {
   const stored = props.block.content?.icon as string | undefined
-  if (stored && stored.includes(':')) return stored
+  if (stored && stored.includes(':') && customIcons.isAvailable(stored)) return stored
   return DEFAULT_CALLOUT_ICON
 })
 

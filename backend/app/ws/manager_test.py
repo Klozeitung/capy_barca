@@ -17,7 +17,7 @@ import uuid
 import pytest
 
 from app.ws import manager as manager_module
-from app.ws.manager import CLOSE_TOO_SLOW, ConnectionManager
+from app.ws.manager import CLOSE_SESSION_ENDED, CLOSE_TOO_SLOW, ConnectionManager
 
 
 # ─── Stub ─────────────────────────────────────────────────────────────────────
@@ -422,3 +422,51 @@ def test_send_queues_behind_waiting_messages():
 
 def test_send_to_an_unknown_socket_is_refused():
     assert ConnectionManager().send(MockWebSocket(), "reply") is False
+
+
+# ─── Ending sessions ──────────────────────────────────────────────────────────
+
+
+def test_close_sessions_closes_only_the_connections_of_those_sessions():
+    async def _run():
+        mgr = ConnectionManager()
+        user_id = _user()
+        ended_a, ended_b, kept, other = (MockWebSocket() for _ in range(4))
+        await mgr.connect(ended_a, user_id, session_key="key-a")
+        await mgr.connect(ended_b, user_id, session_key="key-a")
+        await mgr.connect(kept, user_id, session_key="key-b")
+        await mgr.connect(other, _user(), session_key="key-c")
+
+        assert mgr.close_sessions(["key-a"]) == 2
+        await asyncio.sleep(0)
+
+        assert ended_a.closed_with == CLOSE_SESSION_ENDED
+        assert ended_b.closed_with == CLOSE_SESSION_ENDED
+        assert kept.closed_with is None
+        assert other.closed_with is None
+        assert mgr.active_count == 2
+        mgr.broadcast("after")
+        await mgr.flush()
+        assert kept.sent == ["after"]
+        assert ended_a.sent == []
+    asyncio.run(_run())
+
+
+def test_close_sessions_without_keys_closes_nothing():
+    async def _run():
+        mgr = ConnectionManager()
+        ws = MockWebSocket()
+        await mgr.connect(ws, _user(), session_key="key-a")
+        assert mgr.close_sessions([]) == 0
+        assert mgr.active_count == 1
+    asyncio.run(_run())
+
+
+def test_close_sessions_leaves_connections_without_a_key_alone():
+    async def _run():
+        mgr = ConnectionManager()
+        ws = MockWebSocket()
+        await mgr.connect(ws, _user())
+        assert mgr.close_sessions(["key-a"]) == 0
+        assert mgr.active_count == 1
+    asyncio.run(_run())

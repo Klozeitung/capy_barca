@@ -2,16 +2,21 @@
 /**
  * IconPicker
  *
- * Search over the bundled icon sets. With an empty search the picker offers
- * the icons the user picked most recently (``recentIcons`` store) above a
- * fixed set of common icons; every pick is recorded there, whichever
- * component opened the picker. Removing the icon is not a pick.
+ * Search over the bundled icon sets and the icons admins uploaded
+ * (``customIcons`` store), which a search finds by their name. With an empty
+ * search the picker offers the icons the user picked most recently
+ * (``recentIcons`` store), then the uploaded icons, then a fixed set of
+ * common icons; every pick is recorded as recently used, whichever component
+ * opened the picker. Removing the icon is not a pick. A deleted uploaded
+ * icon is not offered, not even among the recent ones.
  */
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useEscapeKey } from '@/composables/useEscapeStack'
 import { useRecentIconsStore } from '@/stores/recentIcons'
+import { useCustomIconsStore } from '@/stores/customIcons'
+import { isCustomIcon } from '@/plugins/icons'
 import mdiData from '@iconify-json/mdi/icons.json'
 import tablerData from '@iconify-json/tabler/icons.json'
 import lucideData from '@iconify-json/lucide/icons.json'
@@ -43,6 +48,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const recentIcons = useRecentIconsStore()
+const customIcons = useCustomIconsStore()
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -65,16 +71,30 @@ const COMMON: string[] = [
 
 const isSearching = computed(() => query.value.trim() !== '')
 
+const SEARCH_LIMIT = 120
+
 const results = computed<string[]>(() => {
   const q = query.value.trim().toLowerCase()
   if (!q) return COMMON
-  return ALL_ICONS
-    .filter((icon) => icon.slice(icon.indexOf(':') + 1).includes(q))
-    .slice(0, 120)
+  const uploaded = customIcons.icons
+    .filter((icon) => icon.name.toLowerCase().includes(q))
+    .map((icon) => icon.icon)
+  const bundled = ALL_ICONS.filter((icon) => icon.slice(icon.indexOf(':') + 1).includes(q))
+  return [...uploaded, ...bundled].slice(0, SEARCH_LIMIT)
 })
 
-/** The recently used icons, shown above the common ones while not searching. */
-const recent = computed<string[]>(() => (isSearching.value ? [] : recentIcons.icons))
+/** The recently used icons that still exist, shown first while not searching. */
+const recent = computed<string[]>(() =>
+  isSearching.value ? [] : recentIcons.icons.filter((icon) => customIcons.isAvailable(icon)),
+)
+
+/** The uploaded icons, shown between the recent and the common ones while not searching. */
+const uploaded = computed<string[]>(() =>
+  isSearching.value ? [] : customIcons.icons.map((icon) => icon.icon),
+)
+
+/** Whether the common icons need a heading, because a section stands above them. */
+const labelCommon = computed(() => recent.value.length > 0 || uploaded.value.length > 0)
 
 // ── Teleport positioning ──────────────────────────────────────────────────────
 
@@ -122,6 +142,7 @@ const useTeleport = computed(() => !!props.triggerRect)
 
 onMounted(async () => {
   recentIcons.ensureLoaded()
+  void customIcons.ensureLoaded()
   await nextTick()
   searchRef.value?.focus()
   document.addEventListener('mousedown', onOutsideClick)
@@ -140,6 +161,7 @@ function onOutsideClick(e: MouseEvent): void {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function iconTitle(icon: string): string {
+  if (isCustomIcon(icon)) return customIcons.find(icon)?.name ?? ''
   const colon  = icon.indexOf(':')
   const prefix = icon.slice(0, colon)
   const name   = icon.slice(colon + 1)
@@ -203,8 +225,23 @@ useEscapeKey(() => emit('close'))
               <Icon :icon="icon" width="20" height="20" />
             </button>
           </div>
-          <p class="icon-picker__label">{{ t('iconPicker.common') }}</p>
         </template>
+        <template v-if="uploaded.length > 0">
+          <p class="icon-picker__label">{{ t('iconPicker.uploaded') }}</p>
+          <div class="icon-picker__grid">
+            <button
+              v-for="icon in uploaded"
+              :key="icon"
+              class="icon-picker__cell"
+              :class="{ 'icon-picker__cell--active': icon === modelValue }"
+              :title="iconTitle(icon)"
+              @click="select(icon)"
+            >
+              <Icon :icon="icon" width="20" height="20" />
+            </button>
+          </div>
+        </template>
+        <p v-if="labelCommon" class="icon-picker__label">{{ t('iconPicker.common') }}</p>
         <div class="icon-picker__grid">
           <button
             v-for="icon in results"

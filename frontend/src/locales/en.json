@@ -252,7 +252,8 @@
     "usersCreateTaken": "That username is already taken.",
     "overview": "Overview",
     "language": "Language",
-    "languageDesc": "Choose the display language for the interface.",
+    "languageDesc": "Display language of the interface. It is stored with your account and applies in every browser.",
+    "languageSaveError": "The language could not be stored with your account. For now it applies in this browser only.",
     "languageDe": "German",
     "languageEn": "English",
     "date": "Date",
@@ -336,7 +337,20 @@
     "apiTestHint": "Saves the settings and sends a short test text. Green only for a 200 answer.",
     "apiTestStatus": "Answer {status}",
     "apiTestNoAnswer": "No answer: {reason}",
-    "apiTestNoPrinter": "Enter a URL first."
+    "apiTestNoPrinter": "Enter a URL first.",
+    "icons": "Icons",
+    "iconsDesc": "Your own images as icons. Every user can pick them wherever icons are offered.",
+    "iconsUpload": "Upload images",
+    "iconsHint": "PNG, JPEG, GIF or WebP, up to 512 KB. Square images work best.",
+    "iconsUploaded": "One icon uploaded. | {count} icons uploaded.",
+    "iconsTooLarge": "The image is larger than 512 KB.",
+    "iconsWrongType": "Only PNG, JPEG, GIF and WebP can be icons.",
+    "iconsUploadError": "The upload failed.",
+    "iconsNone": "No custom icons yet.",
+    "iconsDelete": "Delete icon",
+    "iconsDeleteConfirm": "Click again to delete",
+    "iconsDeleteHint": "When an icon is deleted, entries get their database's default icon and every other place loses it.",
+    "iconsDeleteError": "The icon could not be deleted."
   },
   "pageSettings": {
     "title": "Page settings",
@@ -1119,6 +1133,7 @@
     "filesSize": "The server limits how large a single upload may be. If a file goes over that limit, the block says so while uploading.",
     "filesTypes": "Image, video, audio and PDF blocks only accept their matching formats. SVG is excluded, because an SVG file can carry scripts and would be rendered directly inside the block.",
     "filesDownload": "File and drive blocks accept anything. Those are always downloaded rather than opened in the browser.",
+    "filesIcons": "Admins upload their own images as icons under Settings → Icons (PNG, JPEG, GIF or WebP). Everyone finds them in the icon picker under “Custom” and can search them by name.",
     "title": "Help",
     "sectionBlocks": "Block Types",
     "sectionShortcuts": "Shortcuts",
@@ -1283,7 +1298,8 @@
     "clear": "Remove icon",
     "noResults": "No results.",
     "recent": "Recently used",
-    "common": "Common"
+    "common": "Common",
+    "uploaded": "Custom"
   },
   "readOnly": {
     "badge": "Read only",
@@ -1318,5 +1334,12 @@
       "exactHint": "Each alert keeps its exact distance to the date.",
       "failed": "The alerts could not be moved. Try again or keep them."
     }
+  },
+  "preferences": {
+    "title": "Welcome",
+    "text": "Choose the language and date format for your account.",
+    "hint": "You can change both later in the settings.",
+    "save": "Save",
+    "failed": "Saving failed. Please try again."
   }
 }

@@ -138,6 +138,39 @@ def test_change_date_format_returns_401_unauthenticated():
     assert response.status_code == 401
 
 
+# ── PATCH /api/users/me/language ─────────────────────────────────────────────
+
+
+def test_a_new_account_has_no_language(admin_client):
+    assert admin_client.get("/api/users/me").json()["language"] is None
+
+
+@pytest.mark.parametrize("language", ["de", "en"])
+def test_change_language_sets_and_persists_it(member_client, language):
+    response = member_client.patch("/api/users/me/language", json={"language": language})
+    assert response.status_code == 200
+    assert response.json()["language"] == language
+    assert member_client.get("/api/users/me").json()["language"] == language
+
+
+@pytest.mark.parametrize("language", ["fr", "DE", "", None])
+def test_change_language_refuses_languages_without_a_locale(member_client, language):
+    response = member_client.patch("/api/users/me/language", json={"language": language})
+    assert response.status_code == 422
+    assert member_client.get("/api/users/me").json()["language"] is None
+
+
+def test_change_language_returns_401_unauthenticated():
+    response = anon_client.patch("/api/users/me/language", json={"language": "en"})
+    assert response.status_code == 401
+
+
+def test_the_language_is_part_of_the_admin_user_list(admin_client):
+    admin_client.patch("/api/users/me/language", json={"language": "en"})
+    listed = {u["username"]: u for u in admin_client.get("/api/users").json()}
+    assert listed["admin_user"]["language"] == "en"
+
+
 # ── /api/users/me/recent-icons ───────────────────────────────────────────────
 
 
@@ -235,9 +268,19 @@ def test_record_icon_use_updates_the_timestamp_of_a_listed_icon():
     ]
 
 
+def test_a_custom_icon_can_be_recorded(admin_client):
+    icon = "custom:3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+    response = _use_icon(admin_client, icon)
+    assert response.status_code == 200
+    assert _icon_names(response) == [icon]
+
+
 @pytest.mark.parametrize(
     "icon",
-    ["", "home", "fa:home", "mdi:Home", "mdi:", "mdi:../etc", "mdi:a b", "mdi:-a", "mdi:" + "a" * 130],
+    [
+        "", "home", "fa:home", "mdi:Home", "mdi:", "mdi:../etc", "mdi:a b", "mdi:-a",
+        "mdi:" + "a" * 130, "custom:star", "custom:../icons/a.png",
+    ],
 )
 def test_using_something_that_is_not_an_icon_returns_422(admin_client, icon):
     assert _use_icon(admin_client, icon).status_code == 422
@@ -440,6 +483,61 @@ def test_admin_reset_withdraws_the_wopi_tokens_of_that_account_only(admin_client
     assert response.status_code == 204
     assert not _wopi_token_exists(target_token)
     assert _wopi_token_exists(admin_token)
+
+
+# ── Sessions end with a password change ──────────────────────────────────────
+
+
+def _second_session(username: str) -> str:
+    """Issue another session token for *username* and return it."""
+    from app.users.model import User
+
+    with s.SessionLocal() as db:
+        user = db.query(User).filter(User.username == username).one()
+    return s.create_token(user.id)
+
+
+def test_changing_the_own_password_ends_the_other_sessions_only(admin_client):
+    current = admin_client.cookies.get("session")
+    other = _second_session("admin_user")
+
+    response = admin_client.patch(
+        "/api/users/me/password",
+        json={"current_password": "secret", "new_password": "new_pw_123"},
+    )
+
+    assert response.status_code == 204
+    assert s.validate_token(current) is not None
+    assert s.validate_token(other) is None
+    assert admin_client.get("/api/users/me").status_code == 200
+
+
+def test_a_refused_password_change_keeps_the_other_sessions(admin_client):
+    other = _second_session("admin_user")
+    admin_client.patch(
+        "/api/users/me/password",
+        json={"current_password": "wrong", "new_password": "new_pw_123"},
+    )
+    assert s.validate_token(other) is not None
+
+
+def test_admin_reset_ends_every_session_of_that_account_only(admin_client):
+    with s.SessionLocal() as db:
+        target = create_user(db, "reset_target", "secret", role="member")
+        db.commit()
+        target_id = target.id
+    first = s.create_token(target_id)
+    second = s.create_token(target_id)
+    admin_session = admin_client.cookies.get("session")
+
+    response = admin_client.patch(
+        f"/api/users/{target_id}/password", json={"new_password": "new_pw_123"}
+    )
+
+    assert response.status_code == 204
+    assert s.validate_token(first) is None
+    assert s.validate_token(second) is None
+    assert s.validate_token(admin_session) is not None
 
 
 # ── GET /api/users ────────────────────────────────────────────────────────────

@@ -71,6 +71,18 @@ read, for example its own alerts. :func:`emit_user_message` and
 to the connections of that account only, provided it is still active. The
 caller has decided that the account may see the payload; nothing here checks
 block permissions for these messages.
+
+Messages for every account
+--------------------------
+:func:`emit_installation_message` delivers ``{"type": <type>, "payload":
+<payload>}`` to the connections of every active account, for changes that
+concern the whole installation and carry no block content (for example the
+list of uploaded icons).
+
+Ending sessions
+---------------
+:func:`close_session_connections` closes the connections opened with sessions
+that have just been deleted, from a request handler.
 """
 import functools
 import json
@@ -497,5 +509,98 @@ def emit_user_message(
             "Dropped %s message for %s: emit_user_message was called outside a "
             "worker thread, so no event loop was available to send it.",
             message_type, user_id,
+        )
+        return 0
+
+
+# ─── Messages for every account ───────────────────────────────────────────────
+
+
+def _active_accounts(user_ids: Iterable[uuid.UUID], db: Optional["Session"] = None) -> set[uuid.UUID]:
+    """Return the accounts among *user_ids* that exist and are active."""
+    from sqlalchemy import select
+
+    from app.users.model import User
+
+    candidates = set(user_ids)
+    if not candidates:
+        return set()
+
+    def _query(session: "Session") -> set[uuid.UUID]:
+        rows = session.execute(
+            select(User.id).where(User.id.in_(candidates), User.is_active.is_(True))
+        )
+        return set(rows.scalars())
+
+    if db is not None:
+        return _query(db)
+
+    import app.database.database as db_module
+
+    with db_module.SessionLocal() as own_db:
+        return _query(own_db)
+
+
+def emit_installation_message(
+    message_type: str,
+    payload: Any,
+    *,
+    db: Optional["Session"] = None,
+) -> int:
+    """
+    Send a message to the connections of every active account, from a request
+    handler.
+
+    Only for payloads every account may see. Hands over to the event loop like
+    :func:`emit_block_event` and returns the number of connections it was
+    queued for.
+    """
+    from app.ws.manager import manager
+
+    if manager.active_count == 0:
+        return 0
+    recipients = _active_accounts(manager.user_ids(), db)
+    if not recipients:
+        return 0
+    send = functools.partial(
+        manager.broadcast,
+        _user_envelope(message_type, payload),
+        recipient_filter=lambda candidate: candidate in recipients,
+    )
+    try:
+        return anyio.from_thread.run_sync(send)
+    except RuntimeError:
+        logger.warning(
+            "Dropped %s message: emit_installation_message was called outside a "
+            "worker thread, so no event loop was available to send it.",
+            message_type,
+        )
+        return 0
+
+
+# ─── Ending sessions ──────────────────────────────────────────────────────────
+
+
+def close_session_connections(session_keys: Iterable[str]) -> int:
+    """
+    Close the connections opened with one of *session_keys*, from a request
+    handler, and return how many there were.
+
+    Called after the commit that deleted the sessions (see
+    ``app.session.session.revoke_user_sessions``), so a client that reconnects
+    at once finds its session gone and is refused.
+    """
+    from app.ws.manager import manager
+
+    keys = list(session_keys)
+    if not keys or manager.active_count == 0:
+        return 0
+    try:
+        return anyio.from_thread.run_sync(manager.close_sessions, keys)
+    except RuntimeError:
+        logger.warning(
+            "Left %d ended sessions' connections open: close_session_connections "
+            "was called outside a worker thread, so no event loop was available.",
+            len(keys),
         )
         return 0

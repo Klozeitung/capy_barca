@@ -11,6 +11,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from app.icons.names import ICON_PATTERN
+
 
 class SchemaCreate(BaseModel):
     """
@@ -260,12 +262,6 @@ class KeyReferenceResponse(BaseModel):
     database_title: Optional[str]
 
 
-# An icon as the frontend's icon picker names it: one of the bundled Iconify
-# sets, a colon, and the icon's name within the set. The same rule applies to
-# the recently used icons of a user (``app.users.router``).
-_ICON_PATTERN = r"^(mdi|tabler|lucide):[a-z0-9]+(-[a-z0-9]+)*$"
-
-
 class DatabaseSettingsResponse(BaseModel):
     """
     Settings of a whole database.
@@ -279,7 +275,7 @@ class DatabaseSettingsResponse(BaseModel):
 
 class DatabaseSettingsUpdate(BaseModel):
     """New settings; ``default_entry_icon`` ``None`` removes the icon."""
-    default_entry_icon: Optional[str] = Field(default=None, max_length=128, pattern=_ICON_PATTERN)
+    default_entry_icon: Optional[str] = Field(default=None, max_length=128, pattern=ICON_PATTERN)
 
 
 class EntryTemplateResponse(BaseModel):

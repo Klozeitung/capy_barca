@@ -3,7 +3,13 @@ import { setActivePinia, createPinia } from 'pinia'
 import { useBlockStore } from '@/stores/blocks'
 import { useUiStore } from '@/stores/ui'
 import { useDrag } from '@/composables/useDrag'
-import { WS_ALERT_EVENT, WS_BLOCK_EVENT, WS_RESYNC_EVENT, useWsStore } from '@/stores/ws'
+import {
+  WS_ALERT_EVENT,
+  WS_BLOCK_EVENT,
+  WS_CUSTOM_ICONS_EVENT,
+  WS_RESYNC_EVENT,
+  useWsStore,
+} from '@/stores/ws'
 import {
   useDatabaseStore,
   entriesEventDetails,
@@ -227,6 +233,83 @@ describe('useBlockStore', () => {
 })
 
 // ── UI Store ──────────────────────────────────────────────────────────────────
+
+describe('useAuthStore language', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('applies the language stored with the account', async () => {
+    const { apiClient } = await import('@/api/client')
+    const i18n = (await import('@/plugins/i18n')).default
+    vi.mocked(apiClient.get).mockResolvedValueOnce({
+      username: 'person-a', role: 'member', date_format: 'YYYY-MM-DD', language: 'en',
+    })
+    const auth = useAuthStore()
+
+    await auth.loadProfile()
+
+    expect(auth.language).toBe('en')
+    expect(auth.dateFormat).toBe('YYYY-MM-DD')
+    expect(auth.needsPreferences).toBe(false)
+    expect(i18n.global.locale.value).toBe('en')
+  })
+
+  it('asks an account without a language, and only once the profile is loaded', async () => {
+    const { apiClient } = await import('@/api/client')
+    vi.mocked(apiClient.get).mockResolvedValueOnce({
+      username: 'person-a', role: 'member', date_format: 'DD.MM.YYYY', language: null,
+    })
+    const auth = useAuthStore()
+    expect(auth.needsPreferences).toBe(false)
+
+    await auth.loadProfile()
+
+    expect(auth.needsPreferences).toBe(true)
+  })
+
+  it('does not ask when the profile cannot be loaded', async () => {
+    const { apiClient } = await import('@/api/client')
+    vi.mocked(apiClient.get).mockRejectedValueOnce(new Error('offline'))
+    const auth = useAuthStore()
+
+    await auth.loadProfile()
+
+    expect(auth.profileLoaded).toBe(false)
+    expect(auth.needsPreferences).toBe(false)
+  })
+
+  it('stores a chosen language with the account and switches to it', async () => {
+    const { apiClient } = await import('@/api/client')
+    const i18n = (await import('@/plugins/i18n')).default
+    vi.mocked(apiClient.patch).mockResolvedValueOnce({
+      username: 'person-a', role: 'member', date_format: 'DD.MM.YYYY', language: 'de',
+    })
+    const auth = useAuthStore()
+
+    await auth.setLanguage('de')
+
+    expect(apiClient.patch).toHaveBeenCalledWith('/api/users/me/language', { language: 'de' })
+    expect(auth.language).toBe('de')
+    expect(i18n.global.locale.value).toBe('de')
+  })
+
+  it('forgets the language when the session ends', async () => {
+    const { apiClient } = await import('@/api/client')
+    vi.mocked(apiClient.get).mockResolvedValueOnce({
+      username: 'person-a', role: 'member', date_format: 'DD.MM.YYYY', language: 'en',
+    })
+    vi.mocked(apiClient.post).mockResolvedValueOnce({})
+    const auth = useAuthStore()
+    await auth.loadProfile()
+
+    await auth.logout()
+
+    expect(auth.language).toBeNull()
+    expect(auth.profileLoaded).toBe(false)
+  })
+})
 
 describe('useUiStore', () => {
   beforeEach(() => {
@@ -556,6 +639,23 @@ describe('useWsStore', () => {
 
     window.removeEventListener(WS_ALERT_EVENT, onAlert)
     window.removeEventListener(WS_BLOCK_EVENT, onBlock)
+  })
+
+  it('the list of uploaded icons is re-dispatched with its payload', () => {
+    const store = useWsStore()
+    store.connect()
+    MockWs.instance!._open()
+    const received: CustomEvent[] = []
+    const onIcons = (e: Event) => received.push(e as CustomEvent)
+    window.addEventListener(WS_CUSTOM_ICONS_EVENT, onIcons)
+
+    MockWs.instance!._message({ type: 'custom_icons.changed', payload: { icons: [] } })
+
+    expect(received).toHaveLength(1)
+    expect(received[0].detail).toEqual({ icons: [] })
+    expect(store.lastEventAt).toBeNull()
+
+    window.removeEventListener(WS_CUSTOM_ICONS_EVENT, onIcons)
   })
 
   it('malformed JSON message is silently ignored', () => {

@@ -137,6 +137,71 @@ def test_record_key_is_none_after_revocation():
         assert s.record_key(token, db) is None
 
 
+def test_token_key_matches_the_record_key():
+    token = s.create_token(TEST_USER_ID)
+    with s.SessionLocal() as db:
+        assert s.token_key(token) == s.record_key(token, db)
+
+
+# ─── Ending the sessions of an account ──────────────────────────────────────
+
+def _other_account() -> uuid.UUID:
+    other_id = uuid.uuid4()
+    with s.SessionLocal() as db:
+        db.add(User(id=other_id, username="other-owner", password_hash="x"))
+        db.commit()
+    return other_id
+
+
+def test_revoke_user_sessions_keeps_the_given_session_only():
+    current = s.create_token(TEST_USER_ID)
+    second = s.create_token(TEST_USER_ID)
+    third = s.create_token(TEST_USER_ID)
+
+    with s.SessionLocal() as db:
+        keys = s.revoke_user_sessions(db, TEST_USER_ID, keep_token=current)
+        db.commit()
+
+    assert sorted(keys) == sorted([s.token_key(second), s.token_key(third)])
+    assert s.validate_token(current) == TEST_USER_ID
+    assert s.validate_token(second) is None
+    assert s.validate_token(third) is None
+
+
+def test_revoke_user_sessions_without_a_token_ends_them_all():
+    first = s.create_token(TEST_USER_ID)
+    second = s.create_token(TEST_USER_ID)
+
+    with s.SessionLocal() as db:
+        keys = s.revoke_user_sessions(db, TEST_USER_ID)
+        db.commit()
+
+    assert len(keys) == 2
+    assert s.validate_token(first) is None
+    assert s.validate_token(second) is None
+
+
+def test_revoke_user_sessions_leaves_other_accounts_alone():
+    other_id = _other_account()
+    own = s.create_token(TEST_USER_ID)
+    foreign = s.create_token(other_id)
+
+    with s.SessionLocal() as db:
+        keys = s.revoke_user_sessions(db, TEST_USER_ID)
+        db.commit()
+
+    assert keys == [s.token_key(own)]
+    assert s.validate_token(foreign) == other_id
+
+
+def test_revoke_user_sessions_waits_for_the_commit():
+    token = s.create_token(TEST_USER_ID)
+    with s.SessionLocal() as db:
+        s.revoke_user_sessions(db, TEST_USER_ID)
+        db.rollback()
+    assert s.validate_token(token) == TEST_USER_ID
+
+
 # ─── Uniqueness ──────────────────────────────────────────────────────────────
 
 def test_tokens_are_unique():

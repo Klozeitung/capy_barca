@@ -39,6 +39,17 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def token_key(token: str) -> str:
+    """
+    Return the key a session with *token* is stored under, whether or not
+    such a session exists.
+
+    The WebSocket manager records it per connection, so the connections of a
+    session can be closed when the session ends (see ``revoke_user_sessions``).
+    """
+    return _hash_token(token)
+
+
 def _now() -> datetime:
     """Return the current UTC time as a naive datetime for DB storage."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -156,6 +167,31 @@ def revoke_token(token: str) -> None:
         if record is not None:
             db.delete(record)
             db.commit()
+
+
+def revoke_user_sessions(
+    db: Session,
+    user_id: uuid.UUID,
+    *,
+    keep_token: str | None = None,
+) -> list[str]:
+    """
+    Delete every session of *user_id* except the one *keep_token* belongs to.
+
+    Used when a password changes: the account's own change keeps the session
+    it was made in, an admin's reset passes no token and ends them all. Rows
+    that reference a session by its key go with it, as on logout.
+
+    Runs in *db* and leaves the commit to the caller, so the sessions end in
+    the same transaction as the password change. Returns the keys of the
+    deleted sessions, for closing their WebSocket connections once the
+    transaction has committed.
+    """
+    statement = delete(SessionRecord).where(SessionRecord.user_id == user_id)
+    if keep_token:
+        statement = statement.where(SessionRecord.token != _hash_token(keep_token))
+    result = db.execute(statement.returning(SessionRecord.token))
+    return list(result.scalars())
 
 
 def purge_expired() -> int:

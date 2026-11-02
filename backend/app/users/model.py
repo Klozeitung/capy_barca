@@ -32,6 +32,10 @@ class User(Base):
         default="DD.MM.YYYY",
         server_default="DD.MM.YYYY",
     )
+    # Language the account uses the application in, "de" or "en". None until
+    # the account has chosen one: the web app then asks for language and date
+    # format after login. A check constraint (migration 0033) holds the values.
+    language = Column(Text, nullable=True, default=None)
     # IANA time zone the account works in, e.g. "Europe/Berlin". The web app
     # reports it from the browser after login; it decides how stored UTC
     # times are shown when a request names no zone of its own, and the local

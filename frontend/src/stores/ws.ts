@@ -9,7 +9,8 @@
  * (`capybarca:block-event`) so that the blocks store (and any future
  * consumer) can react without a direct import dependency on this store.
  * Messages about the user's own alerts (`alert.*`) are re-dispatched the same
- * way as `capybarca:alert-event`.
+ * way as `capybarca:alert-event`, the list of uploaded icons
+ * (`custom_icons.changed`) as `capybarca:custom-icons`.
  *
  * Reconnect behaviour
  * -------------------
@@ -66,6 +67,15 @@ export const WS_ALERT_EVENT = 'capybarca:alert-event'
 
 /** Prefix of the message types re-dispatched as ``WS_ALERT_EVENT``. */
 export const ALERT_MESSAGE_PREFIX = 'alert.'
+
+/**
+ * The message carrying the current list of uploaded icons after one was
+ * added or deleted. Its payload is re-dispatched as ``WS_CUSTOM_ICONS_EVENT``;
+ * the custom icons store handles it.
+ */
+export const CUSTOM_ICONS_MESSAGE = 'custom_icons.changed'
+
+export const WS_CUSTOM_ICONS_EVENT = 'capybarca:custom-icons'
 
 /** Dispatched when the connection is back after an interruption. */
 export const WS_RESYNC_EVENT = 'capybarca:ws-resync'
@@ -147,6 +157,10 @@ export const useWsStore = defineStore('ws', () => {
           new CustomEvent<AlertMessage>(WS_ALERT_EVENT, {
             detail: { type: msg.type, payload: msg.payload },
           }),
+        )
+      } else if (msg.type === CUSTOM_ICONS_MESSAGE) {
+        window.dispatchEvent(
+          new CustomEvent<unknown>(WS_CUSTOM_ICONS_EVENT, { detail: msg.payload }),
         )
       }
       // pong frames are silently consumed

@@ -748,3 +748,70 @@ def test_emit_user_message_outside_a_worker_thread_drops_with_a_warning(caplog):
 
     assert emit_user_message(user.id, "alert.changed", {}) == 0
     assert "emit_user_message was called outside a worker thread" in caplog.text
+
+
+# ─── Messages for every account ───────────────────────────────────────────────
+
+
+def test_installation_message_reaches_every_active_account():
+    from app.ws.broadcaster import emit_installation_message
+
+    first, second, inactive = _make_user(), _make_user("admin"), _make_user(is_active=False)
+
+    async def scenario():
+        sockets = [await _attach(first), await _attach(second), await _attach(inactive)]
+        queued = await anyio.to_thread.run_sync(
+            lambda: emit_installation_message("custom_icons.changed", {"icons": []}),
+        )
+        await manager.flush()
+        return queued, sockets
+
+    queued, (a, b, c) = anyio.run(scenario)
+    assert queued == 2
+    assert json.loads(a.sent[0]) == {"type": "custom_icons.changed", "payload": {"icons": []}}
+    assert b.sent == a.sent
+    assert c.sent == []
+
+
+def test_installation_message_without_connections_costs_no_lookup(count_queries):
+    from app.ws.broadcaster import emit_installation_message
+
+    with count_queries() as counter:
+        assert emit_installation_message("custom_icons.changed", {}) == 0
+    assert counter.count == 0
+
+
+def test_installation_message_outside_a_worker_thread_drops_with_a_warning(caplog):
+    from app.ws.broadcaster import emit_installation_message
+
+    asyncio.run(_attach(_make_user()))
+
+    assert emit_installation_message("custom_icons.changed", {}) == 0
+    assert "emit_installation_message was called outside a worker thread" in caplog.text
+
+
+# ─── Ending sessions ──────────────────────────────────────────────────────────
+
+
+def test_close_session_connections_from_a_worker_thread():
+    from app.ws.broadcaster import close_session_connections
+
+    user = _make_user()
+
+    async def scenario():
+        ended, kept = MockWebSocket(), MockWebSocket()
+        await manager.connect(ended, user.id, session_key="key-a")
+        await manager.connect(kept, user.id, session_key="key-b")
+        closed = await anyio.to_thread.run_sync(lambda: close_session_connections(["key-a"]))
+        return closed, ended, kept
+
+    closed, ended, kept = anyio.run(scenario)
+    assert closed == 1
+    assert manager.user_id_for(ended) is None
+    assert manager.user_id_for(kept) == user.id
+
+
+def test_close_session_connections_without_keys_does_nothing():
+    from app.ws.broadcaster import close_session_connections
+
+    assert close_session_connections([]) == 0

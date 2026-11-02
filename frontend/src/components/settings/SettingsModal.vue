@@ -8,7 +8,7 @@
  *
  * Sections
  * --------
- *  language – Language   (locale switcher, available to all users)
+ *  language – Language   (language of the account, available to all users)
  *  date     – Date       (display date format of the account)
  *  storage  – Storage    (capacity cards)
  *  downloads – Downloads (Android app for every account; backup script
@@ -16,15 +16,22 @@
  *  users    – Users      (admin-only: user management, print permission)
  *  api      – API        (admin-only: local AI and custom printer, see
  *                         ApiSettingsSection)
+ *  icons    – Icons      (admin-only: uploaded icons, see CustomIconsSection)
  */
 import { ref, computed, watch, onMounted } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useSettingsModal } from '@/composables/useSettingsModal'
-import { useAuthStore } from '@/stores/auth'
+import {
+  useAuthStore,
+  DATE_FORMAT_OPTIONS,
+  dateFormatSample,
+  type DateFormatToken,
+} from '@/stores/auth'
 import { apiClient, ApiError } from '@/api/client'
-import { setLocale } from '@/plugins/i18n'
+import type { SupportedLocale } from '@/plugins/i18n'
 import ApiSettingsSection from './ApiSettingsSection.vue'
+import CustomIconsSection from './CustomIconsSection.vue'
 
 const { t } = useI18n()
 const { closeSettings } = useSettingsModal()
@@ -66,42 +73,35 @@ const activeSection = ref<string>('language')
 
 // ── State: language ────────────────────────────────────────────────────────────
 
-type SupportedLocale = 'de' | 'en'
-
 const { locale } = useI18n()
 
 const currentLocale = ref<SupportedLocale>(locale.value as SupportedLocale)
+const languageError = ref(false)
 
 const LANGUAGES: { code: SupportedLocale; labelKey: string; flag: string }[] = [
   { code: 'de', labelKey: 'settings.languageDe', flag: '🇩🇪' },
   { code: 'en', labelKey: 'settings.languageEn', flag: '🇬🇧' },
 ]
 
-function selectLocale(code: SupportedLocale): void {
+/**
+ * Switch to *code* and store it with the account. The interface switches at
+ * once; a failed save is reported, and the account keeps its old language.
+ */
+async function selectLocale(code: SupportedLocale): Promise<void> {
   currentLocale.value = code
-  setLocale(code)
+  languageError.value = false
+  try {
+    await auth.setLanguage(code)
+  } catch {
+    languageError.value = true
+  }
 }
 
 // ── State: date format ─────────────────────────────────────────────────────────
 
-const DATE_FORMAT_OPTIONS = ['DD.MM.YYYY', 'MM.DD.YYYY', 'YYYY-MM-DD', 'YYYY-DD-MM'] as const
-type DateFormatToken = typeof DATE_FORMAT_OPTIONS[number]
-
 const dateFormatPref = ref<string>(auth.dateFormat)
 const dateFormatSaving = ref<DateFormatToken | null>(null)
 const dateFormatError = ref(false)
-
-/** Render a fixed sample date (31 Dec 2026) in the given token for preview. */
-function dateFormatSample(fmt: DateFormatToken): string {
-  const y = '2026', m = '12', d = '31'
-  switch (fmt) {
-    case 'MM.DD.YYYY': return `${m}.${d}.${y}`
-    case 'YYYY-MM-DD': return `${y}-${m}-${d}`
-    case 'YYYY-DD-MM': return `${y}-${d}-${m}`
-    case 'DD.MM.YYYY':
-    default:           return `${d}.${m}.${y}`
-  }
-}
 
 async function selectDateFormat(fmt: DateFormatToken): Promise<void> {
   if (fmt === dateFormatPref.value) return
@@ -472,6 +472,27 @@ function handleBackdropClick(e: MouseEvent): void {
               />
             </button>
 
+            <button
+              class="settings-nav__item"
+              :class="{
+                'settings-nav__item--active': activeSection === 'icons',
+                'settings-nav__item--locked': !auth.isAdmin,
+              }"
+              :disabled="!auth.isAdmin"
+              :title="!auth.isAdmin ? t('settings.usersAdminOnly') : undefined"
+              @click="auth.isAdmin && (activeSection = 'icons')"
+            >
+              <Icon icon="mdi:image-multiple-outline" width="15" height="15" class="settings-nav__icon" />
+              <span>{{ t('settings.icons') }}</span>
+              <Icon
+                v-if="!auth.isAdmin"
+                icon="mdi:lock-outline"
+                width="12"
+                height="12"
+                class="settings-nav__lock"
+              />
+            </button>
+
           </nav>
 
           <!-- Right: content -->
@@ -501,6 +522,9 @@ function handleBackdropClick(e: MouseEvent): void {
                   />
                 </button>
               </div>
+              <p v-if="languageError" class="settings-view__desc feedback--err">
+                {{ t('settings.languageSaveError') }}
+              </p>
             </template>
 
             <!-- ── Date format ──────────────────────────────────────────── -->
@@ -900,6 +924,12 @@ function handleBackdropClick(e: MouseEvent): void {
             <template v-else-if="activeSection === 'api'">
               <h2 class="settings-view__heading">{{ t('settings.api') }}</h2>
               <ApiSettingsSection />
+            </template>
+
+            <!-- ── Icons ───────────────────────────────────────────────── -->
+            <template v-else-if="activeSection === 'icons'">
+              <h2 class="settings-view__heading">{{ t('settings.icons') }}</h2>
+              <CustomIconsSection />
             </template>
 
           </div>

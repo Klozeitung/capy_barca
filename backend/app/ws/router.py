@@ -7,9 +7,11 @@ cookie already used by all REST endpoints, so no additional token passing
 is required.
 
 The account the cookie resolves to is handed to the connection manager and
-kept for the life of the connection. The cookie is only available during the
-handshake, and the broadcaster needs to know whose connection this is in order
-to decide which events it may receive.
+kept for the life of the connection, together with the key of the session.
+The cookie is only available during the handshake; the broadcaster needs to
+know whose connection this is in order to decide which events it may receive,
+and the manager needs the session to close the connection when the session
+ends (code 4401, as below).
 
 An absent or invalid session causes an immediate close with application
 code 4401 (chosen to mirror HTTP 401; codes ≥ 4000 are reserved for
@@ -29,7 +31,7 @@ from typing import Optional
 from fastapi import APIRouter, Cookie, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
-from app.session.session import validate_token
+from app.session.session import token_key, validate_token
 from app.ws.manager import manager
 
 ws_router = APIRouter(tags=["websocket"])
@@ -65,7 +67,7 @@ async def websocket_endpoint(
         await websocket.close(code=_CLOSE_UNAUTHORIZED)
         return
 
-    await manager.connect(websocket, user_id)
+    await manager.connect(websocket, user_id, session_key=token_key(session))
     try:
         while True:
             raw = await websocket.receive_text()

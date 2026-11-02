@@ -120,6 +120,15 @@ def test_ws_forgets_the_account_on_disconnect(authed_client):
     assert manager.user_ids() == set()
 
 
+def test_ws_registers_the_session_key(authed_client):
+    """The connection remembers its session, so ending the session can close it."""
+    from app.session.session import token_key
+
+    with authed_client.websocket_connect("/ws"):
+        keys = [c.session_key for c in manager._connections.values()]
+        assert keys == [token_key("test-token")]
+
+
 def test_ws_rejected_connection_is_not_registered(isolated_db):
     """A refused handshake must leave no trace in the registry."""
     with patch("app.ws.router.validate_token", return_value=None):
@@ -223,3 +232,44 @@ def test_value_change_event_names_the_entry_property_and_actor(isolated_db):
     assert schema_id in after["entries"][entry_id]
     assert after["actor"] == {"id": str(user_id), "name": "person-a"}
     assert "listing" not in after
+
+
+def test_password_change_closes_the_sockets_of_the_other_sessions(isolated_db):
+    """
+    Changing the password ends the account's other sessions, and their open
+    sockets are closed with 4401 so the clients sign out instead of
+    reconnecting. The socket of the session the change was made in stays.
+    """
+    import app.session.session as s
+    from app.users.model import User
+    from app.users.repository import hash_password
+
+    user_id = uuid.uuid4()
+    with s.SessionLocal() as db:
+        db.add(User(
+            id=user_id, username="person-a",
+            password_hash=hash_password("old-password-a"), role="member",
+        ))
+        db.commit()
+    current = s.create_token(user_id)
+    other = s.create_token(user_id)
+
+    with TestClient(app) as current_client, TestClient(app) as other_client:
+        current_client.cookies.set("session", current)
+        other_client.cookies.set("session", other)
+        with current_client.websocket_connect("/ws") as kept, \
+                other_client.websocket_connect("/ws") as ended:
+            response = current_client.patch(
+                "/api/users/me/password",
+                json={"current_password": "old-password-a", "new_password": "new-password-a"},
+            )
+            assert response.status_code == 204
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                ended.receive_text()
+            assert exc_info.value.code == 4401
+
+            kept.send_text(json.dumps({"type": "ping"}))
+            assert json.loads(kept.receive_text())["type"] == "pong"
+
+    assert s.validate_token(current) == user_id
+    assert s.validate_token(other) is None

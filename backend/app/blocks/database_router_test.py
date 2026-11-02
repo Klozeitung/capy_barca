@@ -506,7 +506,16 @@ def test_database_settings_belong_to_one_database(http_client):
     assert http_client.get(_settings_url(db_b)).json()["default_entry_icon"] is None
 
 
-@pytest.mark.parametrize("icon", ["", "star", "fa:star", "mdi:Star", "mdi:a b", "mdi:" + "a" * 130])
+def test_database_settings_take_a_custom_icon(http_client):
+    db_id = _create_database(http_client)
+    icon = "custom:3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+    assert _set_default_icon(http_client, db_id, icon)["default_entry_icon"] == icon
+
+
+@pytest.mark.parametrize(
+    "icon",
+    ["", "star", "fa:star", "mdi:Star", "mdi:a b", "mdi:" + "a" * 130, "custom:star"],
+)
 def test_database_settings_reject_something_that_is_not_an_icon(http_client, icon):
     db_id = _create_database(http_client)
     resp = http_client.put(_settings_url(db_id), json={"default_entry_icon": icon})

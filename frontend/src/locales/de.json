@@ -252,7 +252,8 @@
     "usersCreateTaken": "Benutzername bereits vergeben.",
     "overview": "Übersicht",
     "language": "Sprache",
-    "languageDesc": "Anzeigesprache der Benutzeroberfläche auswählen.",
+    "languageDesc": "Anzeigesprache der Benutzeroberfläche. Sie wird mit deinem Konto gespeichert und gilt in jedem Browser.",
+    "languageSaveError": "Die Sprache konnte nicht im Konto gespeichert werden. Sie gilt vorerst nur in diesem Browser.",
     "languageDe": "Deutsch",
     "languageEn": "Englisch",
     "date": "Datum",
@@ -336,7 +337,20 @@
     "apiTestHint": "Speichert die Einstellungen und sendet einen kurzen Testtext. Grün nur bei Antwort 200.",
     "apiTestStatus": "Antwort {status}",
     "apiTestNoAnswer": "Keine Antwort: {reason}",
-    "apiTestNoPrinter": "Zuerst eine URL eintragen."
+    "apiTestNoPrinter": "Zuerst eine URL eintragen.",
+    "icons": "Icons",
+    "iconsDesc": "Eigene Bilder als Icons. Alle Benutzer können sie überall auswählen, wo es Icons gibt.",
+    "iconsUpload": "Bilder hochladen",
+    "iconsHint": "PNG, JPEG, GIF oder WebP, höchstens 512 KB. Quadratische Bilder wirken am besten.",
+    "iconsUploaded": "Ein Icon hochgeladen. | {count} Icons hochgeladen.",
+    "iconsTooLarge": "Das Bild ist größer als 512 KB.",
+    "iconsWrongType": "Nur PNG, JPEG, GIF und WebP können Icons sein.",
+    "iconsUploadError": "Das Hochladen ist fehlgeschlagen.",
+    "iconsNone": "Noch keine eigenen Icons.",
+    "iconsDelete": "Icon löschen",
+    "iconsDeleteConfirm": "Zum Löschen erneut klicken",
+    "iconsDeleteHint": "Wird ein Icon gelöscht, bekommen Einträge das Standardicon ihrer Datenbank, alle anderen Stellen verlieren es.",
+    "iconsDeleteError": "Das Icon konnte nicht gelöscht werden."
   },
   "pageSettings": {
     "title": "Seiteneinstellungen",
@@ -1119,6 +1133,7 @@
     "filesSize": "Der Server begrenzt die Größe einzelner Uploads. Überschreitet eine Datei das Limit, meldet der Block das direkt beim Hochladen.",
     "filesTypes": "Bild-, Video-, Audio- und PDF-Blöcke nehmen nur die jeweils passenden Formate an. SVG ist ausgenommen, weil eine SVG-Datei Skripte enthalten kann und im Block direkt dargestellt würde.",
     "filesDownload": "Datei- und Ablage-Blöcke nehmen beliebige Dateien. Diese werden immer heruntergeladen statt im Browser geöffnet.",
+    "filesIcons": "Administratoren laden unter Einstellungen → Icons eigene Bilder als Icons hoch (PNG, JPEG, GIF oder WebP). Sie stehen allen im Icon-Auswahlfeld unter „Eigene“ zur Verfügung und lassen sich dort auch per Namen suchen.",
     "title": "Hilfe",
     "sectionBlocks": "Block-Typen",
     "sectionShortcuts": "Tastaturkürzel",
@@ -1283,7 +1298,8 @@
     "clear": "Symbol entfernen",
     "noResults": "Keine Ergebnisse.",
     "recent": "Zuletzt verwendet",
-    "common": "Häufig"
+    "common": "Häufig",
+    "uploaded": "Eigene"
   },
   "readOnly": {
     "badge": "Nur Lesezugriff",
@@ -1318,5 +1334,12 @@
       "exactHint": "Jede Erinnerung behält ihren genauen Abstand zum Datum.",
       "failed": "Die Erinnerungen konnten nicht verschoben werden. Versuche es erneut oder behalte sie bei."
     }
+  },
+  "preferences": {
+    "title": "Willkommen",
+    "text": "Wähle Sprache und Datumsformat für dein Konto.",
+    "hint": "Beides lässt sich später in den Einstellungen ändern.",
+    "save": "Speichern",
+    "failed": "Speichern fehlgeschlagen. Bitte erneut versuchen."
   }
 }

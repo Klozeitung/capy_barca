@@ -113,6 +113,15 @@ def update_date_format(db: Session, user: User, new_format: str) -> None:
     db.flush()
 
 
+def update_language(db: Session, user: User, language: str) -> None:
+    """
+    Set the language *user* uses the application in (validated by the
+    router). The caller must commit the session after this call.
+    """
+    user.language = language
+    db.flush()
+
+
 def update_timezone(db: Session, user: User, zone_name: str) -> None:
     """
     Set the IANA time zone of *user* (validated by the router). The caller

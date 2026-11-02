@@ -100,3 +100,52 @@ describe('SettingsModal downloads', () => {
     expect(section('settings.androidTitle')?.textContent).toContain('settings.androidNone')
   })
 })
+
+describe('SettingsModal language', () => {
+  it('stores a chosen language with the account', async () => {
+    vi.mocked(apiClient.patch).mockResolvedValue({
+      username: 'Person A', role: 'member', date_format: 'DD.MM.YYYY', language: 'de',
+    })
+    await open('member', null)
+    const nav = [...document.body.querySelectorAll<HTMLButtonElement>('.settings-nav__item')]
+    nav.find((b) => b.textContent?.includes('settings.language'))!.click()
+    await nextTick()
+
+    const german = [...document.body.querySelectorAll<HTMLButtonElement>('.lang-option')]
+      .find((b) => b.textContent?.includes('settings.languageDe'))!
+    german.click()
+    for (let i = 0; i < 3; i++) await nextTick()
+
+    expect(apiClient.patch).toHaveBeenCalledWith('/api/users/me/language', { language: 'de' })
+    expect(useAuthStore().language).toBe('de')
+    expect(document.body.querySelector('.feedback--err')).toBeNull()
+  })
+
+  it('reports a language that could not be stored', async () => {
+    vi.mocked(apiClient.patch).mockRejectedValue(new Error('offline'))
+    await open('member', null)
+    const nav = [...document.body.querySelectorAll<HTMLButtonElement>('.settings-nav__item')]
+    nav.find((b) => b.textContent?.includes('settings.language'))!.click()
+    await nextTick()
+
+    ;[...document.body.querySelectorAll<HTMLButtonElement>('.lang-option')][0].click()
+    for (let i = 0; i < 4; i++) {
+      await Promise.resolve()
+      await nextTick()
+    }
+
+    expect(document.body.querySelector('.feedback--err')?.textContent).toContain('settings.languageSaveError')
+  })
+
+  it('offers the icons tab to admins only', async () => {
+    await open('member', null)
+    const iconsTab = () => [...document.body.querySelectorAll<HTMLButtonElement>('.settings-nav__item')]
+      .find((b) => b.textContent?.includes('settings.icons'))!
+    expect(iconsTab().disabled).toBe(true)
+    app?.unmount()
+    host?.remove()
+
+    await open('admin', null)
+    expect(iconsTab().disabled).toBe(false)
+  })
+})
