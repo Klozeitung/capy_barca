@@ -106,7 +106,7 @@ import ViewSettingsModal from './properties/ViewSettingsModal.vue'
 import CalendarView from './CalendarView.vue'
 import AgendaView from './AgendaView.vue'
 import IconPicker from '@/components/IconPicker.vue'
-import { getSchemaIcon } from '@/stores/propertyTypes'
+import { getSchemaIcon, isCalendarDateSchema } from '@/stores/propertyTypes'
 import CheckboxCell from './properties/cells/CheckboxCell.vue'
 import SelectCell from './properties/cells/SelectCell.vue'
 import MultiSelectCell from './properties/cells/MultiSelectCell.vue'
@@ -1445,7 +1445,8 @@ async function toggleWrapColumn(colKey: string): Promise<void> {
                       <button
                         v-else
                         class="db__th-btn db__th-btn--delete"
-                        :title="t('db.deleteColumn')"
+                        :disabled="isCalendarDateSchema(col.schema)"
+                        :title="isCalendarDateSchema(col.schema) ? t('db.settings.calendarDateLocked') : t('db.deleteColumn')"
                         @click.stop="promptDeleteSchema(col.key)"
                       >
                         <Icon icon="mdi:trash-can-outline" width="13" height="13" />

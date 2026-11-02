@@ -15,9 +15,10 @@ from typing import AsyncIterator, Optional
 
 import anyio
 import anyio.to_thread
-from fastapi import Cookie, Depends, HTTPException
+from fastapi import Cookie, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from app import timezones
 from app.blocks import entry_changes
 from app.database.database import POOL_CAPACITY, SessionLocal
 from app.session.session import validate_token
@@ -85,16 +86,21 @@ def configure_worker_threads() -> int:
     return int(limiter.total_tokens)
 
 
-async def get_db() -> AsyncIterator[Session]:
+async def get_db(request: Request = None) -> AsyncIterator[Session]:
     """
     Yield a database session and close it after the request.
 
     Waits for one of the ``REQUEST_SLOTS`` first, on the event loop. The close
     runs in a thread of its own outside the shared pool, so returning the
     connection never waits for a thread either.
+
+    The session remembers the zone the request names in ``X-Timezone``, which
+    decides how its times of day are read and shown (see app.timezones).
     """
     async with _request_gate():
         db = SessionLocal()
+        if request is not None:
+            timezones.set_header_zone(db, request.headers.get(timezones.TIMEZONE_HEADER))
         try:
             yield db
         finally:
@@ -139,7 +145,9 @@ def get_current_user(
     Dependency that resolves the session cookie to a full User object.
 
     The user is also remembered on the request's database session, so the
-    change events the request sends can say who made the change.
+    change events the request sends can say who made the change. So is the
+    account's time zone, which applies when the request names none (see
+    app.timezones).
 
     Raises
     ------
@@ -151,6 +159,7 @@ def get_current_user(
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="Not authenticated")
     entry_changes.set_actor(db, user)
+    timezones.set_user_zone(db, user)
     return user
 
 

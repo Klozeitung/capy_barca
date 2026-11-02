@@ -7,6 +7,11 @@ alembic>=1.13.0,<2
 bcrypt>=4.0.0,<6
 # Encrypts secret setting values (keys, header values) at rest.
 cryptography>=43.0.0,<51
+# IANA time zone data for zoneinfo; the slim base image ships none (see
+# app/timezones.py).
+# The version is the release year of the data; newer data is always wanted,
+# so the bound only guards against a scheme change.
+tzdata>=2024.1,<2100
 fastapi>=0.115.0,<1.0
 httpx>=0.27.0,<1.0
 python-multipart>=0.0.9,<0.1

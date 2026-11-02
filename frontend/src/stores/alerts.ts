@@ -14,6 +14,11 @@
  * server also sends ``alert.changed`` with the cell value to the user's other
  * connections, which apply it the same way.
  *
+ * Moved dates
+ * -----------
+ * ``shiftAlerts`` moves the user's alerts on an entry along with its moved
+ * calendar date, after ``AlertShiftDialog`` asked how.
+ *
  * Notifications
  * -------------
  * When an alert falls due the server sends ``alert.fired``. It becomes a
@@ -34,6 +39,7 @@ import {
   parseAlerts,
   type AlertItem,
   type AlertNotification,
+  type CalendarDateMove,
 } from '@/composables/alertValue'
 
 /** i18n keys of an alert notice, with and without a title of its own. */
@@ -101,6 +107,23 @@ export const useAlertsStore = defineStore('alerts', () => {
     await apiClient.delete<void>(`/api/alerts/${alert.id}`)
     _writeCell(databaseId, alert.block_id, alert.schema_id, current.filter((a) => a.id !== alert.id))
     useNoticesStore().dismissTag(alertTag(alert.id))
+  }
+
+  /**
+   * Move the user's alerts on *move*'s entry along with its moved date:
+   * ``day`` keeps each alert's time of day and distance in days, ``exact``
+   * its exact distance. The server marks alerts that end up in the past as
+   * delivered without a notice.
+   */
+  async function shiftAlerts(move: CalendarDateMove, mode: 'day' | 'exact'): Promise<void> {
+    const alerts = await apiClient.post<AlertItem[]>('/api/alerts/shift', {
+      block_id: move.entryId,
+      old_start: move.oldStart,
+      new_start: move.newStart,
+      mode,
+    })
+    const schema = useDatabaseStore().getSchemas(move.databaseId).find((s) => s.type === 'alerts')
+    if (schema) _writeCell(move.databaseId, move.entryId, schema.id, alerts)
   }
 
   /** Close a delivered alert on the server; failures are left for the next load. */
@@ -192,6 +215,7 @@ export const useAlertsStore = defineStore('alerts', () => {
     createAlert,
     updateAlert,
     deleteAlert,
+    shiftAlerts,
     dismissAlert,
     notify,
     loadPending,

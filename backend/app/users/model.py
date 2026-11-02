@@ -32,6 +32,12 @@ class User(Base):
         default="DD.MM.YYYY",
         server_default="DD.MM.YYYY",
     )
+    # IANA time zone the account works in, e.g. "Europe/Berlin". The web app
+    # reports it from the browser after login; it decides how stored UTC
+    # times are shown when a request names no zone of its own, and the local
+    # time of the account's calendar alerts. None means the installation's
+    # zone (see app.timezones).
+    timezone = Column(Text, nullable=True, default=None)
     # The icons this user picked most recently, newest first, at most
     # ``RECENT_ICONS_LIMIT`` of them: a list of {"icon": str, "used_at": ISO
     # 8601 timestamp}. Maintained by ``users.repository.record_icon_use``.

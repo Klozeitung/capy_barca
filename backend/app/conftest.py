@@ -87,6 +87,11 @@ os.environ.setdefault("SECRET_KEY", "test-suite-signing-secret-not-for-productio
 # passes against the data of whatever test is running. Tests drive it directly.
 os.environ["ALERT_SCHEDULER_ENABLED"] = "false"
 
+# Times are read and shown in the installation's zone when a request names
+# none. The suite fixes it to UTC, whatever the container was configured with,
+# so results do not depend on the machine; tests about zones set their own.
+os.environ["CB_TIMEZONE"] = "UTC"
+
 # Application modules read DATABASE_URL at import time, so they are imported
 # only after it has been redirected above.
 from sqlalchemy import MetaData, create_engine, event, text  # noqa: E402

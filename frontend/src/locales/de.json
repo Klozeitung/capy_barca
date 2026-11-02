@@ -544,7 +544,8 @@
       "keyingBlockedByNuance": "Nicht verfügbar: Eine nuancierte Relation kann nicht zusätzlich gekeyt werden.",
       "keyingBlockedByMirror": "Nicht verfügbar: Die Gegenseite hat eine Timeline oder Nuancen.",
       "keyingBlocksOthers": "Nicht verfügbar, solange diese Relation gekeyt ist.",
-      "keyingMirrorKeyed": "Nicht verfügbar: Die Gegenseite ist gekeyt. Eine gekeyte Relation lässt auf der anderen Seite nur vanilla oder gekeyt zu."
+      "keyingMirrorKeyed": "Nicht verfügbar: Die Gegenseite ist gekeyt. Eine gekeyte Relation lässt auf der anderen Seite nur vanilla oder gekeyt zu.",
+      "calendarDateLocked": "Diese Datumseigenschaft wird von einer Kalenderansicht verwendet. Solange der Kalender sie nutzt, kann sie nicht gelöscht, umgewandelt oder mit einer Zeitleiste versehen werden."
     },
     "formulaHelp": {
       "prop": {
@@ -754,7 +755,6 @@
       "sectionProperties": "Eigenschaften verwalten",
       "viewTypePlanned": "Geplant",
       "calendarDateProperty": "Datumseigenschaft",
-      "calendarDatePropertyNone": "— Datumseigenschaft wählen —",
       "calendarNoDateSchemas": "Keine Datumseigenschaften in dieser Datenbank gefunden.",
       "calendarCreateDateProp": "Datumseigenschaft anlegen",
       "calendarCreateDateName": "Datum",
@@ -803,7 +803,9 @@
       "defaultEntryIconButton": "Standard-Icon wählen",
       "defaultEntryIconHint": "Neue Einträge erhalten dieses Icon. Eine angewendete Vorlage mit eigenem Icon hat Vorrang.",
       "defaultEntryIconOwnerOnly": "Nur der Eigentümer der Datenbank oder ein Administrator kann das Standard-Icon festlegen.",
-      "databaseSettingsError": "Die Datenbankeinstellungen konnten nicht geladen oder gespeichert werden."
+      "databaseSettingsError": "Die Datenbankeinstellungen konnten nicht geladen oder gespeichert werden.",
+      "calendarTimelineHint": "Datumseigenschaften mit Zeitleiste können nicht für einen Kalender verwendet werden.",
+      "calendarAlertsHint": "Jeder Eintrag mit Datum im Kalender erhält eine Benachrichtigung für seinen Besitzer: 30 Minuten vor einer Uhrzeit, bei ganztägigen Daten um 18:00 Uhr am Vortag."
     },
     "relation": {
       "addLink": "Verknüpfung hinzufügen",
@@ -1140,7 +1142,7 @@
     "databasesGroups": "In der Eigenschaften-Seitenleiste lassen sich Properties zu Gruppen zusammenfassen. Eigene Gruppen kannst du ein- und ausklappen, per Doppelklick umbenennen und über den Ziehpunkt rechts im Gruppenkopf per Drag-and-drop neu anordnen. Die Standardgruppe bleibt immer oben.",
     "databasesFormulas": "Formel-Eigenschaften berechnen einen Wert aus anderen Eigenschaften desselben Eintrags, referenziert mit prop('Name'). Die Syntaxreferenz in den Eigenschaftseinstellungen listet alle Funktionen und Operatoren. Beim Umbenennen einer Eigenschaft funktionieren die Formeln, die sie verwenden, weiter.",
     "databasesKeying": "Eine Relations-Eigenschaft kann gekeyt werden: Wähle eine Eigenschaft der Zieldatenbank, nach der die Einträge der Relation sortiert werden. Der gewählte Wert wird neben jedem Eintrag angezeigt.",
-    "databasesAlerts": "Eine Eigenschaft vom Typ Erinnerungen enthält persönliche Erinnerungen mit Datum, Uhrzeit und optionalem Titel. Jede Datenbank kann eine davon haben. Jede Person sieht nur ihre eigenen Erinnerungen. Wird eine Erinnerung fällig, erscheint in jeder offenen Sitzung ein Hinweis, der bis zum Schließen stehen bleibt; ein Klick öffnet den Eintrag. Verpasste Erinnerungen erscheinen bei der nächsten Anmeldung, höchstens sieben Tage nach ihrem Zeitpunkt.",
+    "databasesAlerts": "Eine Eigenschaft vom Typ Erinnerungen enthält persönliche Erinnerungen mit Datum, Uhrzeit und optionalem Titel. Jede Datenbank kann eine davon haben. Jede Person sieht nur ihre eigenen Erinnerungen. Wird eine Erinnerung fällig, erscheint in jeder offenen Sitzung ein Hinweis, der bis zum Schließen stehen bleibt; ein Klick öffnet den Eintrag. Verpasste Erinnerungen erscheinen bei der nächsten Anmeldung, höchstens sieben Tage nach ihrem Zeitpunkt. In einer Datenbank mit Kalender wird der Besitzer jedes Eintrags zusätzlich an dessen Datum erinnert: 30 Minuten vor einer Uhrzeit, bei ganztägigen Daten um 18:00 Uhr am Vortag. Wird ein Datum verschoben, auf dem du Erinnerungen hast, kannst du sie mitverschieben.",
     "databasesViewDescription": "Jede Ansicht kann eine eigene Beschreibung haben: Klicke in den Bereich unter der Toolbar, um sie zu schreiben, und klicke daneben, um sie zu speichern. Sie wird mit exportiert — im PDF unter dem Titel, in CSV und Excel im Kopf der Name-Spalte (bzw. der ersten Spalte, solange die Name-Spalte ausgeblendet ist).",
     "databasesCollaboration": "Änderungen anderer Benutzer erscheinen sofort. Ändert jemand einen Wert, den du gerade bearbeitest oder in der letzten Minute geändert hast, gilt die spätere Änderung, und du erhältst einen Hinweis. War die Verbindung unterbrochen, werden offene Seiten und Ansichten danach neu geladen. Solange ein Feld einen Ladekreis zeigt, wird dein Wert gespeichert; bis die Antwort des Servers da ist, nimmt das Feld keine weitere Eingabe an. Verlässt du die Seite in diesem Moment, fragt der Browser nach.",
     "sectionPrint": "Schnelldruck",
@@ -1290,6 +1292,18 @@
       "invalid": "Die Erinnerung konnte nicht gespeichert werden. Bitte Zeitpunkt und Titel prüfen.",
       "noAccess": "Für diesen Eintrag kannst du keine Erinnerungen setzen.",
       "saveFailed": "Die Erinnerung konnte nicht gespeichert werden."
+    },
+    "calendarHint": "Diese Datenbank hat einen Kalender. Neben den hier aufgeführten Erinnerungen wird der Besitzer jedes Eintrags automatisch an dessen Datum erinnert: 30 Minuten vor einer Uhrzeit, bei ganztägigen Daten um 18:00 Uhr am Vortag.",
+    "shift": {
+      "title": "Angelegte Benachrichtigungen verschieben?",
+      "text": "Das Datum dieses Eintrags hat sich geändert. Du hast Erinnerungen darauf angelegt.",
+      "keep": "Beibehalten",
+      "keepHint": "Die Erinnerungen bleiben zu ihren Zeitpunkten.",
+      "day": "Taggenau verschieben",
+      "dayHint": "Jede Erinnerung behält ihre Uhrzeit und wandert um so viele Tage wie das Datum.",
+      "exact": "Exakt verschieben",
+      "exactHint": "Jede Erinnerung behält ihren genauen Abstand zum Datum.",
+      "failed": "Die Erinnerungen konnten nicht verschoben werden. Versuche es erneut oder behalte sie bei."
     }
   }
 }

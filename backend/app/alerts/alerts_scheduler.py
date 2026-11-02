@@ -27,6 +27,10 @@ recorded in ``delivered``; a delivered alert stays pending until the account
 dismisses it, and a client that connects later collects it from
 ``GET /api/alerts/pending``.
 
+System alerts of repeating calendar dates get their next occurrence once
+one has fired (``app.alerts.system_alerts.sync_entry``). At startup the
+system alerts are reconciled before the first pass.
+
 Disabling
 ---------
 ``ALERT_SCHEDULER_ENABLED=false`` keeps the loop from starting. The test suite
@@ -141,9 +145,25 @@ def run_pass(db: Session, now: datetime) -> list[tuple[uuid.UUID, dict[str, Any]
                 alert.delivered = True
                 deliveries.append((alert.user_id, notification_payload(alert, block)))
         db.commit()
+        _rearm_system_alerts(db, claimed, now)
         if len(claimed) < repo.CLAIM_BATCH:
             break
     return deliveries
+
+
+def _rearm_system_alerts(db: Session, claimed: list[Alert], now: datetime) -> None:
+    """Set the next occurrence's alert for every system alert that just fired."""
+    from app.alerts import system_alerts
+    from app.alerts.alerts_models import KIND_SYSTEM
+    from app.blocks.models import PropertySchema
+
+    keys = {(a.block_id, a.schema_id) for a in claimed if a.kind == KIND_SYSTEM}
+    for block_id, schema_id in keys:
+        schema = db.get(PropertySchema, schema_id)
+        if schema is not None:
+            system_alerts.sync_entry(db, block_id, schema, now)
+    if keys:
+        db.commit()
 
 
 def _pass_in_own_session(now: datetime) -> list[tuple[uuid.UUID, dict[str, Any]]]:
@@ -176,7 +196,13 @@ def seconds_until_next_tick(now: datetime) -> float:
 
 
 async def run_forever() -> None:
-    """Run a pass at once and then once a minute until cancelled."""
+    """
+    Reconcile the system alerts, then run a pass at once and once a minute
+    until cancelled.
+    """
+    from app.alerts import system_alerts
+
+    await anyio.to_thread.run_sync(system_alerts.reconcile_in_own_session)
     while True:
         try:
             await tick()

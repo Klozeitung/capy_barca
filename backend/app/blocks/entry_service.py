@@ -16,7 +16,8 @@ the same transaction:
    ``sub_item`` list of the old and new parent of a ``parent_item``, the
    ``parent_item`` of the children of a ``sub_item``. Entry templates write
    no mirrors; they are no participant in any relation graph.
-3. ``last_edited_*`` is refreshed.
+3. ``last_edited_*`` is refreshed. Times of day of a date value are stored
+   in UTC, read in the zone of the request (see ``app.timezones``).
 4. What is computed from the changed values is brought up to date: the
    entry's own formulas and rollups, then those of other entries that read a
    changed property through a relation linking this entry, and the same for
@@ -33,6 +34,7 @@ from typing import Any, Optional
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from app import timezones
 from app.blocks import relation_lock
 from app.blocks import repository as repo
 from app.blocks import service
@@ -369,6 +371,9 @@ def write_value(
         partner_schema = resolve_partner_schema(repo.list_schemas(db, database_id), schema)
 
     stored_value = build_stored_value(schema, value)
+    if schema.type == "date":
+        # Times of day arrive in the zone of the request and are stored in UTC.
+        stored_value = timezones.date_value_to_utc(stored_value, timezones.zone_of(db))
     repo.upsert_value(db, page_id=entry_id, schema_id=schema.id, value=stored_value)
 
     result = ValueWrite(affected_db_ids=[])

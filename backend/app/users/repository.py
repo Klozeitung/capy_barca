@@ -113,6 +113,15 @@ def update_date_format(db: Session, user: User, new_format: str) -> None:
     db.flush()
 
 
+def update_timezone(db: Session, user: User, zone_name: str) -> None:
+    """
+    Set the IANA time zone of *user* (validated by the router). The caller
+    must commit the session after this call.
+    """
+    user.timezone = zone_name
+    db.flush()
+
+
 def record_icon_use(db: Session, user: User, icon: str, used_at: datetime) -> list[dict]:
     """
     Note that *user* picked *icon* at *used_at* and return the updated list.

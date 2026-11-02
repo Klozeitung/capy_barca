@@ -596,11 +596,15 @@ def _to_datetime(val: Any, label: str) -> _Datetime:
         return val if val.tzinfo is not None else val.replace(tzinfo=_tz.utc)
     if isinstance(val, str):
         clean = val.strip()
-        # Full ISO with optional Z / offset.
+        # A time stored in UTC ends in "Z" (see app.timezones). Formulas work
+        # in the installation's local time, so it is turned into that first.
+        if clean.endswith("Z"):
+            clean = _local_wall_clock(clean)
+        # Full ISO with optional offset.
         # fromisoformat("2024-06-15") returns a naive datetime for date-only
         # strings, so we normalise to UTC when tzinfo is absent.
         try:
-            dt = _Datetime.fromisoformat(clean.replace("Z", "+00:00"))
+            dt = _Datetime.fromisoformat(clean)
             return dt if dt.tzinfo is not None else dt.replace(tzinfo=_tz.utc)
         except ValueError:
             pass
@@ -617,6 +621,30 @@ def _to_datetime(val: Any, label: str) -> _Datetime:
             pass
         raise FormulaError(f"{label}: cannot parse date string '{clean}'")
     raise FormulaError(f"{label}: expected a date, got {type(val).__name__}")
+
+
+def _installation_zone():
+    """The installation's zone; imported late so the engine stays importable alone."""
+    from app.timezones import installation_zone
+
+    return installation_zone()
+
+
+def _local_wall_clock(value: str) -> str:
+    """A UTC time (``…Z``) as wall-clock time in the installation's zone."""
+    from app.timezones import to_floating
+
+    return to_floating(value, _installation_zone())
+
+
+def _now_local() -> _Datetime:
+    """
+    The current wall-clock time in the installation's zone.
+
+    The engine keeps every value as wall-clock time marked UTC, so ``now()``
+    and ``today()`` agree with the dates the user entered, which are local.
+    """
+    return _Datetime.now(_installation_zone()).replace(tzinfo=_tz.utc)
 
 
 def _month_add(dt: _Datetime, months: int) -> _Datetime:
@@ -1373,14 +1401,14 @@ def _fn_at(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
 def _fn_now(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
     if len(args) != 0:
         raise FormulaError("now() takes no arguments")
-    return _Datetime.now(_tz.utc)
+    return _now_local()
 
 
 @_function("today", "date", "today()", "today()")
 def _fn_today(args: list[Any], ctx: dict[str, FormulaValue]) -> FormulaValue:
     if len(args) != 0:
         raise FormulaError("today() takes no arguments")
-    return _Datetime.now(_tz.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    return _now_local().replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 @_function("dateStart", "date", "dateStart(date)", "dateStart()")

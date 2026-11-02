@@ -5,7 +5,7 @@ import { useAlertsStore, alertTag, ALERT_NOTICE_KEY, ALERT_NOTICE_UNTITLED_KEY }
 import { useNoticesStore } from '@/stores/notices'
 import { useDatabaseStore } from '@/stores/database'
 import { WS_ALERT_EVENT, WS_RESYNC_EVENT } from '@/stores/ws'
-import type { AlertItem, AlertNotification } from '@/composables/alertValue'
+import type { AlertItem, AlertNotification, CalendarDateMove } from '@/composables/alertValue'
 
 function alert(id: string, overrides: Partial<AlertNotification> = {}): AlertNotification {
   return {
@@ -135,4 +135,26 @@ describe('useAlertsStore', () => {
 
     expect(useNoticesStore().notices).toHaveLength(0)
   })
+
+  it('shiftAlerts posts the move and rebuilds the cell from the answer', async () => {
+    const moved = alert('a', { at: '2045-07-18T09:30:00Z' })
+    const post = vi.spyOn(apiClient, 'post').mockResolvedValue([moved])
+    const db = useDatabaseStore()
+    vi.spyOn(db, 'getSchemas').mockReturnValue([
+      { id: 'schema-a', database_id: 'db-a', name: 'Alerts', type: 'alerts', config: {}, position: 1 },
+    ] as never)
+    const setCell = vi.spyOn(db, 'setAlertsValue').mockImplementation(() => {})
+    const move: CalendarDateMove = {
+      databaseId: 'db-a', entryId: 'entry-a',
+      oldStart: '2045-07-16T10:00', newStart: '2045-07-17T10:00',
+    }
+
+    await useAlertsStore().shiftAlerts(move, 'day')
+
+    expect(post).toHaveBeenCalledWith('/api/alerts/shift', {
+      block_id: 'entry-a', old_start: '2045-07-16T10:00', new_start: '2045-07-17T10:00', mode: 'day',
+    })
+    expect(setCell).toHaveBeenCalledWith('db-a', 'entry-a', 'schema-a', { alerts: [moved] })
+  })
 })
+

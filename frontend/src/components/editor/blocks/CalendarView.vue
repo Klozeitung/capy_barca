@@ -67,6 +67,7 @@ import IconPicker from '@/components/IconPicker.vue'
 import CalendarFastEditModal from './CalendarFastEditModal.vue'
 import RecurrenceActionDialog from './RecurrenceActionDialog.vue'
 import { chipStyle } from '@/composables/calendarColors'
+import { formatDateToIso } from '@/composables/dateValue'
 import {
   expandEntry,
   isRecurringEntry,
@@ -657,16 +658,27 @@ interface IcsEvent {
 }
 
 /**
- * Convert an iCalendar date/datetime value to an ISO string.
- *   '20240315'         → '2024-03-15'
- *   '20240315T143000Z' → '2024-03-15T14:30'
- *   '20240315T143000'  → '2024-03-15T14:30'
+ * Convert an iCalendar date/datetime value to the local ISO string the date
+ * cells use. Times in UTC (trailing 'Z') are turned into local wall-clock
+ * time; the server stores them as UTC again from the request's time zone.
+ *   '20000728'         → '2000-07-28'
+ *   '20000728T143000'  → '2000-07-28T14:30'
+ *   '20000728T143000Z' → '2000-07-28T14:30' in UTC, shown in local time
  */
 function icsValueToIso(val: string): string {
-  const clean = val.replace(/Z$/, '').trim()
+  const trimmed = val.trim()
+  const isUtc = /Z$/i.test(trimmed)
+  const clean = trimmed.replace(/Z$/i, '')
   if (clean.includes('T')) {
     const d = clean.slice(0, 8)
     const t = clean.slice(9, 13)   // skip the 'T' at index 8
+    if (isUtc) {
+      const instant = new Date(Date.UTC(
+        Number(d.slice(0, 4)), Number(d.slice(4, 6)) - 1, Number(d.slice(6, 8)),
+        Number(t.slice(0, 2)), Number(t.slice(2, 4)),
+      ))
+      if (!Number.isNaN(instant.getTime())) return formatDateToIso(instant, true)
+    }
     return `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}T${t.slice(0,2)}:${t.slice(2,4)}`
   }
   return `${clean.slice(0,4)}-${clean.slice(4,6)}-${clean.slice(6,8)}`

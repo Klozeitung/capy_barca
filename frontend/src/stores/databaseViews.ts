@@ -35,7 +35,23 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { apiClient } from '@/api/client'
+import i18n from '@/plugins/i18n'
 import type { DatabaseView, ViewType } from '@/stores/database'
+
+/**
+ * *payload* with the name the server gives a date property it creates for a
+ * calendar view that has none it can use, in the user's language. Only a
+ * calendar view (*viewType* after the change) whose type or settings change
+ * can make the server create one, so other payloads go out unchanged.
+ */
+export function withCalendarDateName<T extends Record<string, unknown>>(
+  payload: T,
+  viewType: string | undefined,
+): T & { calendar_date_name?: string } {
+  const relevant = viewType === 'calendar' && ('view_type' in payload || 'settings' in payload)
+  if (!relevant) return payload
+  return { ...payload, calendar_date_name: i18n.global.t('db.viewSettings.calendarCreateDateName') }
+}
 
 // ── API shapes ────────────────────────────────────────────────────────────────
 
@@ -289,10 +305,11 @@ export const useDatabaseViewsStore = defineStore('databaseViews', () => {
     databaseId: string,
     payload: { name: string; viewType?: ViewType },
   ): Promise<DatabaseView> {
-    const created = await apiClient.post<ApiView>(`/api/databases/${databaseId}/views`, {
-      name: payload.name,
-      view_type: payload.viewType ?? 'table',
-    })
+    const created = await apiClient.post<ApiView>(`/api/databases/${databaseId}/views`,
+      withCalendarDateName({
+        name: payload.name,
+        view_type: payload.viewType ?? 'table',
+      }, payload.viewType))
     const view = _remember(created)
     _insertByPosition(databaseId, view)
     return view
@@ -363,7 +380,7 @@ export const useDatabaseViewsStore = defineStore('databaseViews', () => {
         if (!patch) return
         const updated = await apiClient.patch<ApiView>(
           `/api/databases/${databaseId}/views/${viewId}`,
-          patch,
+          withCalendarDateName(patch, view.viewType),
         )
         const after = detached(toParts(fromApi(updated)))
         serverState.set(viewId, after)

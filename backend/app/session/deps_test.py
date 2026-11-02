@@ -165,6 +165,37 @@ def test_current_user_is_remembered_on_the_request_session():
         assert db.info[entry_changes._ACTOR_KEY] is user
 
 
+def test_account_zone_is_remembered_on_the_request_session():
+    """The zone times are read and shown in when no header names one."""
+    from app import timezones
+
+    user_id = uuid.uuid4()
+    with s.SessionLocal() as db:
+        db.add(User(id=user_id, username="person-a", password_hash="x", role="member",
+                    timezone="America/New_York"))
+        db.commit()
+        deps.get_current_user(user_id=user_id, db=db)
+        assert str(timezones.zone_of(db)) == "America/New_York"
+
+
+def test_get_db_remembers_the_zone_of_the_header():
+    import asyncio
+
+    from starlette.requests import Request
+
+    from app import timezones
+
+    async def scenario():
+        request = Request({"type": "http", "headers": [(b"x-timezone", b"Asia/Tokyo")]})
+        generator = deps.get_db(request)
+        db = await generator.__anext__()
+        zone = str(timezones.zone_of(db))
+        await generator.aclose()
+        return zone
+
+    assert asyncio.run(scenario()) == "Asia/Tokyo"
+
+
 # ─── Block access ────────────────────────────────────────────────────────────
 
 

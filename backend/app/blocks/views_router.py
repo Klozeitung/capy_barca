@@ -66,12 +66,18 @@ class ViewListResponse(BaseModel):
 
 
 class ViewCreate(BaseModel):
+    """
+    ``calendar_date_name`` names the date property a calendar view creates
+    when the database has none it can use; the frontend sends it localized.
+    """
+
     name: str = ""
     view_type: str = "table"
     description: Optional[str] = None
     filter_groups: Optional[list[Any]] = None
     sorts: Optional[list[Any]] = None
     settings: Optional[dict] = None
+    calendar_date_name: Optional[str] = Field(default=None, max_length=200)
 
 
 class ViewDuplicate(BaseModel):
@@ -92,6 +98,7 @@ class ViewUpdate(BaseModel):
     filter_groups: Optional[list[Any]] = None
     sorts: Optional[list[Any]] = None
     settings: Optional[dict[str, Any]] = None
+    calendar_date_name: Optional[str] = Field(default=None, max_length=200)
 
 
 # Fields a partial update may omit but not clear. ``description`` and the
@@ -170,6 +177,27 @@ class PageIdsResponse(BaseModel):
     offset: int
 
 
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+
+def _schema_state(db: Session, database_id: uuid.UUID) -> list[tuple]:
+    """The properties of *database_id* as far as views can change them."""
+    from app.blocks import repository as repo
+
+    return [
+        (s.id, s.type, bool((s.config or {}).get(views.CALENDAR_DATE_KEY)))
+        for s in repo.list_schemas(db, database_id)
+    ]
+
+
+def _announce_schema_change(db: Session, database_id: uuid.UUID, before: list[tuple]) -> None:
+    """Tell open views when a view change created or marked a date property."""
+    from app.blocks.database_events import emit_schema_updated
+
+    if _schema_state(db, database_id) != before:
+        emit_schema_updated(db, database_id)
+
+
 # ─── Endpoints ───────────────────────────────────────────────────────────────
 
 
@@ -206,8 +234,13 @@ def create_view(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Append a new view. Without settings it gets the default layout."""
+    """
+    Append a new view. Without settings it gets the default layout. A
+    calendar view gets a date property; when that changes the database's
+    properties, ``database_schema_updated`` is broadcast.
+    """
     views.require_writable(db, database_id, current_user)
+    schemas_before = _schema_state(db, database_id)
     view = views.create_view(
         db,
         database_id,
@@ -217,8 +250,10 @@ def create_view(
         filter_groups=payload.filter_groups,
         sorts=payload.sorts,
         settings=payload.settings,
+        calendar_date_name=payload.calendar_date_name,
     )
     db.commit()
+    _announce_schema_change(db, database_id, schemas_before)
     return view
 
 
@@ -288,9 +323,11 @@ def update_view(
             status_code=422, detail=f"These fields cannot be null: {', '.join(not_nullable)}",
         )
     view = views.get_view_or_404(db, database_id, view_id, for_update=True)
+    schemas_before = _schema_state(db, database_id)
     views.update_view(db, view, **changes)
     db.commit()
     db.refresh(view)
+    _announce_schema_change(db, database_id, schemas_before)
     return view
 
 
@@ -304,8 +341,10 @@ def delete_view(
     """Delete a view. The last view of a database cannot be deleted (409)."""
     views.require_writable(db, database_id, current_user)
     view = views.get_view_or_404(db, database_id, view_id)
+    schemas_before = _schema_state(db, database_id)
     views.delete_view(db, database_id, view)
     db.commit()
+    _announce_schema_change(db, database_id, schemas_before)
     return Response(status_code=204)
 
 

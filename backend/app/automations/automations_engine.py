@@ -339,8 +339,31 @@ def _build_context(event: TriggerEvent) -> dict[str, str]:
         "trigger.db_uuid":       event.db_uuid,
         "trigger.property_uuid": event.property_uuid,
         "trigger.new_value":     event.new_value,
-        "today()":               date.today().isoformat(),
+        "today()":               _today_local().isoformat(),
     }
+
+
+def _today_local() -> date:
+    """Today in the installation's zone (see app.timezones)."""
+    from datetime import datetime
+
+    from app.timezones import installation_zone
+
+    return datetime.now(installation_zone()).date()
+
+
+def _value_to_store(db: Session, schema_id: uuid.UUID, value: Optional[dict]) -> Optional[dict]:
+    """
+    *value* as it is stored: a date property keeps its times of day in UTC,
+    read in the zone of the request that fired the automation.
+    """
+    from app import timezones
+    from app.blocks import repository as repo
+
+    schema = repo.get_schema(db, schema_id)
+    if schema is not None and schema.type == "date":
+        return timezones.date_value_to_utc(value, timezones.zone_of(db))
+    return value
 
 
 def _render(template: str, ctx: dict[str, str]) -> str:
@@ -441,6 +464,7 @@ def _handle_upsert_value(
         ) from exc
 
     value: Optional[dict] = body.get("value") if isinstance(body, dict) else None
+    value = _value_to_store(db, s_id, value)
 
     try:
         repo.upsert_value(db, page_id=page_id, schema_id=s_id, value=value)
@@ -599,6 +623,7 @@ def _handle_bulk_upsert_value(
         return
 
     value: Optional[dict] = body.get("value") if isinstance(body, dict) else None
+    value = _value_to_store(db, s_id, value)
 
     for row in rows:
         try:

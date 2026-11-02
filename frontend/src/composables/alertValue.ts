@@ -89,3 +89,30 @@ export function isInFuture(local: string, now: Date = new Date()): boolean {
   const utc = localToUtcIso(local)
   return utc !== '' && Date.parse(utc) > now.getTime()
 }
+
+// ── Moved calendar dates ──────────────────────────────────────────────────────
+
+/**
+ * Dispatched on ``window`` when the user moved the date of a calendar entry
+ * on which they keep alerts of their own. ``AlertShiftDialog`` asks whether
+ * those alerts move along.
+ */
+export const CALENDAR_DATE_MOVED_EVENT = 'capybarca:calendar-date-moved'
+
+export interface CalendarDateMove {
+  databaseId: string
+  entryId: string
+  /** Start before and after the change, local, as the cells show them. */
+  oldStart: string
+  newStart: string
+}
+
+/** How the user's alerts follow a moved date. */
+export type AlertShiftMode = 'keep' | 'day' | 'exact'
+
+/** The start of a date value, '' when it has none. */
+export function dateStart(value: Record<string, unknown> | null | undefined): string {
+  const start = value?.start
+  return typeof start === 'string' ? start : ''
+}
+

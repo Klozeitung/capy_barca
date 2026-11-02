@@ -14,6 +14,7 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { useDatabaseTemplatesStore } from '@/stores/databaseTemplates'
 import { useNoticesStore } from '@/stores/notices'
+import { CALENDAR_DATE_MOVED_EVENT } from '@/composables/alertValue'
 import { sortIdsByKey, type KeyingConfig } from '@/components/editor/blocks/properties/cells/cellUtils'
 import type { Block } from '@/stores/blocks'
 import type { BlockEventPayload } from '@/stores/ws'
@@ -1020,6 +1021,68 @@ describe('useDatabaseStore', () => {
       '/api/databases/db-1/entries/entry-1/values/schema-1',
       { value: null },
     )
+  })
+
+  // ── moved calendar dates ────────────────────────────────────────────────────
+
+  function seedCalendar(store: ReturnType<typeof useDatabaseStore>, alerts: unknown[]) {
+    store.schemas['db-1'] = [
+      makeSchema({ id: 'date-1', type: 'date', config: { calendarDate: true } }),
+      makeSchema({ id: 'alerts-1', type: 'alerts', config: {} }),
+    ] as never
+    store.entries['db-1'] = [makeEntry({
+      id: 'entry-1',
+      values: {
+        'date-1': { start: '2045-07-17T10:00' },
+        'alerts-1': { alerts },
+      },
+    })] as never
+  }
+
+  const ownAlert = {
+    id: 'a1', block_id: 'entry-1', schema_id: 'alerts-1', at: '2045-07-16T08:00:00Z',
+    title: '', fired_at: null, delivered: false, dismissed_at: null,
+  }
+
+  it('upsertValue announces a moved calendar date when the user has alerts on it', async () => {
+    vi.mocked(apiClient.put).mockResolvedValueOnce({ value: { start: '2045-07-19T10:00' } })
+    const store = useDatabaseStore()
+    seedCalendar(store, [ownAlert])
+    const moves: unknown[] = []
+    const listener = (e: Event) => moves.push((e as CustomEvent).detail)
+    window.addEventListener(CALENDAR_DATE_MOVED_EVENT, listener)
+    try {
+      await store.upsertValue('db-1', 'entry-1', 'date-1', { start: '2045-07-19T10:00' })
+    } finally {
+      window.removeEventListener(CALENDAR_DATE_MOVED_EVENT, listener)
+    }
+    expect(moves).toEqual([{
+      databaseId: 'db-1', entryId: 'entry-1',
+      oldStart: '2045-07-17T10:00', newStart: '2045-07-19T10:00',
+    }])
+  })
+
+  it('upsertValue stays quiet without own alerts or when the start did not change', async () => {
+    const store = useDatabaseStore()
+    const moves: unknown[] = []
+    const listener = (e: Event) => moves.push((e as CustomEvent).detail)
+    window.addEventListener(CALENDAR_DATE_MOVED_EVENT, listener)
+    try {
+      seedCalendar(store, [])
+      vi.mocked(apiClient.put).mockResolvedValueOnce({ value: { start: '2045-07-19T10:00' } })
+      await store.upsertValue('db-1', 'entry-1', 'date-1', { start: '2045-07-19T10:00' })
+
+      seedCalendar(store, [ownAlert])
+      vi.mocked(apiClient.put).mockResolvedValueOnce({
+        value: { start: '2045-07-17T10:00', end: '2045-07-17T12:00' },
+      })
+      await store.upsertValue('db-1', 'entry-1', 'date-1', {
+        start: '2045-07-17T10:00', end: '2045-07-17T12:00',
+      })
+    } finally {
+      window.removeEventListener(CALENDAR_DATE_MOVED_EVENT, listener)
+    }
+    expect(moves).toEqual([])
   })
 
   // ── resolveEntryTitles ───────────────────────────────────────────────────────

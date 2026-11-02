@@ -1,6 +1,6 @@
 import { ref, computed, onUnmounted } from 'vue'
 import { defineStore } from 'pinia'
-import { apiClient, API_UNAUTHORIZED_EVENT } from '@/api/client'
+import { apiClient, API_UNAUTHORIZED_EVENT, browserTimeZone } from '@/api/client'
 
 /** Fallback display date format when the backend supplies none. */
 const DEFAULT_DATE_FORMAT = 'DD.MM.YYYY'
@@ -71,6 +71,22 @@ export const useAuthStore = defineStore('auth', () => {
     _dateFormat.value = fmt || DEFAULT_DATE_FORMAT
   }
 
+  /**
+   * Tell the server the browser's time zone, so the account's calendar
+   * alerts and requests without a zone of their own use it. The server
+   * stores it only when it changed. Failures are ignored; the next start
+   * tries again.
+   */
+  async function reportTimezone(): Promise<void> {
+    const timezone = browserTimeZone()
+    if (!timezone) return
+    try {
+      await apiClient.patch('/api/users/me/timezone', { timezone })
+    } catch {
+      // Not essential: requests name their zone themselves.
+    }
+  }
+
   async function logout(): Promise<void> {
     try {
       await apiClient.post('/api/logout')
@@ -85,6 +101,6 @@ export const useAuthStore = defineStore('auth', () => {
 
   return {
     isAuthenticated, username, role, isAdmin, dateFormat,
-    login, logout, verify, setDateFormat,
+    login, logout, verify, setDateFormat, reportTimezone,
   }
 })

@@ -18,6 +18,7 @@ import {
   toParts,
   diffParts,
   applyPatch,
+  withCalendarDateName,
   type ApiView,
 } from '@/stores/databaseViews'
 
@@ -248,5 +249,20 @@ describe('useDatabaseViewsStore', () => {
     await store.duplicateView('db-1', 'v1', 'Copy')
 
     expect(store.getViews('db-1').map((v) => v.id)).toEqual(['v1', 'v3', 'v2'])
+  })
+})
+
+describe('withCalendarDateName', () => {
+  it('leaves payloads alone that cannot make the server create a date property', () => {
+    expect(withCalendarDateName({ name: 'First' }, 'calendar')).toEqual({ name: 'First' })
+    expect(withCalendarDateName({ view_type: 'table' }, 'table')).toEqual({ view_type: 'table' })
+    expect(withCalendarDateName({ settings: { colWidths: {} } }, 'table'))
+      .toEqual({ settings: { colWidths: {} } })
+  })
+
+  it('names the date property when a calendar view changes type or settings', () => {
+    expect(withCalendarDateName({ view_type: 'calendar' }, 'calendar').calendar_date_name).toBeTruthy()
+    expect(withCalendarDateName({ settings: { dateProperty: 'p1' } }, 'calendar').calendar_date_name)
+      .toBeTruthy()
   })
 })

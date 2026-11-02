@@ -36,6 +36,12 @@ timeline flag and the nuance configuration, which are edge data both sides
 read, are copied across. Keying is not propagated; it is a read-side pointer
 each side configures on its own.
 
+Calendar dates
+--------------
+A date property a calendar view uses carries ``config.calendarDate``, which
+only the server sets (:func:`keep_server_owned_config`). It cannot be
+deleted, retyped or given a timeline (:func:`check_calendar_date_lock`).
+
 Alerts
 ------
 A database has at most one ``alerts`` property
@@ -294,6 +300,45 @@ def apply_alerts_retype(
     return changed
 
 
+# ─── Calendar date properties ─────────────────────────────────────────────────
+
+
+def check_calendar_date_lock(
+    schema: PropertySchema,
+    new_type: Optional[str] = None,
+    new_config: Optional[dict] = None,
+    deleting: bool = False,
+) -> None:
+    """
+    Refuse with 422 deleting, retyping or giving a timeline to a date property
+    a calendar view uses (``config.calendarDate``, see ``app.blocks.views``).
+    """
+    if not views.is_calendar_date(schema):
+        return
+    if deleting:
+        detail = "A calendar uses this date property; it cannot be deleted"
+    elif new_type is not None and new_type != schema.type:
+        detail = "A calendar uses this date property; its type cannot change"
+    elif new_config is not None and new_config.get("hasTimeline"):
+        detail = "A calendar uses this date property; it cannot have a timeline"
+    else:
+        return
+    raise HTTPException(status_code=422, detail=detail)
+
+
+def keep_server_owned_config(old_config: Optional[dict], new_config: Optional[dict]) -> Optional[dict]:
+    """
+    *new_config* with the keys only the server sets carried over from
+    *old_config*: the calendar mark is the views' business, not the client's.
+    """
+    if new_config is None:
+        return None
+    result = {k: v for k, v in new_config.items() if k != views.CALENDAR_DATE_KEY}
+    if (old_config or {}).get(views.CALENDAR_DATE_KEY):
+        result[views.CALENDAR_DATE_KEY] = True
+    return result
+
+
 # ─── Creation ─────────────────────────────────────────────────────────────────
 
 
@@ -407,11 +452,16 @@ def client_config(schema, schemas: list) -> Optional[dict]:
 def portable_config(db: Session, schema) -> Optional[dict]:
     """
     *schema*'s config for use in another database: a formula's references as
-    names, which the target database binds to its own properties.
+    names, which the target database binds to its own properties. The calendar
+    mark stays behind; it belongs to the views of the database it was set in.
     """
     if not _expression(schema):
-        return schema.config
-    return client_config(schema, repo.list_schemas(db, schema.database_id))
+        config = schema.config
+    else:
+        config = client_config(schema, repo.list_schemas(db, schema.database_id))
+    if isinstance(config, dict) and views.CALENDAR_DATE_KEY in config:
+        config = {k: v for k, v in config.items() if k != views.CALENDAR_DATE_KEY}
+    return config
 
 
 def recompute_entries(db: Session, database_id: uuid.UUID) -> None:

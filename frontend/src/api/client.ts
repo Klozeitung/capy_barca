@@ -65,15 +65,38 @@ function broadcastReadOnly(): void {
 
 type JsonBody = Record<string, unknown> | unknown[] | null
 
+/** Header naming the browser's time zone (see backend app/timezones.py). */
+export const TIMEZONE_HEADER = 'X-Timezone'
+
+/**
+ * The IANA time zone of the browser, e.g. "Europe/Berlin"; '' when the
+ * browser does not tell.
+ *
+ * The server stores times of day in UTC and reads and shows them in this
+ * zone, so dates are entered and displayed in local time, with the daylight
+ * saving time of their own date.
+ */
+export function browserTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+  } catch {
+    return ''
+  }
+}
+
 /**
  * Build a base RequestInit with the standard CapyBarca headers.
- * Credentials are always included so the session cookie is forwarded.
+ * Credentials are always included so the session cookie is forwarded, and
+ * the browser's time zone is named so the server shows times in it.
  */
 function baseInit(method: string, body?: JsonBody): RequestInit {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const zone = browserTimeZone()
+  if (zone) headers[TIMEZONE_HEADER] = zone
   const init: RequestInit = {
     method,
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
   }
   if (body !== undefined) {
     init.body = JSON.stringify(body)

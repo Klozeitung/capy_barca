@@ -10,15 +10,24 @@ Cell values
 ``values`` for an ``alerts`` property: ``{"alerts": [<alert>, ...]}`` with the
 alerts of one account only, ordered by time. The same shape goes out with the
 ``alert.changed`` WebSocket message, so a client replaces the cell with it.
+Only user alerts appear in a cell; system alerts of calendar dates (see
+``app.alerts.system_alerts``) are delivered but never shown there.
+
+Shifting
+--------
+:func:`shift_alerts` moves an account's user alerts on an entry along with a
+moved date: keeping the time of day and the distance in days, or keeping the
+exact distance. Alerts that end up in the past count as delivered without a
+notice; ones that end up in the future again are due again.
 """
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.alerts.alerts_models import ALERTS_PROPERTY_TYPE, Alert
+from app.alerts.alerts_models import ALERTS_PROPERTY_TYPE, KIND_SYSTEM, KIND_USER, Alert
 from app.blocks.models import Block, PropertySchema
 
 # Alerts claimed by one scheduler pass at most; the rest follow in the next.
@@ -48,6 +57,7 @@ def serialize(alert: Alert) -> dict[str, Any]:
         "fired_at": iso_utc(alert.fired_at),
         "delivered": alert.delivered,
         "dismissed_at": iso_utc(alert.dismissed_at),
+        "kind": alert.kind or KIND_USER,
     }
 
 
@@ -81,9 +91,13 @@ def get_alert(db: Session, alert_id: uuid.UUID) -> Optional[Alert]:
 
 
 def list_for_entry(db: Session, user_id: uuid.UUID, block_id: uuid.UUID) -> list[Alert]:
-    """The alerts *user_id* keeps on *block_id*."""
+    """The user alerts *user_id* keeps on *block_id*."""
     return list(db.scalars(
-        select(Alert).where(Alert.user_id == user_id, Alert.block_id == block_id)
+        select(Alert).where(
+            Alert.user_id == user_id,
+            Alert.block_id == block_id,
+            Alert.kind == KIND_USER,
+        )
     ))
 
 
@@ -128,6 +142,7 @@ def values_for_entries(
             select(Alert).where(
                 Alert.user_id == user_id,
                 Alert.block_id.in_(list(by_entry)),
+                Alert.kind == KIND_USER,
             )
         ):
             by_entry[alert.block_id].append(alert)
@@ -139,7 +154,10 @@ def values_for_entries(
 
 
 def list_upcoming(db: Session, user_id: uuid.UUID, limit: int) -> list[Alert]:
-    """The alerts of *user_id* not fired yet, earliest first, on active entries."""
+    """
+    The alerts of *user_id* not fired yet, earliest first, on active entries,
+    system alerts included.
+    """
     return list(db.scalars(
         select(Alert)
         .join(Block, Block.id == Alert.block_id)
@@ -243,9 +261,11 @@ def transfer_to_database(
     """
     Follow entries that moved into *database_id*.
 
-    Their alerts go over to the ``alerts`` property of that database. When it
-    has none, or the blocks left databases altogether (*database_id* None),
-    the alerts are deleted.
+    Their user alerts go over to the ``alerts`` property of that database.
+    When it has none, or the blocks left databases altogether (*database_id*
+    None), they are deleted. System alerts belong to the date property they
+    left and are deleted; the moved date value gets new ones in the target
+    when that is a calendar date (see ``app.alerts.system_alerts``).
     """
     ids = list(block_ids)
     if not ids:
@@ -255,7 +275,7 @@ def transfer_to_database(
         return
     target = find_alerts_schema(db, database_id) if database_id is not None else None
     for alert in alerts:
-        if target is None:
+        if target is None or alert.kind == KIND_SYSTEM:
             db.delete(alert)
         elif alert.schema_id != target.id:
             alert.schema_id = target.id
@@ -293,3 +313,43 @@ def claim_due(db: Session, now: datetime, limit: int = CLAIM_BATCH) -> list[Aler
         .order_by(Alert.fire_at, Alert.id)
         .execution_options(populate_existing=True)
     ))
+
+
+def shift_alerts(
+    alerts: Iterable[Alert],
+    *,
+    mode: str,
+    old_start: datetime,
+    new_start: datetime,
+    zone: Any,
+    now: datetime,
+) -> None:
+    """
+    Move *alerts* along with a date that moved from *old_start* to
+    *new_start* (both aware; all-day dates at local midnight).
+
+    ``day``: each alert keeps its local time of day and moves by the number of
+    calendar days the date moved. ``exact``: each alert keeps its exact
+    distance to the date. Afterwards an alert in the past counts as delivered
+    without a notice, one in the future is due again.
+    """
+    days = (new_start.astimezone(zone).date() - old_start.astimezone(zone).date()).days
+    delta = new_start - old_start
+    for alert in alerts:
+        if mode == "day":
+            local = alert.fire_at.astimezone(zone)
+            moved_day = local.date() + timedelta(days=days)
+            moved = datetime.combine(
+                moved_day, local.time().replace(tzinfo=None), tzinfo=zone,
+            ).astimezone(timezone.utc)
+        else:
+            moved = (alert.fire_at + delta).astimezone(timezone.utc)
+        alert.fire_at = moved
+        if moved <= now:
+            alert.fired_at = alert.fired_at or now
+            alert.delivered = True
+            alert.dismissed_at = alert.dismissed_at or now
+        else:
+            alert.fired_at = None
+            alert.delivered = False
+            alert.dismissed_at = None

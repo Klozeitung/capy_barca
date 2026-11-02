@@ -531,10 +531,9 @@ def duplicate_entry(
         new_block = copy.block
         db.commit()
         db.refresh(new_block)
-        new_values: dict[str, Optional[dict]] = {
-            str(pv.property_schema_id): pv.value
-            for pv in repo.list_values_for_pages(db, [new_block.id]).get(new_block.id, [])
-        }
+        new_values: dict[str, Optional[dict]] = views.entry_payloads(
+            db, [new_block], current_user.id,
+        )[0]["values"]
     except BlockNotFound as exc:
         db.rollback()
         raise HTTPException(status_code=404, detail=str(exc))
@@ -635,7 +634,7 @@ def upsert_value(
         db.commit()
         # The committed value, serialised by the read path itself so the
         # answer cannot drift from what a later read returns.
-        stored = views.entry_payloads(db, [entry])[0]["values"].get(str(schema_id))
+        stored = views.entry_payloads(db, [entry], current_user.id)[0]["values"].get(str(schema_id))
     except Exception:
         db.rollback()
         raise
@@ -746,19 +745,15 @@ def list_entry_templates(
     ]
     if not templates:
         return []
-    values_map = repo.list_values_for_pages(db, [t.id for t in templates])
     return [
         EntryTemplateResponse(
-            id=t.id,
-            position=t.position,
-            content=t.content,
-            icon=t.icon,
-            values={
-                str(pv.property_schema_id): pv.value
-                for pv in values_map.get(t.id, [])
-            },
+            id=payload["id"],
+            position=payload["position"],
+            content=payload["content"],
+            icon=payload["icon"],
+            values=payload["values"],
         )
-        for t in templates
+        for payload in views.entry_payloads(db, templates, current_user.id)
     ]
 
 

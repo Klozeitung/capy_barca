@@ -27,6 +27,18 @@ Writes are partial: an update names only the fields it changes, and
 of the same view at the same time do not overwrite each other. The row is
 locked for the read-merge-write of an update.
 
+Calendar date properties
+------------------------
+The date property a calendar view lays its entries out by is marked with
+``config.calendarDate``. The mark is kept by the server alone, from the
+views: it is set while at least one calendar view uses the property and
+removed when none does (:func:`sync_calendar_marks`). A marked property
+cannot be deleted, retyped or given a timeline, and its entries get a system
+alert each (see ``app.alerts.system_alerts``). A calendar view without a
+usable date property gets one: the first date property without a timeline,
+or a new one named as the client asks (:func:`ensure_calendar_date`). A date
+property with a timeline cannot be a calendar's date (422).
+
 Default view and system properties
 ----------------------------------
 A database always has at least one view. The first time its views are
@@ -42,6 +54,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app import timezones
 from app.blocks import options
 from app.blocks import repository as repo
 from app.blocks import resolution
@@ -217,6 +230,113 @@ def require_placement(db: Session, database_id: uuid.UUID, placement_id: uuid.UU
         )
 
 
+# ─── Calendar date properties ────────────────────────────────────────────────
+
+# Server-owned mark on a date property a calendar view uses.
+CALENDAR_DATE_KEY = "calendarDate"
+
+# Name of a date property created for a calendar when the client names none.
+DEFAULT_CALENDAR_DATE_NAME = "Date"
+
+
+def is_calendar_date(schema: Any) -> bool:
+    """True when *schema* is a date property a calendar view uses."""
+    return getattr(schema, "type", None) == "date" and bool(
+        (getattr(schema, "config", None) or {}).get(CALENDAR_DATE_KEY)
+    )
+
+
+def _calendar_pointer(view: DatabaseView) -> Optional[str]:
+    if view.view_type != "calendar":
+        return None
+    return (view.settings or {}).get("calendarDateSchemaId") or None
+
+
+def _schema_by_id(schemas: list[PropertySchema], key: Optional[str]) -> Optional[PropertySchema]:
+    return next((s for s in schemas if str(s.id) == key), None) if key else None
+
+
+def check_calendar_date(db: Session, database_id: uuid.UUID, view: DatabaseView) -> None:
+    """Refuse with 422 a calendar view whose date property has a timeline."""
+    target = _schema_by_id(repo.list_schemas(db, database_id), _calendar_pointer(view))
+    if target is not None and target.type == "date" and (target.config or {}).get("hasTimeline"):
+        raise HTTPException(
+            status_code=422,
+            detail="A calendar cannot use a date property with a timeline",
+        )
+
+
+def ensure_calendar_date(
+    db: Session, database_id: uuid.UUID, view: DatabaseView, name: Optional[str],
+) -> None:
+    """
+    Give a calendar view a date property when it points at none it can use.
+
+    A pointer at a date or timestamp property is left alone. Otherwise the
+    first date property without a timeline is taken, and when there is none
+    a new date property is created under *name* (the client sends it in the
+    user's language), with a number appended if the name is taken.
+    """
+    if view.view_type != "calendar":
+        return
+    schemas = repo.list_schemas(db, database_id)
+    current = _schema_by_id(schemas, _calendar_pointer(view))
+    if current is not None and current.type in ("date", "created_time", "last_edited_time"):
+        return
+    target = next(
+        (s for s in schemas if s.type == "date" and not (s.config or {}).get("hasTimeline")),
+        None,
+    )
+    if target is None:
+        base = (name or "").strip() or DEFAULT_CALENDAR_DATE_NAME
+        taken = {s.name for s in schemas}
+        candidate, counter = base, 2
+        while candidate in taken:
+            candidate, counter = f"{base} {counter}", counter + 1
+        target = repo.create_schema(
+            db,
+            database_id=database_id,
+            name=candidate,
+            type="date",
+            position=(schemas[-1].position + 1.0) if schemas else 1.0,
+            # The calendar needs both, as the frontend sets them for a date
+            # property it creates for a calendar.
+            config={"hasEndDate": True, "includeTime": True},
+            visible_in_view_id=view.id,
+        )
+    view.settings = {**(view.settings or {}), "calendarDateSchemaId": str(target.id)}
+    db.flush()
+
+
+def sync_calendar_marks(db: Session, database_id: uuid.UUID) -> set[uuid.UUID]:
+    """
+    Set ``config.calendarDate`` on exactly the date properties a calendar
+    view of *database_id* uses, and bring their system alerts in line.
+    Returns the ids of the properties whose mark changed.
+    """
+    from app.alerts import system_alerts
+
+    used = {_calendar_pointer(v) for v in list_views(db, database_id)} - {None}
+    changed: set[uuid.UUID] = set()
+    for schema in repo.list_schemas(db, database_id):
+        if schema.type != "date":
+            continue
+        wanted = str(schema.id) in used and not (schema.config or {}).get("hasTimeline")
+        if bool((schema.config or {}).get(CALENDAR_DATE_KEY)) == wanted:
+            continue
+        config = dict(schema.config or {})
+        if wanted:
+            config[CALENDAR_DATE_KEY] = True
+        else:
+            config.pop(CALENDAR_DATE_KEY, None)
+        schema.config = config
+        changed.add(schema.id)
+    db.flush()
+    for schema_id in changed:
+        system_alerts.resync_schema(db, schema_id)
+    return changed
+
+
 # ─── Bootstrap ───────────────────────────────────────────────────────────────
 
 
@@ -289,10 +409,12 @@ def create_view(
     filter_groups: Any = None,
     sorts: Any = None,
     settings: Any = None,
+    calendar_date_name: Optional[str] = None,
 ) -> DatabaseView:
     """
     Append a view. Without explicit settings it gets the default layout.
-    Raises 422 for an invalid shape.
+    A calendar view gets a date property (:func:`ensure_calendar_date`).
+    Raises 422 for an invalid shape or a date property with a timeline.
     """
     if view_type not in VIEW_TYPES:
         raise HTTPException(status_code=422, detail=f"Unknown view type {view_type!r}")
@@ -318,6 +440,9 @@ def create_view(
     )
     db.add(view)
     db.flush()
+    check_calendar_date(db, database_id, view)
+    ensure_calendar_date(db, database_id, view, calendar_date_name)
+    sync_calendar_marks(db, database_id)
     return view
 
 
@@ -368,6 +493,7 @@ def update_view(
     filter_groups: Any = _UNSET,
     sorts: Any = _UNSET,
     settings: Any = _UNSET,
+    calendar_date_name: Optional[str] = None,
 ) -> DatabaseView:
     """
     Apply the given fields to *view*. Fields left unset are not touched.
@@ -376,6 +502,11 @@ def update_view(
     given replaces the stored one, and a key given as ``None`` is removed.
     The merged result is validated as a whole. Raises 422 for an invalid
     shape and leaves the view unchanged.
+
+    A calendar view gets a date property when it has none it can use
+    (:func:`ensure_calendar_date`, created under *calendar_date_name*), and
+    the calendar marks follow (:func:`sync_calendar_marks`). A date property
+    with a timeline as the calendar's date answers 422.
     """
     try:
         if filter_groups is not _UNSET:
@@ -408,6 +539,9 @@ def update_view(
     if settings is not _UNSET:
         view.settings = settings
     db.flush()
+    check_calendar_date(db, view.database_id, view)
+    ensure_calendar_date(db, view.database_id, view, calendar_date_name)
+    sync_calendar_marks(db, view.database_id)
     return view
 
 
@@ -422,6 +556,7 @@ def delete_view(db: Session, database_id: uuid.UUID, view: DatabaseView) -> None
         raise HTTPException(status_code=409, detail="A database keeps at least one view")
     db.delete(view)
     db.flush()
+    sync_calendar_marks(db, database_id)
 
 
 def reorder_views(db: Session, database_id: uuid.UUID, view_ids: list[uuid.UUID]) -> list[DatabaseView]:
@@ -599,6 +734,18 @@ def _query_descriptors(
     return groups, sort_descriptors
 
 
+def _date_schema_ids(db: Session, database_ids: set) -> set[uuid.UUID]:
+    """The ids of the date properties of *database_ids*, in one query."""
+    if not database_ids:
+        return set()
+    return set(db.scalars(
+        select(PropertySchema.id).where(
+            PropertySchema.database_id.in_(database_ids),
+            PropertySchema.type == "date",
+        )
+    ))
+
+
 def entry_payloads(
     db: Session,
     entries: list[Block],
@@ -610,12 +757,23 @@ def entry_payloads(
     The cells of an ``alerts`` property carry the alerts of *viewer_id*,
     read from the alerts table; nobody else's are ever included, and without
     a viewer the cells are empty.
+
+    Times of day of date properties are stored in UTC and given here in the
+    zone of the request (see app.timezones).
     """
     from app.alerts.alerts_repository import values_for_entries
 
     ids = [e.id for e in entries]
     values_map = repo.list_values_for_pages(db, ids)
     alert_values = values_for_entries(db, viewer_id, entries)
+    date_schemas = _date_schema_ids(db, {e.parent_id for e in entries if e.parent_id})
+    zone = timezones.zone_of(db)
+
+    def shown(pv) -> Any:
+        if pv.property_schema_id in date_schemas:
+            return timezones.date_value_to_local(pv.value, zone)
+        return pv.value
+
     return [
         {
             "id": entry.id,
@@ -625,7 +783,7 @@ def entry_payloads(
             "state": entry.state,
             "values": {
                 **{
-                    str(pv.property_schema_id): pv.value
+                    str(pv.property_schema_id): shown(pv)
                     for pv in values_map.get(entry.id, [])
                 },
                 **alert_values.get(entry.id, {}),

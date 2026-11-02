@@ -58,7 +58,7 @@ import {
   optionColorStyle,
   SELECT_OPTION_COLORS,
 } from '@/stores/database'
-import { getSchemaIcon } from '@/stores/propertyTypes'
+import { getSchemaIcon, isCalendarDateSchema } from '@/stores/propertyTypes'
 import { apiClient } from '@/api/client'
 import {
   filterSyntaxEntries,
@@ -366,10 +366,13 @@ const hasTimeline = ref<boolean>(
 )
 
 // Computed: types that are ineligible for hasTimeline (computed / system /
-// sub-item pair / alerts, whose values are personal and live in their own table)
+// sub-item pair / alerts, whose values are personal and live in their own
+// table), and the date property a calendar uses, which the server keeps
+// without a timeline.
 const isTimelineEligible = computed(() =>
   !['formula', 'rollup', 'id', 'created_by', 'created_time',
-    'last_edited_by', 'last_edited_time', 'parent_item', 'sub_item', 'alerts'].includes(props.schema.type),
+    'last_edited_by', 'last_edited_time', 'parent_item', 'sub_item', 'alerts'].includes(props.schema.type)
+  && !isCalendarDateSchema(props.schema),
 )
 
 // ── formula ───────────────────────────────────────────────────────────────────
@@ -1518,6 +1521,14 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
             </p>
           </div>
         </template>
+
+        <!-- ── Calendar date: locked while a calendar uses it ──────────────── -->
+        <div v-if="isCalendarDateSchema(schema)" class="psm__field psm__field--divider">
+          <p class="psm__hint psm__hint--system">
+            <Icon icon="mdi:calendar-lock-outline" width="13" height="13" />
+            {{ t('db.settings.calendarDateLocked') }}
+          </p>
+        </div>
 
         <!-- ── Timeline toggle (all writable types except formula/rollup) ──── -->
         <template v-if="isTimelineEligible">

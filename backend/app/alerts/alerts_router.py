@@ -22,10 +22,16 @@ and an account keeps at most ``MAX_ALERTS_PER_ENTRY`` alerts on one entry.
 After every change the caller's other connections receive ``alert.changed``
 with the entry's new cell value, and after a dismissal ``alert.dismissed``.
 
+System alerts of calendar dates (``kind`` ``system``, see
+``app.alerts.system_alerts``) belong to their recipient too. They appear in
+``pending`` and ``upcoming`` and can be dismissed, but not changed or deleted
+here; they follow the date.
+
 GET    /api/alerts/pending           delivered alerts not dismissed yet
 GET    /api/alerts/upcoming          alerts not fired yet, earliest first
 GET    /api/alerts/{id}              one alert
 POST   /api/alerts                   create an alert
+POST   /api/alerts/shift             move the caller's alerts with a moved date
 PATCH  /api/alerts/{id}              change time or title
 DELETE /api/alerts/{id}              delete an alert
 POST   /api/alerts/{id}/dismiss      close a delivered alert
@@ -34,12 +40,15 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import AwareDatetime, BaseModel
+from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.alerts import alerts_repository as repo
-from app.alerts.alerts_models import MAX_ALERTS_PER_ENTRY, MAX_TITLE_LENGTH, Alert
+from app import timezones
+from app.alerts.alerts_models import KIND_USER, MAX_ALERTS_PER_ENTRY, MAX_TITLE_LENGTH, Alert
 from app.alerts.alerts_scheduler import notification_payload
 from app.blocks.models import Block
 from app.permissions import repository as perm_repo
@@ -72,6 +81,20 @@ class AlertUpdate(BaseModel):
     title: Optional[str] = None
 
 
+class AlertShift(BaseModel):
+    """
+    A date of *block_id* moved from ``old_start`` to ``new_start``: local
+    ``YYYY-MM-DDTHH:MM`` or all-day ``YYYY-MM-DD`` as the client shows them,
+    read in the zone of the request. ``day`` keeps each alert's time of day
+    and its distance in days, ``exact`` its exact distance.
+    """
+
+    block_id: uuid.UUID
+    old_start: str = Field(min_length=8, max_length=40)
+    new_start: str = Field(min_length=8, max_length=40)
+    mode: Literal["day", "exact"]
+
+
 class AlertResponse(BaseModel):
     id: uuid.UUID
     block_id: uuid.UUID
@@ -81,6 +104,7 @@ class AlertResponse(BaseModel):
     fired_at: Optional[str] = None
     delivered: bool
     dismissed_at: Optional[str] = None
+    kind: str = KIND_USER
 
 
 class AlertNotification(AlertResponse):
@@ -115,12 +139,32 @@ def _future(at: datetime) -> datetime:
     return moment
 
 
-def _own_alert(db: Session, alert_id: uuid.UUID, user: User) -> Alert:
-    """The caller's alert *alert_id*; 404 for a missing or foreign one."""
+def _own_alert(
+    db: Session, alert_id: uuid.UUID, user: User, *, user_kind_only: bool = True,
+) -> Alert:
+    """
+    The caller's alert *alert_id*; 404 for a missing or foreign one, and,
+    unless *user_kind_only* is False, for a system alert.
+    """
     alert = repo.get_alert(db, alert_id)
     if alert is None or alert.user_id != user.id:
         raise HTTPException(status_code=404, detail="Alert not found")
+    if user_kind_only and alert.kind != KIND_USER:
+        raise HTTPException(status_code=404, detail="Alert not found")
     return alert
+
+
+def _start_instant(value: str, zone) -> datetime:
+    """A date's start as an instant: its time of day, or local midnight."""
+    from app.alerts.recurrence import parse_date
+
+    timed = timezones.parse_time(value, zone)
+    if timed is not None:
+        return timed
+    day = parse_date(value)
+    if day is None:
+        raise HTTPException(status_code=422, detail="Unreadable date")
+    return datetime.combine(day, datetime.min.time(), tzinfo=zone)
 
 
 def _entry_with_alerts_schema(db: Session, block_id: uuid.UUID) -> tuple[Block, uuid.UUID]:
@@ -193,13 +237,45 @@ def list_upcoming(
     return [notification_payload(a, blocks[a.block_id]) for a in alerts]
 
 
+@alerts_router.post("/shift", response_model=list[AlertResponse])
+def shift_alerts(
+    payload: AlertShift,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    """
+    Move the caller's user alerts on an entry along with its moved date.
+
+    Other accounts' alerts stay where they are, and so do system alerts,
+    which follow the date on their own. An alert that ends up in the past
+    counts as delivered without a notice; one in the future is due again.
+    """
+    block = db.get(Block, payload.block_id)
+    if block is None:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    require_block_access(db, block.id, current_user, level=READ)
+    zone = timezones.zone_of(db)
+    alerts = repo.list_for_entry(db, current_user.id, block.id)
+    repo.shift_alerts(
+        alerts,
+        mode=payload.mode,
+        old_start=_start_instant(payload.old_start, zone),
+        new_start=_start_instant(payload.new_start, zone),
+        zone=zone,
+        now=_now(),
+    )
+    db.commit()
+    _announce_change(db, current_user, block.id)
+    return [repo.serialize(a) for a in repo.list_for_entry(db, current_user.id, block.id)]
+
+
 @alerts_router.get("/{alert_id}", response_model=AlertResponse)
 def get_alert(
     alert_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
-    alert = _own_alert(db, alert_id, current_user)
+    alert = _own_alert(db, alert_id, current_user, user_kind_only=False)
     require_block_access(db, alert.block_id, current_user, level=READ)
     return repo.serialize(alert)
 
@@ -274,8 +350,8 @@ def dismiss_alert(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Close a delivered alert on every connection of the caller."""
-    alert = _own_alert(db, alert_id, current_user)
+    """Close a delivered alert on every connection of the caller, system alerts included."""
+    alert = _own_alert(db, alert_id, current_user, user_kind_only=False)
     repo.dismiss_alert(db, alert, _now())
     db.commit()
     db.refresh(alert)

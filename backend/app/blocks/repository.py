@@ -7,13 +7,15 @@ No business logic lives here; that belongs in the service layer.
 import calendar
 import uuid
 from dataclasses import dataclass, field as dc_field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from sqlalchemy import String, and_, case, cast, false, func, or_, select
+from sqlalchemy.types import TIMESTAMP
 from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.orm import Session, aliased
 
+from app import timezones
 from app.blocks import options
 from app.blocks.models import (
     Block,
@@ -147,15 +149,24 @@ _PRESET_OPERATORS: frozenset[str] = frozenset({
 })
 
 
-def _preset_range_iso(operator: str) -> Optional[tuple[str, str]]:
+def _today(zone_name: Optional[str]) -> date:
+    """Today's date in the zone *zone_name*, the installation's without one."""
+    zone = timezones.parse_zone(zone_name) or timezones.installation_zone()
+    return datetime.now(zone).date()
+
+
+def _preset_range_iso(
+    operator: str, zone_name: Optional[str] = None,
+) -> Optional[tuple[str, str]]:
     """
     Return (start_iso, end_iso) date strings for a preset date-range operator,
-    computed relative to today.  Returns None for non-preset operators.
+    computed relative to today in the zone *zone_name*.  Returns None for
+    non-preset operators.
 
     ISO date strings sort lexicographically, so string comparison in SQL is
     equivalent to chronological comparison for YYYY-MM-DD format.
     """
-    today = date.today()
+    today = _today(zone_name)
 
     def iso(d: date) -> str:
         return d.isoformat()
@@ -197,9 +208,10 @@ def _ref_date_iso(
     date_mode: Optional[str],
     date_offset: Optional[int],
     value: str,
+    zone_name: Optional[str] = None,
 ) -> Optional[str]:
     """Return the ISO reference date string for a point-comparison date filter."""
-    today = date.today()
+    today = _today(zone_name)
     if date_mode == 'today':
         return today.isoformat()
     if date_mode == 'relative':
@@ -415,16 +427,36 @@ def _emptiness_clause(f: FilterDescriptor, schema_type: str, is_multi: bool, cv:
     return (~not_empty) if f.operator == 'is_empty' else not_empty
 
 
-def _date_clause(f: FilterDescriptor, cv: _CorrelatedValue, raw_expr, date_expr):
+def local_time_expr(raw_expr, zone_name: str):
+    """
+    *raw_expr*, a stored date string, as local time in *zone_name*: a time of
+    day stored in UTC (``…Z``) becomes ``YYYY-MM-DDTHH:MI`` in that zone,
+    anything else is compared as stored (see app.timezones).
+    """
+    local = func.to_char(
+        func.timezone(zone_name, cast(raw_expr, TIMESTAMP(timezone=True))),
+        'YYYY-MM-DD"T"HH24:MI',
+    )
+    return case((raw_expr.like('%Z'), local), else_=raw_expr)
+
+
+def _date_clause(
+    f: FilterDescriptor,
+    cv: _CorrelatedValue,
+    raw_expr,
+    date_expr,
+    zone_name: Optional[str] = None,
+):
     """
     Date operators on a stored ISO string *raw_expr*, compared through
     *date_expr* (the date part of it).
 
     Presets cover a range relative to today, ``between`` an explicit inclusive
     range, and the point comparisons a reference date from ``date_mode``.
+    Today is today in the zone *zone_name*.
     """
     if f.operator in _PRESET_OPERATORS:
-        preset = _preset_range_iso(f.operator)
+        preset = _preset_range_iso(f.operator, zone_name)
         if preset is None:
             return None
         start_iso, end_iso = preset
@@ -451,7 +483,7 @@ def _date_clause(f: FilterDescriptor, cv: _CorrelatedValue, raw_expr, date_expr)
             .exists()
         )
 
-    ref = _ref_date_iso(f.date_mode, f.date_offset, f.value)
+    ref = _ref_date_iso(f.date_mode, f.date_offset, f.value, zone_name)
     if not ref:
         return None
     op_map = {
@@ -467,13 +499,23 @@ def _date_clause(f: FilterDescriptor, cv: _CorrelatedValue, raw_expr, date_expr)
     return cv.base().where(raw_expr.is_not(None)).where(cond).exists()
 
 
-def _date_property_clause(f: FilterDescriptor, schema_type: str, cv: _CorrelatedValue):
-    """Date operators on a date property or a creation / edit timestamp."""
+def _date_property_clause(
+    f: FilterDescriptor, schema_type: str, cv: _CorrelatedValue, zone_name: str,
+):
+    """
+    Date operators on a date property or a creation / edit timestamp.
+
+    A date property's time of day is stored in UTC and compared as local time
+    in *zone_name*, so an entry at 00:30 local time belongs to that day.
+    """
     date_key = 'start' if schema_type == 'date' else 'datetime'
     raw_expr = cv.value[date_key].as_string()
     # Timestamps carry a time part (YYYY-MM-DDTHH:…); compare their date prefix.
-    date_expr = func.substr(raw_expr, 1, 10) if schema_type != 'date' else raw_expr
-    return _date_clause(f, cv, raw_expr, date_expr)
+    if schema_type == 'date':
+        date_expr = local_time_expr(raw_expr, zone_name)
+    else:
+        date_expr = func.substr(raw_expr, 1, 10)
+    return _date_clause(f, cv, raw_expr, date_expr, zone_name)
 
 
 def _relation_contains_clause(f: FilterDescriptor, cv: _CorrelatedValue):
@@ -587,7 +629,7 @@ def _text_clause(f: FilterDescriptor, cv: _CorrelatedValue, str_expr):
     return None
 
 
-def _formula_clause(f: FilterDescriptor, cv: _CorrelatedValue):
+def _formula_clause(f: FilterDescriptor, cv: _CorrelatedValue, zone_name: Optional[str] = None):
     """A formula filter, compared as the formula's result type."""
     raw_expr = cv.value['result']
     result_type = f.formula_result_type or 'text'
@@ -597,11 +639,11 @@ def _formula_clause(f: FilterDescriptor, cv: _CorrelatedValue):
         return _boolean_clause(f, cv, raw_expr.as_boolean())
     if result_type == 'date':
         raw_str = raw_expr.as_string()
-        return _date_clause(f, cv, raw_str, func.substr(raw_str, 1, 10))
+        return _date_clause(f, cv, raw_str, func.substr(raw_str, 1, 10), zone_name)
     return _text_clause(f, cv, func.lower(raw_expr.as_string()))
 
 
-def _build_filter_clause(f: FilterDescriptor):
+def _build_filter_clause(f: FilterDescriptor, zone_name: Optional[str] = None):
     """
     Return a SQLAlchemy WHERE expression for a single FilterDescriptor.
 
@@ -615,9 +657,13 @@ def _build_filter_clause(f: FilterDescriptor):
     everything else (text, single select, email, phone, url, created_by,
     last_edited_by).
 
+    Dates are compared, and today is taken, in the zone *zone_name*; the
+    installation's zone without one.
+
     Returns None if the filter is malformed or the operator is unrecognised;
     callers should skip None results.
     """
+    zone_name = zone_name or str(timezones.installation_zone())
     if f.schema_id == '__name__':
         title_expr = Block.content['title'].as_string()
         return _text_operator_clause(title_expr, f.operator, f.value)
@@ -638,7 +684,7 @@ def _build_filter_clause(f: FilterDescriptor):
     if f.operator in ('is_empty', 'is_not_empty'):
         return _emptiness_clause(f, schema_type, is_multi, cv)
     if schema_type in ('date', 'created_time', 'last_edited_time'):
-        return _date_property_clause(f, schema_type, cv)
+        return _date_property_clause(f, schema_type, cv, zone_name)
     if schema_type == 'relation' and f.operator in ('contains', 'not_contains'):
         return _relation_contains_clause(f, cv)
     if is_multi:
@@ -649,7 +695,7 @@ def _build_filter_clause(f: FilterDescriptor):
     if schema_type == 'checkbox':
         return _boolean_clause(f, cv, cv.value['checked'].as_boolean())
     if schema_type == 'formula':
-        return _formula_clause(f, cv)
+        return _formula_clause(f, cv, zone_name)
     return _text_clause(f, cv, func.lower(cv.value[_value_key(schema_type)].as_string()))
 
 
@@ -681,9 +727,13 @@ def query_entries(
     natural order (``NATURAL_SORT_COLLATION``); numbers and dates sort by
     value.
 
+    Dates are filtered and sorted as local time in the zone of the request
+    (see app.timezones).
+
     The caller is responsible for loading PropertyValues separately via
     list_values_for_pages().
     """
+    zone_name = str(timezones.zone_of(db))
     base_conds = [
         Block.parent_id == database_id,
         Block.state == 'active',
@@ -696,7 +746,7 @@ def query_entries(
         individual = [
             clause
             for f in group.filters
-            if (clause := _build_filter_clause(f)) is not None
+            if (clause := _build_filter_clause(f, zone_name)) is not None
         ]
         if not individual:
             continue
@@ -758,6 +808,11 @@ def query_entries(
             # by the date filter branch so that sort and filter behave consistently.
             date_key = 'start' if schema_type == 'date' else 'datetime'
             val_expr = PV.value[date_key].as_string()
+            if schema_type == 'date':
+                # Times of day stored in UTC sort by their local time, so an
+                # all-day value and a timed one on the same day keep the
+                # order they show in.
+                val_expr = local_time_expr(val_expr, zone_name)
         elif schema_type == 'rollup':
             # Rollup values store their aggregate under the 'result' key (see
             # app/blocks/computed.py); the generic text fallback would look up a

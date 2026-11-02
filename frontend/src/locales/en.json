@@ -544,7 +544,8 @@
       "keyingBlockedByNuance": "Not available: a nuanced relation cannot also be keyed.",
       "keyingBlockedByMirror": "Not available: the mirror property is timelined or nuanced.",
       "keyingBlocksOthers": "Not available while this relation is keyed.",
-      "keyingMirrorKeyed": "Not available: the mirror property is keyed. A keyed relation restricts the other side to vanilla or keyed."
+      "keyingMirrorKeyed": "Not available: the mirror property is keyed. A keyed relation restricts the other side to vanilla or keyed.",
+      "calendarDateLocked": "This date property is used by a calendar view. It cannot be deleted, given another type or a timeline while the calendar uses it."
     },
     "formulaHelp": {
       "prop": {
@@ -754,7 +755,6 @@
       "sectionProperties": "Manage properties",
       "viewTypePlanned": "Planned",
       "calendarDateProperty": "Date property",
-      "calendarDatePropertyNone": "— Select a date property —",
       "calendarNoDateSchemas": "No date properties found in this database.",
       "calendarCreateDateProp": "Create date property",
       "calendarCreateDateName": "Date",
@@ -803,7 +803,9 @@
       "defaultEntryIconButton": "Choose default icon",
       "defaultEntryIconHint": "New entries start with this icon. An applied template with an icon of its own takes precedence.",
       "defaultEntryIconOwnerOnly": "Only the owner of the database or an admin can set the default icon.",
-      "databaseSettingsError": "The database settings could not be loaded or saved."
+      "databaseSettingsError": "The database settings could not be loaded or saved.",
+      "calendarTimelineHint": "Date properties with a timeline cannot be used for a calendar.",
+      "calendarAlertsHint": "Every entry with a date in the calendar gets an alert for its owner: 30 minutes before a time, or at 18:00 on the day before an all-day date."
     },
     "relation": {
       "addLink": "Add link",
@@ -1140,7 +1142,7 @@
     "databasesGroups": "In the properties side panel you can organise properties into groups. Custom groups fold and unfold, rename on double-click, and reorder by drag-and-drop via the handle on the right of the group header. The default group always stays on top.",
     "databasesFormulas": "Formula properties calculate a value from other properties of the same entry, referenced with prop('Name'). The syntax reference in the property settings lists every function and operator. Renaming a property keeps the formulas that use it working.",
     "databasesKeying": "A relation property can be keyed: choose a property of the target database to sort the relation's entries by. The chosen value is shown beside each entry.",
-    "databasesAlerts": "An Alerts property holds personal reminders with a date, a time and an optional title. Each database can have one. Everyone sees only their own alerts. When an alert is due, a notice appears in every open session and stays until it is closed; clicking it opens the entry. Alerts missed while offline appear at the next login, up to seven days late.",
+    "databasesAlerts": "An Alerts property holds personal reminders with a date, a time and an optional title. Each database can have one. Everyone sees only their own alerts. When an alert is due, a notice appears in every open session and stays until it is closed; clicking it opens the entry. Alerts missed while offline appear at the next login, up to seven days late. In a database with a calendar, each entry's owner is also reminded of its date: 30 minutes before a time, or at 18:00 on the day before an all-day date. When you move a date you have alerts on, you can move them along.",
     "databasesViewDescription": "Each view can have its own description: click the area below the toolbar to write it, click elsewhere to save. It is included in exports — beneath the title in PDF, on the header of the name column in CSV and Excel (or of the first column while the name column is hidden).",
     "databasesCollaboration": "Changes by other users appear right away. If someone changes a value you are editing or changed within the last minute, the later change applies and you get a notice. After an interrupted connection, open pages and views load again. While a field shows a spinner, your value is being saved; until the server has answered, the field takes no further input. Leaving the page at that moment makes the browser ask first.",
     "sectionPrint": "Quick Print",
@@ -1290,6 +1292,18 @@
       "invalid": "The alert could not be saved. Check the time and the title.",
       "noAccess": "You cannot set alerts on this entry.",
       "saveFailed": "The alert could not be saved."
+    },
+    "calendarHint": "This database has a calendar. Besides the alerts listed here, the owner of each entry is reminded of its date automatically: 30 minutes before a time, or at 18:00 on the day before an all-day date.",
+    "shift": {
+      "title": "Move your alerts?",
+      "text": "The date of this entry has changed. You have alerts on it.",
+      "keep": "Keep",
+      "keepHint": "The alerts stay at their times.",
+      "day": "Move by days",
+      "dayHint": "Each alert keeps its time of day and moves by as many days as the date.",
+      "exact": "Move exactly",
+      "exactHint": "Each alert keeps its exact distance to the date.",
+      "failed": "The alerts could not be moved. Try again or keep them."
     }
   }
 }

@@ -586,3 +586,16 @@ def test_can_print_requires_a_boolean(admin_client):
     user_id = _member_id()
     response = admin_client.patch(f"/api/users/{user_id}/can-print", json={"can_print": "maybe"})
     assert response.status_code == 422
+
+
+# ─── Time zone ────────────────────────────────────────────────────────────────
+
+
+def test_own_time_zone_is_set_and_validated(member_client):
+    resp = member_client.patch("/api/users/me/timezone", json={"timezone": "Europe/Berlin"})
+    assert resp.status_code == 200
+    assert resp.json()["timezone"] == "Europe/Berlin"
+
+    assert member_client.patch(
+        "/api/users/me/timezone", json={"timezone": "Not/AZone"},
+    ).status_code == 422

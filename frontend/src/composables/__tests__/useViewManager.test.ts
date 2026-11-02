@@ -7,6 +7,10 @@ vi.mock('vue-i18n', () => ({
   useI18n: () => ({ t: (key: string) => (key === 'db.views.defaultName' ? 'View 1' : key) }),
 }))
 
+vi.mock('@/plugins/i18n', () => ({
+  default: { global: { t: (key: string) => key } },
+}))
+
 vi.mock('@/api/client', () => ({
   apiClient: {
     get: vi.fn(),

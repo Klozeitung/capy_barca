@@ -57,7 +57,7 @@ import {
   type DatabaseEntry,
   type KeyReference,
 } from '@/stores/database'
-import { isReadonlyPropertyType, getSchemaIcon } from '@/stores/propertyTypes'
+import { isReadonlyPropertyType, getSchemaIcon, isCalendarDateSchema } from '@/stores/propertyTypes'
 import {
   DEFAULT_GROUP,
   PREF_GROUP_ORDER,
@@ -746,7 +746,7 @@ async function onGroupHeaderDrop(e: DragEvent, groupName: string): Promise<void>
               <Icon icon="mdi:cog-outline" width="13" height="13" />
             </button>
             <button
-              v-if="editable"
+              v-if="editable && !isCalendarDateSchema(schema)"
               class="bps__action-btn bps__action-btn--danger"
               :class="{ 'bps__action-btn--confirm': confirmDeleteId === schema.id }"
               :title="confirmDeleteId === schema.id ? t('db.deleteColumnConfirm') : t('actions.delete')"

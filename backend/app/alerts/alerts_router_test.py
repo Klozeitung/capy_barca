@@ -442,3 +442,109 @@ def test_duplicating_an_entry_does_not_copy_its_alerts(http_client, acting_admin
     assert copy.status_code == 201
     copy_id = copy.json()["id"]
     assert _entries(http_client, database_id)[copy_id]["values"][schema_id] == {"alerts": []}
+
+
+# ─── Shifting with a moved date ───────────────────────────────────────────────
+
+
+def _alert_at(http_client, entry_id: str, local: str, zone: str = "Europe/Berlin") -> str:
+    from zoneinfo import ZoneInfo
+
+    at = datetime.fromisoformat(local).replace(tzinfo=ZoneInfo(zone))
+    return _create(http_client, entry_id, at=at.isoformat()).json()["id"]
+
+
+def _local_at(http_client, alert_id: str, zone: str = "Europe/Berlin") -> str:
+    from zoneinfo import ZoneInfo
+
+    at = http_client.get(f"/api/alerts/{alert_id}").json()["at"]
+    moment = datetime.fromisoformat(at.replace("Z", "+00:00")).astimezone(ZoneInfo(zone))
+    return moment.strftime("%Y-%m-%dT%H:%M")
+
+
+def _shift(http_client, entry_id: str, old: str, new: str, mode: str):
+    return http_client.post(
+        "/api/alerts/shift",
+        json={"block_id": entry_id, "old_start": old, "new_start": new, "mode": mode},
+        headers={"X-Timezone": "Europe/Berlin"},
+    )
+
+
+def test_shift_by_day_keeps_the_time_of_day_across_daylight_saving(http_client, acting_admin):
+    _, _, entry_id = _setup(http_client)
+    year = datetime.now().year + 2
+    alert_id = _alert_at(http_client, entry_id, f"{year}-03-20T08:15")
+
+    resp = _shift(http_client, entry_id, f"{year}-03-22T10:00", f"{year}-04-05", "day")
+
+    assert resp.status_code == 200
+    assert _local_at(http_client, alert_id) == f"{year}-04-03T08:15"
+
+
+def test_shift_exactly_keeps_the_distance(http_client, acting_admin):
+    _, _, entry_id = _setup(http_client)
+    year = datetime.now().year + 2
+    alert_id = _alert_at(http_client, entry_id, f"{year}-06-10T06:52")
+
+    _shift(http_client, entry_id, f"{year}-06-13T11:00", f"{year}-06-20T09:30", "exact")
+
+    assert _local_at(http_client, alert_id) == f"{year}-06-17T05:22"
+
+
+def test_shift_into_the_past_marks_delivered_and_back_resets(http_client, acting_admin):
+    _, _, entry_id = _setup(http_client)
+    alert_id = _create(http_client, entry_id, at=_future(48)).json()["id"]
+    today = datetime.now().date()
+
+    _shift(http_client, entry_id, (today + timedelta(days=3)).isoformat(),
+           (today - timedelta(days=3)).isoformat(), "day")
+    moved = http_client.get(f"/api/alerts/{alert_id}").json()
+    assert moved["fired_at"] is not None and moved["delivered"] and moved["dismissed_at"]
+    assert http_client.get("/api/alerts/pending").json() == []
+
+    _shift(http_client, entry_id, (today - timedelta(days=3)).isoformat(),
+           (today + timedelta(days=3)).isoformat(), "day")
+    back = http_client.get(f"/api/alerts/{alert_id}").json()
+    assert back["fired_at"] is None and not back["delivered"] and back["dismissed_at"] is None
+
+
+def test_shift_moves_only_the_callers_alerts(http_client, login_as, member_user, acting_admin):
+    database_id, _, entry_id = _setup(http_client)
+    _share(http_client, database_id)
+    year = datetime.now().year + 2
+    own = _alert_at(http_client, entry_id, f"{year}-06-10T09:00")
+    login_as(member_user)
+    other = _create(http_client, entry_id, at=_future(24 * 30)).json()["id"]
+    other_at = http_client.get(f"/api/alerts/{other}").json()["at"]
+
+    login_as(acting_admin)
+    _shift(http_client, entry_id, f"{year}-06-11", f"{year}-06-12", "day")
+
+    assert _local_at(http_client, own) == f"{year}-06-11T09:00"
+    login_as(member_user)
+    assert http_client.get(f"/api/alerts/{other}").json()["at"] == other_at
+
+
+def test_shift_refuses_an_unreadable_date(http_client, acting_admin):
+    _, _, entry_id = _setup(http_client)
+    assert _shift(http_client, entry_id, "not a date", "2045-01-01", "day").status_code == 422
+
+
+def test_system_alerts_cannot_be_changed_or_deleted_but_dismissed(http_client, acting_admin):
+    from app.alerts.alerts_models import KIND_SYSTEM
+
+    _, schema_id, entry_id = _setup(http_client)
+    with db_module.SessionLocal() as db:
+        alert = Alert(
+            block_id=uuid.UUID(entry_id), schema_id=uuid.UUID(schema_id),
+            user_id=acting_admin.id, fire_at=datetime.now(timezone.utc) + timedelta(days=1),
+            kind=KIND_SYSTEM, title="",
+        )
+        db.add(alert)
+        db.commit()
+        alert_id = str(alert.id)
+
+    assert http_client.patch(f"/api/alerts/{alert_id}", json={"title": "x"}).status_code == 404
+    assert http_client.delete(f"/api/alerts/{alert_id}").status_code == 404
+    assert http_client.get(f"/api/alerts/{alert_id}").json()["kind"] == "system"
+    assert http_client.post(f"/api/alerts/{alert_id}/dismiss").status_code == 200

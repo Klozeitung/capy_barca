@@ -23,6 +23,7 @@ watch(
   (authenticated) => {
     if (authenticated) {
       ws.connect()
+      void auth.reportTimezone()
       void alerts.start((blockId) => { void router.push(`/blocks/${blockId}`) })
     } else {
       ws.disconnect()

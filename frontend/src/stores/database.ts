@@ -48,6 +48,10 @@
  * answer is in. Writes to one cell that still arrive meanwhile, from places
  * without that lock, are sent one after another in the order they were made.
  *
+ * Moving the date of a calendar entry on which the user keeps alerts of
+ * their own announces ``CALENDAR_DATE_MOVED_EVENT`` once the server confirmed
+ * it; ``AlertShiftDialog`` then asks whether the alerts move along.
+ *
  * The server answers a write with the value as it stored it, in the shape a
  * read returns. That can differ from the value sent: the backend derives the
  * ``_timeline`` of a timeline relation from its ``relationPool`` and drops
@@ -71,6 +75,12 @@ import { WS_BLOCK_EVENT, type BlockEventPayload } from '@/stores/ws'
 import { useDatabaseViewsStore } from '@/stores/databaseViews'
 import { useAuthStore } from '@/stores/auth'
 import { useNoticesStore } from '@/stores/notices'
+import {
+  CALENDAR_DATE_MOVED_EVENT,
+  dateStart,
+  parseAlerts,
+  type CalendarDateMove,
+} from '@/composables/alertValue'
 
 /** Pseudo schema id of the lead property, the entry title shown as "Name". */
 export const NAME_COL_KEY = '__name__'
@@ -1550,6 +1560,7 @@ export const useDatabaseStore = defineStore('database', () => {
     value: Record<string, unknown> | null,
   ): Promise<void> {
     const cell = cellKey(entryId, schemaId)
+    const move = _calendarDateMove(databaseId, entryId, schemaId)
 
     // Optimistic local update so the cell does not flicker back on blur.
     _writeCell(databaseId, entryId, schemaId, value)
@@ -1584,6 +1595,39 @@ export const useDatabaseStore = defineStore('database', () => {
       throw err
     }
     _settleWrite(cell, request, stored)
+    if (move) _announceDateMove(move, stored.value)
+  }
+
+  /**
+   * The start a calendar date has before a write, when the user keeps alerts
+   * of their own on the entry; null otherwise. After the write it decides
+   * whether ``AlertShiftDialog`` asks to move those alerts along.
+   */
+  function _calendarDateMove(
+    databaseId: string,
+    entryId: string,
+    schemaId: string,
+  ): Omit<CalendarDateMove, 'newStart'> | null {
+    const list = getSchemas(databaseId)
+    const schema = list.find((s) => s.id === schemaId)
+    if (schema?.type !== 'date' || schema.config?.calendarDate !== true) return null
+    const alertsSchema = list.find((s) => s.type === 'alerts')
+    const entry = getEntry(databaseId, entryId)
+    if (!alertsSchema || !entry) return null
+    if (parseAlerts(entry.values[alertsSchema.id]).length === 0) return null
+    const oldStart = dateStart(entry.values[schemaId])
+    return oldStart ? { databaseId, entryId, oldStart } : null
+  }
+
+  function _announceDateMove(
+    move: Omit<CalendarDateMove, 'newStart'>,
+    stored: Record<string, unknown> | null,
+  ): void {
+    const newStart = dateStart(stored)
+    if (!newStart || newStart === move.oldStart) return
+    window.dispatchEvent(new CustomEvent<CalendarDateMove>(CALENDAR_DATE_MOVED_EVENT, {
+      detail: { ...move, newStart },
+    }))
   }
 
   /**

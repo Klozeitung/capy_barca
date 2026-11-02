@@ -2723,10 +2723,12 @@ def test_enable_timeline_wraps_select_and_date_values(http_client):
     sel_val = row["values"].get(select_schema["id"])
     assert sel_val["_timeline"][""] == {"option": "Active"}
 
+    # Times of day are stored in UTC and come back as local HH:MM (see
+    # app.timezones); the suite's zone is UTC.
     date_val = row["values"].get(date_schema["id"])
     assert date_val["_timeline"][""] == {
-        "start": "2024-01-01T00:00:00",
-        "end": "2024-02-01T00:00:00",
+        "start": "2024-01-01T00:00",
+        "end": "2024-02-01T00:00",
     }
 
 
@@ -5203,7 +5205,13 @@ def test_a_formula_over_last_edited_follows_every_write(http_client):
     after = _stored(http_client, db_id, entry["id"], edited["id"])["result"]
     stamp = _stored(http_client, db_id, entry["id"], last["id"])["datetime"]
     assert after != before
-    assert after == stamp
+    # Formulas see timestamps as wall-clock time in the installation's zone
+    # (UTC in the suite), without the offset the stored stamp carries.
+    from zoneinfo import ZoneInfo
+
+    from app.timezones import to_floating
+
+    assert after == to_floating(stamp, ZoneInfo("UTC"))
 
 
 def test_a_rollup_over_last_edited_of_linked_entries_follows_their_writes(http_client):
@@ -5282,3 +5290,73 @@ def test_entries_list_shows_an_empty_alerts_cell(http_client):
 
     [listed] = [e for e in entries if e["id"] == entry["id"]]
     assert listed["values"][schema["id"]] == {"alerts": []}
+
+
+# ─── Times of day across zones ────────────────────────────────────────────────
+
+
+def test_times_are_stored_in_utc_and_shown_in_the_zone_of_the_request(http_client):
+    from app.blocks.models import PropertyValue
+    import app.database.database as db_module
+
+    database_id = _create_database(http_client)
+    schema = _create_schema(http_client, database_id, name="When", type_="date")
+    entry = _create_entry(http_client, database_id)
+    berlin = {"X-Timezone": "Europe/Berlin"}
+
+    resp = http_client.put(
+        f"/api/databases/{database_id}/entries/{entry['id']}/values/{schema['id']}",
+        json={"value": {"start": "2045-08-17T09:00", "end": "2045-08-17T10:30"}},
+        headers=berlin,
+    )
+
+    assert resp.json()["value"]["start"] == "2045-08-17T09:00"
+    with db_module.SessionLocal() as db:
+        stored = db.query(PropertyValue).filter_by(page_id=uuid.UUID(entry["id"])).one().value
+    assert stored["start"] == "2045-08-17T07:00:00Z"
+    assert stored["end"] == "2045-08-17T08:30:00Z"
+
+    tokyo = http_client.get(
+        f"/api/databases/{database_id}/entries", headers={"X-Timezone": "Asia/Tokyo"},
+    ).json()
+    [row] = [e for e in tokyo if e["id"] == entry["id"]]
+    assert row["values"][schema["id"]]["start"] == "2045-08-17T16:00"
+
+
+def test_all_day_dates_are_not_shifted(http_client):
+    database_id = _create_database(http_client)
+    schema = _create_schema(http_client, database_id, name="When", type_="date")
+    entry = _create_entry(http_client, database_id)
+    resp = http_client.put(
+        f"/api/databases/{database_id}/entries/{entry['id']}/values/{schema['id']}",
+        json={"value": {"start": "2045-08-17", "end": "2045-08-17"}},
+        headers={"X-Timezone": "Pacific/Auckland"},
+    )
+    assert resp.json()["value"] == {"start": "2045-08-17", "end": "2045-08-17"}
+
+
+def test_date_filters_compare_the_local_day(http_client):
+    """An entry at 00:30 Berlin time is on that day, though it is the day before in UTC."""
+    database_id = _create_database(http_client)
+    schema = _create_schema(http_client, database_id, name="When", type_="date")
+    entry = _create_entry(http_client, database_id)
+    berlin = {"X-Timezone": "Europe/Berlin"}
+    http_client.put(
+        f"/api/databases/{database_id}/entries/{entry['id']}/values/{schema['id']}",
+        json={"value": {"start": "2045-08-17T00:30"}}, headers=berlin,
+    )
+    body = {
+        "filter_groups": [{"conjunction": "and", "filters": [{
+            "schema_id": schema["id"], "operator": "between",
+            "value": "2045-08-17", "value2": "2045-08-17T23:59",
+        }]}],
+    }
+
+    hit = http_client.post(f"/api/databases/{database_id}/entries/query", json=body, headers=berlin)
+    miss = http_client.post(
+        f"/api/databases/{database_id}/entries/query", json=body,
+        headers={"X-Timezone": "America/New_York"},
+    )
+
+    assert [e["id"] for e in hit.json()["entries"]] == [entry["id"]]
+    assert miss.json()["entries"] == []

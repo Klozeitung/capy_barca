@@ -138,9 +138,22 @@ const localFrozenColumns      = ref<number>(clampFrozenColumns(props.view.frozen
 
 // ── Date schemas (for calendar property picker) ───────────────────────────────
 
+/**
+ * Properties a calendar can lay its entries out by. A date property with a
+ * timeline is not one: its value has no single date, and the server refuses
+ * it as a calendar's date.
+ */
 const dateSchemas = computed(() =>
-  props.schemas.filter(s => s.type === 'date' || s.type === 'created_time' || s.type === 'last_edited_time'),
+  props.schemas.filter(s =>
+    (s.type === 'date' && !s.config?.hasTimeline) ||
+    s.type === 'created_time' || s.type === 'last_edited_time'),
 )
+
+/** The calendar points at a date property with a timeline, set before this was refused. */
+const calendarSchemaHasTimeline = computed(() => {
+  const current = props.schemas.find(s => s.id === localCalendarSchemaId.value)
+  return current?.type === 'date' && !!current.config?.hasTimeline
+})
 
 // ── Create date property ──────────────────────────────────────────────────────
 
@@ -418,9 +431,12 @@ function hideAll() {
                 :value="localCalendarSchemaId"
                 @change="setCalendarSchema(($event.target as HTMLSelectElement).value)"
               >
-                <option value="">{{ t('db.viewSettings.calendarDatePropertyNone') }}</option>
                 <option v-for="s in dateSchemas" :key="s.id" :value="s.id">{{ s.name }}</option>
               </select>
+              <div v-if="calendarSchemaHasTimeline" class="vsm__hint">
+                {{ t('db.viewSettings.calendarTimelineHint') }}
+              </div>
+              <div class="vsm__hint">{{ t('db.viewSettings.calendarAlertsHint') }}</div>
 
               <!-- Create date property if none exists -->
               <button

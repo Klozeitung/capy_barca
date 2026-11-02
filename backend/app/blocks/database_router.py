@@ -305,7 +305,9 @@ def create_schema(
     get_database_or_raise(db, database_id, current_user, Access.WRITE)
     if payload.type == "relation":
         require_relation_targets_access(db, database_id, [payload.config], current_user)
-    config = opts.normalize_config(payload.type, payload.config)
+    config = schema_service.keep_server_owned_config(
+        None, opts.normalize_config(payload.type, payload.config),
+    )
     position = (
         payload.position
         if payload.position is not None
@@ -388,6 +390,9 @@ def update_schema(
     * A retype out of ``alerts`` deletes its alerts; a retype into it deletes
       the stored values, and answers 409 when the database already has an
       ``alerts`` property.
+    * A date property a calendar view uses cannot be retyped or given a
+      timeline (422); its mark ``config.calendarDate`` is kept whatever the
+      client sends.
     * A bilateral relation carries the change over to its mirror (see
       ``schema_service.propagate_to_mirror``).
     * Enabling ``hasTimeline`` wraps the existing values into the timeline
@@ -427,11 +432,13 @@ def update_schema(
     old_name = schema.name
     old_config = dict(schema.config or {})
     effective_type = payload.type if payload.type is not None else schema.type
-    new_config = (
+    new_config = schema_service.keep_server_owned_config(
+        old_config,
         opts.normalize_config(effective_type, payload.config, old_config)
         if config_changed
-        else None
+        else None,
     )
+    schema_service.check_calendar_date_lock(schema, payload.type, new_config)
     effective_config = new_config if new_config is not None else schema.config
     effective_name = payload.name if payload.name is not None else schema.name
     removed_options, options_relabelled = schema_service.option_changes(
@@ -571,6 +578,8 @@ def delete_schema(
     Formulas referring to the property keep the reference as its name: they
     stay readable and bind again once a property with that name exists.
 
+    A date property a calendar view uses cannot be deleted (422).
+
     Returns 204 No Content on success.
     """
     get_database_or_raise(db, database_id, current_user, Access.WRITE)
@@ -580,6 +589,7 @@ def delete_schema(
             status_code=404,
             detail=f"Schema {schema_id} not found in database {database_id}",
         )
+    schema_service.check_calendar_date_lock(schema, deleting=True)
     try:
         clear_keying_for_property(db, schema_id)
         schema_service.unbind_formula_references(db, schema)

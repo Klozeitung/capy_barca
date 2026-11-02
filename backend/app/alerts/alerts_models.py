@@ -23,6 +23,17 @@ overdue, its entry was in the trash or the account had lost read access.
 
 Every foreign key cascades: purging the entry, deleting the property or the
 account removes the alerts that depend on it.
+
+Kinds
+-----
+``kind`` is ``user`` for a reminder a person set in an ``alerts`` property,
+and ``system`` for the one the application keeps for a calendar date (see
+``app.alerts.system_alerts``). A system alert points at the date property in
+``schema_id``; there is at most one unfired one per entry, date property and
+recipient. Fired ones stay until they are dismissed, so a repeating date can
+already have its next alert while the notice of the last one is still open.
+System alerts never appear in an ``alerts`` cell, but they are delivered like
+the others.
 """
 import uuid
 from datetime import datetime
@@ -35,6 +46,11 @@ from app.database.database import Base
 
 # Property type whose cells show alerts.
 ALERTS_PROPERTY_TYPE = "alerts"
+
+# Kinds of alert: set by a person, or kept by the application for a calendar
+# date (see app.alerts.system_alerts).
+KIND_USER = "user"
+KIND_SYSTEM = "system"
 
 # Longest title an alert may carry.
 MAX_TITLE_LENGTH = 200
@@ -52,6 +68,14 @@ class Alert(Base):
         sa.Index("ix_alerts_due", "fired_at", "fire_at"),
         # The entry endpoints look up the caller's alerts for a set of entries.
         sa.Index("ix_alerts_user_block", "user_id", "block_id"),
+        sa.CheckConstraint("kind IN ('user', 'system')", name="ck_alerts_kind"),
+        # One unfired system alert per entry, date property and recipient.
+        sa.Index(
+            "uq_alerts_single_system",
+            "block_id", "schema_id", "user_id",
+            unique=True,
+            postgresql_where=sa.text("kind = 'system' AND fired_at IS NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -78,6 +102,9 @@ class Alert(Base):
     )
     title: Mapped[str] = mapped_column(
         sa.Text, nullable=False, default="", server_default=""
+    )
+    kind: Mapped[str] = mapped_column(
+        sa.Text, nullable=False, default=KIND_USER, server_default=KIND_USER
     )
     fired_at: Mapped[Optional[datetime]] = mapped_column(
         sa.DateTime(timezone=True), nullable=True, default=None

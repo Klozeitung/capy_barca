@@ -13,6 +13,7 @@
 
 app/main_test.py
 app/conftest_test.py
+app/timezones_test.py
 
 app/database/database_test.py
 app/database/view_preferences_migration_test.py
@@ -29,6 +30,7 @@ app/database/natural_sort_collation_migration_test.py
 app/database/api_settings_migration_test.py
 app/database/migration_lock_test.py
 app/database/alerts_migration_test.py
+app/database/calendar_alerts_timezone_migration_test.py
 
 app/session/user_registration_test.py
 app/session/user_login_test.py
@@ -82,6 +84,9 @@ app/ws/router_test.py
 app/alerts/alerts_repository_test.py
 app/alerts/alerts_router_test.py
 app/alerts/alerts_scheduler_test.py
+app/alerts/system_alerts_test.py
+app/alerts/recurrence_test.py
+app/maintenance/convert_dates_to_utc_test.py
 
 app/automations/automations_engine_test.py
 app/automations/automations_router_test.py

@@ -25,6 +25,7 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 - **Alerts** personal reminders on database entries (one alerts property per database); each user sees only their own, and a due alert shows a notice in every open session until it is closed
 - **Comments** inline comments on pages and database entries
 - **Collaborative editing** real-time document collaboration via integrated Collabora Online (WOPI)
+- **Android app** a mobile client for phones, where the browser interface designed for desktop and tablet is cramped; see [Android app](#android-app)
 
 ### CapyBarca specific features
 
@@ -87,6 +88,17 @@ If you want the script to prune the docker build cache afterwards, set the envir
 ```bash
 CLEANUP=1 ./update.sh
 ```
+
+### Times of day are stored in UTC
+
+Since 0.17.1.0 the server stores every date with a time of day in UTC and shows it in each user's time zone, which the browser reports. The installation's own zone is `CB_TIMEZONE` in `.env`; `setup.sh` takes it from the host. Dates written before that were stored as local wall-clock time, so an installation updated from an earlier version converts them once after the update:
+
+```bash
+docker compose exec backend python -m app.maintenance.convert_dates_to_utc --dry-run
+docker compose exec backend python -m app.maintenance.convert_dates_to_utc
+```
+
+The first command only reports how many values would change. `--timezone` names the zone the old values were written in (default: `CB_TIMEZONE`). Values already stored in UTC are left alone, so running the conversion again changes nothing.
 
 ---
 
@@ -154,6 +166,20 @@ All containers run as an unprivileged user rather than as root. `setup.sh` align
 
 ---
 
+## Android app
+
+The browser interface is designed for desktop and tablet. On a phone, the Android app covers the everyday features: pages and the block editor, databases with their views, editing properties, and live updates.
+
+- Requires Android 13 or later and Tailscale running on the phone, connected to the same tailnet as the server
+- Currently distributed as a debug build (`app-debug.apk`) from android/capybarca-android-0.6.0.0-debug.apk. Install it by opening the file on the phone and allowing installation from that source. Minimum Requirements: Android 13 (minSdk=33) + Tailscale
+- The debug build installs alongside a later release build rather than replacing it
+
+capybarca-android-0.6.0.0-debug.apk is compatible with CapyBarca 0.16.9.0 - 0.17.1.0
+
+The app is pre-release software like CapyBarca itself. Use it at your own risk.
+
+---
+
 ## Trivia
 
 - The dev's daughter is a huge fan of capybaras. The dev made the mistake of thinking out loud when pondering on how to name this project. The dev couldn't refuse his daughter's pleading eyes. The dev did, however, tweak it a bit in reference to Hannibal Barca. Both the dev and his daughter are happy with the result.
@@ -170,7 +196,7 @@ The Anthropic LLM "Claude" assisted in creating this software.
 
 ## Project Status
 
-Despite heavy testing (~3100 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet.
+Despite heavy testing (~3200 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet.
 
 Do not use for irreplaceable data without regularly creating backups. Use at your own risk.
 

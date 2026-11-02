@@ -17,7 +17,7 @@ admin's list of all users.
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -59,6 +59,7 @@ class UserResponse(BaseModel):
     is_active: bool
     date_format: str
     can_print: bool
+    timezone: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -75,6 +76,10 @@ class ChangeUsernameRequest(BaseModel):
 
 class ChangeDateFormatRequest(BaseModel):
     date_format: DateFormatToken
+
+
+class ChangeTimezoneRequest(BaseModel):
+    timezone: str = Field(min_length=1, max_length=64)
 
 
 class ChangePasswordRequest(BaseModel):
@@ -189,6 +194,32 @@ def change_own_date_format(
     db.commit()
     db.refresh(current_user)
     return current_user
+
+
+@users_router.patch("/me/timezone", response_model=UserResponse)
+def change_own_timezone(
+    payload: ChangeTimezoneRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Set the IANA time zone of the current user, as the browser reports it.
+
+    Refuses a name that is no IANA zone with 422. A changed zone moves the
+    account's calendar alerts to the local times the new zone gives them.
+    """
+    from app.alerts import system_alerts
+    from app.timezones import parse_zone
+
+    if parse_zone(payload.timezone) is None:
+        raise HTTPException(status_code=422, detail="Unknown time zone")
+    user = db.get(User, current_user.id) or current_user
+    if payload.timezone != user.timezone:
+        user_repo.update_timezone(db, user, payload.timezone)
+        system_alerts.resync_for_user(db, user.id)
+        db.commit()
+        db.refresh(user)
+    return user
 
 
 @users_router.get("/me/recent-icons", response_model=list[RecentIcon])

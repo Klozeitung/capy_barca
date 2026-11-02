@@ -5,6 +5,8 @@ import {
   API_READ_ONLY_EVENT,
   API_UNAUTHORIZED_EVENT,
   READ_ONLY_DETAIL,
+  TIMEZONE_HEADER,
+  browserTimeZone,
 } from '@/api/client'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -43,6 +45,15 @@ describe('apiClient', () => {
     const [, init] = vi.mocked(fetch).mock.calls[0]
     expect((init as RequestInit).method).toBe('POST')
     expect(JSON.parse((init as RequestInit).body as string)).toEqual(payload)
+  })
+
+  it('requests name the browser time zone', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(mockResponse(200, {}))
+    await apiClient.get('/api/blocks/abc')
+    const [, init] = vi.mocked(fetch).mock.calls[0]
+    const headers = (init as RequestInit).headers as Record<string, string>
+    expect(headers[TIMEZONE_HEADER]).toBe(browserTimeZone())
+    expect(browserTimeZone()).not.toBe('')
   })
 
   it('PATCH sends correct method', async () => {

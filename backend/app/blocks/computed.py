@@ -90,6 +90,7 @@ from typing import Any, Callable, Optional
 
 from sqlalchemy.orm import Session
 
+from app import timezones
 from app.blocks import options as opts
 from app.blocks import repository as repo
 from app.blocks.formula_engine import (
@@ -431,8 +432,14 @@ def _extract_scalar(schema_type: str, value: Optional[dict], config: Optional[di
     if schema_type == "date":
         # Return the full dict so formulas can access both start and end via
         # dateStart() / dateEnd(). _to_datetime() in formula_engine handles
-        # the {"start": …, "end": …} shape transparently.
-        return {"start": value.get("start"), "end": value.get("end")}
+        # the {"start": …, "end": …} shape transparently. Times of day are
+        # stored in UTC; formulas and rollups are computed once for everybody
+        # and see them in the installation's zone (see app.timezones).
+        zone = timezones.installation_zone()
+        return {
+            "start": timezones.to_floating(value.get("start"), zone),
+            "end": timezones.to_floating(value.get("end"), zone),
+        }
     if schema_type == "id":
         return value.get("id_value")
     if schema_type in ("relation", "parent_item", "sub_item"):
@@ -465,7 +472,7 @@ def _extract_scalar(schema_type: str, value: Optional[dict], config: Optional[di
     if schema_type in ("created_by", "last_edited_by"):
         return value.get("user_id") or value.get("username")  # user_id (new) or username (legacy)
     if schema_type in ("created_time", "last_edited_time"):
-        return value.get("datetime")
+        return timezones.to_floating(value.get("datetime"), timezones.installation_zone())
     return None
 
 

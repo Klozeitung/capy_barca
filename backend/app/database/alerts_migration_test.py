@@ -74,10 +74,11 @@ def test_revision_follows_the_api_settings_revision():
 def test_the_table_and_its_indexes_exist_after_the_migrations(connection):
     assert migration.TABLE in _tables(connection)
     columns = {c["name"] for c in sa.inspect(connection).get_columns(migration.TABLE)}
-    assert columns == {
+    # Later revisions add columns (0032: kind); these are the ones 0031 made.
+    assert {
         "id", "block_id", "schema_id", "user_id", "fire_at", "title",
         "fired_at", "delivered", "dismissed_at", "created_at", "updated_at",
-    }
+    } <= columns
     assert {"ix_alerts_due", "ix_alerts_user_block", "ix_alerts_schema_id"} <= _index_names(
         connection, migration.TABLE,
     )

@@ -119,6 +119,18 @@ export function getSchemaIcon(schema: { type: string; config?: Record<string, un
   return getPropertyTypeIcon(schema.type)
 }
 
+/**
+ * True for a date property a calendar view lays its entries out by. The
+ * server sets ``config.calendarDate`` on it and refuses to delete it, change
+ * its type or give it a timeline while a calendar uses it; its entries get a
+ * calendar alert each.
+ */
+export function isCalendarDateSchema(
+  schema: { type: string; config?: Record<string, unknown> | null } | null | undefined,
+): boolean {
+  return schema?.type === 'date' && schema.config?.calendarDate === true
+}
+
 /** Return true if the type is system-managed and cannot be written via the API. */
 export function isReadonlyPropertyType(type: string): boolean {
   return PROPERTY_TYPES.find(pt => pt.value === type)?.readonly === true

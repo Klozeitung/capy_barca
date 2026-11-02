@@ -17,14 +17,19 @@
  * time. Times are entered in local time and sent as UTC; a time that has
  * already passed is refused by the server and reported in the editor.
  *
+ * In a database with a calendar, every entry also gets an alert before its
+ * date from the server; those are not part of the value, and an info icon
+ * in the editor header says so.
+ *
  * Value shape: { alerts: AlertItem[] } (see ``composables/alertValue``).
  */
 import { computed, ref } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { ApiError } from '@/api/client'
-import type { DatabaseEntry, PropertySchema } from '@/stores/database'
+import { useDatabaseStore, type DatabaseEntry, type PropertySchema } from '@/stores/database'
 import { useAlertsStore } from '@/stores/alerts'
+import { isCalendarDateSchema } from '@/stores/propertyTypes'
 import { useEscapeKey } from '@/composables/useEscapeStack'
 import {
   ALERT_TITLE_MAX_LENGTH,
@@ -47,6 +52,7 @@ const props = defineProps<{
 
 const { t } = useI18n()
 const alertsStore = useAlertsStore()
+const databaseStore = useDatabaseStore()
 
 // ── Value ─────────────────────────────────────────────────────────────────────
 
@@ -54,6 +60,10 @@ const alerts = computed<AlertItem[]>(() => parseAlerts(props.entry.values[props.
 const upcoming = computed(() => alerts.value.filter(isUpcoming))
 const next = computed(() => nextAlert(alerts.value))
 const dateFormat = computed(() => resolveDateFormat(props.schema))
+
+/** Whether the database has a calendar, whose dates get alerts of their own. */
+const hasCalendar = computed(() =>
+  databaseStore.getSchemas(props.databaseId).some(isCalendarDateSchema))
 
 function timeLabel(alert: AlertItem): string {
   return formatAlertTime(alert.at, props.schema)
@@ -160,6 +170,17 @@ async function removeAlert(alert: AlertItem): Promise<void> {
       <div class="alerts-editor__header">
         <Icon icon="mdi:bell-outline" width="14" height="14" class="alerts-editor__header-icon" />
         <span class="alerts-editor__title">{{ t('alerts.editorTitle') }}</span>
+        <Icon
+          v-if="hasCalendar"
+          icon="mdi:information-outline"
+          width="14"
+          height="14"
+          class="alerts-editor__info"
+          role="img"
+          tabindex="0"
+          :title="t('alerts.calendarHint')"
+          :aria-label="t('alerts.calendarHint')"
+        />
         <button class="alerts-editor__close" :title="t('actions.close')" @click="closeEditor">
           <Icon icon="mdi:close" width="14" height="14" />
         </button>
@@ -266,6 +287,12 @@ async function removeAlert(alert: AlertItem): Promise<void> {
 .alerts-cell__icon--idle {
   color: var(--color-text-muted);
   opacity: 0.5;
+}
+
+.alerts-editor__info {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  cursor: help;
 }
 
 .alerts-cell__more {

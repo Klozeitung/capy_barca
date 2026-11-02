@@ -35,6 +35,7 @@ from typing import Any, Iterable, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import timezones
 from app.blocks import repository as repo
 from app.blocks.models import Block, PropertySchema, PropertyValue
 from app.permissions import repository as perm_repo
@@ -105,7 +106,8 @@ def resolve_titles(
     No permission check: the caller decides whether the database may be read.
     With *value_schema_id*, each descriptor also carries the entry's stored
     value for that property, provided the property belongs to *database_id*;
-    otherwise ``value`` stays ``None``.
+    otherwise ``value`` stays ``None``. Times of day of a date property are
+    given in the zone of the request (see app.timezones).
     """
     wanted = list(dict.fromkeys(ids))
     blocks = repo.list_blocks_by_ids(
@@ -123,6 +125,12 @@ def resolve_titles(
                 PropertyValue.property_schema_id == value_schema_id,
             )
             values = {page_id: value for page_id, value in db.execute(stmt)}
+            if value_schema.type == "date":
+                zone = timezones.zone_of(db)
+                values = {
+                    page_id: timezones.date_value_to_local(value, zone)
+                    for page_id, value in values.items()
+                }
 
     return [
         EntryTitle(
@@ -277,11 +285,14 @@ def _resolve_key_values(
     # A key property counts only if it belongs to the relation's target
     # database: a pointer left dangling by a concurrent change degrades to no
     # key values instead of reading another database's data.
-    stmt = select(PropertySchema.id, PropertySchema.database_id).where(
+    stmt = select(PropertySchema.id, PropertySchema.database_id, PropertySchema.type).where(
         PropertySchema.id.in_(keyed.keys())
     )
     valid: dict[uuid.UUID, set[uuid.UUID]] = {}
-    for key_property, database_id in db.execute(stmt):
+    date_keys: set[uuid.UUID] = set()
+    for key_property, database_id, schema_type in db.execute(stmt):
+        if schema_type == "date":
+            date_keys.add(key_property)
         target, ids = keyed[key_property]
         if database_id != target or target not in readable:
             continue
@@ -305,6 +316,9 @@ def _resolve_key_values(
     )
     for key_property in valid:
         resolution.key_values[str(key_property)] = {}
+    zone = timezones.zone_of(db)
     for key_property, page_id, value in db.execute(stmt):
         if page_id in valid[key_property]:
+            if key_property in date_keys:
+                value = timezones.date_value_to_local(value, zone)
             resolution.key_values[str(key_property)][str(page_id)] = value
