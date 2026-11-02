@@ -76,7 +76,13 @@ async def lifespan(app: FastAPI):
     purge_expired()
     purge_expired_tokens()
     _migrate_env_user_to_db()
-    yield
+    from app.alerts import alerts_scheduler
+
+    alert_task = alerts_scheduler.start()
+    try:
+        yield
+    finally:
+        await alerts_scheduler.stop(alert_task)
 
 
 def build_cors_origins(
@@ -133,7 +139,7 @@ _cors_credentials = True
 
 app = FastAPI(
     title="CapyBarca API",
-    version="0.16.10.1",
+    version="0.17.0.0",
     lifespan=lifespan,
 )
 
@@ -150,6 +156,7 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization", "X-Requested-With", "Cookie"],
 )
 
+from app.alerts.alerts_router import alerts_router  # noqa: E402
 from app.automations.automations_router import automations_router  # noqa: E402
 from app.blocks.database_entries_router import database_entries_router  # noqa: E402
 from app.blocks.database_router import database_router  # noqa: E402
@@ -165,6 +172,7 @@ from app.users.router import users_router  # noqa: E402
 from app.wopi.router import wopi_router  # noqa: E402
 from app.ws.router import ws_router  # noqa: E402
 
+app.include_router(alerts_router)
 app.include_router(automations_router)
 app.include_router(block_router)
 app.include_router(comments_router)

@@ -134,3 +134,10 @@ def test_other_values_are_stored_as_sent():
     value = {"text": "Value A"}
     assert entry_service.build_stored_value(_schema("text"), value) is value
     assert entry_service.build_stored_value(_schema(), None) is None
+
+
+def test_an_alerts_property_is_not_writable_through_the_value_endpoint():
+    with pytest.raises(HTTPException) as exc:
+        entry_service.check_writable(_schema("alerts"))
+    assert exc.value.status_code == 422
+    assert "/api/alerts" in exc.value.detail

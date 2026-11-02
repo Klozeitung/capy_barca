@@ -16,6 +16,7 @@
  * - formatRollupExport      – plain-text rollup rendering (export)
  * - formatFormulaExport     – plain-text formula rendering (export)
  * - formatDateString        – apply a configured date format pattern
+ * - formatAlertTime         – an alert's time in the property's date format, local time
  * - resolveDateFormat       – pick the effective display format (property → user → fallback)
  * - formatCanonicalDate     – format a single canonical ISO string (auto time)
  * - maybeFormatRollupDate   – format rollup ISO scalars / ranges, pass through non-dates
@@ -31,6 +32,7 @@ import {
   type SelectOption,
 } from '@/stores/database'
 import { useAuthStore } from '@/stores/auth'
+import { nextAlert, parseAlerts, utcToLocalIso } from '@/composables/alertValue'
 
 // ── Relation chips ────────────────────────────────────────────────────────────
 
@@ -465,6 +467,14 @@ export function formatDateString(
 }
 
 /**
+ * An alert's absolute time (ISO 8601 in UTC) shown in local time with the
+ * property's date format.
+ */
+export function formatAlertTime(utc: string, schema: PropertySchema): string {
+  return formatDateString(utcToLocalIso(utc), resolveDateFormat(schema), true)
+}
+
+/**
  * Format a single canonical ISO string for display in the given format.
  *
  * The time component is shown only when it is present AND not midnight, so
@@ -891,6 +901,17 @@ export function displayValue(
       return ids
         .map(id => formatNuancedRelation(titleOf(id), nuanceLabelFor(val, id, nuanceCfg), nuanceCfg))
         .join(', ')
+    }
+
+    case 'alerts': {
+      // The next alert still to come, as the cell shows it; the count of the
+      // others follows. Alerts belong to the user, so this is their view.
+      const upcoming = nextAlert(parseAlerts(val))
+      if (!upcoming) return ''
+      const more = parseAlerts(val).filter((a) => a.fired_at === null).length - 1
+      const time = formatAlertTime(upcoming.at, schema)
+      const label = upcoming.title ? `${time} ${upcoming.title}` : time
+      return more > 0 ? `${label} (+${more})` : label
     }
 
     case 'rollup':

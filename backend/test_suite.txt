@@ -28,6 +28,7 @@ app/database/relation_chip_icons_migration_test.py
 app/database/natural_sort_collation_migration_test.py
 app/database/api_settings_migration_test.py
 app/database/migration_lock_test.py
+app/database/alerts_migration_test.py
 
 app/session/user_registration_test.py
 app/session/user_login_test.py
@@ -77,6 +78,10 @@ app/wopi/router_test.py
 app/ws/manager_test.py
 app/ws/broadcaster_test.py
 app/ws/router_test.py
+
+app/alerts/alerts_repository_test.py
+app/alerts/alerts_router_test.py
+app/alerts/alerts_scheduler_test.py
 
 app/automations/automations_engine_test.py
 app/automations/automations_router_test.py

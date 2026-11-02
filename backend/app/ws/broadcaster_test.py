@@ -674,3 +674,77 @@ def test_emit_does_not_wait_for_a_client_that_stopped_reading():
         assert time.monotonic() - started < 5.0
 
     anyio.run(_run)
+
+
+# ─── Messages for one account ─────────────────────────────────────────────────
+
+
+def test_user_message_reaches_only_that_accounts_connections():
+    from app.ws.broadcaster import send_user_message
+
+    owner, other = _make_user(), _make_user()
+
+    async def scenario():
+        mine, second_tab, theirs = await _attach(owner), await _attach(owner), await _attach(other)
+        queued = await send_user_message(owner.id, "alert.fired", {"id": "alert-a"})
+        await manager.flush()
+        return queued, mine, second_tab, theirs
+
+    queued, mine, second_tab, theirs = asyncio.run(scenario())
+
+    assert queued == 2
+    assert json.loads(mine.sent[0]) == {"type": "alert.fired", "payload": {"id": "alert-a"}}
+    assert second_tab.sent == mine.sent
+    assert theirs.sent == []
+
+
+def test_user_message_skips_a_deactivated_account():
+    from app.ws.broadcaster import send_user_message
+
+    user = _make_user(is_active=False)
+
+    async def scenario():
+        socket = await _attach(user)
+        queued = await send_user_message(user.id, "alert.fired", {})
+        await manager.flush()
+        return queued, socket
+
+    queued, socket = asyncio.run(scenario())
+    assert queued == 0
+    assert socket.sent == []
+
+
+def test_user_message_without_connection_costs_no_lookup(count_queries):
+    from app.ws.broadcaster import send_user_message
+
+    with count_queries() as counter:
+        assert asyncio.run(send_user_message(uuid.uuid4(), "alert.fired", {})) == 0
+    assert counter.count == 0
+
+
+def test_emit_user_message_from_a_worker_thread():
+    from app.ws.broadcaster import emit_user_message
+
+    user = _make_user()
+
+    async def scenario():
+        socket = await _attach(user)
+        queued = await anyio.to_thread.run_sync(
+            lambda: emit_user_message(user.id, "alert.changed", {"value": {"alerts": []}}),
+        )
+        await manager.flush()
+        return queued, socket
+
+    queued, socket = anyio.run(scenario)
+    assert queued == 1
+    assert json.loads(socket.sent[0])["type"] == "alert.changed"
+
+
+def test_emit_user_message_outside_a_worker_thread_drops_with_a_warning(caplog):
+    from app.ws.broadcaster import emit_user_message
+
+    user = _make_user()
+    asyncio.run(_attach(user))
+
+    assert emit_user_message(user.id, "alert.changed", {}) == 0
+    assert "emit_user_message was called outside a worker thread" in caplog.text

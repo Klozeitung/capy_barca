@@ -83,11 +83,16 @@ os.environ["DATABASE_URL"] = _TEST_DATABASE_URL
 # the WOPI router reads it at import time.
 os.environ.setdefault("SECRET_KEY", "test-suite-signing-secret-not-for-production")
 
+# The alert scheduler would otherwise start with every TestClient and run its
+# passes against the data of whatever test is running. Tests drive it directly.
+os.environ["ALERT_SCHEDULER_ENABLED"] = "false"
+
 # Application modules read DATABASE_URL at import time, so they are imported
 # only after it has been redirected above.
 from sqlalchemy import MetaData, create_engine, event, text  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
+import app.alerts.alerts_models  # noqa: E402,F401 – registers Alert with Base
 import app.automations.automations_models  # noqa: E402,F401 – registers Automation with Base
 import app.blocks.models  # noqa: E402,F401 – registers Block, PropertySchema, PropertyValue,
                            #                    BlockPreference, BlockEvent with Base

@@ -981,6 +981,12 @@ def move(
         in the target are re-pointed; missing schemas are created (except
         ``type='relation'``).  Any leftover ``schemaMemory`` is cleared.
 
+    Alerts
+    ------
+    An entry leaving a database takes its alerts to the ``alerts`` property
+    of the target database. They are deleted when the target has none or is
+    not a database (see ``alerts_repository.transfer_to_database``).
+
     After the move, if the minimum position gap among the new parent's active
     siblings falls below :data:`_REBALANCE_THRESHOLD`, the sibling list is
     automatically rebalanced to evenly spaced integers to prevent future
@@ -1049,6 +1055,16 @@ def move(
     elif new_is_db and old_parent_id != new_parent_id:
         # non-DB → DB or DB → DB (cross-database): migrate into target database.
         _migrate_to_database(db, block, new_parent_id)
+
+    if old_is_db and old_parent_id != new_parent_id:
+        # Alerts are not property values: they follow the entry to the alerts
+        # property of the target database, or are deleted when it has none or
+        # the entry leaves databases altogether.
+        from app.alerts import alerts_repository as alerts_repo
+
+        alerts_repo.transfer_to_database(
+            db, [block_id], new_parent_id if new_is_db else None,
+        )
 
     # ── Apply the move ────────────────────────────────────────────────────────
     repo.update_block(db, block, parent_id=new_parent_id, position=new_position)

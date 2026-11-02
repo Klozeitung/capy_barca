@@ -168,7 +168,8 @@
     "edit": "Edit",
     "restore": "Restore",
     "rename": "Rename",
-    "remove": "Remove"
+    "remove": "Remove",
+    "close": "Close"
   },
   "auth": {
     "loginTitle": "Sign in",
@@ -395,6 +396,7 @@
       "select_multiple": "Multi select",
       "date": "Date",
       "relation": "Relation",
+      "alerts": "Alerts",
       "file": "File attachment",
       "email": "Email",
       "phone": "Phone",
@@ -1138,6 +1140,7 @@
     "databasesGroups": "In the properties side panel you can organise properties into groups. Custom groups fold and unfold, rename on double-click, and reorder by drag-and-drop via the handle on the right of the group header. The default group always stays on top.",
     "databasesFormulas": "Formula properties calculate a value from other properties of the same entry, referenced with prop('Name'). The syntax reference in the property settings lists every function and operator. Renaming a property keeps the formulas that use it working.",
     "databasesKeying": "A relation property can be keyed: choose a property of the target database to sort the relation's entries by. The chosen value is shown beside each entry.",
+    "databasesAlerts": "An Alerts property holds personal reminders with a date, a time and an optional title. Each database can have one. Everyone sees only their own alerts. When an alert is due, a notice appears in every open session and stays until it is closed; clicking it opens the entry. Alerts missed while offline appear at the next login, up to seven days late.",
     "databasesViewDescription": "Each view can have its own description: click the area below the toolbar to write it, click elsewhere to save. It is included in exports — beneath the title in PDF, on the header of the name column in CSV and Excel (or of the first column while the name column is hidden).",
     "databasesCollaboration": "Changes by other users appear right away. If someone changes a value you are editing or changed within the last minute, the later change applies and you get a notice. After an interrupted connection, open pages and views load again. While a field shows a spinner, your value is being saved; until the server has answered, the field takes no further input. Leaving the page at that moment makes the browser ask first.",
     "sectionPrint": "Quick Print",
@@ -1228,7 +1231,8 @@
   "notices": {
     "valueOverwritten": "{user} changed “{property}” in “{entry}” after you edited it. The later change applies.",
     "readOnly": "You only have read access to this block. The change was not saved.",
-    "dismiss": "Close notice"
+    "dismiss": "Close notice",
+    "open": "Open"
   },
   "drive": {
     "defaultTitle": "Drive",
@@ -1269,5 +1273,23 @@
   "readOnly": {
     "badge": "Read only",
     "badgeTitle": "You can view and comment on this content, but not change it."
+  },
+  "alerts": {
+    "notice": "{title}: {entry}",
+    "noticeUntitled": "Alert: {entry}",
+    "editorTitle": "Alerts",
+    "privateHint": "Your alerts are visible to you only. At the set time you get a notice in every open session.",
+    "empty": "No alerts yet.",
+    "fired": "Already due",
+    "timePlaceholder": "Date and time",
+    "titlePlaceholder": "Title (optional)",
+    "add": "Add",
+    "remove": "Remove alert",
+    "errors": {
+      "past": "The time has already passed.",
+      "invalid": "The alert could not be saved. Check the time and the title.",
+      "noAccess": "You cannot set alerts on this entry.",
+      "saveFailed": "The alert could not be saved."
+    }
   }
 }

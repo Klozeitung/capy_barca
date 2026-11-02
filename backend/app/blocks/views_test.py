@@ -426,3 +426,42 @@ def test_forgetting_options_drops_conditions_that_test_them(db):
     assert view.filter_groups == [{"conjunction": "or", "filters": [
         {"schemaId": str(status.id), "operator": "eq", "value": "o2"},
     ]}]
+
+
+def test_entry_payloads_fill_alerts_cells_with_the_viewers_alerts_only(db, admin):
+    from datetime import timedelta
+
+    from app.alerts import alerts_repository as alerts_repo
+
+    other = User(
+        id=uuid.uuid4(), username=f"user_{uuid.uuid4().hex[:8]}",
+        password_hash="x", role="member", is_active=True,
+    )
+    db.add(other)
+    database = _database(db)
+    schema = _schema(db, database, "Reminders", "alerts")
+    entry = _entry(db, database, "Entry A")
+    at = _now() + timedelta(days=1)
+    alerts_repo.create_alert(db, block_id=entry.id, schema_id=schema.id, user_id=admin.id,
+                             fire_at=at, title="Own")
+    alerts_repo.create_alert(db, block_id=entry.id, schema_id=schema.id, user_id=other.id,
+                             fire_at=at, title="Foreign")
+    db.commit()
+
+    [payload] = views.entry_payloads(db, [entry], admin.id)
+    [anonymous] = views.entry_payloads(db, [entry])
+
+    assert [a["title"] for a in payload["values"][str(schema.id)]["alerts"]] == ["Own"]
+    assert anonymous["values"][str(schema.id)] == {"alerts": []}
+
+
+def test_entry_payloads_ignore_a_stored_value_of_an_alerts_property(db, admin):
+    database = _database(db)
+    schema = _schema(db, database, "Reminders", "alerts")
+    entry = _entry(db, database, "Entry A")
+    repo.upsert_value(db, page_id=entry.id, schema_id=schema.id, value={"alerts": [{"id": "x"}]})
+    db.commit()
+
+    [payload] = views.entry_payloads(db, [entry], admin.id)
+
+    assert payload["values"][str(schema.id)] == {"alerts": []}

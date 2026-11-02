@@ -1,0 +1,284 @@
+"""
+Alerts router.
+
+Alerts are personal: every endpoint acts on the caller's own alerts only. An
+alert of another account answers 404, the same as one that does not exist, so
+its existence is not disclosed.
+
+Authorization
+-------------
+Read access to the entry is enough to keep an alert on it; the alert is a
+reminder of the caller and changes nothing others see. Read access is checked
+when an alert is created or changed, and again by the scheduler when it fires
+(see ``app.alerts.alerts_scheduler``).
+
+Validation
+----------
+``at`` must carry a time zone and lie in the future (422 otherwise). The
+entry has to be an active entry of a database that has an ``alerts``
+property. Titles are trimmed and limited to ``MAX_TITLE_LENGTH`` characters,
+and an account keeps at most ``MAX_ALERTS_PER_ENTRY`` alerts on one entry.
+
+After every change the caller's other connections receive ``alert.changed``
+with the entry's new cell value, and after a dismissal ``alert.dismissed``.
+
+GET    /api/alerts/pending           delivered alerts not dismissed yet
+GET    /api/alerts/upcoming          alerts not fired yet, earliest first
+GET    /api/alerts/{id}              one alert
+POST   /api/alerts                   create an alert
+PATCH  /api/alerts/{id}              change time or title
+DELETE /api/alerts/{id}              delete an alert
+POST   /api/alerts/{id}/dismiss      close a delivered alert
+"""
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import AwareDatetime, BaseModel
+from sqlalchemy.orm import Session
+
+from app.alerts import alerts_repository as repo
+from app.alerts.alerts_models import MAX_ALERTS_PER_ENTRY, MAX_TITLE_LENGTH, Alert
+from app.alerts.alerts_scheduler import notification_payload
+from app.blocks.models import Block
+from app.permissions import repository as perm_repo
+from app.permissions.model import READ
+from app.session.deps import get_current_user, get_db, require_block_access
+from app.users.model import User
+from app.ws.broadcaster import emit_user_message
+
+alerts_router = APIRouter(prefix="/api/alerts", tags=["alerts"])
+
+# WebSocket message types sent to the caller's own connections.
+CHANGED_MESSAGE = "alert.changed"
+DISMISSED_MESSAGE = "alert.dismissed"
+
+# Most alerts a listing returns.
+LIST_LIMIT = 500
+
+
+# ─── Request / Response schemas ───────────────────────────────────────────────
+
+
+class AlertCreate(BaseModel):
+    block_id: uuid.UUID
+    at: AwareDatetime
+    title: str = ""
+
+
+class AlertUpdate(BaseModel):
+    at: Optional[AwareDatetime] = None
+    title: Optional[str] = None
+
+
+class AlertResponse(BaseModel):
+    id: uuid.UUID
+    block_id: uuid.UUID
+    schema_id: uuid.UUID
+    at: str
+    title: str
+    fired_at: Optional[str] = None
+    delivered: bool
+    dismissed_at: Optional[str] = None
+
+
+class AlertNotification(AlertResponse):
+    """An alert with what a notification of it shows."""
+
+    block_title: str
+    block_icon: Optional[str] = None
+    database_id: Optional[uuid.UUID] = None
+
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _clean_title(title: str) -> str:
+    cleaned = title.strip()
+    if len(cleaned) > MAX_TITLE_LENGTH:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Title longer than {MAX_TITLE_LENGTH} characters",
+        )
+    return cleaned
+
+
+def _future(at: datetime) -> datetime:
+    moment = at.astimezone(timezone.utc)
+    if moment <= _now():
+        raise HTTPException(status_code=422, detail="Alert time lies in the past")
+    return moment
+
+
+def _own_alert(db: Session, alert_id: uuid.UUID, user: User) -> Alert:
+    """The caller's alert *alert_id*; 404 for a missing or foreign one."""
+    alert = repo.get_alert(db, alert_id)
+    if alert is None or alert.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return alert
+
+
+def _entry_with_alerts_schema(db: Session, block_id: uuid.UUID) -> tuple[Block, uuid.UUID]:
+    """The active entry *block_id* and the id of its database's alerts property."""
+    block = db.get(Block, block_id)
+    if block is None or block.state != "active":
+        raise HTTPException(status_code=404, detail="Entry not found")
+    parent = db.get(Block, block.parent_id) if block.parent_id else None
+    if block.type == "entry_template" or parent is None or parent.type != "database":
+        raise HTTPException(status_code=422, detail="Alerts can only be set on database entries")
+    schema = repo.find_alerts_schema(db, parent.id)
+    if schema is None:
+        raise HTTPException(status_code=422, detail="The database has no alerts property")
+    return block, schema.id
+
+
+def _readable(db: Session, alerts: list[Alert], user: User) -> list[Alert]:
+    """The alerts among *alerts* whose entry *user* may still read."""
+    allowed = perm_repo.filter_accessible(db, {a.block_id for a in alerts}, user, level=READ)
+    return [a for a in alerts if a.block_id in allowed]
+
+
+def _announce_change(db: Session, user: User, block_id: uuid.UUID) -> None:
+    """Send the entry's new cell value to the caller's connections."""
+    alerts = repo.list_for_entry(db, user.id, block_id)
+    block = db.get(Block, block_id)
+    database_id = block.parent_id if block is not None else None
+    schema = repo.find_alerts_schema(db, database_id) if database_id else None
+    emit_user_message(
+        user.id,
+        CHANGED_MESSAGE,
+        {
+            "block_id": str(block_id),
+            "database_id": str(database_id) if database_id else None,
+            "schema_id": str(schema.id) if schema is not None else None,
+            "value": repo.cell_value(alerts),
+        },
+        db=db,
+    )
+
+
+# ─── Endpoints ────────────────────────────────────────────────────────────────
+
+
+@alerts_router.get("/pending", response_model=list[AlertNotification])
+def list_pending(
+    limit: int = Query(default=LIST_LIMIT, ge=1, le=LIST_LIMIT),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    """Delivered alerts of the caller not dismissed yet, on entries still readable."""
+    alerts = _readable(db, repo.list_pending(db, current_user.id, limit), current_user)
+    blocks = {a.block_id: db.get(Block, a.block_id) for a in alerts}
+    return [notification_payload(a, blocks[a.block_id]) for a in alerts]
+
+
+@alerts_router.get("/upcoming", response_model=list[AlertNotification])
+def list_upcoming(
+    limit: int = Query(default=LIST_LIMIT, ge=1, le=LIST_LIMIT),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    """
+    Alerts of the caller not fired yet, earliest first, on entries still readable.
+
+    For clients that schedule notifications on the device themselves.
+    """
+    alerts = _readable(db, repo.list_upcoming(db, current_user.id, limit), current_user)
+    blocks = {a.block_id: db.get(Block, a.block_id) for a in alerts}
+    return [notification_payload(a, blocks[a.block_id]) for a in alerts]
+
+
+@alerts_router.get("/{alert_id}", response_model=AlertResponse)
+def get_alert(
+    alert_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    alert = _own_alert(db, alert_id, current_user)
+    require_block_access(db, alert.block_id, current_user, level=READ)
+    return repo.serialize(alert)
+
+
+@alerts_router.post("", response_model=AlertResponse, status_code=201)
+def create_alert(
+    payload: AlertCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    block, schema_id = _entry_with_alerts_schema(db, payload.block_id)
+    require_block_access(db, block.id, current_user, level=READ)
+    fire_at = _future(payload.at)
+    title = _clean_title(payload.title)
+    if repo.count_for_entry(db, current_user.id, block.id) >= MAX_ALERTS_PER_ENTRY:
+        raise HTTPException(
+            status_code=422,
+            detail=f"At most {MAX_ALERTS_PER_ENTRY} alerts per entry",
+        )
+    alert = repo.create_alert(
+        db,
+        block_id=block.id,
+        schema_id=schema_id,
+        user_id=current_user.id,
+        fire_at=fire_at,
+        title=title,
+    )
+    db.commit()
+    db.refresh(alert)
+    _announce_change(db, current_user, block.id)
+    return repo.serialize(alert)
+
+
+@alerts_router.patch("/{alert_id}", response_model=AlertResponse)
+def update_alert(
+    alert_id: uuid.UUID,
+    payload: AlertUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    alert = _own_alert(db, alert_id, current_user)
+    require_block_access(db, alert.block_id, current_user, level=READ)
+    fire_at = _future(payload.at) if payload.at is not None else None
+    title = _clean_title(payload.title) if payload.title is not None else None
+    repo.update_alert(db, alert, fire_at=fire_at, title=title)
+    db.commit()
+    db.refresh(alert)
+    _announce_change(db, current_user, alert.block_id)
+    return repo.serialize(alert)
+
+
+@alerts_router.delete("/{alert_id}", status_code=204)
+def delete_alert(
+    alert_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    """Delete one of the caller's alerts; read access is not required to remove it."""
+    alert = _own_alert(db, alert_id, current_user)
+    block_id = alert.block_id
+    was_pending = alert.delivered and alert.dismissed_at is None
+    repo.delete_alert(db, alert)
+    db.commit()
+    _announce_change(db, current_user, block_id)
+    if was_pending:
+        emit_user_message(current_user.id, DISMISSED_MESSAGE, {"id": str(alert_id)}, db=db)
+
+
+@alerts_router.post("/{alert_id}/dismiss", response_model=AlertResponse)
+def dismiss_alert(
+    alert_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Close a delivered alert on every connection of the caller."""
+    alert = _own_alert(db, alert_id, current_user)
+    repo.dismiss_alert(db, alert, _now())
+    db.commit()
+    db.refresh(alert)
+    emit_user_message(current_user.id, DISMISSED_MESSAGE, {"id": str(alert.id)}, db=db)
+    _announce_change(db, current_user, alert.block_id)
+    return repo.serialize(alert)

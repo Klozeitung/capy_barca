@@ -365,10 +365,11 @@ const hasTimeline = ref<boolean>(
   (props.schema.config?.hasTimeline as boolean | undefined) ?? false,
 )
 
-// Computed: types that are ineligible for hasTimeline (computed / system / sub-item pair)
+// Computed: types that are ineligible for hasTimeline (computed / system /
+// sub-item pair / alerts, whose values are personal and live in their own table)
 const isTimelineEligible = computed(() =>
   !['formula', 'rollup', 'id', 'created_by', 'created_time',
-    'last_edited_by', 'last_edited_time', 'parent_item', 'sub_item'].includes(props.schema.type),
+    'last_edited_by', 'last_edited_time', 'parent_item', 'sub_item', 'alerts'].includes(props.schema.type),
 )
 
 // ── formula ───────────────────────────────────────────────────────────────────

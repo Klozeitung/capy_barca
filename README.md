@@ -22,6 +22,7 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 ### Advanced features
 
 - **Automations** rule-based triggers that act on database entries
+- **Alerts** personal reminders on database entries (one alerts property per database); each user sees only their own, and a due alert shows a notice in every open session until it is closed
 - **Comments** inline comments on pages and database entries
 - **Collaborative editing** real-time document collaboration via integrated Collabora Online (WOPI)
 
@@ -169,7 +170,7 @@ The Anthropic LLM "Claude" assisted in creating this software.
 
 ## Project Status
 
-Despite heavy testing (~3000 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet.
+Despite heavy testing (~3100 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet.
 
 Do not use for irreplaceable data without regularly creating backups. Use at your own risk.
 

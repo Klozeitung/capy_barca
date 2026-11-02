@@ -62,6 +62,15 @@ Wire format (server → client):
     }
 
 ``after.can_write`` is present only on block snapshots (see above).
+
+Messages for one account
+------------------------
+Some messages concern a single account rather than a block that several may
+read, for example its own alerts. :func:`emit_user_message` and
+:func:`send_user_message` deliver ``{"type": <type>, "payload": <payload>}``
+to the connections of that account only, provided it is still active. The
+caller has decided that the account may see the payload; nothing here checks
+block permissions for these messages.
 """
 import functools
 import json
@@ -409,5 +418,84 @@ def emit_block_event(
             "Dropped %s event for %s: emit_block_event was called outside a "
             "worker thread, so no event loop was available to send it.",
             event_type, block_id,
+        )
+        return 0
+
+
+# ─── Messages for one account ─────────────────────────────────────────────────
+
+
+def _user_envelope(message_type: str, payload: Any) -> str:
+    """Serialise a message for one account."""
+    return json.dumps({"type": message_type, "payload": payload})
+
+
+def _is_active_account(user_id: uuid.UUID, db: Optional["Session"] = None) -> bool:
+    """True when *user_id* names an existing, active account."""
+    from app.users.model import User
+
+    if db is not None:
+        user = db.get(User, user_id)
+        return user is not None and bool(user.is_active)
+
+    import app.database.database as db_module
+
+    with db_module.SessionLocal() as own_db:
+        user = own_db.get(User, user_id)
+        return user is not None and bool(user.is_active)
+
+
+async def send_user_message(user_id: uuid.UUID, message_type: str, payload: Any) -> int:
+    """
+    Send a message to the connections of *user_id*, from the event loop.
+
+    Returns the number of connections it was queued for; 0 when the account
+    holds none or is no longer active.
+    """
+    from app.ws.manager import manager
+
+    if user_id not in manager.user_ids():
+        return 0
+    active = await anyio.to_thread.run_sync(_is_active_account, user_id)
+    if not active:
+        return 0
+    return manager.broadcast(
+        _user_envelope(message_type, payload),
+        recipient_filter=lambda candidate: candidate == user_id,
+    )
+
+
+def emit_user_message(
+    user_id: uuid.UUID,
+    message_type: str,
+    payload: Any,
+    *,
+    db: Optional["Session"] = None,
+) -> int:
+    """
+    Send a message to the connections of *user_id*, from a request handler.
+
+    The counterpart of :func:`send_user_message` for code running in a worker
+    thread, with the same hand-over to the event loop as
+    :func:`emit_block_event`: it returns as soon as the message is queued.
+    """
+    from app.ws.manager import manager
+
+    if user_id not in manager.user_ids():
+        return 0
+    if not _is_active_account(user_id, db):
+        return 0
+    send = functools.partial(
+        manager.broadcast,
+        _user_envelope(message_type, payload),
+        recipient_filter=lambda candidate: candidate == user_id,
+    )
+    try:
+        return anyio.from_thread.run_sync(send)
+    except RuntimeError:
+        logger.warning(
+            "Dropped %s message for %s: emit_user_message was called outside a "
+            "worker thread, so no event loop was available to send it.",
+            message_type, user_id,
         )
         return 0

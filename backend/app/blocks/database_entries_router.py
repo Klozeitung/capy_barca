@@ -137,7 +137,9 @@ def list_entries(
     property values.
 
     Values are loaded in a single additional query (no N+1). The ``values``
-    dict on each entry maps schema_id (string) to the stored JSONB payload.
+    dict on each entry maps schema_id (string) to the stored JSONB payload;
+    an ``alerts`` property carries the caller's own alerts instead (see
+    ``views.entry_payloads``).
     Non-admin users that do not have access to the database block receive an
     empty list (this prevents leaking entry content via relation pickers).
     """
@@ -150,20 +152,9 @@ def list_entries(
     if not entries:
         return []
 
-    values_map = repo.list_values_for_pages(db, [e.id for e in entries])
     return [
-        EntryResponse(
-            id=entry.id,
-            position=entry.position,
-            content=entry.content,
-            icon=entry.icon,
-            state=entry.state,
-            values={
-                str(pv.property_schema_id): pv.value
-                for pv in values_map.get(entry.id, [])
-            },
-        )
-        for entry in entries
+        EntryResponse(**payload)
+        for payload in views.entry_payloads(db, entries, current_user.id)
     ]
 
 
@@ -270,21 +261,10 @@ def query_entries(
     if not entries:
         return EntryQueryResponse(entries=[], total=total)
 
-    values_map = repo.list_values_for_pages(db, [e.id for e in entries])
     return EntryQueryResponse(
         entries=[
-            EntryResponse(
-                id=entry.id,
-                position=entry.position,
-                content=entry.content,
-                icon=entry.icon,
-                state=entry.state,
-                values={
-                    str(pv.property_schema_id): pv.value
-                    for pv in values_map.get(entry.id, [])
-                },
-            )
-            for entry in entries
+            EntryResponse(**payload)
+            for payload in views.entry_payloads(db, entries, current_user.id)
         ],
         total=total,
     )
@@ -384,7 +364,7 @@ def get_entry(
     if entry is None or entry.parent_id != database_id:
         raise HTTPException(status_code=404, detail=f"Entry {entry_id} not found")
 
-    payload = views.entry_payloads(db, [entry])[0]
+    payload = views.entry_payloads(db, [entry], current_user.id)[0]
     resolved = resolution.resolve_relations(
         db, repo.list_schemas(db, database_id), [payload["values"]], current_user,
     )
@@ -419,7 +399,7 @@ def get_entries_batch(
     )
     by_id = {b.id: b for b in found}
     entries = [by_id[i] for i in wanted if i in by_id]
-    payloads = views.entry_payloads(db, entries)
+    payloads = views.entry_payloads(db, entries, current_user.id)
     resolved = resolution.resolve_relations(
         db, repo.list_schemas(db, database_id), (p["values"] for p in payloads), current_user,
     )
@@ -616,7 +596,8 @@ def upsert_value(
     Raises 404 if the entry does not belong to this database, or if the
     schema does not belong to this database.
     Raises 422 for schema types that are backend-managed (id, created_*, formula,
-    rollup), for an invalid ``parent_item`` or timeline value.
+    rollup) or written through their own endpoints (alerts), for an invalid
+    ``parent_item`` or timeline value.
     Raises 403 for a relation property whose target database the caller may
     not access.
     """

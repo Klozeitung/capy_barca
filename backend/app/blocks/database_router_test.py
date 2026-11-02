@@ -5231,3 +5231,54 @@ def test_a_rollup_over_last_edited_of_linked_entries_follows_their_writes(http_c
     after = _stored(http_client, readers, reader["id"], latest["id"])["result"]
     assert after != before
     assert after.startswith(stamp[:19])
+
+
+# ─── Alerts properties ────────────────────────────────────────────────────────
+
+
+def test_second_alerts_property_returns_409(http_client):
+    database_id = _create_database(http_client)
+    _create_schema(http_client, database_id, name="Reminders", type_="alerts")
+
+    resp = http_client.post(
+        f"/api/databases/{database_id}/schemas", json={"name": "Second", "type": "alerts"},
+    )
+    assert resp.status_code == 409
+
+    other = _create_schema(http_client, database_id, name="Notes", type_="text")
+    resp = http_client.patch(
+        f"/api/databases/{database_id}/schemas/{other['id']}", json={"type": "alerts"},
+    )
+    assert resp.status_code == 409
+
+
+def test_alerts_property_may_be_renamed(http_client):
+    database_id = _create_database(http_client)
+    schema = _create_schema(http_client, database_id, name="Reminders", type_="alerts")
+    resp = http_client.patch(
+        f"/api/databases/{database_id}/schemas/{schema['id']}",
+        json={"name": "Renamed", "type": "alerts"},
+    )
+    assert resp.status_code == 200
+
+
+def test_upsert_alerts_value_returns_422(http_client):
+    database_id = _create_database(http_client)
+    schema = _create_schema(http_client, database_id, name="Reminders", type_="alerts")
+    entry = _create_entry(http_client, database_id)
+    resp = http_client.put(
+        f"/api/databases/{database_id}/entries/{entry['id']}/values/{schema['id']}",
+        json={"value": {"alerts": []}},
+    )
+    assert resp.status_code == 422
+
+
+def test_entries_list_shows_an_empty_alerts_cell(http_client):
+    database_id = _create_database(http_client)
+    schema = _create_schema(http_client, database_id, name="Reminders", type_="alerts")
+    entry = _create_entry(http_client, database_id)
+
+    entries = http_client.get(f"/api/databases/{database_id}/entries").json()
+
+    [listed] = [e for e in entries if e["id"] == entry["id"]]
+    assert listed["values"][schema["id"]] == {"alerts": []}

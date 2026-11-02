@@ -36,9 +36,10 @@
  * After any mutation the affected collection is re-fetched from the server.
  * This keeps the implementation simple and correct; optimistic updates would
  * complicate conflict handling for schema renames and position reordering.
- * The exceptions are cell values (``upsertValue``) and entry titles, which
- * arrive over the WebSocket: both are patched in place in every cached copy
- * of the entry, so views, side panels and relation chips agree immediately.
+ * The exceptions are cell values (``upsertValue``, and ``setAlertsValue`` for
+ * the alerts store) and entry titles, which arrive over the WebSocket: they
+ * are patched in place in every cached copy of the entry, so views, side
+ * panels and relation chips agree immediately.
  *
  * Pending writes
  * --------------
@@ -1604,6 +1605,20 @@ export const useDatabaseStore = defineStore('database', () => {
     if (tmpl) tmpl.values[schemaId] = value
   }
 
+  /**
+   * Put the cell value of an ``alerts`` property into every cached copy of
+   * the entry. Alerts are written through ``/api/alerts`` (see the alerts
+   * store), never through ``upsertValue``, so no pending write is involved.
+   */
+  function setAlertsValue(
+    databaseId: string,
+    entryId: string,
+    schemaId: string,
+    value: Record<string, unknown>,
+  ): void {
+    _writeCell(databaseId, entryId, schemaId, value)
+  }
+
   // ── In-place entry updates ────────────────────────────────────────────────
 
   /**
@@ -1993,6 +2008,7 @@ export const useDatabaseStore = defineStore('database', () => {
     createEntry,
     duplicateEntry,
     upsertValue,
+    setAlertsValue,
     refreshEntries,
     setEditingCell,
 

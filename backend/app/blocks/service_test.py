@@ -771,6 +771,55 @@ def test_move_between_databases_does_not_port_relation_schema(
     assert target_schema is None
 
 
+def _alerts_setup(db, database, entry):
+    from datetime import datetime, timedelta, timezone
+
+    from app.alerts import alerts_repository as alerts_repo
+    from app.users.model import User
+
+    user = User(id=uuid.uuid4(), username="person-a", password_hash="x", role="member",
+                is_active=True)
+    db.add(user)
+    schema = repo.create_schema(
+        db, database_id=database.id, name="Reminders", type="alerts", position=1.0,
+    )
+    db.flush()
+    alert = alerts_repo.create_alert(
+        db, block_id=entry.id, schema_id=schema.id, user_id=user.id,
+        fire_at=datetime.now(timezone.utc) + timedelta(days=1), title="",
+    )
+    db.commit()
+    return alert.id
+
+
+def test_move_between_databases_takes_alerts_to_the_targets_alerts_property(
+    db, database_a, database_b, entry,
+):
+    from app.alerts.alerts_models import Alert
+
+    alert_id = _alerts_setup(db, database_a, entry)
+    target = repo.create_schema(
+        db, database_id=database_b.id, name="Other name", type="alerts", position=1.0,
+    )
+    db.commit()
+
+    service.move(db, entry.id, new_parent_id=database_b.id, new_position=1.0)
+    db.commit()
+
+    assert db.get(Alert, alert_id).schema_id == target.id
+
+
+def test_move_out_of_databases_deletes_the_alerts(db, workspace, database_a, entry):
+    from app.alerts.alerts_models import Alert
+
+    _alerts_setup(db, database_a, entry)
+
+    service.move(db, entry.id, new_parent_id=workspace.id, new_position=9.0)
+    db.commit()
+
+    assert db.query(Alert).count() == 0
+
+
 def test_move_within_same_parent_no_schema_migration(db, database_a, entry):
     schema_a = repo.create_schema(
         db, database_id=database_a.id, name="Status", type="select", position=1.0

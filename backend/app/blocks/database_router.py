@@ -284,7 +284,7 @@ def create_schema(
 
     If ``position`` is omitted the schema is appended after the last existing
     one. Returns 409 if a schema with the same name already exists in this
-    database. Returns 422 if a formula / rollup config would create a cycle or
+    database, or for a second property of type ``alerts``. Returns 422 if a formula / rollup config would create a cycle or
     contains a syntax error.
 
     For bilateral relation schemas, the mirror schema is created eagerly in the
@@ -318,6 +318,7 @@ def create_schema(
         )
     if payload.type == "relation":
         validate_relation_mode_exclusivity(payload.config)
+    schema_service.check_single_alerts_property(db, database_id, payload.type)
 
     try:
         schema = repo.create_schema(
@@ -384,6 +385,9 @@ def update_schema(
       re-evaluate the computed properties that show them.
     * A retype out of the keyable types resets every relation keyed on the
       property.
+    * A retype out of ``alerts`` deletes its alerts; a retype into it deletes
+      the stored values, and answers 409 when the database already has an
+      ``alerts`` property.
     * A bilateral relation carries the change over to its mirror (see
       ``schema_service.propagate_to_mirror``).
     * Enabling ``hasTimeline`` wraps the existing values into the timeline
@@ -446,6 +450,8 @@ def update_schema(
         validate_relation_mode_exclusivity(effective_config)
         assert_relation_cross_side_lock(db, schema, effective_config)
     retyped_out_of_keyable = schema_service.retyped_out_of_keyable(schema.type, payload.type)
+    schema_service.check_single_alerts_property(db, database_id, payload.type, schema_id)
+    old_type = schema.type
 
     if touches_relation and config_changed:
         schema_service.lock_for_relation_config(
@@ -473,6 +479,8 @@ def update_schema(
             migrated.update(recompute_database_and_readers(db, database_id))
         if retyped_out_of_keyable:
             clear_keying_for_property(db, schema_id)
+        if schema_service.apply_alerts_retype(db, updated, old_type, payload.type):
+            migrated.add(database_id)
 
         # Formulas store property ids, so a rename leaves them intact. A
         # formula saved with names, and references written by name to what

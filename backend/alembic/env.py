@@ -18,6 +18,7 @@ from app.database.database import Base, engine  # noqa: E402
 from app.database.migration_lock import acquire_migration_lock  # noqa: E402
 
 # Register all models with Base so autogenerate can detect schema changes.
+import app.alerts.alerts_models  # noqa: F401, E402 – Alert
 import app.automations.automations_models  # noqa: F401, E402 – Automation
 import app.blocks.models  # noqa: F401, E402 – Block, PropertySchema, PropertyValue,
                            #                    BlockPreference, BlockEvent

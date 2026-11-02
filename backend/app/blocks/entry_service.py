@@ -218,11 +218,22 @@ def recompute_after_writes(
 
 
 def check_writable(schema) -> None:
-    """Refuse a write to a system-managed property with 422."""
+    """
+    Refuse a write to a system-managed property, or to an ``alerts``
+    property, whose alerts live in their own table and are changed through
+    ``/api/alerts`` only, with 422.
+    """
+    from app.alerts.alerts_models import ALERTS_PROPERTY_TYPE
+
     if schema.type in READONLY_TYPES:
         raise HTTPException(
             status_code=422,
             detail=f"Property '{schema.name}' is system-managed and cannot be set directly.",
+        )
+    if schema.type == ALERTS_PROPERTY_TYPE:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Property '{schema.name}' holds alerts, which are set through /api/alerts.",
         )
 
 

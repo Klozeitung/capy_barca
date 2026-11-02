@@ -495,3 +495,14 @@ def test_view_selection_is_deleted_with_its_placement(db, workspace, database_bl
 
     assert db.get(DatabaseViewSelection, linked_id) is None
     assert db.get(DatabaseView, view.id) is not None
+
+
+def test_a_database_holds_at_most_one_alerts_property(db, database_block):
+    db.add(PropertySchema(database_id=database_block.id, name="Reminders", type="alerts", position=1.0))
+    db.add(PropertySchema(database_id=database_block.id, name="Notes", type="text", position=2.0))
+    db.commit()
+
+    db.add(PropertySchema(database_id=database_block.id, name="Second", type="alerts", position=3.0))
+    with pytest.raises(sa.exc.IntegrityError):
+        db.commit()
+    db.rollback()

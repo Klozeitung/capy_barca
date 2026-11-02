@@ -8,6 +8,8 @@
  * Received block events are re-dispatched as a DOM CustomEvent
  * (`capybarca:block-event`) so that the blocks store (and any future
  * consumer) can react without a direct import dependency on this store.
+ * Messages about the user's own alerts (`alert.*`) are re-dispatched the same
+ * way as `capybarca:alert-event`.
  *
  * Reconnect behaviour
  * -------------------
@@ -49,6 +51,21 @@ export interface BlockEventPayload {
 }
 
 export const WS_BLOCK_EVENT = 'capybarca:block-event'
+
+/**
+ * A message about the user's own alerts: ``alert.fired``, ``alert.dismissed``
+ * or ``alert.changed``. Re-dispatched as ``WS_ALERT_EVENT``; the alerts store
+ * handles it.
+ */
+export interface AlertMessage {
+  type: string
+  payload: unknown
+}
+
+export const WS_ALERT_EVENT = 'capybarca:alert-event'
+
+/** Prefix of the message types re-dispatched as ``WS_ALERT_EVENT``. */
+export const ALERT_MESSAGE_PREFIX = 'alert.'
 
 /** Dispatched when the connection is back after an interruption. */
 export const WS_RESYNC_EVENT = 'capybarca:ws-resync'
@@ -112,7 +129,7 @@ export const useWsStore = defineStore('ws', () => {
     })
 
     ws.addEventListener('message', (ev: MessageEvent) => {
-      let msg: { type: string; payload?: BlockEventPayload }
+      let msg: { type: string; payload?: unknown }
       try {
         msg = JSON.parse(ev.data as string)
       } catch {
@@ -120,9 +137,16 @@ export const useWsStore = defineStore('ws', () => {
       }
 
       if (msg.type === 'block.event' && msg.payload) {
-        lastEventAt.value = msg.payload.created_at
+        const payload = msg.payload as BlockEventPayload
+        lastEventAt.value = payload.created_at
         window.dispatchEvent(
-          new CustomEvent<BlockEventPayload>(WS_BLOCK_EVENT, { detail: msg.payload }),
+          new CustomEvent<BlockEventPayload>(WS_BLOCK_EVENT, { detail: payload }),
+        )
+      } else if (typeof msg.type === 'string' && msg.type.startsWith(ALERT_MESSAGE_PREFIX)) {
+        window.dispatchEvent(
+          new CustomEvent<AlertMessage>(WS_ALERT_EVENT, {
+            detail: { type: msg.type, payload: msg.payload },
+          }),
         )
       }
       // pong frames are silently consumed

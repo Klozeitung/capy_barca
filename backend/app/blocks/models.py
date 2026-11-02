@@ -149,6 +149,13 @@ class PropertySchema(Base):
         sa.UniqueConstraint(
             "database_id", "name", name="uq_property_schemas_database_name"
         ),
+        # A database has at most one property of type ``alerts``.
+        sa.Index(
+            "uq_property_schemas_single_alerts",
+            "database_id",
+            unique=True,
+            postgresql_where=sa.text("type = 'alerts'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

@@ -3,8 +3,11 @@
  * NoticeToasts
  *
  * Shows the notices of the notices store in the lower right corner. Each one
- * closes on its own after a few seconds or when its close button is clicked.
- * Announced politely to screen readers.
+ * closes on its own after a few seconds or when its close button is clicked;
+ * a sticky notice, such as an alert that fell due, stays until it is closed.
+ * A notice that can be opened shows its text as a button, which opens it
+ * (for an alert: goes to the entry) and closes it. Announced politely to
+ * screen readers.
  *
  * Also turns the API client's read-only event into a notice, so a change the
  * server refused because the user may only read the block does not vanish
@@ -27,6 +30,10 @@ const ICONS: Record<string, string> = {
 }
 const DEFAULT_ICON = 'mdi:account-sync-outline'
 
+function iconOf(notice: Notice): string {
+  return notice.icon ?? ICONS[notice.key] ?? DEFAULT_ICON
+}
+
 function onReadOnly(): void {
   store.push(READ_ONLY_NOTICE_KEY)
 }
@@ -43,9 +50,20 @@ function paramsOf(notice: Notice): Record<string, string> {
 
 <template>
   <div class="notices" role="status" aria-live="polite">
-    <div v-for="notice in store.notices" :key="notice.id" class="notices__item">
-      <Icon :icon="ICONS[notice.key] ?? DEFAULT_ICON" width="16" height="16" class="notices__icon" />
-      <span class="notices__text">{{ t(notice.key, paramsOf(notice)) }}</span>
+    <div
+      v-for="notice in store.notices"
+      :key="notice.id"
+      class="notices__item"
+      :class="{ 'notices__item--sticky': notice.sticky }"
+    >
+      <Icon :icon="iconOf(notice)" width="16" height="16" class="notices__icon" />
+      <button
+        v-if="notice.onOpen"
+        class="notices__text notices__text--open"
+        :title="t('notices.open')"
+        @click="store.open(notice.id)"
+      >{{ t(notice.key, paramsOf(notice)) }}</button>
+      <span v-else class="notices__text">{{ t(notice.key, paramsOf(notice)) }}</span>
       <button
         class="notices__close"
         :aria-label="t('notices.dismiss')"
@@ -94,6 +112,24 @@ function paramsOf(notice: Notice): Record<string, string> {
 
 .notices__text {
   flex: 1;
+}
+
+.notices__text--open {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notices__text--open:hover {
+  text-decoration: underline;
+}
+
+.notices__item--sticky {
+  border-color: var(--color-accent);
 }
 
 .notices__close {

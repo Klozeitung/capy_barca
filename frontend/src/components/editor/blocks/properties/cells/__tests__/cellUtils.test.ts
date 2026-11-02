@@ -1015,3 +1015,52 @@ describe('compareKeyScalars', () => {
     expect(sorted([10, 2, 1])).toEqual([1, 2, 10])
   })
 })
+
+// ── Alerts ────────────────────────────────────────────────────────────────────
+
+import { formatAlertTime } from '../cellUtils'
+import { localToUtcIso } from '@/composables/alertValue'
+
+describe('displayValue – alerts', () => {
+  const schema: PropertySchema = {
+    id: 'schema-alerts',
+    database_id: 'db-1',
+    name: 'Reminders',
+    type: 'alerts',
+    config: { dateFormat: 'DD.MM.YYYY' },
+    position: 0,
+    group: 'Standard',
+  }
+
+  function alertItem(id: string, local: string, title = '', fired = false) {
+    return {
+      id, block_id: 'entry-1', schema_id: 'schema-alerts', at: localToUtcIso(local), title,
+      fired_at: fired ? localToUtcIso(local) : null, delivered: fired, dismissed_at: null,
+    }
+  }
+
+  function entry(alerts: unknown[]): DatabaseEntry {
+    return {
+      id: 'entry-1', position: 0, content: null, icon: null, state: 'active',
+      values: { 'schema-alerts': { alerts } },
+    }
+  }
+
+  it('shows the alert time in local time and the property format', () => {
+    expect(formatAlertTime(localToUtcIso('2045-07-17T09:30'), schema)).toBe('17.07.2045 09:30')
+  })
+
+  it('shows the next upcoming alert with its title and the count of the others', () => {
+    const value = entry([
+      alertItem('fired', '2045-07-16T08:00', 'Old', true),
+      alertItem('later', '2045-07-18T10:00'),
+      alertItem('soon', '2045-07-17T09:30', 'Title A'),
+    ])
+    expect(displayValue(value, schema)).toBe('17.07.2045 09:30 Title A (+1)')
+  })
+
+  it('is empty when no alert is still to come', () => {
+    expect(displayValue(entry([alertItem('fired', '2045-07-16T08:00', '', true)]), schema)).toBe('')
+    expect(displayValue(entry([]), schema)).toBe('')
+  })
+})

@@ -117,6 +117,7 @@ import ReadonlyCell from './properties/cells/ReadonlyCell.vue'
 import TextCell from './properties/cells/TextCell.vue'
 import RollupCell from './properties/cells/RollupCell.vue'
 import FormulaCell from './properties/cells/FormulaCell.vue'
+import AlertsCell from './properties/cells/AlertsCell.vue'
 import SideView from '@/components/main/SideView.vue'
 import AutomationsModal from './AutomationsModal.vue'
 import DatabaseTemplateEditor from './DatabaseTemplateEditor.vue'
@@ -153,6 +154,11 @@ const placementId = props.placementId ?? props.blockId
 const block   = computed(() => blockStore.blocks[props.blockId])
 const editable = provideEditable(block)
 const schemas = computed(() => dbStore.getSchemas(props.blockId))
+/**
+ * Properties offered for filters and sorts. Alerts are left out: each user
+ * sees only their own, so the server has nothing shared to filter or sort by.
+ */
+const queryableSchemas = computed(() => schemas.value.filter(s => s.type !== 'alerts'))
 const isLoading = ref(true)
 
 // ── Server-side query state ───────────────────────────────────────────────────
@@ -1073,6 +1079,7 @@ function onCellClick(entry: DatabaseEntry, schema: PropertySchema): void {
   if (!editable.value) return
   if (isReadonlyPropertyType(schema.type)) return
   if (schema.type === 'checkbox' || schema.type === 'relation' || schema.type === 'file') return
+  if (schema.type === 'alerts') return
   if (schema.type === 'select' && (schema.config?.mode ?? 'single') === 'multiple') return
   setActiveCell(entry.id, schema.id)
 }
@@ -1262,7 +1269,7 @@ async function toggleWrapColumn(colKey: string): Promise<void> {
         <template #filter-panel>
           <FilterPanel
             :active-view="activeView"
-            :schemas="schemas"
+            :schemas="queryableSchemas"
             :displayed-entries="displayedEntries"
             :name-col-key="NAME_COL_KEY"
             :name-label="nameLabel"
@@ -1282,7 +1289,7 @@ async function toggleWrapColumn(colKey: string): Promise<void> {
         <template #sort-panel>
           <SortPanel
             :active-view="activeView"
-            :schemas="schemas"
+            :schemas="queryableSchemas"
             :name-col-key="NAME_COL_KEY"
             :name-label="nameLabel"
             @add-sort="addSort"
@@ -1622,6 +1629,7 @@ async function toggleWrapColumn(colKey: string): Promise<void> {
                         <RelationCell   v-else-if="col.schema!.type === 'sub_item'"                                                          :schema="col.schema!" :entry="entry" :database-id="blockId" :readonly="true" />
                         <LinkCell       v-else-if="col.schema!.type === 'email' || col.schema!.type === 'phone' || col.schema!.type === 'url'" :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
                         <FileCell       v-else-if="col.schema!.type === 'file'"                                                              :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
+                        <AlertsCell     v-else-if="col.schema!.type === 'alerts'"                                                            :entry="entry" :schema="col.schema!" :database-id="blockId" />
                         <ReadonlyCell   v-else-if="isReadonlyPropertyType(col.schema!.type)"                                                 :entry="entry" :schema="col.schema!" />
                         <RollupCell     v-else-if="col.schema!.type === 'rollup'"                                                            :entry="entry" :schema="col.schema!" />
                         <FormulaCell    v-else-if="col.schema!.type === 'formula'"                                                           :entry="entry" :schema="col.schema!" />
@@ -1817,6 +1825,7 @@ async function toggleWrapColumn(colKey: string): Promise<void> {
                           <RelationCell   v-else-if="col.schema!.type === 'sub_item'"                                                          :schema="col.schema!" :entry="entry" :database-id="blockId" :readonly="true" />
                           <LinkCell       v-else-if="col.schema!.type === 'email' || col.schema!.type === 'phone' || col.schema!.type === 'url'" :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
                           <FileCell       v-else-if="col.schema!.type === 'file'"                                                              :entry="entry" :schema="col.schema!" :database-id="blockId" :is-active="isActiveCell(entry.id, col.schema!.id)" @activate="setActiveCell(entry.id, col.schema!.id)" @deactivate="clearActiveCell" />
+                          <AlertsCell     v-else-if="col.schema!.type === 'alerts'"                                                            :entry="entry" :schema="col.schema!" :database-id="blockId" />
                           <ReadonlyCell   v-else-if="isReadonlyPropertyType(col.schema!.type)"                                                 :entry="entry" :schema="col.schema!" />
                           <RollupCell     v-else-if="col.schema!.type === 'rollup'"                                                            :entry="entry" :schema="col.schema!" />
                           <FormulaCell    v-else-if="col.schema!.type === 'formula'"                                                           :entry="entry" :schema="col.schema!" />

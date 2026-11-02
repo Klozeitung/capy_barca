@@ -125,3 +125,32 @@ def test_client_config_returns_other_configs_unchanged():
     config = {"mode": "single", "options": []}
     select = _schema("Choice", "select", config)
     assert schema_service.client_config(select, [select]) is config
+
+
+# ─── Alerts ──────────────────────────────────────────────────────────────────
+
+
+def test_single_alerts_check_ignores_other_types(monkeypatch):
+    import app.alerts.alerts_repository as alerts_repo
+
+    monkeypatch.setattr(alerts_repo, "find_alerts_schema", lambda db, database_id: pytest.fail())
+    schema_service.check_single_alerts_property(None, uuid.uuid4(), "text")
+    schema_service.check_single_alerts_property(None, uuid.uuid4(), None)
+
+
+def test_single_alerts_check_refuses_a_second_and_admits_the_existing_one(monkeypatch):
+    import app.alerts.alerts_repository as alerts_repo
+
+    existing = _schema("Reminders", "alerts")
+    monkeypatch.setattr(alerts_repo, "find_alerts_schema", lambda db, database_id: existing)
+
+    with pytest.raises(HTTPException) as exc:
+        schema_service.check_single_alerts_property(None, uuid.uuid4(), "alerts")
+    assert exc.value.status_code == 409
+    schema_service.check_single_alerts_property(None, uuid.uuid4(), "alerts", existing.id)
+
+
+def test_alerts_retype_without_a_type_change_touches_nothing():
+    schema = _schema("Reminders", "alerts")
+    assert schema_service.apply_alerts_retype(None, schema, "alerts", None) is False
+    assert schema_service.apply_alerts_retype(None, schema, "alerts", "alerts") is False

@@ -53,6 +53,9 @@ export const PROPERTY_TYPES: readonly PropertyTypeDefinition[] = [
   { value: 'select_multiple', labelKey: 'db.propType.select_multiple',  icon: 'mdi:format-list-checks',            group: 'standard', virtual: true },
   { value: 'date',             labelKey: 'db.propType.date',             icon: 'mdi:calendar-outline',              group: 'standard' },
   { value: 'relation',         labelKey: 'db.propType.relation',         icon: 'mdi:link-variant',                  group: 'standard' },
+  // Personal reminders. Values live in their own table and are written through
+  // /api/alerts; each user sees only their own. At most one per database.
+  { value: 'alerts',           labelKey: 'db.propType.alerts',           icon: 'mdi:bell-outline',                  group: 'standard' },
 
   // ── Upload media ──────────────────────────────────────────────────────────
   { value: 'file',             labelKey: 'db.propType.file',             icon: 'mdi:paperclip',                     group: 'upload' },

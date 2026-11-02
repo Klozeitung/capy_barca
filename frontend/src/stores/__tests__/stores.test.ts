@@ -3,7 +3,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { useBlockStore } from '@/stores/blocks'
 import { useUiStore } from '@/stores/ui'
 import { useDrag } from '@/composables/useDrag'
-import { WS_BLOCK_EVENT, WS_RESYNC_EVENT, useWsStore } from '@/stores/ws'
+import { WS_ALERT_EVENT, WS_BLOCK_EVENT, WS_RESYNC_EVENT, useWsStore } from '@/stores/ws'
 import {
   useDatabaseStore,
   entriesEventDetails,
@@ -533,6 +533,28 @@ describe('useWsStore', () => {
     })
 
     expect(store.lastEventAt).toBe('2025-06-01T12:00:00Z')
+  })
+
+  it('alert messages are re-dispatched as alert events, not block events', () => {
+    const store = useWsStore()
+    store.connect()
+    MockWs.instance!._open()
+    const alerts: CustomEvent[] = []
+    const blocks: CustomEvent[] = []
+    const onAlert = (e: Event) => alerts.push(e as CustomEvent)
+    const onBlock = (e: Event) => blocks.push(e as CustomEvent)
+    window.addEventListener(WS_ALERT_EVENT, onAlert)
+    window.addEventListener(WS_BLOCK_EVENT, onBlock)
+
+    MockWs.instance!._message({ type: 'alert.fired', payload: { id: 'alert-a' } })
+
+    expect(alerts).toHaveLength(1)
+    expect(alerts[0].detail).toEqual({ type: 'alert.fired', payload: { id: 'alert-a' } })
+    expect(blocks).toHaveLength(0)
+    expect(store.lastEventAt).toBeNull()
+
+    window.removeEventListener(WS_ALERT_EVENT, onAlert)
+    window.removeEventListener(WS_BLOCK_EVENT, onBlock)
   })
 
   it('malformed JSON message is silently ignored', () => {

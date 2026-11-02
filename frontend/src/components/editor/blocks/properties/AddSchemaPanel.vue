@@ -12,6 +12,9 @@
  * and auto-updates on type change — unless the user has already typed
  * something manually.
  *
+ * A database has at most one ``alerts`` property; once it has one, the type
+ * is not offered.
+ *
  * Virtual types
  * -------------
  * ``select_multiple`` is a UI-only entry that maps to type ``select`` with
@@ -95,11 +98,16 @@ onMounted(async () => {
 
 // ── Grouped types ─────────────────────────────────────────────────────────────
 
-const groups: Array<{ key: string; labelKey: string; types: typeof PROPERTY_TYPES[number][] }> = [
+const hasAlertsProperty = computed(() =>
+  dbStore.getSchemas(props.databaseId).some(s => s.type === 'alerts'),
+)
+
+const groups = computed<Array<{ key: string; labelKey: string; types: typeof PROPERTY_TYPES[number][] }>>(() => [
   {
     key: 'standard',
     labelKey: 'db.addSchema.groupStandard',
-    types: PROPERTY_TYPES.filter(p => p.group === 'standard'),
+    types: PROPERTY_TYPES.filter(p =>
+      p.group === 'standard' && !(p.value === 'alerts' && hasAlertsProperty.value)),
   },
   {
     key: 'upload',
@@ -121,7 +129,7 @@ const groups: Array<{ key: string; labelKey: string; types: typeof PROPERTY_TYPE
     labelKey: 'db.addSchema.groupReadonly',
     types: PROPERTY_TYPES.filter(p => p.group === 'readonly'),
   },
-]
+])
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 

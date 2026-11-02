@@ -194,12 +194,12 @@ function setCalendarSubtype(sub: 'standard' | 'agenda'): void {
 
 /**
  * Schema types that cannot be used as a group-by property:
- * system/readonly types, computed types, and multi-value types that
- * don't have a single stable string key.
+ * system/readonly types, computed types, multi-value types that
+ * don't have a single stable string key, and alerts, which differ per user.
  */
 const SKIP_GROUP_TYPES = new Set([
   'id', 'created_by', 'created_time', 'last_edited_by', 'last_edited_time',
-  'formula', 'rollup', 'file', 'relation',
+  'formula', 'rollup', 'file', 'relation', 'alerts',
 ])
 
 const groupableSchemas = computed(() =>

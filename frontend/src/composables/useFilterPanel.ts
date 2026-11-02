@@ -87,6 +87,9 @@ export function getOperatorsForSchemaId(
       return ['contains', 'not_contains', 'is_empty', 'is_not_empty']
     case 'file':
       return ['is_empty', 'is_not_empty']
+    case 'alerts':
+      // Personal per user; the server has nothing shared to filter by.
+      return []
     case 'id':
       return ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'is_empty', 'is_not_empty']
     case 'created_by':

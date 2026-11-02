@@ -9,7 +9,7 @@ client = TestClient(app)
 
 def test_app_is_initialized():
     assert app.title == "CapyBarca API"
-    assert app.version == "0.16.10.1"
+    assert app.version == "0.17.0.0"
 
 
 @pytest.mark.parametrize("secret", ["", "   ", "changeme"])
@@ -102,6 +102,37 @@ def test_database_routes_are_registered():
     assert "/api/databases/{database_id}/schemas" in paths
     assert "/api/databases/{database_id}/entries/{entry_id}/values/{schema_id}" in paths
     assert "/api/databases/{database_id}/entry-templates" in paths
+
+
+def test_alert_routes_are_registered():
+    paths = set(app.openapi()["paths"])
+    assert "/api/alerts" in paths
+    assert "/api/alerts/pending" in paths
+    assert "/api/alerts/upcoming" in paths
+    assert "/api/alerts/{alert_id}/dismiss" in paths
+
+
+def test_startup_runs_the_alert_scheduler_and_shutdown_stops_it(monkeypatch):
+    """The scheduler lives exactly as long as the application."""
+    import app.alerts.alerts_scheduler as scheduler
+
+    started, stopped = [], []
+    sentinel = object()
+
+    def fake_start():
+        started.append(True)
+        return sentinel
+
+    async def fake_stop(task):
+        stopped.append(task)
+
+    monkeypatch.setattr(scheduler, "start", fake_start)
+    monkeypatch.setattr(scheduler, "stop", fake_stop)
+
+    with TestClient(app):
+        assert started == [True]
+        assert stopped == []
+    assert stopped == [sentinel]
 
 
 def test_login_route_is_registered():

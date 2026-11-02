@@ -43,7 +43,8 @@
  * Without write access (``useEditable``) the section only shows: no property
  * settings, deleting, adding, renaming or reordering, and the cells display
  * their values without opening an editor. Folding groups and choosing which
- * properties are visible remain, as they are view settings.
+ * properties are visible remain, as they are view settings. Alerts stay
+ * editable, since they are the user's own reminders and need read access only.
  */
 import { ref, computed, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -84,6 +85,7 @@ import TextCell from '@/components/editor/blocks/properties/cells/TextCell.vue'
 import RollupCell from '@/components/editor/blocks/properties/cells/RollupCell.vue'
 import FormulaCell from '@/components/editor/blocks/properties/cells/FormulaCell.vue'
 import RelationCell from '@/components/editor/blocks/properties/cells/RelationCell.vue'
+import AlertsCell from '@/components/editor/blocks/properties/cells/AlertsCell.vue'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -221,6 +223,7 @@ function onCellClick(schema: PropertySchema): void {
   if (isReadonlyPropertyType(schema.type)) return
   if (schema.type === 'checkbox' || schema.type === 'relation' || schema.type === 'file') return
   if (schema.type === 'parent_item' || schema.type === 'sub_item') return
+  if (schema.type === 'alerts') return
   if (schema.type === 'select' && (schema.config?.mode ?? 'single') === 'multiple') return
   setActiveCell(schema.id)
 }
@@ -839,6 +842,13 @@ async function onGroupHeaderDrop(e: DragEvent, groupName: string): Promise<void>
               :is-active="isActiveCell(schema.id)"
               @activate="setActiveCell(schema.id)"
               @deactivate="clearActiveCell"
+            />
+
+            <AlertsCell
+              v-else-if="schema.type === 'alerts'"
+              :entry="entry"
+              :schema="schema"
+              :database-id="databaseId"
             />
 
             <ReadonlyCell

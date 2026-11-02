@@ -599,9 +599,23 @@ def _query_descriptors(
     return groups, sort_descriptors
 
 
-def entry_payloads(db: Session, entries: list[Block]) -> list[dict]:
-    """Entries with all their property values, in the entry response shape."""
-    values_map = repo.list_values_for_pages(db, [e.id for e in entries])
+def entry_payloads(
+    db: Session,
+    entries: list[Block],
+    viewer_id: Optional[uuid.UUID] = None,
+) -> list[dict]:
+    """
+    Entries with all their property values, in the entry response shape.
+
+    The cells of an ``alerts`` property carry the alerts of *viewer_id*,
+    read from the alerts table; nobody else's are ever included, and without
+    a viewer the cells are empty.
+    """
+    from app.alerts.alerts_repository import values_for_entries
+
+    ids = [e.id for e in entries]
+    values_map = repo.list_values_for_pages(db, ids)
+    alert_values = values_for_entries(db, viewer_id, entries)
     return [
         {
             "id": entry.id,
@@ -610,7 +624,11 @@ def entry_payloads(db: Session, entries: list[Block]) -> list[dict]:
             "icon": entry.icon,
             "state": entry.state,
             "values": {
-                str(pv.property_schema_id): pv.value for pv in values_map.get(entry.id, [])
+                **{
+                    str(pv.property_schema_id): pv.value
+                    for pv in values_map.get(entry.id, [])
+                },
+                **alert_values.get(entry.id, {}),
             },
         }
         for entry in entries
@@ -677,7 +695,7 @@ def render_page(
     entries, total, offset, schemas = _query_page(
         db, view, offset=offset, limit=limit, search=search,
     )
-    payloads = entry_payloads(db, entries)
+    payloads = entry_payloads(db, entries, user.id)
     resolved = resolution.resolve_relations(db, schemas, (p["values"] for p in payloads), user)
     return {
         "entries": payloads,

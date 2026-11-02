@@ -168,7 +168,8 @@
     "edit": "Bearbeiten",
     "restore": "Wiederherstellen",
     "rename": "Umbenennen",
-    "remove": "Entfernen"
+    "remove": "Entfernen",
+    "close": "Schließen"
   },
   "auth": {
     "loginTitle": "Anmelden",
@@ -395,6 +396,7 @@
       "select_multiple": "Mehrfachauswahl",
       "date": "Datum",
       "relation": "Relation",
+      "alerts": "Erinnerungen",
       "file": "Dateianhang",
       "email": "E-Mail",
       "phone": "Telefon",
@@ -1138,6 +1140,7 @@
     "databasesGroups": "In der Eigenschaften-Seitenleiste lassen sich Properties zu Gruppen zusammenfassen. Eigene Gruppen kannst du ein- und ausklappen, per Doppelklick umbenennen und über den Ziehpunkt rechts im Gruppenkopf per Drag-and-drop neu anordnen. Die Standardgruppe bleibt immer oben.",
     "databasesFormulas": "Formel-Eigenschaften berechnen einen Wert aus anderen Eigenschaften desselben Eintrags, referenziert mit prop('Name'). Die Syntaxreferenz in den Eigenschaftseinstellungen listet alle Funktionen und Operatoren. Beim Umbenennen einer Eigenschaft funktionieren die Formeln, die sie verwenden, weiter.",
     "databasesKeying": "Eine Relations-Eigenschaft kann gekeyt werden: Wähle eine Eigenschaft der Zieldatenbank, nach der die Einträge der Relation sortiert werden. Der gewählte Wert wird neben jedem Eintrag angezeigt.",
+    "databasesAlerts": "Eine Eigenschaft vom Typ Erinnerungen enthält persönliche Erinnerungen mit Datum, Uhrzeit und optionalem Titel. Jede Datenbank kann eine davon haben. Jede Person sieht nur ihre eigenen Erinnerungen. Wird eine Erinnerung fällig, erscheint in jeder offenen Sitzung ein Hinweis, der bis zum Schließen stehen bleibt; ein Klick öffnet den Eintrag. Verpasste Erinnerungen erscheinen bei der nächsten Anmeldung, höchstens sieben Tage nach ihrem Zeitpunkt.",
     "databasesViewDescription": "Jede Ansicht kann eine eigene Beschreibung haben: Klicke in den Bereich unter der Toolbar, um sie zu schreiben, und klicke daneben, um sie zu speichern. Sie wird mit exportiert — im PDF unter dem Titel, in CSV und Excel im Kopf der Name-Spalte (bzw. der ersten Spalte, solange die Name-Spalte ausgeblendet ist).",
     "databasesCollaboration": "Änderungen anderer Benutzer erscheinen sofort. Ändert jemand einen Wert, den du gerade bearbeitest oder in der letzten Minute geändert hast, gilt die spätere Änderung, und du erhältst einen Hinweis. War die Verbindung unterbrochen, werden offene Seiten und Ansichten danach neu geladen. Solange ein Feld einen Ladekreis zeigt, wird dein Wert gespeichert; bis die Antwort des Servers da ist, nimmt das Feld keine weitere Eingabe an. Verlässt du die Seite in diesem Moment, fragt der Browser nach.",
     "sectionPrint": "Schnelldruck",
@@ -1228,7 +1231,8 @@
   "notices": {
     "valueOverwritten": "{user} hat „{property}“ in „{entry}“ geändert, nachdem du es bearbeitet hast. Es gilt die spätere Änderung.",
     "readOnly": "Du hast für diesen Block nur Lesezugriff. Die Änderung wurde nicht gespeichert.",
-    "dismiss": "Hinweis schließen"
+    "dismiss": "Hinweis schließen",
+    "open": "Öffnen"
   },
   "drive": {
     "defaultTitle": "Drive",
@@ -1269,5 +1273,23 @@
   "readOnly": {
     "badge": "Nur Lesezugriff",
     "badgeTitle": "Du kannst diesen Inhalt ansehen und kommentieren, aber nicht ändern."
+  },
+  "alerts": {
+    "notice": "{title}: {entry}",
+    "noticeUntitled": "Erinnerung: {entry}",
+    "editorTitle": "Erinnerungen",
+    "privateHint": "Deine Erinnerungen siehst nur du. Zum eingestellten Zeitpunkt erscheint ein Hinweis in jeder offenen Sitzung.",
+    "empty": "Noch keine Erinnerungen.",
+    "fired": "Bereits fällig",
+    "timePlaceholder": "Datum und Uhrzeit",
+    "titlePlaceholder": "Titel (optional)",
+    "add": "Hinzufügen",
+    "remove": "Erinnerung entfernen",
+    "errors": {
+      "past": "Der Zeitpunkt liegt bereits in der Vergangenheit.",
+      "invalid": "Die Erinnerung konnte nicht gespeichert werden. Bitte Zeitpunkt und Titel prüfen.",
+      "noAccess": "Für diesen Eintrag kannst du keine Erinnerungen setzen.",
+      "saveFailed": "Die Erinnerung konnte nicht gespeichert werden."
+    }
   }
 }

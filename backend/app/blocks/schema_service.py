@@ -36,6 +36,13 @@ timeline flag and the nuance configuration, which are edge data both sides
 read, are copied across. Keying is not propagated; it is a read-side pointer
 each side configures on its own.
 
+Alerts
+------
+A database has at most one ``alerts`` property
+(:func:`check_single_alerts_property`). Its alerts live in their own table,
+so a retype clears what the other storage held for the property
+(:func:`apply_alerts_retype`).
+
 Timelines
 ---------
 Enabling ``hasTimeline`` on a property with values wraps every existing value
@@ -46,6 +53,7 @@ import uuid
 from typing import Optional
 
 from fastapi import HTTPException
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from app.blocks import options as opts
@@ -62,7 +70,7 @@ from app.blocks.computed import (
     has_any_cycle,
 )
 from app.blocks.formula_engine import FormulaError, map_prop_references, validate_syntax
-from app.blocks.models import PropertySchema
+from app.blocks.models import PropertySchema, PropertyValue
 from app.blocks.readonly_properties import READONLY_TYPES
 from app.blocks.relation_sync import KEYABLE_PROPERTY_TYPES, ensure_bilateral_mirror
 from app.blocks.timeline import (
@@ -226,6 +234,64 @@ def purge_options(db: Session, schema: PropertySchema, removed: set[str]) -> boo
     views.forget_options_in_views(db, schema.database_id, schema.id, removed)
     opts.purge_automations(db, schema.id, removed)
     return changed > 0
+
+
+# ─── Alerts ───────────────────────────────────────────────────────────────────
+
+
+def check_single_alerts_property(
+    db: Session,
+    database_id: uuid.UUID,
+    new_type: Optional[str],
+    schema_id: Optional[uuid.UUID] = None,
+) -> None:
+    """
+    Refuse with 409 a property of type ``alerts`` in a database that already
+    has one. *schema_id* names the property being retyped, which may keep the
+    type it has.
+    """
+    from app.alerts.alerts_models import ALERTS_PROPERTY_TYPE
+    from app.alerts.alerts_repository import find_alerts_schema
+
+    if new_type != ALERTS_PROPERTY_TYPE:
+        return
+    existing = find_alerts_schema(db, database_id)
+    if existing is not None and existing.id != schema_id:
+        raise HTTPException(
+            status_code=409,
+            detail="This database already has an alerts property",
+        )
+
+
+def apply_alerts_retype(
+    db: Session,
+    schema: PropertySchema,
+    old_type: str,
+    new_type: Optional[str],
+) -> bool:
+    """
+    Clear the storage a retype leaves behind and return True when entry
+    values changed.
+
+    A property that stops being ``alerts`` loses its alerts. A property that
+    becomes ``alerts`` loses its stored values, which the alerts table now
+    stands in for.
+    """
+    from app.alerts.alerts_models import ALERTS_PROPERTY_TYPE
+    from app.alerts.alerts_repository import delete_for_schema
+
+    if new_type is None or new_type == old_type:
+        return False
+    changed = False
+    if old_type == ALERTS_PROPERTY_TYPE:
+        changed = delete_for_schema(db, schema.id) > 0
+    if new_type == ALERTS_PROPERTY_TYPE:
+        removed = db.execute(
+            delete(PropertyValue).where(PropertyValue.property_schema_id == schema.id)
+        ).rowcount
+        db.flush()
+        changed = changed or bool(removed)
+    return changed
 
 
 # ─── Creation ─────────────────────────────────────────────────────────────────
