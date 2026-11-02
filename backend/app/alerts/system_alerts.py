@@ -25,9 +25,19 @@ Keeping them in line
   duplicating, templates, automations, moves between databases.
 * A changed calendar mark resyncs the property (:func:`resync_schema`), a
   changed account zone the account's alerts (:func:`resync_for_user`).
-* At startup :func:`reconcile` brings every system alert in line and adds
-  the missing ones, so nothing depends on all of the above having run, for
-  example after a restore. It is idempotent.
+* At startup :func:`reconcile` first marks the date properties calendar
+  views use (``app.blocks.views.sync_calendar_marks``), which covers calendars
+  older than the marks and restores, then brings every system alert in line
+  and adds the missing ones. It is idempotent.
+
+Messages
+--------
+Whenever :func:`sync_entry` creates, moves or deletes a system alert, the
+account it belongs to receives ``alert.changed`` for the entry once the
+transaction has committed (nothing after a rollback). The cell value in it
+is unchanged, since system alerts never appear in a cell; clients that keep
+alarms on the device (the Android app) sync on it. The payload is built
+before the commit, while the session can still query, and sent after it.
 
 Only the unfired system alert of an entry, date property and recipient is
 ever changed; one that has fired stays as it is until it is dismissed, so its
@@ -54,6 +64,11 @@ ALL_DAY_ALERT_TIME = time(18, 0)
 
 # Key under which a session collects the date values its flushes touched.
 _PENDING_KEY = "capybarca_system_alert_values"
+
+# Keys under which a session collects the (account, entry) pairs whose system
+# alert changed, and the messages built from them for after the commit.
+_CHANGED_KEY = "capybarca_system_alert_changes"
+_OUTBOX_KEY = "capybarca_system_alert_messages"
 
 UTC = timezone.utc
 
@@ -207,6 +222,7 @@ def sync_entry(
             keep = row
         else:
             db.delete(row)
+            _note_change(db, row.user_id, block_id)
     if desired is not None:
         if keep is None:
             db.add(Alert(
@@ -217,11 +233,19 @@ def sync_entry(
                 title="",
                 kind=KIND_SYSTEM,
             ))
+            _note_change(db, recipient, block_id)
         elif keep.fire_at != desired:
             keep.fire_at = desired
             keep.delivered = False
             keep.dismissed_at = None
+            _note_change(db, recipient, block_id)
     db.flush()
+
+
+def _note_change(db: Session, user_id: Optional[uuid.UUID], block_id: uuid.UUID) -> None:
+    """Remember that *user_id*'s system alert on *block_id* changed (see Messages)."""
+    if user_id is not None:
+        db.info.setdefault(_CHANGED_KEY, set()).add((user_id, block_id))
 
 
 def resync_schema(db: Session, schema_id: uuid.UUID, now: Optional[datetime] = None) -> None:
@@ -277,6 +301,7 @@ def reconcile(db: Session, now: Optional[datetime] = None) -> None:
     from app.blocks.views import CALENDAR_DATE_KEY
 
     moment = now or datetime.now(UTC)
+    mark_calendar_dates(db)
     schema_ids = set(db.scalars(select(PropertySchema.id).where(PropertySchema.type == "date")))
     schema_ids |= set(db.scalars(
         select(Alert.schema_id).where(Alert.kind == KIND_SYSTEM, Alert.fired_at.is_(None))
@@ -300,6 +325,29 @@ def reconcile(db: Session, now: Optional[datetime] = None) -> None:
         or_(Alert.dismissed_at.is_not(None), Alert.delivered.is_(False)),
     ))
     db.commit()
+
+
+def mark_calendar_dates(db: Session) -> None:
+    """
+    Mark the date property of every calendar view, and unmark properties no
+    calendar uses any more, for each database concerned. Calendars created
+    before the marks existed get theirs here. Flushes but does not commit.
+    """
+    from sqlalchemy import select
+
+    from app.blocks.models import DatabaseView, PropertySchema
+    from app.blocks.views import CALENDAR_DATE_KEY, sync_calendar_marks
+
+    database_ids = set(db.scalars(
+        select(DatabaseView.database_id).where(DatabaseView.view_type == "calendar")
+    ))
+    database_ids |= {
+        schema.database_id
+        for schema in db.scalars(select(PropertySchema).where(PropertySchema.type == "date"))
+        if (schema.config or {}).get(CALENDAR_DATE_KEY)
+    }
+    for database_id in database_ids:
+        sync_calendar_marks(db, database_id)
 
 
 def reconcile_in_own_session() -> None:
@@ -342,7 +390,7 @@ def _apply(session: Session) -> None:
         session.flush()
         pending = session.info.pop(_PENDING_KEY, None)
         if not pending:
-            return
+            break
         schema_ids = {schema_id for _, schema_id in pending}
         schemas = {
             s.id: s for s in session.scalars(
@@ -355,8 +403,36 @@ def _apply(session: Session) -> None:
             schema = schemas.get(schema_id)
             if schema is not None and is_calendar_date(schema):
                 sync_entry(session, page_id, schema)
+    _prepare_messages(session)
+
+
+def _prepare_messages(session: Session) -> None:
+    """Build ``alert.changed`` for every account whose system alert changed."""
+    from app.alerts import alerts_repository as repo
+
+    changed = session.info.pop(_CHANGED_KEY, None)
+    if not changed:
+        return
+    outbox = session.info.setdefault(_OUTBOX_KEY, [])
+    for user_id, block_id in sorted(changed, key=lambda pair: (str(pair[0]), str(pair[1]))):
+        outbox.append((user_id, repo.change_payload(session, user_id, block_id)))
+
+
+@event.listens_for(Session, "after_commit")
+def _send(session: Session) -> None:
+    """Send the messages of the committed transaction; a failure never undoes it."""
+    from app.alerts.alerts_router import CHANGED_MESSAGE
+    from app.ws.broadcaster import emit_user_message
+
+    for user_id, payload in session.info.pop(_OUTBOX_KEY, None) or []:
+        try:
+            emit_user_message(user_id, CHANGED_MESSAGE, payload)
+        except Exception:
+            logger.exception("Sending a system alert change failed")
 
 
 @event.listens_for(Session, "after_rollback")
 def _forget(session: Session) -> None:
     session.info.pop(_PENDING_KEY, None)
+    session.info.pop(_CHANGED_KEY, None)
+    session.info.pop(_OUTBOX_KEY, None)

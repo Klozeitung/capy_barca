@@ -189,21 +189,7 @@ def _readable(db: Session, alerts: list[Alert], user: User) -> list[Alert]:
 
 def _announce_change(db: Session, user: User, block_id: uuid.UUID) -> None:
     """Send the entry's new cell value to the caller's connections."""
-    alerts = repo.list_for_entry(db, user.id, block_id)
-    block = db.get(Block, block_id)
-    database_id = block.parent_id if block is not None else None
-    schema = repo.find_alerts_schema(db, database_id) if database_id else None
-    emit_user_message(
-        user.id,
-        CHANGED_MESSAGE,
-        {
-            "block_id": str(block_id),
-            "database_id": str(database_id) if database_id else None,
-            "schema_id": str(schema.id) if schema is not None else None,
-            "value": repo.cell_value(alerts),
-        },
-        db=db,
-    )
+    emit_user_message(user.id, CHANGED_MESSAGE, repo.change_payload(db, user.id, block_id), db=db)
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────

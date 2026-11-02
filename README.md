@@ -175,7 +175,7 @@ The browser interface is designed for desktop and tablet. On a phone, the Androi
 - Download it on the phone from **Settings → Downloads** inside the web app; every account can do so. Install it by opening the file and allowing installation from that source, then sign in with the address you use in the browser
 - The debug build installs alongside a later release build rather than replacing it
 
-capybarca-android-0.6.0.0-debug.apk is compatible with CapyBarca 0.16.9.0 - 0.17.1.1
+capybarca-android-0.6.0.0-debug.apk is compatible with CapyBarca 0.16.9.0 - 0.17.1.2
 
 The app is pre-release software like CapyBarca itself. Use it at your own risk.
 

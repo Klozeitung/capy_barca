@@ -9,9 +9,11 @@ Cell values
 :func:`values_for_entries` produces what the entry endpoints put into
 ``values`` for an ``alerts`` property: ``{"alerts": [<alert>, ...]}`` with the
 alerts of one account only, ordered by time. The same shape goes out with the
-``alert.changed`` WebSocket message, so a client replaces the cell with it.
-Only user alerts appear in a cell; system alerts of calendar dates (see
-``app.alerts.system_alerts``) are delivered but never shown there.
+``alert.changed`` WebSocket message, so a client replaces the cell with it
+(:func:`change_payload`). Only user alerts appear in a cell; system alerts of
+calendar dates (see ``app.alerts.system_alerts``) are delivered but never
+shown there. A change of a system alert sends ``alert.changed`` all the same,
+with the unchanged cell, so clients that schedule alerts themselves sync.
 
 Shifting
 --------
@@ -65,6 +67,23 @@ def cell_value(alerts: Iterable[Alert]) -> dict[str, Any]:
     """The value of an ``alerts`` cell holding *alerts*, ordered by time."""
     ordered = sorted(alerts, key=lambda a: (a.fire_at, str(a.id)))
     return {"alerts": [serialize(a) for a in ordered]}
+
+
+def change_payload(db: Session, user_id: uuid.UUID, block_id: uuid.UUID) -> dict[str, Any]:
+    """
+    The payload of ``alert.changed`` for *user_id*'s alerts on *block_id*:
+    the entry, its database, the database's alerts property (None when it has
+    none) and the cell value of the user's alerts.
+    """
+    block = db.get(Block, block_id)
+    database_id = block.parent_id if block is not None else None
+    schema = find_alerts_schema(db, database_id) if database_id else None
+    return {
+        "block_id": str(block_id),
+        "database_id": str(database_id) if database_id else None,
+        "schema_id": str(schema.id) if schema is not None else None,
+        "value": cell_value(list_for_entry(db, user_id, block_id)),
+    }
 
 
 # ─── Property schema ──────────────────────────────────────────────────────────

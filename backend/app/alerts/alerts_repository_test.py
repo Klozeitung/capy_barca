@@ -92,6 +92,33 @@ def test_cell_value_orders_alerts_by_time(db):
     assert value["alerts"][0]["delivered"] is False
 
 
+def test_change_payload_names_entry_database_property_and_the_users_cell(db):
+    owner, other = _user(db, "person-a"), _user(db, "person-b")
+    database = _database(db)
+    schema = _alerts_schema(db, database)
+    entry = _entry(db, database)
+    _alert(db, entry, schema, owner, NOW + timedelta(hours=1), "Own")
+    _alert(db, entry, schema, other, NOW + timedelta(hours=2), "Other")
+
+    payload = repo.change_payload(db, owner.id, entry.id)
+
+    assert payload["block_id"] == str(entry.id)
+    assert payload["database_id"] == str(database.id)
+    assert payload["schema_id"] == str(schema.id)
+    assert [a["title"] for a in payload["value"]["alerts"]] == ["Own"]
+
+
+def test_change_payload_without_alerts_property_names_none(db):
+    user = _user(db)
+    database = _database(db)
+    entry = _entry(db, database)
+
+    payload = repo.change_payload(db, user.id, entry.id)
+
+    assert payload["schema_id"] is None
+    assert payload["value"] == {"alerts": []}
+
+
 # ─── Cell values ──────────────────────────────────────────────────────────────
 
 

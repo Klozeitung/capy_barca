@@ -1,7 +1,8 @@
 """
 Tests for the system alerts of calendar dates: their times, the session hook
 that keeps them in line with every write, the calendar mark that switches
-them on, repeating dates, and the startup reconcile.
+them on, repeating dates, the startup reconcile and the messages a change
+sends to its account.
 
 HTTP-level tests act as the persisted admin (``acting_admin``) in the zone
 Europe/Berlin, sent as the X-Timezone header the web app sends.
@@ -333,3 +334,118 @@ def test_moving_an_entry_out_of_the_calendar_drops_its_system_alert(http_client,
 
     assert resp.status_code == 200
     assert _system_alerts(entry_id) == []
+
+
+# ─── Calendars older than the marks ───────────────────────────────────────────
+
+
+def _unmark(schema_id: str) -> None:
+    """Remove the calendar mark and the system alerts, as before the marks existed."""
+    from app.blocks.views import CALENDAR_DATE_KEY
+
+    with db_module.SessionLocal() as db:
+        schema = db.get(PropertySchema, uuid.UUID(schema_id))
+        config = dict(schema.config or {})
+        config.pop(CALENDAR_DATE_KEY, None)
+        schema.config = config
+        for alert in db.scalars(select(Alert).where(Alert.kind == KIND_SYSTEM)):
+            db.delete(alert)
+        db.commit()
+
+
+def test_reconcile_marks_the_date_property_of_an_older_calendar(http_client, acting_admin):
+    database_id, schema = _calendar_database(http_client)
+    entry_id = http_client.post(f"/api/databases/{database_id}/entries").json()["id"]
+    _write_date(http_client, database_id, entry_id, schema["id"], {"start": _future(3, "10:30")})
+    _unmark(schema["id"])
+    assert _system_alerts(entry_id) == []
+
+    with db_module.SessionLocal() as db:
+        system_alerts.reconcile(db)
+
+    with db_module.SessionLocal() as db:
+        assert db.get(PropertySchema, uuid.UUID(schema["id"])).config["calendarDate"] is True
+    assert len(_system_alerts(entry_id)) == 1
+
+
+def test_reconcile_drops_a_mark_no_calendar_uses(http_client, acting_admin):
+    database_id, schema = _calendar_database(http_client)
+    view_id = http_client.get(f"/api/databases/{database_id}/views").json()["views"][0]["id"]
+    entry_id = http_client.post(f"/api/databases/{database_id}/entries").json()["id"]
+    _write_date(http_client, database_id, entry_id, schema["id"], {"start": _future(3)})
+    with db_module.SessionLocal() as db:
+        from app.blocks.models import DatabaseView
+
+        view = db.get(DatabaseView, uuid.UUID(view_id))
+        view.view_type = "table"
+        db.commit()
+
+    with db_module.SessionLocal() as db:
+        system_alerts.reconcile(db)
+
+    with db_module.SessionLocal() as db:
+        assert "calendarDate" not in (db.get(PropertySchema, uuid.UUID(schema["id"])).config or {})
+    assert _system_alerts(entry_id) == []
+
+
+# ─── Messages ─────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def sent(monkeypatch):
+    """Collect what goes out as alert.changed instead of sending it."""
+    import app.ws.broadcaster as broadcaster
+
+    messages: list[tuple] = []
+    monkeypatch.setattr(
+        broadcaster, "emit_user_message",
+        lambda user_id, message_type, payload, **_: messages.append((user_id, message_type, payload)) or 1,
+    )
+    return messages
+
+
+def test_a_new_system_alert_tells_its_account_after_the_commit(http_client, acting_admin, sent):
+    database_id, schema = _calendar_database(http_client)
+    entry_id = http_client.post(f"/api/databases/{database_id}/entries").json()["id"]
+    sent.clear()
+
+    _write_date(http_client, database_id, entry_id, schema["id"], {"start": _future(2, "08:00")})
+
+    changes = [m for m in sent if m[1] == "alert.changed"]
+    assert len(changes) == 1
+    user_id, _, payload = changes[0]
+    assert user_id == acting_admin.id
+    assert payload["block_id"] == entry_id
+    assert payload["database_id"] == database_id
+    # System alerts never appear in the cell.
+    assert payload["value"] == {"alerts": []}
+
+
+def test_an_unchanged_system_alert_sends_nothing(http_client, acting_admin, sent):
+    database_id, schema = _calendar_database(http_client)
+    entry_id = http_client.post(f"/api/databases/{database_id}/entries").json()["id"]
+    _write_date(http_client, database_id, entry_id, schema["id"], {"start": _future(2, "08:00")})
+    sent.clear()
+
+    with db_module.SessionLocal() as db:
+        system_alerts.reconcile(db)
+
+    assert [m for m in sent if m[1] == "alert.changed"] == []
+
+
+def test_a_rolled_back_change_sends_nothing(http_client, acting_admin, sent):
+    database_id, schema = _calendar_database(http_client)
+    entry_id = http_client.post(f"/api/databases/{database_id}/entries").json()["id"]
+    _write_date(http_client, database_id, entry_id, schema["id"], {"start": _future(2, "08:00")})
+    sent.clear()
+
+    with db_module.SessionLocal() as db:
+        for alert in db.scalars(select(Alert).where(Alert.kind == KIND_SYSTEM)):
+            db.delete(alert)
+        db.flush()
+        schema_row = db.get(PropertySchema, uuid.UUID(schema["id"]))
+        system_alerts.sync_entry(db, uuid.UUID(entry_id), schema_row)
+        db.rollback()
+
+    assert sent == []
+    assert len(_system_alerts(entry_id)) == 1
