@@ -41,6 +41,8 @@ services:
       - ./ssl:/app/ssl:ro
       - ./static/uploads:/app/static/uploads
       - ./recovery/backup:/app/recovery/backup:ro
+      # The Android app offered under Settings -> Downloads.
+      - ./android:/app/android:ro
     expose:
       - "${PORT_BACKEND:-17012}"
     depends_on:

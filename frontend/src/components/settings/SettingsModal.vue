@@ -11,7 +11,8 @@
  *  language – Language   (locale switcher, available to all users)
  *  date     – Date       (display date format of the account)
  *  storage  – Storage    (capacity cards)
- *  backup   – Backup     (admin-only: backup script download + instructions)
+ *  downloads – Downloads (Android app for every account; backup script
+ *                         download and instructions for admins only)
  *  users    – Users      (admin-only: user management, print permission)
  *  api      – API        (admin-only: local AI and custom printer, see
  *                         ApiSettingsSection)
@@ -36,6 +37,20 @@ interface CapacityData {
   used_bytes: number
   free_bytes: number
 }
+
+/** The Android app on offer, from GET /api/downloads/android. */
+interface AndroidApp {
+  filename: string
+  version: string
+  debug: boolean
+  size: number
+}
+
+/** Where the browser downloads the Android app from. */
+const ANDROID_APP_URL = '/api/downloads/android/file'
+
+/** The address the app asks for: this server as the browser reaches it. */
+const serverAddress = window.location.host
 
 interface UserRow {
   id: string
@@ -108,10 +123,15 @@ async function selectDateFormat(fmt: DateFormatToken): Promise<void> {
 const capacity = ref<CapacityData | null>(null)
 const capacityError = ref(false)
 
-// ── State: backup ─────────────────────────────────────────────────────────────
+// ── State: downloads ──────────────────────────────────────────────────────────
 
 const backupDownloading = ref(false)
 const backupError = ref(false)
+
+const androidApp = ref<AndroidApp | null>(null)
+const androidLoading = ref(false)
+const androidLoaded = ref(false)
+const androidError = ref(false)
 
 // ── State: users ──────────────────────────────────────────────────────────────
 
@@ -186,6 +206,19 @@ async function fetchUsers(): Promise<void> {
     usersError.value = true
   } finally {
     usersLoading.value = false
+  }
+}
+
+async function fetchAndroidApp(): Promise<void> {
+  androidLoading.value = true
+  androidError.value = false
+  try {
+    androidApp.value = await apiClient.get<AndroidApp | null>('/api/downloads/android')
+    androidLoaded.value = true
+  } catch {
+    androidError.value = true
+  } finally {
+    androidLoading.value = false
   }
 }
 
@@ -325,6 +358,9 @@ watch(activeSection, (val) => {
   if (val === 'users' && usersData.value.length === 0 && !usersLoading.value) {
     fetchUsers()
   }
+  if (val === 'downloads' && !androidLoaded.value && !androidLoading.value) {
+    fetchAndroidApp()
+  }
 })
 
 // ── Backdrop ──────────────────────────────────────────────────────────────────
@@ -387,23 +423,11 @@ function handleBackdropClick(e: MouseEvent): void {
 
             <button
               class="settings-nav__item"
-              :class="{
-                'settings-nav__item--active': activeSection === 'backup',
-                'settings-nav__item--locked': !auth.isAdmin,
-              }"
-              :disabled="!auth.isAdmin"
-              :title="!auth.isAdmin ? t('settings.usersAdminOnly') : undefined"
-              @click="auth.isAdmin && (activeSection = 'backup')"
+              :class="{ 'settings-nav__item--active': activeSection === 'downloads' }"
+              @click="activeSection = 'downloads'"
             >
-              <Icon icon="mdi:backup-restore" width="15" height="15" class="settings-nav__icon" />
-              <span>{{ t('settings.backup') }}</span>
-              <Icon
-                v-if="!auth.isAdmin"
-                icon="mdi:lock-outline"
-                width="12"
-                height="12"
-                class="settings-nav__lock"
-              />
+              <Icon icon="mdi:tray-arrow-down" width="15" height="15" class="settings-nav__icon" />
+              <span>{{ t('settings.downloads') }}</span>
             </button>
 
             <button
@@ -562,72 +586,126 @@ function handleBackdropClick(e: MouseEvent): void {
               </div>
             </template>
 
-            <!-- ── Backup ───────────────────────────────────────────────── -->
-            <template v-else-if="activeSection === 'backup'">
-              <h2 class="settings-view__heading">{{ t('settings.backup') }}</h2>
+            <!-- ── Downloads ────────────────────────────────────────────── -->
+            <template v-else-if="activeSection === 'downloads'">
+              <h2 class="settings-view__heading">{{ t('settings.downloads') }}</h2>
 
-              <p class="backup-intro">{{ t('settings.backupIntro') }}</p>
+              <!-- Android -->
+              <section class="downloads-section">
+                <h3 class="downloads-section__title">
+                  <Icon icon="mdi:android" width="16" height="16" />
+                  {{ t('settings.androidTitle') }}
+                </h3>
 
-              <div class="backup-steps">
-                <h3 class="backup-steps__title">{{ t('settings.backupSetupTitle') }}</h3>
-                <ol class="backup-steps__list">
-                  <li>{{ t('settings.backupStep1') }}</li>
-                  <li>{{ t('settings.backupStep2') }}</li>
-                  <li>
-                    {{ t('settings.backupStep3') }}
-                    <table class="backup-vars">
-                      <tbody>
-                        <tr>
-                          <td class="backup-vars__key">REMOTE_HOST</td>
-                          <td class="backup-vars__desc">{{ t('settings.backupVarRemoteHostDesc') }}</td>
-                        </tr>
-                        <tr>
-                          <td class="backup-vars__key">REMOTE_USER</td>
-                          <td class="backup-vars__desc">{{ t('settings.backupVarRemoteUserDesc') }}</td>
-                        </tr>
-                        <tr>
-                          <td class="backup-vars__key">CAPYBARCA_DIR</td>
-                          <td class="backup-vars__desc">{{ t('settings.backupVarCapybarcaDirDesc') }}</td>
-                        </tr>
-                        <tr>
-                          <td class="backup-vars__key">OUTPUT_DIR</td>
-                          <td class="backup-vars__desc">{{ t('settings.backupVarOutputDirDesc') }}</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </li>
-                  <li>
-                    {{ t('settings.backupStep4') }}
-                    <code class="backup-code backup-code--block">chmod +x backup.sh &amp;&amp; ./backup.sh</code>
-                  </li>
-                </ol>
-              </div>
+                <p class="backup-intro">{{ t('settings.androidIntro') }}</p>
 
-              <div class="backup-restore-note">
-                <Icon icon="mdi:information-outline" width="14" height="14" class="backup-restore-note__icon" />
-                {{ t('settings.backupRestoreNote') }}
-              </div>
+                <div class="backup-steps">
+                  <h4 class="backup-steps__title">{{ t('settings.androidInstallTitle') }}</h4>
+                  <ol class="backup-steps__list">
+                    <li>{{ t('settings.androidStepRequirements') }}</li>
+                    <li>{{ t('settings.androidStepDownload') }}</li>
+                    <li>{{ t('settings.androidStepInstall') }}</li>
+                    <li>{{ t('settings.androidStepSignIn', { address: serverAddress }) }}</li>
+                  </ol>
+                </div>
 
-              <div class="backup-actions">
-                <button
-                  class="backup-download-btn"
-                  :disabled="backupDownloading"
-                  @click="downloadBackupScript"
-                >
-                  <Icon
-                    :icon="backupDownloading ? 'mdi:loading' : 'mdi:download'"
-                    width="16"
-                    height="16"
-                    :class="{ spin: backupDownloading }"
-                  />
-                  {{ backupDownloading ? t('settings.backupDownloading') : t('settings.backupDownloadBtn') }}
-                </button>
+                <div v-if="androidLoading" class="users-loading">
+                  <Icon icon="mdi:loading" width="18" height="18" class="spin" />
+                </div>
 
-                <p v-if="backupError" class="backup-error">
+                <p v-else-if="androidError" class="backup-error">
                   <Icon icon="mdi:alert-circle-outline" width="14" height="14" />
-                  {{ t('settings.backupDownloadError') }}
+                  {{ t('settings.androidLoadError') }}
                 </p>
-              </div>
+
+                <div v-else-if="androidApp" class="backup-actions">
+                  <a class="backup-download-btn" :href="ANDROID_APP_URL" :download="androidApp.filename">
+                    <Icon icon="mdi:download" width="16" height="16" />
+                    {{ t('settings.androidDownloadBtn') }}
+                  </a>
+                  <span class="downloads-meta">
+                    {{ t('settings.androidVersion', { version: androidApp.version }) }}
+                    <template v-if="androidApp.debug"> · {{ t('settings.androidDebug') }}</template>
+                    · {{ formatBytes(androidApp.size) }}
+                  </span>
+                </div>
+
+                <div v-else class="backup-restore-note">
+                  <Icon icon="mdi:information-outline" width="14" height="14" class="backup-restore-note__icon" />
+                  {{ t('settings.androidNone') }}
+                </div>
+              </section>
+
+              <!-- Backup (admins only) -->
+              <section v-if="auth.isAdmin" class="downloads-section">
+                <h3 class="downloads-section__title">
+                  <Icon icon="mdi:backup-restore" width="16" height="16" />
+                  {{ t('settings.backup') }}
+                </h3>
+
+                <p class="backup-intro">{{ t('settings.backupIntro') }}</p>
+
+                <div class="backup-steps">
+                  <h4 class="backup-steps__title">{{ t('settings.backupSetupTitle') }}</h4>
+                  <ol class="backup-steps__list">
+                    <li>{{ t('settings.backupStep1') }}</li>
+                    <li>{{ t('settings.backupStep2') }}</li>
+                    <li>
+                      {{ t('settings.backupStep3') }}
+                      <table class="backup-vars">
+                        <tbody>
+                          <tr>
+                            <td class="backup-vars__key">REMOTE_HOST</td>
+                            <td class="backup-vars__desc">{{ t('settings.backupVarRemoteHostDesc') }}</td>
+                          </tr>
+                          <tr>
+                            <td class="backup-vars__key">REMOTE_USER</td>
+                            <td class="backup-vars__desc">{{ t('settings.backupVarRemoteUserDesc') }}</td>
+                          </tr>
+                          <tr>
+                            <td class="backup-vars__key">CAPYBARCA_DIR</td>
+                            <td class="backup-vars__desc">{{ t('settings.backupVarCapybarcaDirDesc') }}</td>
+                          </tr>
+                          <tr>
+                            <td class="backup-vars__key">OUTPUT_DIR</td>
+                            <td class="backup-vars__desc">{{ t('settings.backupVarOutputDirDesc') }}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </li>
+                    <li>
+                      {{ t('settings.backupStep4') }}
+                      <code class="backup-code backup-code--block">chmod +x backup.sh &amp;&amp; ./backup.sh</code>
+                    </li>
+                  </ol>
+                </div>
+
+                <div class="backup-restore-note">
+                  <Icon icon="mdi:information-outline" width="14" height="14" class="backup-restore-note__icon" />
+                  {{ t('settings.backupRestoreNote') }}
+                </div>
+
+                <div class="backup-actions">
+                  <button
+                    class="backup-download-btn"
+                    :disabled="backupDownloading"
+                    @click="downloadBackupScript"
+                  >
+                    <Icon
+                      :icon="backupDownloading ? 'mdi:loading' : 'mdi:download'"
+                      width="16"
+                      height="16"
+                      :class="{ spin: backupDownloading }"
+                    />
+                    {{ backupDownloading ? t('settings.backupDownloading') : t('settings.backupDownloadBtn') }}
+                  </button>
+
+                  <p v-if="backupError" class="backup-error">
+                    <Icon icon="mdi:alert-circle-outline" width="14" height="14" />
+                    {{ t('settings.backupDownloadError') }}
+                  </p>
+                </div>
+              </section>
             </template>
 
             <!-- ── Users ────────────────────────────────────────────────── -->
@@ -1080,7 +1158,29 @@ function handleBackdropClick(e: MouseEvent): void {
 .capacity-bar__fill--warn   { background: #e0a732; }
 .capacity-bar__fill--danger { background: #e05353; }
 
-/* ── Backup section ──────────────────────────────────────────────────────── */
+/* ── Downloads section ───────────────────────────────────────────────────── */
+.downloads-section + .downloads-section {
+  margin-top: 1.75rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.downloads-section__title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.downloads-meta {
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+}
+
+/* Shared by the Android and the backup part. */
 .backup-intro {
   font-size: 0.8125rem;
   color: var(--color-text-muted);
@@ -1184,6 +1284,7 @@ function handleBackdropClick(e: MouseEvent): void {
 
 .backup-download-btn {
   display: inline-flex;
+  text-decoration: none;
   align-items: center;
   gap: 7px;
   padding: 7px 16px;

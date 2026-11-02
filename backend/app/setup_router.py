@@ -1,15 +1,15 @@
 import hmac
 import os
 from pathlib import Path
-from typing import Optional
 
-from fastapi import APIRouter, Cookie, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from app.database.database import SessionLocal
 from app.security.limiter import limiter
+from app.session.deps import require_admin
 from app.session.login_router import set_session_cookie
-from app.session.session import create_token, validate_token
+from app.session.session import create_token
 from app.session.user_registration import AlreadyConfigured, create_admin
 from app.users import repository as user_repo
 from app.users.model import User
@@ -165,7 +165,7 @@ def signup(request: Request, payload: SignupRequest, response: Response):
 
 
 @setup_router.get("/api/backup/script")
-def download_backup_script(session: Optional[str] = Cookie(default=None)):
+def download_backup_script(_admin: User = Depends(require_admin)):
     """
     Return the backup script as a file download.
 
@@ -174,11 +174,9 @@ def download_backup_script(session: Optional[str] = Cookie(default=None)):
     own Tailscale hostname). All other variables (REMOTE_USER, CAPYBARCA_DIR,
     OUTPUT_DIR) remain as placeholders for the user to fill in after download.
 
-    Requires an active session.
+    Admins only: the script reaches the whole installation over SSH, so it is
+    no business of members (401 without a session, 403 for a member).
     """
-    if not session or not validate_token(session):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
     if not _BACKUP_SCRIPT_PATH.exists():
         raise HTTPException(
             status_code=404,

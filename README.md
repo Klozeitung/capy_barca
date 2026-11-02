@@ -106,7 +106,7 @@ The first command only reports how many values would change. `--timezone` names 
 
 Backups run from a separate machine over SSH/Tailscale and produce a portable `.capy` file containing the database dump, all uploads, and the configuration.
 
-Download `backup.sh` from **Settings → Backup** inside the app, fill in the four variables at the top, and run it:
+Download `backup.sh` from **Settings → Downloads** inside the app (administrators only), fill in the four variables at the top, and run it:
 
 ```bash
 chmod +x backup.sh
@@ -161,6 +161,7 @@ Key variables:
 - **Frontend**: Vue 3, TypeScript, Vite, vue-i18n, Pinia
 - **Backend**: Python, FastAPI, SQLAlchemy, Alembic, PostgreSQL
 - **Infrastructure**: Docker Compose, nginx, Collabora Online
+- **Android**: Kotlin, Jetpack Compose, Material 3, Retrofit, OkHttp, kotlinx.serialization
 
 All containers run as an unprivileged user rather than as root. `setup.sh` aligns the container account with the host account that owns the repository and adjusts the ownership of `ssl/` and `static/uploads/` accordingly. Run it as your normal user, not with `sudo`; it escalates on its own where that is required.
 
@@ -171,10 +172,10 @@ All containers run as an unprivileged user rather than as root. `setup.sh` align
 The browser interface is designed for desktop and tablet. On a phone, the Android app covers the everyday features: pages and the block editor, databases with their views, editing properties, and live updates.
 
 - Requires Android 13 or later and Tailscale running on the phone, connected to the same tailnet as the server
-- Currently distributed as a debug build (`app-debug.apk`) from android/capybarca-android-0.6.0.0-debug.apk. Install it by opening the file on the phone and allowing installation from that source. Minimum Requirements: Android 13 (minSdk=33) + Tailscale
+- Download it on the phone from **Settings → Downloads** inside the web app; every account can do so. Install it by opening the file and allowing installation from that source, then sign in with the address you use in the browser
 - The debug build installs alongside a later release build rather than replacing it
 
-capybarca-android-0.6.0.0-debug.apk is compatible with CapyBarca 0.16.9.0 - 0.17.1.0
+capybarca-android-0.6.0.0-debug.apk is compatible with CapyBarca 0.16.9.0 - 0.17.1.1
 
 The app is pre-release software like CapyBarca itself. Use it at your own risk.
 

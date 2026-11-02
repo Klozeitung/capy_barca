@@ -5,7 +5,7 @@
 # Connects via SSH/Tailscale and backs up CapyBarca as a portable .capy file.
 #
 # Setup:
-#   1. Download this file via the CapyBarca UI (Settings → Backup)
+#   1. Download this file via the CapyBarca UI (Settings → Downloads, admins)
 #   2. Fill in the four configuration variables below
 #   3. chmod +x backup.sh && ./backup.sh
 #

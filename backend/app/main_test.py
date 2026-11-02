@@ -9,7 +9,7 @@ client = TestClient(app)
 
 def test_app_is_initialized():
     assert app.title == "CapyBarca API"
-    assert app.version == "0.17.1.0"
+    assert app.version == "0.17.1.1"
 
 
 @pytest.mark.parametrize("secret", ["", "   ", "changeme"])
@@ -326,3 +326,9 @@ def test_settings_and_print_routes_are_registered():
     """Without auth both must return 401, not 404."""
     assert client.get("/api/settings/api").status_code == 401
     assert client.get("/api/print/status").status_code == 401
+
+
+def test_downloads_routes_are_registered():
+    """Without auth both must return 401, not 404."""
+    assert client.get("/api/downloads/android").status_code == 401
+    assert client.get("/api/downloads/android/file").status_code == 401

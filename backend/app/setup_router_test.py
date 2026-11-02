@@ -339,13 +339,35 @@ def backup_script_path(tmp_path, monkeypatch):
     return script
 
 
+def _account(role: str):
+    """A transient account with *role*, as get_current_user would return it."""
+    import uuid
+    from app.users.model import User
+
+    return User(
+        id=uuid.uuid4(), username=f"{role}-account", password_hash="x",
+        role=role, is_active=True,
+    )
+
+
 @pytest.fixture
-def auth_client(backup_script_path):
-    """TestClient with a session cookie that passes validate_token."""
-    with patch("app.setup_router.validate_token", return_value=True):
-        c = TestClient(app, base_url=_BASE_URL)
-        c.cookies.set("session", "test-token")
-        yield c
+def as_role():
+    """Return a builder for a TestClient signed in with a given role."""
+    from app.session.deps import get_current_user
+
+    def _make(role: str) -> TestClient:
+        account = _account(role)
+        app.dependency_overrides[get_current_user] = lambda: account
+        return TestClient(app, base_url=_BASE_URL)
+
+    yield _make
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.fixture
+def auth_client(backup_script_path, as_role):
+    """TestClient signed in as an admin."""
+    return as_role("admin")
 
 
 def test_backup_script_requires_auth(backup_script_path):
@@ -353,46 +375,43 @@ def test_backup_script_requires_auth(backup_script_path):
     assert response.status_code == 401
 
 
+def test_backup_script_is_refused_to_members(backup_script_path, as_role):
+    response = as_role("member").get("/api/backup/script")
+    assert response.status_code == 403
+
+
 def test_backup_script_returns_200(auth_client):
-    with patch("app.setup_router.validate_token", return_value=True):
-        response = auth_client.get("/api/backup/script")
+    response = auth_client.get("/api/backup/script")
     assert response.status_code == 200
 
 
 def test_backup_script_content_type(auth_client):
-    with patch("app.setup_router.validate_token", return_value=True):
-        response = auth_client.get("/api/backup/script")
+    response = auth_client.get("/api/backup/script")
     assert "text/x-sh" in response.headers["content-type"]
 
 
 def test_backup_script_content_disposition(auth_client):
-    with patch("app.setup_router.validate_token", return_value=True):
-        response = auth_client.get("/api/backup/script")
+    response = auth_client.get("/api/backup/script")
     assert 'filename="backup.sh"' in response.headers["content-disposition"]
 
 
 def test_backup_script_fills_remote_host_from_env(auth_client, monkeypatch):
-    monkeypatch.setenv("TAILSCALE_HOSTNAME", "myserver.example.com")
-    with patch("app.setup_router.validate_token", return_value=True):
-        response = auth_client.get("/api/backup/script")
-    assert 'REMOTE_HOST="myserver.example.com"' in response.text
+    monkeypatch.setenv("TAILSCALE_HOSTNAME", "server-x.example.com")
+    response = auth_client.get("/api/backup/script")
+    assert 'REMOTE_HOST="server-x.example.com"' in response.text
     assert "YOUR_TAILSCALE_HOSTNAME_HERE" not in response.text
 
 
 def test_backup_script_keeps_placeholder_when_no_tailscale_hostname(auth_client, monkeypatch):
     monkeypatch.delenv("TAILSCALE_HOSTNAME", raising=False)
-    with patch("app.setup_router.validate_token", return_value=True):
-        response = auth_client.get("/api/backup/script")
+    response = auth_client.get("/api/backup/script")
     assert "YOUR_TAILSCALE_HOSTNAME_HERE" in response.text
 
 
-def test_backup_script_returns_404_when_file_missing(monkeypatch):
+def test_backup_script_returns_404_when_file_missing(monkeypatch, as_role):
     import app.setup_router as sr
     from pathlib import Path
 
     monkeypatch.setattr(sr, "_BACKUP_SCRIPT_PATH", Path("/nonexistent/backup.sh"))
-    with patch("app.setup_router.validate_token", return_value=True):
-        c = TestClient(app, base_url=_BASE_URL)
-        c.cookies.set("session", "test-token")
-        response = c.get("/api/backup/script")
+    response = as_role("admin").get("/api/backup/script")
     assert response.status_code == 404
