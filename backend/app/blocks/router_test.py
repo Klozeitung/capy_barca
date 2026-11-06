@@ -1415,6 +1415,178 @@ def test_remove_cover_unknown_block_returns_404(http_client, tmp_path, monkeypat
     assert response.status_code == 404
 
 
+# ─── Profile picture ──────────────────────────────────────────────────────────
+
+
+def _put_avatar(http_client, block_id, filename="avatar.png", content=b"img",
+                content_type="image/png"):
+    return http_client.post(
+        f"/api/blocks/{block_id}/avatar",
+        files={"file": (filename, content, content_type)},
+    )
+
+
+@pytest.fixture
+def avatar_page(http_client, tmp_path, monkeypatch):
+    """A page block with upload storage redirected into a temp directory."""
+    import app.media.router as media_module
+    monkeypatch.setattr(media_module, "STATIC_ROOT", tmp_path)
+
+    resp = http_client.post(
+        "/api/blocks",
+        json={"type": "page", "parent_id": str(WORKSPACE_ROOT_ID)},
+    )
+    return resp.json()["id"], tmp_path / "avatars"
+
+
+def test_new_page_has_no_avatar(http_client):
+    resp = http_client.post(
+        "/api/blocks",
+        json={"type": "page", "parent_id": str(WORKSPACE_ROOT_ID)},
+    )
+    assert resp.json()["avatar"] is None
+
+
+def test_upload_avatar_stores_the_file_and_a_versioned_url(http_client, avatar_page):
+    block_id, avatars_dir = avatar_page
+
+    resp = _put_avatar(http_client, block_id, content=b"square")
+
+    assert resp.status_code == 200
+    url = resp.json()["avatar"]
+    assert url.startswith(f"/static/uploads/avatars/{block_id}.png?v=")
+    assert (avatars_dir / f"{block_id}.png").read_bytes() == b"square"
+    assert http_client.get(f"/api/blocks/{block_id}").json()["avatar"] == url
+
+
+def test_replacing_an_avatar_changes_the_url_and_removes_the_other_extension(
+    http_client, avatar_page,
+):
+    block_id, avatars_dir = avatar_page
+    first = _put_avatar(http_client, block_id, "a.png", b"first").json()["avatar"]
+
+    second = _put_avatar(
+        http_client, block_id, "b.jpg", b"second", "image/jpeg",
+    ).json()["avatar"]
+
+    assert second != first
+    assert list(avatars_dir.glob(f"{block_id}.*")) == [avatars_dir / f"{block_id}.jpg"]
+
+
+def test_avatar_upload_leaves_the_cover_alone(http_client, avatar_page, tmp_path):
+    block_id, _ = avatar_page
+    http_client.post(
+        f"/api/blocks/{block_id}/cover",
+        files={"file": ("cover.png", b"cover", "image/png")},
+    )
+
+    resp = _put_avatar(http_client, block_id)
+
+    assert resp.json()["cover"].endswith(".png")
+    assert (tmp_path / "covers" / f"{block_id}.png").read_bytes() == b"cover"
+
+
+@pytest.mark.parametrize("filename,content_type", [
+    ("payload.svg", "image/svg+xml"),
+    ("payload.html", "text/html"),
+    ("doc.pdf", "application/pdf"),
+])
+def test_avatar_refuses_a_type_outside_the_image_list(
+    http_client, avatar_page, filename, content_type,
+):
+    block_id, avatars_dir = avatar_page
+    assert _put_avatar(http_client, block_id, filename, content_type=content_type).status_code == 415
+    assert not avatars_dir.exists() or list(avatars_dir.glob("*")) == []
+
+
+def test_avatar_over_the_size_ceiling_keeps_the_previous_one(
+    http_client, avatar_page, monkeypatch,
+):
+    from app.media import upload as upload_module
+
+    block_id, avatars_dir = avatar_page
+    _put_avatar(http_client, block_id, content=b"ok")
+    monkeypatch.setattr(upload_module, "MAX_UPLOAD_BYTES", 16)
+
+    assert _put_avatar(http_client, block_id, content=b"x" * 64).status_code == 413
+    assert (avatars_dir / f"{block_id}.png").read_bytes() == b"ok"
+    assert list(avatars_dir.glob("*.part")) == []
+
+
+def test_upload_avatar_unknown_block_returns_404(http_client, avatar_page):
+    assert _put_avatar(http_client, str(uuid.uuid4())).status_code == 404
+
+
+def test_remove_avatar_clears_the_field_and_the_file(http_client, avatar_page):
+    block_id, avatars_dir = avatar_page
+    _put_avatar(http_client, block_id)
+
+    resp = http_client.delete(f"/api/blocks/{block_id}/avatar")
+
+    assert resp.status_code == 200
+    assert resp.json()["avatar"] is None
+    assert list(avatars_dir.glob(f"{block_id}.*")) == []
+
+
+def test_remove_avatar_is_idempotent(http_client, avatar_page):
+    block_id, _ = avatar_page
+    resp = http_client.delete(f"/api/blocks/{block_id}/avatar")
+    assert resp.status_code == 200
+    assert resp.json()["avatar"] is None
+
+
+def test_avatar_changes_are_recorded_and_broadcast(
+    http_client, avatar_page, captured_broadcasts,
+):
+    block_id, _ = avatar_page
+    url = _put_avatar(http_client, block_id).json()["avatar"]
+    http_client.delete(f"/api/blocks/{block_id}/avatar")
+
+    history = http_client.get(f"/api/blocks/{block_id}/history").json()
+    changes = [
+        (e["before"], e["after"]) for e in history if e["event_type"] == "avatar_changed"
+    ]
+    assert changes == [
+        ({"avatar": url}, {"avatar": None}),
+        ({"avatar": None}, {"avatar": url}),
+    ]
+    broadcast = [after for kind, after in captured_broadcasts if kind == "appearance_updated"]
+    assert [after["avatar"] for after in broadcast] == [url, None]
+
+
+def test_reverting_an_avatar_change_leaves_the_picture(http_client, avatar_page):
+    """The previous file is gone, so a revert does not bring the old URL back."""
+    block_id, _ = avatar_page
+    url = _put_avatar(http_client, block_id).json()["avatar"]
+    history = http_client.get(f"/api/blocks/{block_id}/history").json()
+    event = next(e for e in history if e["event_type"] == "avatar_changed")
+
+    resp = http_client.post(f"/api/blocks/{block_id}/revert/{event['id']}")
+
+    assert resp.status_code == 200
+    assert resp.json()["avatar"] == url
+
+
+def test_purge_removes_the_avatar_file(http_client, avatar_page):
+    block_id, avatars_dir = avatar_page
+    _put_avatar(http_client, block_id)
+    http_client.delete(f"/api/blocks/{block_id}")
+
+    assert http_client.delete(f"/api/blocks/{block_id}/purge").status_code == 204
+    assert list(avatars_dir.glob(f"{block_id}.*")) == []
+
+
+def test_duplicate_starts_without_the_avatar(http_client, avatar_page):
+    """A copy gets no picture of its own; the file belongs to the original."""
+    block_id, avatars_dir = avatar_page
+    _put_avatar(http_client, block_id)
+
+    copy = http_client.post(f"/api/blocks/{block_id}/duplicate").json()
+
+    assert copy["avatar"] is None
+    assert (avatars_dir / f"{block_id}.png").exists()
+
+
 # ─── owner_id in responses ────────────────────────────────────────────────────
 
 
@@ -1462,6 +1634,17 @@ def _remove_cover(client, bid):
     return client.delete(f"/api/blocks/{bid}/cover")
 
 
+def _upload_avatar(client, bid):
+    return client.post(
+        f"/api/blocks/{bid}/avatar",
+        files={"file": ("avatar.png", b"img", "image/png")},
+    )
+
+
+def _remove_avatar(client, bid):
+    return client.delete(f"/api/blocks/{bid}/avatar")
+
+
 def _move(client, bid):
     return client.post(
         f"/api/blocks/{bid}/move",
@@ -1502,6 +1685,8 @@ WRITE_ENDPOINTS = [
     ("update_appearance", _appearance),
     ("upload_cover", _upload_cover),
     ("remove_cover", _remove_cover),
+    ("upload_avatar", _upload_avatar),
+    ("remove_avatar", _remove_avatar),
     ("move_block", _move),
     ("duplicate_block", _duplicate),
     ("soft_delete_block", _soft_delete),

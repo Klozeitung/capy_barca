@@ -32,6 +32,7 @@ app/database/migration_lock_test.py
 app/database/alerts_migration_test.py
 app/database/calendar_alerts_timezone_migration_test.py
 app/database/account_language_custom_icons_migration_test.py
+app/database/block_avatar_migration_test.py
 
 app/session/user_registration_test.py
 app/session/user_login_test.py

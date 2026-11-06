@@ -282,6 +282,36 @@ def test_another_icon_is_left_in_place(http_client, stored_admin):
     assert http_client.get("/api/icons").json() == [kept]
 
 
+def test_the_changed_block_is_reported_with_its_whole_appearance(
+    http_client, stored_admin, monkeypatch,
+):
+    """The event carries the block as the block endpoints send it, avatar included."""
+    import app.icons.router as router_module
+
+    events: list[tuple[str, dict, dict]] = []
+    monkeypatch.setattr(
+        router_module, "emit_block_event",
+        lambda *, event_type, block_id, before, after, **_kw: events.append(
+            (event_type, before, after),
+        ),
+    )
+    icon = _upload(http_client).json()["icon"]
+    page = http_client.post(
+        "/api/blocks", json={"type": "page", "parent_id": str(WORKSPACE_ROOT_ID)},
+    ).json()["id"]
+    _set_icon(http_client, page, icon)
+    with db_module.SessionLocal() as db:
+        db.get(Block, uuid.UUID(page)).avatar = "/static/uploads/avatars/a.png"
+        db.commit()
+
+    http_client.delete(f"/api/icons/{icon.removeprefix('custom:')}")
+
+    [(event_type, before, after)] = [e for e in events if e[0] == "appearance_updated"]
+    assert before["icon"] == icon
+    assert after["icon"] is None
+    assert after["avatar"] == "/static/uploads/avatars/a.png"
+
+
 def test_deleting_announces_the_new_list(http_client, stored_admin, announced):
     body = _upload(http_client).json()
     announced.clear()

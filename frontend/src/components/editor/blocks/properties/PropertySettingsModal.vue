@@ -36,6 +36,8 @@
  * relation: { target_database_id: string, direction: 'unilateral' | 'bilateral',
  *             mirror_property_name: string | null,
  *             keying: { enabled, key_property_id, key_order, key_empty_first } }
+ * rollup:   { relation_schema_id, rollup_schema_id, function,
+ *             dedupe: boolean (show_original only), show_type_badge, wrapContent }
  *
  * Relation mode matrix
  * --------------------
@@ -506,6 +508,8 @@ const rollupSchemaId = ref<string>(
 const rollupFunction = ref<string>(
   (props.schema.config?.function as string | undefined) ?? 'count',
 )
+// "Show original" lists every value once instead of as often as it occurs.
+const rollupDedupe = ref<boolean>(props.schema.config?.dedupe === true)
 // Function-type badge (ERL / SUM …) shown in the cell — off by default.
 const rollupShowTypeBadge = ref<boolean>(
   (props.schema.config?.show_type_badge as boolean | undefined) ?? false,
@@ -740,6 +744,8 @@ async function save() {
         relation_schema_id: rollupRelationSchemaId.value || null,
         rollup_schema_id:   rollupSchemaId.value || null,
         function:           rollupFunction.value,
+        // Only meaningful for "show original"; kept off for every other function.
+        dedupe:             rollupFunction.value === 'show_original' && rollupDedupe.value,
         show_type_badge:    rollupShowTypeBadge.value,
         wrapContent:        wrapContent.value,
       }
@@ -1483,6 +1489,14 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
               </button>
             </div>
             <p class="psm__hint">{{ t('db.settings.rollupHint') }}</p>
+          </div>
+
+          <div v-if="rollupFunction === 'show_original'" class="psm__field">
+            <label class="psm__check-label">
+              <input type="checkbox" v-model="rollupDedupe" class="psm__checkbox" />
+              {{ t('db.settings.rollupDedupe') }}
+            </label>
+            <p class="psm__hint">{{ t('db.settings.rollupDedupeHint') }}</p>
           </div>
 
           <div class="psm__field">

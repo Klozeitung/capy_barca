@@ -9,7 +9,7 @@ client = TestClient(app)
 
 def test_app_is_initialized():
     assert app.title == "CapyBarca API"
-    assert app.version == "0.17.2.0"
+    assert app.version == "0.18.0.0"
 
 
 @pytest.mark.parametrize("secret", ["", "   ", "changeme"])
@@ -273,6 +273,18 @@ def test_static_always_sets_nosniff(static_client, name):
     """Without this the browser may disregard the declared type."""
     response = static_client.get(f"/static/uploads/{name}")
     assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_static_ignores_a_version_query(static_client):
+    """Profile pictures are linked with ?v=… so a replaced file is fetched anew."""
+    response = static_client.get("/static/uploads/a.png?v=1700000000")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+
+
+def test_avatar_routes_are_registered():
+    paths = app.openapi()["paths"]
+    assert set(paths["/api/blocks/{block_id}/avatar"]) == {"post", "delete"}
 
 
 def test_static_does_not_decorate_a_missing_file(static_client):

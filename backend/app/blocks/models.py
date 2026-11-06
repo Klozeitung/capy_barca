@@ -35,6 +35,8 @@ class Block(Base):
     ``icon`` stores an Iconify icon string, e.g. ``"mdi:file-document"``.
     ``cover`` stores either an image URL (``https://...``) or a CSS gradient
     prefixed with ``gradient:``, e.g. ``"gradient:linear-gradient(...)"`` .
+    ``avatar`` stores the static URL of the page's profile picture, a square
+    image the client crops before uploading; ``None`` means the page has none.
 
     Deletion is soft: ``state`` transitions from ``active`` to ``trash``.
     Hard deletion is performed by an explicit purge operation which relies
@@ -71,6 +73,7 @@ class Block(Base):
     content: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True, default=None)
     icon: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True, default=None)
     cover: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True, default=None)
+    avatar: Mapped[Optional[str]] = mapped_column(sa.Text, nullable=True, default=None)
     # Owner of this block.  No FK so that deleting a user does not affect
     # the block tree.  Set to the creating user at block creation time.
     # Backfilled to the first active admin for all pre-existing rows by
@@ -306,6 +309,7 @@ class BlockEvent(Base):
     - ``renamed``        (block title / name within content)
     - ``icon_changed``
     - ``cover_changed``
+    - ``avatar_changed``
     - ``moved``
     - ``state_changed``  (active → trash, trash → active)
     """

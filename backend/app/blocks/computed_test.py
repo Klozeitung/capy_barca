@@ -1728,6 +1728,141 @@ def test_rollup_over_date_show_original_emits_iso_string(db, database_block, ent
     assert pv.value.get("result") == ["2025-01-01"]
 
 
+# ─── show_original without duplicates ─────────────────────────────────────────
+
+
+def test_without_duplicates_keeps_first_occurrences_in_order():
+    from app.blocks.computed import _without_duplicates
+
+    assert _without_duplicates(["b", "a", "b", None, "a", None]) == ["b", "a", None]
+    dates = [{"start": "2000-07-28"}, {"start": "2045-07-17"}, {"start": "2000-07-28"}]
+    assert _without_duplicates(dates) == dates[:2]
+    chips = [{"id": "x", "title": "X"}, {"id": "x", "title": "X again"}]
+    assert _without_duplicates(chips, key=lambda c: c["id"]) == chips[:1]
+
+
+@pytest.fixture
+def shared_grandparent(db, database_block, entry):
+    """
+    *entry* links two parents; both link the same grandparent, and the
+    second also links a grandparent of its own.
+    """
+    parent_a = repo.create_block(db, type="page", position=2.0, parent_id=database_block.id)
+    parent_b = repo.create_block(db, type="page", position=3.0, parent_id=database_block.id)
+    shared = repo.create_block(db, type="page", position=4.0, parent_id=database_block.id)
+    shared.content = {"title": "Person A"}
+    own = repo.create_block(db, type="page", position=5.0, parent_id=database_block.id)
+    own.content = {"title": "Person B"}
+    parents = repo.create_schema(
+        db, database_id=database_block.id, name="Parents", type="relation",
+        position=1.0, config={"target_database_id": str(database_block.id)},
+    )
+    repo.upsert_value(
+        db, page_id=entry.id, schema_id=parents.id,
+        value={"related_ids": [str(parent_a.id), str(parent_b.id)]},
+    )
+    repo.upsert_value(
+        db, page_id=parent_a.id, schema_id=parents.id,
+        value={"related_ids": [str(shared.id)]},
+    )
+    repo.upsert_value(
+        db, page_id=parent_b.id, schema_id=parents.id,
+        value={"related_ids": [str(shared.id), str(own.id)]},
+    )
+    db.commit()
+    return parents, shared, own
+
+
+@pytest.mark.parametrize("dedupe, expected", [
+    (False, ["Person A", "Person A", "Person B"]),
+    (True, ["Person A", "Person B"]),
+])
+def test_relation_rollup_lists_a_shared_entry_once_with_dedupe(
+    db, database_block, entry, shared_grandparent, dedupe, expected,
+):
+    parents, _, _ = shared_grandparent
+    config = {
+        "relation_schema_id": str(parents.id),
+        "rollup_schema_id": str(parents.id),
+        "function": "show_original",
+    }
+    if dedupe:
+        config["dedupe"] = True
+    grandparents = repo.create_schema(
+        db, database_id=database_block.id, name="Grandparents", type="rollup",
+        position=2.0, config=config,
+    )
+    db.commit()
+
+    compute_all_for_entry(db, database_block.id, entry.id)
+    db.commit()
+
+    value = repo.get_value(db, entry.id, grandparents.id).value
+    assert value["relation"] is True
+    assert [chip["title"] for chip in value["result"]] == expected
+
+
+def _scalar_rollup(db, database_block, entry, prop_type, values, function, dedupe):
+    """A rollup of *function* over a *prop_type* column holding *values*."""
+    rel = repo.create_schema(
+        db, database_id=database_block.id, name="Rel", type="relation",
+        position=1.0, config={"target_database_id": str(database_block.id)},
+    )
+    column = repo.create_schema(
+        db, database_id=database_block.id, name="Column", type=prop_type,
+        position=2.0, config={},
+    )
+    config = {
+        "relation_schema_id": str(rel.id),
+        "rollup_schema_id": str(column.id),
+        "function": function,
+        "dedupe": dedupe,
+    }
+    roll = repo.create_schema(
+        db, database_id=database_block.id, name="Roll", type="rollup",
+        position=3.0, config=config,
+    )
+    targets = []
+    for i, value in enumerate(values):
+        target = repo.create_block(db, type="page", position=10.0 + i, parent_id=database_block.id)
+        repo.upsert_value(db, page_id=target.id, schema_id=column.id, value=value)
+        targets.append(str(target.id))
+    repo.upsert_value(db, page_id=entry.id, schema_id=rel.id, value={"related_ids": targets})
+    db.commit()
+    compute_all_for_entry(db, database_block.id, entry.id)
+    db.commit()
+    return repo.get_value(db, entry.id, roll.id).value["result"]
+
+
+def test_scalar_show_original_lists_each_value_once_with_dedupe(db, database_block, entry):
+    values = [{"text": "City X"}, {"text": "City Y"}, {"text": "City X"}]
+    assert _scalar_rollup(
+        db, database_block, entry, "text", values, "show_original", True,
+    ) == ["City X", "City Y"]
+
+
+def test_scalar_show_original_keeps_repetitions_without_dedupe(db, database_block, entry):
+    values = [{"text": "City X"}, {"text": "City X"}]
+    assert _scalar_rollup(
+        db, database_block, entry, "text", values, "show_original", False,
+    ) == ["City X", "City X"]
+
+
+def test_date_show_original_lists_each_date_once_with_dedupe(db, database_block, entry):
+    values = [{"start": "2000-07-28"}, {"start": "2000-07-28"}, {"start": "2045-07-17"}]
+    assert _scalar_rollup(
+        db, database_block, entry, "date", values, "show_original", True,
+    ) == ["2000-07-28", "2045-07-17"]
+
+
+def test_dedupe_flag_leaves_aggregations_alone(db, database_block, entry):
+    """The flag applies to show_original only; a sum counts every value."""
+    values = [{"number": 5}, {"number": 5}]
+    assert _scalar_rollup(
+        db, database_block, entry, "number", values, "sum", True,
+    ) == pytest.approx(10.0)
+
+
 # ─── Dependent recompute after a linked entry changes ─────────────────────────
 #
 # A formula that passes a relation through stores the linked entries' titles.

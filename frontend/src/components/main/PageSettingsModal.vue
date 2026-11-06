@@ -11,6 +11,9 @@
  *   - Layout: full-size toggle (expands content to the full available width)
  *   - Cover:  upload / change / remove the page cover image, offered only
  *             when the user may change the page (``useEditable``)
+ *   - Profile picture: choose an image, crop it to a circle in
+ *             ``AvatarCropDialog`` and upload the square result, or remove it;
+ *             offered under the same condition as the cover
  *
  * Cover storage convention (server-side):
  *   static/uploads/covers/{pageId}
@@ -37,6 +40,7 @@ import { apiClient } from '@/api/client'
 import { useEditable } from '@/composables/useEditable'
 import { useQuickPrint } from '@/composables/useQuickPrint'
 import { useBlockStore, type Block } from '@/stores/blocks'
+import AvatarCropDialog from './AvatarCropDialog.vue'
 import PermissionsSection from './PermissionsSection.vue'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
@@ -137,6 +141,53 @@ async function removeCover(): Promise<void> {
     coverError.value = t('pageSettings.coverRemoveError')
   } finally {
     coverRemoving.value = false
+  }
+}
+
+// ── Profile picture ───────────────────────────────────────────────────────────
+
+const avatarFileInput = ref<HTMLInputElement | null>(null)
+/** The image being cropped; the crop dialog is open while it is set. */
+const avatarCropFile = ref<File | null>(null)
+const avatarUploading = ref(false)
+const avatarRemoving = ref(false)
+const avatarError = ref<string | null>(null)
+
+function openAvatarPicker(): void {
+  avatarError.value = null
+  avatarFileInput.value?.click()
+}
+
+function onAvatarFileSelected(e: Event): void {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  // Reset so the same file can be chosen again after cancelling.
+  input.value = ''
+  if (file) avatarCropFile.value = file
+}
+
+async function onAvatarCropped(image: Blob, filename: string): Promise<void> {
+  avatarCropFile.value = null
+  avatarError.value = null
+  avatarUploading.value = true
+  try {
+    await blockStore.uploadAvatar(props.block.id, image, filename)
+  } catch {
+    avatarError.value = t('pageSettings.avatarUploadError')
+  } finally {
+    avatarUploading.value = false
+  }
+}
+
+async function removeAvatar(): Promise<void> {
+  avatarError.value = null
+  avatarRemoving.value = true
+  try {
+    await blockStore.removeAvatar(props.block.id)
+  } catch {
+    avatarError.value = t('pageSettings.avatarRemoveError')
+  } finally {
+    avatarRemoving.value = false
   }
 }
 
@@ -303,6 +354,71 @@ async function quickPrint(): Promise<void> {
                 />
               </div>
 
+              <!-- Profile picture section -->
+              <div class="psm__section">
+                <p class="psm__section-title">{{ t('pageSettings.avatarTitle') }}</p>
+
+                <img
+                  v-if="block.avatar"
+                  :src="block.avatar"
+                  class="psm__avatar-preview"
+                  alt=""
+                />
+
+                <div v-if="editable" class="psm__cover-actions">
+                  <button
+                    class="psm__btn"
+                    :disabled="avatarUploading"
+                    @click="openAvatarPicker"
+                  >
+                    <Icon
+                      v-if="avatarUploading"
+                      icon="mdi:loading"
+                      width="14"
+                      height="14"
+                      class="spin"
+                    />
+                    <Icon v-else icon="mdi:account-circle-outline" width="14" height="14" />
+                    {{ block.avatar ? t('pageSettings.avatarChange') : t('pageSettings.avatarUpload') }}
+                  </button>
+
+                  <button
+                    v-if="block.avatar"
+                    class="psm__btn psm__btn--danger"
+                    :disabled="avatarRemoving"
+                    @click="removeAvatar"
+                  >
+                    <Icon
+                      v-if="avatarRemoving"
+                      icon="mdi:loading"
+                      width="14"
+                      height="14"
+                      class="spin"
+                    />
+                    <Icon v-else icon="mdi:account-remove-outline" width="14" height="14" />
+                    {{ t('pageSettings.avatarRemove') }}
+                  </button>
+                </div>
+
+                <p v-if="avatarError" class="psm__error">
+                  <Icon icon="mdi:alert-circle-outline" width="13" height="13" />
+                  {{ avatarError }}
+                </p>
+
+                <p v-if="!editable && !block.avatar" class="psm__row-hint">
+                  {{ t('pageSettings.avatarNone') }}
+                </p>
+
+                <input
+                  v-if="editable"
+                  ref="avatarFileInput"
+                  type="file"
+                  accept="image/*"
+                  class="psm__file-input"
+                  @change="onAvatarFileSelected"
+                />
+              </div>
+
             </template>
 
             <!-- ── Export ─────────────────────────────────────────────── -->
@@ -355,6 +471,12 @@ async function quickPrint(): Promise<void> {
 
       </div>
     </div>
+    <AvatarCropDialog
+      v-if="avatarCropFile"
+      :file="avatarCropFile"
+      @cancel="avatarCropFile = null"
+      @confirm="onAvatarCropped"
+    />
   </Teleport>
 </template>
 
@@ -579,6 +701,15 @@ async function quickPrint(): Promise<void> {
   height: 100%;
   background-size: cover;
   background-position: center;
+}
+
+/* ── Profile picture preview ─────────────────────────────────────────────── */
+.psm__avatar-preview {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--color-border);
 }
 
 /* ── Cover action buttons ────────────────────────────────────────────────── */

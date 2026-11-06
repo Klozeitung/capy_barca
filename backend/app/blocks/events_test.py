@@ -113,6 +113,18 @@ def test_update_appearance_emits_cover_changed(db, page):
     assert len(cover_events) == 1
 
 
+def test_emit_avatar_changed_records_both_sides(db, page):
+    from app.blocks import events as block_events
+
+    block_events.emit_avatar_changed(db, page.id, None, "/static/uploads/avatars/a.png")
+    db.commit()
+    events = repo.list_events(db, page.id)
+    avatar_events = [e for e in events if e.event_type == "avatar_changed"]
+    assert len(avatar_events) == 1
+    assert avatar_events[0].before == {"avatar": None}
+    assert avatar_events[0].after == {"avatar": "/static/uploads/avatars/a.png"}
+
+
 def test_no_icon_event_when_value_unchanged(db, page):
     service.update_block_appearance(db, page.id, icon="mdi:star")
     db.commit()

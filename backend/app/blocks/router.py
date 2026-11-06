@@ -85,6 +85,7 @@ def _cleanup_files_for_blocks(block_snapshots: list[dict]) -> None:
       drives/<block_id>/        – all files of a drive block
       media/{image|video|audio|pdf}/<uuid><ext>  – individual media files
       files/<uuid><ext>         – individual file-block files
+      avatars/<block_id><ext>   – the profile picture of a page
     """
     import app.media.router as media_module
     static_root: Path = media_module.STATIC_ROOT
@@ -97,6 +98,9 @@ def _cleanup_files_for_blocks(block_snapshots: list[dict]) -> None:
         content: dict = snap.get("content") or {}
 
         try:
+            if snap.get("avatar"):
+                _remove_avatar_files(static_root, block_id)
+
             if block_type == "drive":
                 # Entire drive directory (all files regardless of folder structure)
                 drive_dir = static_root / "drives" / block_id
@@ -130,6 +134,25 @@ def _cleanup_files_for_blocks(block_snapshots: list[dict]) -> None:
                 "Purge filesystem cleanup failed for block %s (%s): %s",
                 block_id, block_type, exc,
             )
+
+
+AVATARS_DIR = "avatars"
+
+
+def _remove_avatar_files(static_root: Path, block_id, keep: Optional[Path] = None) -> None:
+    """
+    Delete every stored profile picture of *block_id*, whatever its extension,
+    except *keep*. Failures are logged, never raised: a leftover file must not
+    undo a change that already succeeded.
+    """
+    avatars_dir = static_root / AVATARS_DIR
+    for existing in avatars_dir.glob(f"{block_id}.*"):
+        if keep is not None and existing == keep:
+            continue
+        try:
+            existing.unlink()
+        except OSError as exc:
+            logger.warning("Could not remove avatar file %s: %s", existing, exc)
 
 
 
@@ -216,6 +239,7 @@ class BlockResponse(BaseModel):
     content: Optional[dict]
     icon: Optional[str]
     cover: Optional[str]
+    avatar: Optional[str] = None
     owner_id: Optional[uuid.UUID] = None
     # Whether the caller may change this block. Filled by the endpoints that
     # return blocks (see _mark_write_access). Block snapshots in WebSocket
@@ -288,6 +312,7 @@ def _block_to_dict(block) -> dict:
         "content": block.content,
         "icon": block.icon,
         "cover": block.cover,
+        "avatar": block.avatar,
         "owner_id": str(block.owner_id) if getattr(block, "owner_id", None) else None,
     }
 
@@ -750,6 +775,116 @@ def remove_cover(
             after=_block_to_dict(block),
         )
         return _written(block)
+    except Exception as exc:
+        db.rollback()
+        _handle_service_errors(exc)
+
+
+def _set_avatar(db: Session, block, avatar: Optional[str]):
+    """
+    Store *avatar* as the profile picture of *block*, record the change in
+    its history and broadcast it. Returns the block as the caller sees it.
+    """
+    from app.blocks import events as block_events
+
+    before_snapshot = _block_to_dict(block)
+    previous = block.avatar
+    block.avatar = avatar
+    db.flush()
+    block_events.emit_avatar_changed(db, block.id, previous, avatar)
+    db.commit()
+    db.refresh(block)
+    emit_block_event(
+        db=db,
+        event_type="appearance_updated",
+        block_id=str(block.id),
+        before=before_snapshot,
+        after=_block_to_dict(block),
+    )
+    return _written(block)
+
+
+@block_router.post("/{block_id}/avatar", response_model=BlockResponse)
+def upload_avatar(
+    block_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Upload (or replace) the profile picture of a page.
+
+    The client crops the picture to a square before uploading; the server
+    stores the file as it arrives, at
+        <STATIC_ROOT>/avatars/<block_id><ext>
+
+    The upload goes through ``app.media.upload`` like a cover: the image
+    allowlist applies (415 otherwise) and the body is streamed against the
+    size ceiling (413). An earlier picture of the page with another extension
+    is removed once the new one is in place. The stored URL carries a version
+    query, so a replaced picture is not served from a browser's cache. The
+    history records the change as ``avatar_changed``; reverting it is not
+    offered, because the previous file no longer exists.
+    """
+    import time
+
+    import app.media.router as media_module
+    from app.media import upload as upload_helper
+
+    static_root: Path = media_module.STATIC_ROOT
+
+    block = repo.get_block(db, block_id)
+    if block is None:
+        raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
+    require_block_access(db, block_id, current_user, level=WRITE)
+
+    # Settled before anything on disk is touched, as for covers.
+    ext = upload_helper.resolve_extension(file)
+    upload_helper.assert_type_permitted(ext, upload_helper.COVER_CATEGORY)
+
+    avatars_dir = static_root / AVATARS_DIR
+    avatars_dir.mkdir(parents=True, exist_ok=True)
+    dest = avatars_dir / f"{block_id}{ext}"
+    staging = upload_helper.staging_path(avatars_dir)
+    try:
+        upload_helper.save_upload(file, staging)
+        staging.replace(dest)
+    finally:
+        staging.unlink(missing_ok=True)
+    _remove_avatar_files(static_root, block_id, keep=dest)
+
+    avatar_url = f"/static/uploads/{AVATARS_DIR}/{block_id}{ext}?v={time.time_ns()}"
+    try:
+        return _set_avatar(db, block, avatar_url)
+    except Exception as exc:
+        db.rollback()
+        _handle_service_errors(exc)
+
+
+@block_router.delete("/{block_id}/avatar", response_model=BlockResponse)
+def remove_avatar(
+    block_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Remove the profile picture of a page.
+
+    Deletes the stored file and sets ``avatar`` to ``None``. Idempotent: a
+    page without a picture is returned unchanged with 200.
+    """
+    import app.media.router as media_module
+
+    block = repo.get_block(db, block_id)
+    if block is None:
+        raise HTTPException(status_code=404, detail=f"Block {block_id} not found")
+    require_block_access(db, block_id, current_user, level=WRITE)
+
+    _remove_avatar_files(media_module.STATIC_ROOT, block_id)
+    if block.avatar is None:
+        return _written(block)
+    try:
+        return _set_avatar(db, block, None)
     except Exception as exc:
         db.rollback()
         _handle_service_errors(exc)

@@ -108,6 +108,22 @@ def emit_cover_changed(
     )
 
 
+def emit_avatar_changed(
+    db: Session,
+    block_id: uuid.UUID,
+    before: Optional[str],
+    after: Optional[str],
+) -> BlockEvent:
+    """Emit an ``avatar_changed`` event."""
+    return _emit(
+        db,
+        block_id=block_id,
+        event_type="avatar_changed",
+        before={"avatar": before},
+        after={"avatar": after},
+    )
+
+
 def emit_moved(
     db: Session,
     block_id: uuid.UUID,

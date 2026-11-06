@@ -25,6 +25,7 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 - **Alerts** personal reminders on database entries (one alerts property per database); each user sees only their own, and a due alert shows a notice in every open session until it is closed
 - **Comments** inline comments on pages and database entries
 - **Custom icons** admins upload images (PNG, JPEG, GIF, WebP) under Settings → Icons, which every user can then pick wherever icons are offered
+- **Profile pictures** every page, database entries included, can carry a round profile picture above its icon and title; the section shown is chosen when uploading
 - **Collaborative editing** real-time document collaboration via integrated Collabora Online (WOPI)
 - **Android app** a mobile client for phones, where the browser interface designed for desktop and tablet is cramped; see [Android app](#android-app)
 

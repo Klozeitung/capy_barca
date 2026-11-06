@@ -18,6 +18,8 @@ pool_to_timeline                    – derive the slots of a relation pool
 sanitize_nuance_pool                – keep only nuance labels of existing ranges
 sanitize_flat_nuances               – the same for a relation without timeline
 validate_timeline_value             – structure check of a scalar timeline
+slot_at                             – the slot valid at an instant, or the
+                                      most recent slot
 extract_related_ids_now             – current links of a relation value
 migrate_relation_values_to_timeline – convert relation values when a timeline
                                       is enabled
@@ -401,20 +403,92 @@ def validate_timeline_value(value: dict) -> Optional[str]:
     return None
 
 
+def _period_start_key(key: str) -> str:
+    """
+    The sort key of a period by its start: ``"→end"`` periods have no start
+    and precede everything, every other key sorts by its start part.
+    """
+    if key.startswith("→"):
+        return ""
+    return key.split("→")[0]
+
+
+def _minute_of(ts: Optional[str]):
+    """
+    *ts* as a naive datetime truncated to the minute, or None when it is
+    missing or unparseable. A date without a time is midnight and a UTC
+    offset is ignored, as in :func:`pool_to_timeline`.
+    """
+    from datetime import datetime as _DT
+
+    if not ts:
+        return None
+    try:
+        dt = _DT.fromisoformat(ts.strip().replace("Z", "+00:00"))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return dt.replace(tzinfo=None, second=0, microsecond=0)
+
+
+def slot_at(timeline: dict, at: Optional[str] = None) -> Optional[dict]:
+    """
+    Return the slot of a ``_timeline`` dict that applies, or None.
+
+    Without *at* this is the most recent slot: the always-valid ``""`` slot
+    when present, otherwise the slot with the latest start, where ``"→end"``
+    periods count as the earliest. Rollups and formulas read timelined values
+    this way ("the most recent value"), so a slot starting in the future
+    counts as the most recent one.
+
+    With *at*, an ISO date or timestamp, this is the slot whose period
+    contains that instant: the always-valid slot, or the period whose start
+    is at or before *at* and whose end is at or after it. Comparison happens
+    at the resolution of one minute, like :func:`pool_to_timeline`: an end
+    covers its minute, a date without a time is midnight, and an open side
+    reaches infinitely far. Returns None when no period contains *at*, and
+    for an *at* that cannot be parsed.
+    """
+    if not timeline:
+        return None
+    if "" in timeline:
+        return timeline[""]  # type: ignore[return-value]
+
+    if at is None:
+        last_key = max(timeline.keys(), key=_period_start_key)
+        return timeline[last_key]  # type: ignore[return-value]
+
+    instant = _minute_of(at)
+    if instant is None:
+        return None
+    for key in sorted(timeline.keys(), key=_period_start_key):
+        start_raw, end_raw = parse_pool_range(key)
+        start = _minute_of(start_raw)
+        end = _minute_of(end_raw)
+        if start_raw is not None and start is None:
+            continue
+        if end_raw is not None and end is None:
+            continue
+        if start is not None and instant < start:
+            continue
+        if end is not None and instant > end:
+            continue
+        return timeline[key]  # type: ignore[return-value]
+    return None
+
+
 def extract_related_ids_now(value: Optional[dict]) -> list[str]:
     """
     Extract the current flat ``related_ids`` list from a relation value.
 
     For timeline relations (``_timeline`` present): returns the list from the
-    chronologically last slot.  For plain relations: returns ``related_ids``
-    from the root dict.  Always returns a plain Python list of strings.
+    most recent slot (:func:`slot_at`).  For plain relations: returns
+    ``related_ids`` from the root dict.  Always returns a plain Python list of
+    strings.
     """
     if not value:
         return []
     if "_timeline" in value:
-        # Import here to avoid circular dependency risk
-        from app.blocks.computed import _last_timeline_slot
-        slot = _last_timeline_slot(value.get("_timeline") or {})
+        slot = slot_at(value.get("_timeline") or {})
         if slot is None:
             return []
         return list(slot.get("related_ids", []))

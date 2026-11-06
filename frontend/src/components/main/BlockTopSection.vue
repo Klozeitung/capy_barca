@@ -2,8 +2,11 @@
 /**
  * BlockTopSection
  *
- * Cover, icon and title of a page. Icon and title are editable in place
- * unless the user may only read the page (``useEditable``).
+ * Cover, profile picture, icon and title of a page. Icon and title are
+ * editable in place unless the user may only read the page
+ * (``useEditable``). The profile picture sits above icon and title and, on a
+ * page with a cover, overlaps the cover's lower edge in front of it; it is set
+ * in the page settings.
  */
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -81,6 +84,15 @@ function onTitleKeydown(e: KeyboardEvent): void {
     <div v-if="hasCover" class="block-cover" :style="coverStyle" />
 
     <div class="block-meta" :class="{ 'block-meta--with-cover': hasCover }">
+      <!-- Profile picture -->
+      <img
+        v-if="block.avatar"
+        :src="block.avatar"
+        class="block-avatar"
+        :class="{ 'block-avatar--over-cover': hasCover }"
+        alt=""
+      />
+
       <!-- Icon -->
       <div class="block-icon-wrap">
         <button
@@ -143,6 +155,23 @@ function onTitleKeydown(e: KeyboardEvent): void {
 }
 
 .block-meta--with-cover { padding-top: 1rem; }
+
+.block-avatar {
+  display: block;
+  width: 112px;
+  height: 112px;
+  border-radius: 50%;
+  object-fit: cover;
+  margin-bottom: 0.75rem;
+  border: 4px solid var(--color-bg, var(--color-surface));
+  background: var(--color-surface);
+}
+
+/* Pulled up into the cover; position: relative keeps it painted in front. */
+.block-avatar--over-cover {
+  position: relative;
+  margin-top: calc(-1rem - 64px);
+}
 
 .block-icon-wrap {
   position: relative;

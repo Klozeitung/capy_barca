@@ -72,6 +72,7 @@ def _block_dict(block: Block) -> dict:
         "content": block.content,
         "icon": block.icon,
         "cover": block.cover,
+        "avatar": block.avatar,
         "owner_id": str(block.owner_id) if getattr(block, "owner_id", None) else None,
     }
 

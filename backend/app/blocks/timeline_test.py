@@ -2,17 +2,19 @@
 Tests for the timeline helpers of database properties.
 
 Pure functions, no database: period key parsing, the derivation of relation
-timelines from their pools, nuance sanitising and the structure check of
-scalar timelines. The endpoints that use them are covered in
-``database_router_test.py``.
+timelines from their pools, nuance sanitising, the structure check of scalar
+timelines and the lookup of the slot that applies. The endpoints that use
+them are covered in ``database_router_test.py``.
 """
 import pytest
 
 from app.blocks.timeline import (
+    extract_related_ids_now,
     parse_pool_range,
     pool_to_timeline,
     sanitize_flat_nuances,
     sanitize_nuance_pool,
+    slot_at,
     validate_timeline_value,
 )
 
@@ -425,3 +427,105 @@ def test_sanitize_flat_nuances_keeps_only_linked_uids():
     assert sanitize_flat_nuances({"a": "k", "ghost": "q"}, ["a"]) == {"a": "k"}
     assert sanitize_flat_nuances({"a": "  "}, ["a"]) == {}
     assert sanitize_flat_nuances(None, ["a"]) == {}
+
+
+# ── slot_at ──────────────────────────────────────────────────────────────────
+
+_PERIODS = {
+    "→2000-07-27T23:59:00": {"text": "before"},
+    "2000-07-28T00:00:00→2045-07-17T18:05:00": {"text": "during"},
+    "2045-07-17T18:06:00→": {"text": "after"},
+}
+
+
+def _most_recent_reference(timeline: dict):
+    """The selection rule rollups and formulas used before slot_at existed."""
+    if not timeline:
+        return None
+    if "" in timeline:
+        return timeline[""]
+    return timeline[max(
+        timeline, key=lambda k: "" if k.startswith("→") else k.split("→")[0],
+    )]
+
+
+@pytest.mark.parametrize("timeline", [
+    {},
+    {"": {"text": "always"}},
+    _PERIODS,
+    {"→2000-07-27T23:59:00": {"text": "until"}},
+    {
+        "2000-07-28T00:00:00→2000-12-31T23:59:00": {"text": "past"},
+        "2045-07-17T00:00:00→": {"text": "future"},
+    },
+    {
+        "0044-03-15T00:00:00→0044-03-15T23:59:00": {"text": "ancient"},
+        "2000-07-28T00:00:00→": {"text": "modern"},
+    },
+])
+def test_slot_at_without_instant_matches_the_previous_selection(timeline):
+    """Without an instant the most recent slot is chosen, exactly as before."""
+    assert slot_at(timeline) is _most_recent_reference(timeline)
+
+
+def test_slot_at_without_instant_counts_a_future_slot_as_most_recent():
+    """'Most recent' means the latest start, also when it lies in the future."""
+    timeline = {
+        "2000-07-28T00:00:00→": {"text": "present"},
+        "2999-01-01T00:00:00→": {"text": "future"},
+    }
+    assert slot_at(timeline) == {"text": "future"}
+
+
+@pytest.mark.parametrize("at, expected", [
+    ("1990-01-01", "before"),
+    ("2000-07-27T23:59:00", "before"),
+    ("2000-07-28", "during"),
+    ("2045-07-17T18:05:00", "during"),
+    ("2045-07-17T18:05:59", "during"),
+    ("2045-07-17T18:06:00", "after"),
+    ("2100-01-01T00:00:00Z", "after"),
+])
+def test_slot_at_instant_finds_the_period_containing_it(at, expected):
+    """Starts and ends cover their minute; open sides reach infinitely far."""
+    assert slot_at(_PERIODS, at) == {"text": expected}
+
+
+def test_slot_at_instant_in_a_gap_finds_nothing():
+    timeline = {
+        "2000-01-01T00:00:00→2000-12-31T23:59:00": {"text": "a"},
+        "2002-01-01T00:00:00→": {"text": "b"},
+    }
+    assert slot_at(timeline, "2001-06-01") is None
+
+
+def test_slot_at_instant_always_valid_slot_applies_everywhere():
+    assert slot_at({"": {"text": "always"}}, "0001-01-01") == {"text": "always"}
+
+
+@pytest.mark.parametrize("at", ["", "not a date", "2045-13-40"])
+def test_slot_at_unparseable_instant_finds_nothing(at):
+    assert slot_at(_PERIODS, at) is None
+
+
+def test_slot_at_skips_a_period_with_an_unparseable_boundary():
+    timeline = {
+        "garbage→2000-12-31T23:59:00": {"text": "broken"},
+        "2001-01-01T00:00:00→": {"text": "fine"},
+    }
+    assert slot_at(timeline, "2000-06-01") is None
+    assert slot_at(timeline, "2001-06-01") == {"text": "fine"}
+
+
+def test_slot_at_empty_timeline_with_instant():
+    assert slot_at({}, "2000-07-28") is None
+
+
+def test_extract_related_ids_now_reads_the_most_recent_slot():
+    value = {"_timeline": {
+        "2000-07-28T00:00:00→2000-12-31T23:59:00": {"related_ids": ["a"]},
+        "2001-01-01T00:00:00→": {"related_ids": ["b", "c"]},
+    }}
+    assert extract_related_ids_now(value) == ["b", "c"]
+    assert extract_related_ids_now({"related_ids": ["x"]}) == ["x"]
+    assert extract_related_ids_now(None) == []

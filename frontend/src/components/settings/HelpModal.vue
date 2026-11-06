@@ -14,7 +14,7 @@
  *                • Drag-handle modifier clicks
  *                • Editor keyboard shortcuts
  *  files     – What the server accepts for uploads and how it hands files
- *              back out again; uploaded icons.
+ *              back out again; uploaded icons and profile pictures.
  *  permissions – Access modes and the read and edit levels.
  *  print     – What Quick Print outputs and how a printer is set up.
  */
@@ -287,6 +287,7 @@ const permissionModes = [
                 <p class="hm__permissions-intro">{{ t('help.filesTypes') }}</p>
                 <p class="hm__permissions-intro">{{ t('help.filesDownload') }}</p>
                 <p class="hm__permissions-intro">{{ t('help.filesIcons') }}</p>
+                <p class="hm__permissions-intro">{{ t('help.filesAvatar') }}</p>
               </div>
             </template>
 

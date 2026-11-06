@@ -15,6 +15,8 @@ export interface Block {
   content: Record<string, unknown> | null
   icon: string | null
   cover: string | null
+  /** Static URL of the page's profile picture, a square image; null when it has none. */
+  avatar?: string | null
   owner_id?: string | null
   /**
    * Whether the current user may change this block. Sent with every block an
@@ -362,6 +364,26 @@ export const useBlockStore = defineStore('blocks', () => {
     return blocks.value[block.id]
   }
 
+  /**
+   * Upload *image* as the profile picture of *blockId*. The image is expected
+   * to be cropped to a square already; the server stores it as it arrives.
+   */
+  async function uploadAvatar(blockId: string, image: Blob, filename: string): Promise<Block> {
+    const form = new FormData()
+    // Wrapped in a File so the name, which decides the stored extension, is
+    // sent along wherever FormData would otherwise drop it for a plain Blob.
+    form.append('file', new File([image], filename, { type: image.type }))
+    const block = await apiClient.postForm<Block>(`/api/blocks/${blockId}/avatar`, form)
+    _storeBlock(block)
+    return blocks.value[block.id]
+  }
+
+  async function removeAvatar(blockId: string): Promise<Block> {
+    const block = await apiClient.delete<Block>(`/api/blocks/${blockId}/avatar`)
+    _storeBlock(block)
+    return blocks.value[block.id]
+  }
+
   async function moveBlock(
     blockId: string,
     oldParentId: string | null,
@@ -467,6 +489,8 @@ export const useBlockStore = defineStore('blocks', () => {
     createBlock,
     updateBlock,
     updateAppearance,
+    uploadAvatar,
+    removeAvatar,
     moveBlock,
     deleteBlock,
     deepDuplicateBlock,

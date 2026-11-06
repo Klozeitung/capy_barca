@@ -149,6 +149,19 @@ def test_block_content_stores_json(db):
     assert block.content == content
 
 
+def test_block_avatar_is_nullable_and_stores_a_url(db):
+    block = Block(type="page", position=1.0)
+    db.add(block)
+    db.commit()
+    db.refresh(block)
+    assert block.avatar is None
+
+    block.avatar = "/static/uploads/avatars/a.png"
+    db.commit()
+    db.refresh(block)
+    assert block.avatar == "/static/uploads/avatars/a.png"
+
+
 def test_workspace_root_id_is_stable():
     assert WORKSPACE_ROOT_ID == uuid.UUID("00000000-0000-0000-0000-000000000001")
 

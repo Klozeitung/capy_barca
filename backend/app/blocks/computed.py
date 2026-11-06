@@ -100,6 +100,7 @@ from app.blocks.formula_engine import (
     map_prop_references,
     uses_volatile_functions,
 )
+from app.blocks.timeline import slot_at
 
 
 class CycleError(Exception):
@@ -304,22 +305,11 @@ def _last_timeline_slot(timeline: dict) -> Optional[dict]:
     directly when present.  All other keys are sorted lexicographically by
     their start timestamp — ISO 8601 strings sort correctly this way.
 
-    Returns ``None`` when *timeline* is empty.
+    Returns ``None`` when *timeline* is empty. This is
+    :func:`app.blocks.timeline.slot_at` without an instant, the one place
+    that decides which slot of a timeline applies.
     """
-    if not timeline:
-        return None
-    if "" in timeline:
-        return timeline[""]  # type: ignore[return-value]
-
-    def _slot_start_key(k: str) -> str:
-        # "→end" keys have no start — they precede everything.
-        if k.startswith("→"):
-            return ""
-        # "start→end" or "start→": take the start part.
-        return k.split("→")[0]
-
-    last_key = max(timeline.keys(), key=_slot_start_key)
-    return timeline[last_key]  # type: ignore[return-value]
+    return slot_at(timeline)
 
 
 def _get_related_ids(rel_value: Optional[dict], rel_schema: Any) -> list[str]:
@@ -515,6 +505,37 @@ _ROLLUP_FUNCTIONS: frozenset[str] = frozenset({
 # titles for human-readable output.
 _RELATION_COL_TYPES = frozenset({"relation", "parent_item", "sub_item"})
 _RAW_DISPLAY_FUNCTIONS = frozenset({"show_original", "first_value", "last_value"})
+
+# Rollup config flag: a ``show_original`` rollup lists every value once. Over
+# a relation column that means every linked entry once, so an entry reached
+# through two of the related entries (a grandparent shared by both parents)
+# is not shown twice. Without the flag every value is listed as often as it
+# occurs.
+ROLLUP_DEDUPE_KEY = "dedupe"
+
+
+def _without_duplicates(values: list[Any], key: Callable[[Any], Any] = lambda v: v) -> list[Any]:
+    """
+    *values* with every value after its first occurrence removed, in order.
+
+    Two values are duplicates when *key* yields equal results for them.
+    Unhashable keys (date dicts) are compared by equality.
+    """
+    seen_hashable: set = set()
+    seen_other: list[Any] = []
+    out: list[Any] = []
+    for value in values:
+        k = key(value)
+        try:
+            if k in seen_hashable:
+                continue
+            seen_hashable.add(k)
+        except TypeError:
+            if k in seen_other:
+                continue
+            seen_other.append(k)
+        out.append(value)
+    return out
 
 
 def _entry_descriptor(db: Session, rid_str: str) -> Optional[dict]:
@@ -936,6 +957,7 @@ def _compute_rollup(
     rel_id_raw = config.get("relation_schema_id")
     roll_col_id_raw = config.get("rollup_schema_id")
     function: str = config.get("function", "count")
+    dedupe = function == "show_original" and config.get(ROLLUP_DEDUPE_KEY) is True
 
     def _store(result: Any, error: str | None = None, extra: dict | None = None) -> None:
         val: dict = {"result": result, "function": function}
@@ -1024,7 +1046,9 @@ def _compute_rollup(
     if (col_type in _RELATION_COL_TYPES or target_is_relation_formula) and function in _RAW_DISPLAY_FUNCTIONS:
         entries = _resolve_relation_entries(scalars, lambda rid: _entry_descriptor(db, rid))
         if function == "show_original":
-            result: Any = entries
+            result: Any = (
+                _without_duplicates(entries, key=lambda e: e["id"]) if dedupe else entries
+            )
         elif function == "first_value":
             result = entries[0] if entries else None
         else:  # last_value
@@ -1042,8 +1066,13 @@ def _compute_rollup(
             (sc.get("start") or sc.get("end")) if isinstance(sc, dict) else sc
             for sc in scalars
         ]
+        if dedupe:
+            iso_scalars = _without_duplicates(iso_scalars)
         _store(_aggregate(iso_scalars, function))
         return
+
+    if dedupe:
+        scalars = _without_duplicates(scalars)
 
     _store(_aggregate(scalars, function))
 
