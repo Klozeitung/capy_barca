@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   BOW_DROP,
+  ENTRY_SHIFT,
   MIN_DROP,
   PICTURE_HEIGHT,
   TRACK_STEP,
@@ -197,11 +198,26 @@ describe('channel routing', () => {
     expect(tracks.get('1|B')).toBe(0)
   })
 
-  it('puts touching runs on different tracks and a source above another end higher', () => {
+  it('shifts the entry of a line under another net\'s source and keeps one track', () => {
     // Net A runs from 100 to 300 and ends at 300, where net B leaves from.
-    const { tracks, count } = assignTracks([item('A', 100, 100), item('A', 100, 300), item('B', 300, 500)])
+    const { tracks, count, drops } = assignTracks([item('A', 100, 100), item('A', 100, 300), item('B', 300, 500)])
+    expect(count).toBe(1)
+    expect(tracks.get('1|A')).toBe(tracks.get('1|B'))
+    expect(drops.get('A>300')).toBe(300 - ENTRY_SHIFT)
+    expect(drops.get('A>100')).toBe(100)
+    expect(drops.get('B>500')).toBe(500)
+  })
+
+  it('lets two lines meet at a child they share', () => {
+    const { count, drops } = assignTracks([item('A', 100, 300), item('B', 500, 300)])
+    expect(count).toBe(1)
+    expect(drops.get('A>300')).toBe(300)
+  })
+
+  it('puts overlapping runs on different tracks', () => {
+    const { tracks, count } = assignTracks([item('A', 0, 300), item('B', 100, 400)])
     expect(count).toBe(2)
-    expect(tracks.get('1|B')).toBeLessThan(tracks.get('1|A')!)
+    expect(tracks.get('1|A')).not.toBe(tracks.get('1|B'))
   })
 
   it('still assigns every net when the constraints form a cycle', () => {
@@ -218,20 +234,20 @@ describe('channel routing', () => {
 
   it('places tracks in the channel and packs them when more are needed than reserved', () => {
     const channels = new Map([[1, { top: 132, bottom: 164 + TRACK_STEP, tracks: 2 }]])
-    const across = routeAcross([item('A', 100, 300), item('B', 300, 500)], channels)
-    expect(across.get('B>500')).toBe(132)
-    expect(across.get('A>300')).toBe(132 + TRACK_STEP)
+    const across = routeAcross([item('A', 0, 300), item('B', 100, 400)], channels)
+    expect(across.get('A>300')).toEqual({ y: 132, x: 300 })
+    expect(across.get('B>400')).toEqual({ y: 132 + TRACK_STEP, x: 400 })
 
     const tight = new Map([[1, { top: 132, bottom: 164, tracks: 1 }]])
-    const packed = routeAcross([item('A', 100, 300), item('B', 300, 500), item('C', 500, 700)], tight)
-    const heights = [...packed.values()]
+    const packed = routeAcross([item('A', 0, 300), item('B', 100, 400), item('C', 200, 500)], tight)
+    const heights = [...packed.values()].map((r) => r.y)
     expect(new Set(heights).size).toBe(3)
     for (const h of heights) expect(h).toBeLessThanOrEqual(164 - MIN_DROP)
     // Outside any channel: no height, the default route.
     expect(routeAcross([item('A', 0, 100, 7)], tight).size).toBe(0)
   })
 
-  it('separates a parent above another parent\'s child and widens only that gap', () => {
+  it('clears a parent above another parent\'s child without widening the gap', () => {
     // Person A has children Person C and Person D; Person D stands right
     // under Person B, whose child is Person E.
     const t = tree({
@@ -253,16 +269,17 @@ describe('channel routing', () => {
     // The case to solve: the second child stands under the other parent.
     expect(d.x + d.width / 2).toBeCloseTo(b.x + b.width / 2)
     const channel = layout.channels.get(1)!
-    expect(channel.tracks).toBe(2)
-    expect(channel.bottom - channel.top).toBe(V_GAP / 2 + TRACK_STEP)
-    expect(d.y).toBe(channel.bottom)
+    expect(channel.tracks).toBe(1)
+    expect(channel.bottom - channel.top).toBe(V_GAP / 2)
 
     const items = [
       { key: 'ad', net: 'A', row: 1, sourceX: layout.boxes.get('Person A')!.x + NODE_WIDTH / 2, dropX: d.x + d.width / 2 },
       { key: 'be', net: 'B', row: 1, sourceX: b.x + b.width / 2, dropX: layout.boxes.get('Person E')!.x + NODE_WIDTH / 2 },
     ]
     const across = routeAcross(items, layout.channels)
-    expect(across.get('be')).toBeLessThan(across.get('ad')!)
+    expect(across.get('ad')!.y).toBe(across.get('be')!.y)
+    // The line into Person D enters left of Person B's line down.
+    expect(across.get('ad')!.x).toBe(d.x + d.width / 2 - ENTRY_SHIFT)
   })
 
   it('keeps the gap of a channel with a single track', () => {
@@ -277,5 +294,6 @@ describe('channel routing', () => {
     const parent = { id: 'p', x: 0, y: 0, width: 100, height: 120, generation: 0 }
     const child = { id: 'c', x: 200, y: 200, width: 100, height: 120, generation: 1 }
     expect(parentPath(parent, child, 150)).toBe('M 50 120 L 50 150 L 250 150 L 250 200')
+    expect(parentPath(parent, child, 150, 238)).toBe('M 50 120 L 50 150 L 238 150 L 238 200')
   })
 })

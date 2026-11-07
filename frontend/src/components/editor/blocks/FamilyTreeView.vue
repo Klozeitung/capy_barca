@@ -27,7 +27,8 @@
  * Links
  * -----
  * Parent links run from below the parent across above the child's row, on
- * a track of their own where they would meet another line (``routeAcross``).
+ * a track of their own or with a shifted entry where they would meet another
+ * line (``routeAcross``).
  * Partners with children shown together hang on a bow under both of them,
  * and the line to those children leaves from its middle; other partnerships
  * connect the pictures (``groupLinks``). Pictures are 3:4 rectangles. The style follows the nuance
@@ -282,7 +283,10 @@ const drawing = computed(() => {
     lines.map(routeItem).filter((item): item is RouteItem => item !== null),
     layout.value?.channels ?? new Map(),
   )
-  for (const line of lines) line.make(stemPath(line.from, line.child, across.get(line.key)))
+  for (const line of lines) {
+    const route = across.get(line.key)
+    line.make(stemPath(line.from, line.child, route?.y, route?.x))
+  }
   family.push(...bows)
   for (const link of groups.partners) {
     const a = box(link.a)

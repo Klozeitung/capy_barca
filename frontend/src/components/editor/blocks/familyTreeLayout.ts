@@ -43,13 +43,15 @@
  * Lines to a row run across in the gap above it, its channel. All lines that
  * leave one point (a person, the middle of a bow, a virtual parent) form a
  * net and share one track. The tracks are assigned with the left-edge
- * algorithm of channel routing with vertical constraints (``assignTracks``):
- * nets whose horizontal runs overlap or touch take different tracks, and a
- * net that leaves right above the end of another net runs higher, so the two
- * vertical lines never meet. The gap grows by ``TRACK_STEP`` for every track
- * beyond the first; it is reserved from the overall view so positions stay
- * stable, and an instant that needs more tracks than reserved packs them
- * closer (``routeAcross``).
+ * algorithm of channel routing with vertical constraints (``assignTracks``).
+ * A line that would end right under the source of another net enters its
+ * child ``ENTRY_SHIFT`` to the side it comes from, so the two vertical lines
+ * never meet and the two runs keep a gap on the same track. Nets whose runs
+ * still overlap or touch take different tracks, except where they only meet
+ * at a child they share; a net leaving above the end of another runs higher.
+ * The gap grows by ``TRACK_STEP`` for every track beyond the first; it is
+ * reserved from the overall view so positions stay stable, and an instant
+ * that needs more tracks than reserved packs them closer (``routeAcross``).
  */
 import type { FamilyTree, TreeNode, TreeToken } from '@/composables/useFamilyTree'
 import { treeAt, type ParentLinkAt, type PartnerLinkAt, type TreeAt } from './familyTreeAt'
@@ -85,6 +87,8 @@ export const TRACK_STEP = 10
 export const TRACK_TOUCH = 4
 /** Shortest vertical line from a track down to a child when tracks are packed. */
 export const MIN_DROP = 12
+/** How far a line moves off the middle of its child to clear another net's source. */
+export const ENTRY_SHIFT = 12
 const CHARS_PER_LINE = 26
 const SWEEPS = 4
 
@@ -370,25 +374,58 @@ interface Net {
   id: string
   row: number
   sourceX: number
+  /** Where its lines meet their children, as drawn. */
   drops: number[]
+  /** The middles of its children, before any shift. */
+  targets: number[]
   left: number
   right: number
 }
 
+/** Whether the runs of *a* and *b* would meet on one track (see the module). */
+function runsMeet(a: Net, b: Net): boolean {
+  const from = Math.max(a.left, b.left)
+  const to = Math.min(a.right, b.right)
+  if (to - from < -TRACK_TOUCH) return false
+  if (to - from > TRACK_TOUCH) return true
+  // They touch at one point: fine where both end there, at a child they share.
+  const point = (from + to) / 2
+  const endsAt = (net: Net) => net.drops.some((d) => Math.abs(d - point) < TRACK_TOUCH)
+  return !(endsAt(a) && endsAt(b))
+}
+
 /**
  * Tracks for the nets of *items* (see the module): the track of every net,
- * keyed by row and net, and the largest number of tracks of any row.
+ * keyed by row and net, the largest number of tracks of any row, and where
+ * each line meets its child, by the key of the line.
  */
-export function assignTracks(items: RouteItem[]): { tracks: Map<string, number>; count: number } {
+export function assignTracks(items: RouteItem[]): { tracks: Map<string, number>; count: number; drops: Map<string, number> } {
+  const sources = new Map<number, Map<string, number>>()
+  for (const item of items) {
+    const row = sources.get(item.row) ?? new Map<string, number>()
+    row.set(item.net, item.sourceX)
+    sources.set(item.row, row)
+  }
+  const drops = new Map<string, number>()
   const byRow = new Map<number, Map<string, Net>>()
   for (const item of items) {
+    // Clear the source of another net right above the child.
+    let dropX = item.dropX
+    const blocked = [...(sources.get(item.row) ?? new Map<string, number>()).entries()]
+      .some(([net, x]) => net !== item.net && Math.abs(x - item.dropX) < TRACK_TOUCH)
+    if (blocked && Math.abs(item.sourceX - item.dropX) >= TRACK_TOUCH) {
+      dropX += item.sourceX < item.dropX ? -ENTRY_SHIFT : ENTRY_SHIFT
+    }
+    drops.set(item.key, dropX)
+
     const nets = byRow.get(item.row) ?? new Map<string, Net>()
     byRow.set(item.row, nets)
     const id = trackKey(item.row, item.net)
-    const net = nets.get(id) ?? { id, row: item.row, sourceX: item.sourceX, drops: [], left: item.sourceX, right: item.sourceX }
-    net.drops.push(item.dropX)
-    net.left = Math.min(net.left, item.dropX)
-    net.right = Math.max(net.right, item.dropX)
+    const net = nets.get(id) ?? { id, row: item.row, sourceX: item.sourceX, drops: [], targets: [], left: item.sourceX, right: item.sourceX }
+    net.drops.push(dropX)
+    net.targets.push(item.dropX)
+    net.left = Math.min(net.left, dropX)
+    net.right = Math.max(net.right, dropX)
     nets.set(id, net)
   }
 
@@ -396,12 +433,13 @@ export function assignTracks(items: RouteItem[]): { tracks: Map<string, number>;
   let count = 0
   for (const nets of byRow.values()) {
     const list = [...nets.values()].sort((a, b) => a.left - b.left || a.right - b.right || a.id.localeCompare(b.id))
-    // A net leaving right above the end of another one runs higher than it.
+    // A net leaving right above the end of another one runs higher than it
+    // where the two need tracks of their own, so it does not cross that end.
     const above = new Map<string, Set<string>>(list.map((n) => [n.id, new Set<string>()]))
     for (const upper of list) {
       for (const lower of list) {
-        if (upper === lower) continue
-        if (lower.drops.some((d) => Math.abs(d - upper.sourceX) < TRACK_TOUCH)) above.get(lower.id)?.add(upper.id)
+        if (upper === lower || !runsMeet(upper, lower)) continue
+        if (lower.targets.some((d) => Math.abs(d - upper.sourceX) < TRACK_TOUCH)) above.get(lower.id)?.add(upper.id)
       }
     }
     const occupied: Net[][] = []
@@ -411,7 +449,7 @@ export function assignTracks(items: RouteItem[]): { tracks: Map<string, number>;
       if (constrained) {
         for (const id of above.get(net.id) ?? []) track = Math.max(track, (tracks.get(id) ?? -1) + 1)
       }
-      while ((occupied[track] ?? []).some((o) => o.left <= net.right + TRACK_TOUCH && net.left <= o.right + TRACK_TOUCH)) track++
+      while ((occupied[track] ?? []).some((o) => runsMeet(o, net))) track++
       ;(occupied[track] ??= []).push(net)
       tracks.set(net.id, track)
       done.add(net.id)
@@ -432,33 +470,39 @@ export function assignTracks(items: RouteItem[]): { tracks: Map<string, number>;
     for (const net of list) if (!done.has(net.id)) place(net, false)
     count = Math.max(count, occupied.length)
   }
-  return { tracks, count }
+  return { tracks, count, drops }
 }
 
 function trackKey(row: number, net: string): string {
   return `${row}|${net}`
 }
 
+/** Where a line runs across (*y*) and where it meets its child (*x*). */
+export interface Route {
+  y: number
+  x: number
+}
+
 /**
- * The height at which every line of *items* runs across, by its key. Lines
- * outside any channel are left out and keep the default route.
+ * The route of every line of *items*, by its key. Lines outside any channel
+ * are left out and keep the default route.
  */
-export function routeAcross(items: RouteItem[], channels: Map<number, Channel>): Map<string, number> {
+export function routeAcross(items: RouteItem[], channels: Map<number, Channel>): Map<string, Route> {
   const inChannel = items.filter((item) => channels.has(item.row))
-  const { tracks } = assignTracks(inChannel)
+  const { tracks, drops } = assignTracks(inChannel)
   const used = new Map<number, number>()
   for (const item of inChannel) {
     const track = tracks.get(trackKey(item.row, item.net)) ?? 0
     used.set(item.row, Math.max(used.get(item.row) ?? 0, track + 1))
   }
-  const result = new Map<string, number>()
+  const result = new Map<string, Route>()
   for (const item of inChannel) {
     const channel = channels.get(item.row) as Channel
     const count = used.get(item.row) ?? 1
     const track = tracks.get(trackKey(item.row, item.net)) ?? 0
     const room = channel.bottom - MIN_DROP - channel.top
     const step = count > channel.tracks ? Math.min(TRACK_STEP, room / Math.max(1, count - 1)) : TRACK_STEP
-    result.set(item.key, channel.top + track * step)
+    result.set(item.key, { y: channel.top + track * step, x: drops.get(item.key) ?? item.dropX })
   }
   return result
 }
@@ -542,10 +586,10 @@ function edgeDistance(box: Box, ux: number, uy: number): number {
 /**
  * The path of a parent link: down from below the parent's text, across
  * above the child's row at *across* (its track, see ``routeAcross``), down
- * to the child.
+ * to the child at *entry*.
  */
-export function parentPath(parent: Box, child: Box, across?: number): string {
-  return stemPath(nodeBottom(parent), child, across)
+export function parentPath(parent: Box, child: Box, across?: number, entry?: number): string {
+  return stemPath(nodeBottom(parent), child, across, entry)
 }
 
 /**
@@ -587,10 +631,16 @@ export function bowMiddle(a: Box, b: Box, y: number): { x: number; y: number } {
 
 /**
  * The line from a point (the middle of a bow) across above the child's row
- * at *across*, halfway up the gap without one, down to the child.
+ * at *across*, halfway up the gap without one, down to the child at *entry*,
+ * its middle without one.
  */
-export function stemPath(from: { x: number; y: number }, child: Box, across: number = child.y - V_GAP / 2): string {
-  const to = { x: child.x + child.width / 2, y: child.y }
+export function stemPath(
+  from: { x: number; y: number },
+  child: Box,
+  across: number = child.y - V_GAP / 2,
+  entry: number = child.x + child.width / 2,
+): string {
+  const to = { x: entry, y: child.y }
   if (across <= from.y || across >= to.y) return `M ${from.x} ${from.y} L ${to.x} ${to.y}`
   return `M ${from.x} ${from.y} L ${from.x} ${across} L ${to.x} ${across} L ${to.x} ${to.y}`
 }
