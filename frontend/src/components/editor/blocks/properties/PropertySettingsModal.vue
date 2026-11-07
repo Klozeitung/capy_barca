@@ -73,7 +73,9 @@ import {
   getSchemaIcon,
   hasSystemNuances,
   isCalendarDateSchema,
+  isKinshipTimelineCoupled,
   kinshipFemaleOptionId,
+  kinshipMaleOptionId,
   kinshipRole,
 } from '@/stores/propertyTypes'
 import { apiClient, ApiError } from '@/api/client'
@@ -122,6 +124,15 @@ const description = ref<string>(
 const kinRole = computed(() => kinshipRole(props.schema))
 const systemNuances = computed(() => hasSystemNuances(props.schema))
 const femaleOptionId = computed(() => kinshipFemaleOptionId(props.schema))
+const maleOptionId = computed(() => kinshipMaleOptionId(props.schema))
+const timelineCoupled = computed(() => isKinshipTimelineCoupled(props.schema))
+
+/** Why an option of the family set's sex property cannot be removed, or null. */
+function sexOptionLock(id: string): string | null {
+  if (id === femaleOptionId.value) return t('db.settings.kinFemaleOptionLocked')
+  if (id === maleOptionId.value) return t('db.settings.kinMaleOptionLocked')
+  return null
+}
 
 // number
 const numberFormat = ref<'plain' | 'euro'>(
@@ -1016,8 +1027,8 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
                 </button>
                 <button
                   class="psm__option-remove"
-                  :disabled="opt.id === femaleOptionId"
-                  :title="opt.id === femaleOptionId ? t('db.settings.kinFemaleOptionLocked') : undefined"
+                  :disabled="!!sexOptionLock(opt.id)"
+                  :title="sexOptionLock(opt.id) ?? undefined"
                   @click="requestRemoveOption('select', idx)"
                 >
                   <Icon icon="mdi:close" width="13" height="13" />
@@ -1616,6 +1627,9 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
               {{ t('db.timeline.hasTimeline') }}
             </label>
             <p class="psm__hint">{{ t('db.timeline.hasTimelineHint') }}</p>
+            <p v-if="timelineCoupled" class="psm__hint psm__hint--system">
+              {{ t('db.timeline.kinCoupled') }}
+            </p>
             <p v-if="schema.config?.hasTimeline" class="psm__hint psm__hint--warning">
               {{ t('db.timeline.disableBlocked') }}
             </p>

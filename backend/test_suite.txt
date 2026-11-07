@@ -34,6 +34,7 @@ app/database/calendar_alerts_timezone_migration_test.py
 app/database/account_language_custom_icons_migration_test.py
 app/database/block_avatar_migration_test.py
 app/database/kinship_roles_migration_test.py
+app/database/kinship_siblings_migration_test.py
 
 app/session/user_registration_test.py
 app/session/user_login_test.py
@@ -75,6 +76,13 @@ app/blocks/entry_changes_test.py
 app/blocks/database_events_test.py
 app/blocks/relation_lock_test.py
 app/blocks/kinship_test.py
+
+app/family_tree/graph_test.py
+app/family_tree/generations_test.py
+app/family_tree/conflicts_test.py
+app/family_tree/siblings_test.py
+app/family_tree/render_test.py
+app/family_tree/router_test.py
 
 app/media/model_test.py
 app/media/upload_test.py

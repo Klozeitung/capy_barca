@@ -353,18 +353,14 @@
     "iconsDeleteError": "The icon could not be deleted.",
     "systemDefaults": "System defaults",
     "kinNuances": "Family tree nuances",
-    "kinNuancesDesc": "Parents, children and partners offer fixed base nuances the family tree interprets. Add nuances of your own next to the base nuance they should count as. They are available in every database at once.",
+    "kinNuancesDesc": "Parents, children, partners and siblings offer fixed base nuances the family tree interprets. Add nuances of your own next to the base nuance they should count as. They are available in every database at once.",
     "kinGroupParents": "Parents / Children",
     "kinGroupPartners": "Partners",
     "kinGroupSiblings": "Siblings",
-    "kinGroupHalfSiblings": "Half-siblings",
     "kinAliasPlaceholder": "Add nuances of your own here that the system should treat like the base nuance",
-    "kinSiblingsPlaceholder": "Siblings have no base nuance. You can still add nuances of your own here, but the system will ignore them (there is no path between siblings that could carry a label)",
-    "kinHalfSiblingsPlaceholder": "Half-siblings have no base nuance. You can still add nuances of your own here, but the system will ignore them (there is no path between half-siblings that could carry a label)",
     "kinAliasAdd": "Add nuance",
     "kinAliasDelete": "Delete nuance",
     "kinAliasDeleteToBase": "No entry uses \"{label}\". | One entry uses \"{label}\"; it will show \"{base}\" instead. | {count} entries use \"{label}\"; they will show \"{base}\" instead.",
-    "kinAliasDeleteRemoves": "No entry uses \"{label}\". | \"{label}\" will be removed from one entry. | \"{label}\" will be removed from {count} entries.",
     "kinAliasDeleteUnknown": "\"{label}\" may be in use. Delete it anyway?",
     "kinAliasExists": "\"{label}\" exists already in this group.",
     "kinSaveError": "The nuances could not be saved.",
@@ -482,7 +478,8 @@
       "groupComputed": "Computed",
       "groupReadonly": "System (read-only)",
       "kinReserved": "This name is reserved for the family tree. The structure of the property is fixed.",
-      "errorReserved": "This name is reserved for the family tree and needs the structure offered here, or the database already has such a property."
+      "errorReserved": "This name is reserved for the family tree and needs the structure offered here, or the database already has such a property.",
+      "kinReservedSynonyms": "Meant something else? Another word keeps the name free, for example \"Business partners\" instead of \"Partners\"."
     },
     "settings": {
       "title": "Edit property",
@@ -612,7 +609,8 @@
       "kinNuancesAdminOnly": "The nuances of this property are system nuances. Only administrators add new ones, in the settings under System defaults.",
       "kinFemaleOptionLocked": "The family tree reads this option as female. It cannot be removed.",
       "kinDeleteLocked": "A family tree view uses this property. It cannot be deleted while the view exists.",
-      "errorSaveRefused": "This change is not allowed for this property."
+      "errorSaveRefused": "This change is not allowed for this property.",
+      "kinMaleOptionLocked": "The family tree reads this option as male. It cannot be removed."
     },
     "formulaHelp": {
       "prop": {
@@ -872,7 +870,8 @@
       "defaultEntryIconOwnerOnly": "Only the owner of the database or an admin can set the default icon.",
       "databaseSettingsError": "The database settings could not be loaded or saved.",
       "calendarTimelineHint": "Date properties with a timeline cannot be used for a calendar.",
-      "calendarAlertsHint": "Every entry with a date in the calendar gets an alert for its owner: 30 minutes before a time, or at 18:00 on the day before an all-day date."
+      "calendarAlertsHint": "Every entry with a date in the calendar gets an alert for its owner: 30 minutes before a time, or at 18:00 on the day before an all-day date.",
+      "sectionFamilyTree": "Family tree"
     },
     "relation": {
       "addLink": "Add link",
@@ -880,7 +879,8 @@
       "noEntries": "No entries available",
       "searchPlaceholder": "Search or create…",
       "createAndLink": "Create & link \"{query}\"",
-      "moreResults": "{shown} of {total} matches – refine your search"
+      "moreResults": "{shown} of {total} matches – refine your search",
+      "derivedLink": "Derived by the family tree from shared parents"
     },
     "select": {
       "searchPlaceholder": "Search or create…",
@@ -955,7 +955,9 @@
       "pdf": "Export as PDF",
       "ics": "Export as ICS",
       "descriptionPrefix": "Description",
-      "viewDescriptionPrefix": "Global description"
+      "viewDescriptionPrefix": "Global description",
+      "svg": "Export as SVG",
+      "svgHint": "Download the tree as shown, as an SVG file"
     },
     "calendar": {
       "prevMonth": "Previous month",
@@ -1040,7 +1042,8 @@
       "modeLast": "Show last",
       "modeAll": "Show all",
       "modeNow": "Show now (coming soon)",
-      "modeCustom": "Show custom date (coming soon)"
+      "modeCustom": "Show custom date (coming soon)",
+      "kinCoupled": "Parents, children and siblings get their timeline together: switching it on here switches it on for all three."
     },
     "deleteColumnKeyedTitle": "Reset keyed relations?",
     "deleteColumnKeyedBody": "Deleting this property resets the following relations to their unsorted state:",
@@ -1049,7 +1052,85 @@
     "changeIcon": "Change icon",
     "formulaCellError": "Error",
     "rollupCellError": "Error",
-    "cellSaving": "Saving…"
+    "cellSaving": "Saving…",
+    "familyTree": {
+      "noRoot": "Choose the person the tree starts from in the view settings.",
+      "noRootShort": "No root chosen",
+      "rootMissing": "The root of this tree is no longer in the database. Choose another one in the view settings.",
+      "rootUnresolved": "Unknown entry",
+      "loading": "Loading the family tree…",
+      "loadError": "The family tree could not be loaded.",
+      "root": "Root",
+      "rootSearch": "Search an entry by title",
+      "instant": "Point in time",
+      "overall": "Overall view",
+      "scope": "Scope",
+      "scopes": {
+        "lineage": "Ancestors and descendants",
+        "collateral": "With collateral lines",
+        "connected": "Whole connected family",
+        "blood": "Blood relatives only"
+      },
+      "scopeHints": {
+        "lineage": "Ancestors and descendants of the root, and the other parents of their children.",
+        "collateral": "Also the lines of every ancestor: siblings, cousins and their descendants.",
+        "connected": "Everybody linked to the root by parents, children, partners or siblings.",
+        "blood": "Only people related to the root by biological, putative or unspecified parenthood."
+      },
+      "properties": "Under the life span",
+      "propertiesHint": "Values of these properties are shown under each person, comma separated. A property with a timeline shows the value of the point in time.",
+      "overlays": "Overlays",
+      "overlaysHint": "Further relations of this database drawn on top of the family links.",
+      "overlayChoose": "Choose a relation",
+      "overlayAdd": "Add",
+      "overlayNone": "This database has no two-way relation to itself outside the family tree properties.",
+      "overlayInvalid": "Deleted property",
+      "overlayRemove": "Remove overlay",
+      "directionForward": "Arrow in the direction of the property",
+      "directionBoth": "Arrows in both directions",
+      "directionNone": "No arrow",
+      "showOutsiders": "Show people outside the family tree",
+      "showNuances": "Show nuances at the point in time",
+      "mapper": "Determine family tree",
+      "mapperHint": "Derives siblings from shared parents for everybody in the scope and writes them into \"Siblings\". Siblings entered by hand stay. Contradictions are listed afterwards.",
+      "mapperRun": "Determine family tree",
+      "mapperNeedsRoot": "Choose a root first.",
+      "mapperError": "The family tree could not be determined.",
+      "mapperSummary": "Siblings added: {added}, changed: {updated}, removed: {removed}, nuances added: {filled}.",
+      "mapperNoConflicts": "No contradictions found.",
+      "mapperConflicts": "One contradiction; the pairs it concerns were left as they are: | {count} contradictions; the pairs they concern were left as they are:",
+      "mapperWarnings": "One note: | {count} notes:",
+      "conflict": {
+        "cycle": "Someone is their own ancestor.",
+        "two_mothers": "A child has more than one biological mother.",
+        "two_fathers": "A child has more than one biological father.",
+        "too_many_parents": "A child has more than two biological parents.",
+        "sibling_is_parent": "Two siblings are also parent and child.",
+        "sibling_nuance_parents": "Siblings entered as full or half siblings do not fit their known biological parents.",
+        "sibling_nuance_differs": "Siblings entered by hand carry a different nuance than their parents give.",
+        "parent_born_after_child": "A biological parent was born after the child."
+      },
+      "resolve": {
+        "cycle": "Check \"Parents\" of the entries listed; one of the links points the wrong way.",
+        "two_mothers": "Open the child and give one mother another nuance in \"Parents\", or correct the sex of one of them.",
+        "two_fathers": "Open the child and give one father another nuance in \"Parents\", or correct the sex of one of them.",
+        "too_many_parents": "Open the child and keep at most two parents biological in \"Parents\".",
+        "sibling_is_parent": "Remove the link from \"Siblings\" or from \"Parents\" of one of them.",
+        "sibling_nuance_parents": "Correct the nuance in \"Siblings\" or the parents in \"Parents\".",
+        "sibling_nuance_differs": "Correct the nuance in \"Siblings\", or remove the link there and let the family tree derive it.",
+        "parent_born_after_child": "Check the dates of birth."
+      },
+      "warning": {
+        "two_mothers": "More than one biological mother; the tree follows the first.",
+        "two_fathers": "More than one biological father."
+      },
+      "brokenLink": "This link closes a cycle of parents.",
+      "unspecified": "Unspecified",
+      "unknownParent": "Unknown parent",
+      "dateUnknown": "Date unknown",
+      "yes": "yes",
+      "no": "no"
+    }
   },
   "propertySection": {
     "title": "Properties",
@@ -1211,14 +1292,15 @@
     "databasesGroups": "In the properties side panel you can organise properties into groups. Custom groups fold and unfold, rename on double-click, and reorder by drag-and-drop via the handle on the right of the group header. The default group always stays on top.",
     "databasesFormulas": "Formula properties calculate a value from other properties of the same entry, referenced with prop('Name'). The syntax reference in the property settings lists every function and operator. Renaming a property keeps the formulas that use it working.",
     "databasesKeying": "A relation property can be keyed: choose a property of the target database to sort the relation's entries by. The chosen value is shown beside each entry.",
-    "databasesFamilySet": "Some property names are reserved for the family tree: Parents, Children, Partners, Siblings, Half-siblings, Date of birth, Time of death and Sex (biological), and their German counterparts. A property with such a name needs the structure the name stands for and keeps its name and type. Parents, children, partners and siblings offer system nuances; administrators add nuances of their own under Settings → System defaults.",
+    "databasesFamilySet": "Some property names are reserved for the family tree: Parents, Children, Partners, Siblings, Date of birth, Time of death and Sex (biological), and their German counterparts. A property with such a name needs the structure the name stands for and keeps its name and type. Parents, children, partners and siblings always carry a nuance from the system nuances; administrators add nuances of their own under Settings → System defaults. Parents, children and siblings get a timeline together.",
     "databasesAlerts": "An Alerts property holds personal reminders with a date, a time and an optional title. Each database can have one. Everyone sees only their own alerts. When an alert is due, a notice appears in every open session and stays until it is closed; clicking it opens the entry. Alerts missed while offline appear at the next login, up to seven days late. In a database with a calendar, each entry's owner is also reminded of its date: 30 minutes before a time, or at 18:00 on the day before an all-day date. When you move a date you have alerts on, you can move them along.",
     "databasesViewDescription": "Each view can have its own description: click the area below the toolbar to write it, click elsewhere to save. It is included in exports — beneath the title in PDF, on the header of the name column in CSV and Excel (or of the first column while the name column is hidden).",
     "databasesCollaboration": "Changes by other users appear right away. If someone changes a value you are editing or changed within the last minute, the later change applies and you get a notice. After an interrupted connection, open pages and views load again. While a field shows a spinner, your value is being saved; until the server has answered, the field takes no further input. Leaving the page at that moment makes the browser ask first.",
     "sectionPrint": "Quick Print",
     "printTitle": "Quick Print",
     "printWhat": "Quick Print outputs a page as plain text: title, properties that have a value, and all text blocks. From a table (a row's drag handle) the columns visible in the view count, in their order; from the page settings (Export), the properties as the page shows them.",
-    "printSetup": "An admin sets up a printer of your own under Settings → API with URL, field name and arguments, and allows in the user management who may print. Without a printer or without the print permission, the text is downloaded as a .txt file. For ordinary printing, export the page as PDF."
+    "printSetup": "An admin sets up a printer of your own under Settings → API with URL, field name and arguments, and allows in the user management who may print. Without a printer or without the print permission, the text is downloaded as a .txt file. For ordinary printing, export the page as PDF.",
+    "databasesFamilyTree": "The family tree view draws the people of a database around a root you choose in the view settings, generation by generation, as a whole or at a point in time. The scope decides who belongs to it; properties can be shown under each life span and further relations drawn on top. \"Determine family tree\" in the view settings adds siblings derived from shared parents and lists contradictions in the data. A click on a person opens the entry; the toolbar exports the tree as SVG."
   },
   "synchedBlock": {
     "originLabel": "Synced",

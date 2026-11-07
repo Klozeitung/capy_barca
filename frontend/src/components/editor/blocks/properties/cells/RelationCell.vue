@@ -42,6 +42,10 @@
  * Without write access (``useEditable``) the linked entries are shown and
  * open as before, but no link can be added, removed or re-nuanced and the
  * timeline editor does not open.
+ *
+ * Links the server derived (``derived`` in the value, the siblings a family
+ * tree derives from shared parents) look like any other chip; their tooltip
+ * says where they come from.
  */
 import { ref, computed, onUnmounted, watch, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -489,6 +493,18 @@ function isSelected(entryId: string): boolean {
   return relatedIds.value.includes(entryId)
 }
 
+/** Links the server derived rather than a person (see the module docstring). */
+const derivedIds = computed(() => {
+  const raw = props.entry.values[props.schema.id] as { derived?: unknown } | null | undefined
+  return new Set(Array.isArray(raw?.derived) ? (raw.derived as string[]) : [])
+})
+
+/** The tooltip of a chip: the entry's title, and whether the link was derived. */
+function chipTitle(id: string): string {
+  const title = getEntryTitle(id)
+  return derivedIds.value.has(id) ? `${title}\n${t('db.relation.derivedLink')}` : title
+}
+
 function getEntryTitle(id: string): string {
   // Prefer the dedicated relation-title resolver; it is independent of
   // the target database's display limit. Fall back to the current search
@@ -647,7 +663,7 @@ function closeSideView(): void {
               </span>
               <span
                 class="rel-cell__tag-open"
-                :title="getEntryTitle(id)"
+                :title="chipTitle(id)"
                 @click.stop="openRelatedEntry(id)"
               >
                 <Icon :icon="getEntryIcon(id)" width="10" height="10" class="rel-cell__tag-icon" />
@@ -752,7 +768,7 @@ function closeSideView(): void {
           </span>
           <span
             class="rel-cell__tag-open"
-            :title="getEntryTitle(id)"
+            :title="chipTitle(id)"
             @click.stop="openRelatedEntry(id)"
           >
             <Icon :icon="getEntryIcon(id)" width="10" height="10" class="rel-cell__tag-icon" />

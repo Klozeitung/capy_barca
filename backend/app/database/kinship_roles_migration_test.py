@@ -33,9 +33,11 @@ def _row(name, type_, config, position=1.0, database_id=DB_A):
 # ─── Rules ───────────────────────────────────────────────────────────────────
 
 
-def test_the_migration_knows_the_same_names_as_the_application():
+def test_the_migration_knew_the_names_of_the_application_at_its_time():
+    # Revision 0036 removed half-siblings from the application's names.
+    current = {r: set(n.values()) for r, n in kinship.RESERVED_NAMES.items()}
     assert {r: set(n) for r, n in migration.RESERVED_NAMES.items()} == {
-        r: set(n.values()) for r, n in kinship.RESERVED_NAMES.items()
+        **current, "half_siblings": {"Halbgeschwister", "Half-siblings"},
     }
     assert migration.ROLE_KEY == kinship.ROLE_KEY
     assert migration.FEMALE_OPTION_KEY == kinship.FEMALE_OPTION_KEY

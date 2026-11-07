@@ -20,7 +20,8 @@
  * A name reserved for a role of the family set (``kinshipRoleForName``)
  * fixes the structure the server requires: only the types of the role are
  * offered, and a relation gets its direction, the database itself as target
- * and, for parents and children, the mirror named after the other role.
+ * and, for parents and children, the mirror named after the other role. A
+ * tooltip on the notice suggests other words for other meanings.
  *
  * Virtual types
  * -------------
@@ -235,9 +236,10 @@ function cancel() {
         @keydown.escape.prevent="cancel"
       />
       <span v-if="error" class="asp__error">{{ error }}</span>
-      <p v-if="kinPreset" class="asp__hint">
+      <p v-if="kinPreset" class="asp__hint asp__hint--kin" :title="t('db.addSchema.kinReservedSynonyms')">
         <Icon icon="mdi:family-tree" width="13" height="13" />
         {{ t('db.addSchema.kinReserved') }}
+        <Icon icon="mdi:information-outline" width="13" height="13" class="asp__hint-info" />
       </p>
 
       <label class="asp__label">{{ t('db.addSchema.typeLabel') }}</label>
@@ -525,6 +527,14 @@ function cancel() {
   color: var(--color-text-muted);
   margin: 0;
   line-height: 1.4;
+}
+
+.asp__hint--kin {
+  cursor: help;
+}
+
+.asp__hint-info {
+  flex-shrink: 0;
 }
 
 .asp__select {

@@ -9,7 +9,9 @@ import {
 import {
   hasSystemNuances,
   isKinshipDeleteLocked,
+  isKinshipTimelineCoupled,
   kinshipFemaleOptionId,
+  kinshipMaleOptionId,
   kinshipPreset,
   kinshipRole,
   kinshipRoleForName,
@@ -37,7 +39,11 @@ function parents(aliases: KinshipNuanceGroup['aliases'] = []): KinshipNuanceGrou
 }
 
 function siblings(aliases: KinshipNuanceGroup['aliases'] = []): KinshipNuanceGroup {
-  return { group: 'siblings', bases: [], aliases }
+  return {
+    group: 'siblings',
+    bases: [{ id: 'kin.sibling.biological', label: 'biological' }, { id: 'kin.sibling.half', label: 'half' }],
+    aliases,
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -46,12 +52,12 @@ describe('aliasPayload', () => {
   it('flattens the groups and leaves the id out of new aliases', () => {
     const payload = aliasPayload([
       parents([{ id: 'a-1', base: 'kin.parent.step', label: ' Label A ' }]),
-      siblings([{ id: null, base: null, label: 'Label B' }]),
+      siblings([{ id: null, base: 'kin.sibling.half', label: 'Label B' }]),
     ])
     expect(payload).toEqual({
       aliases: [
         { id: 'a-1', group: 'parents', base: 'kin.parent.step', label: 'Label A' },
-        { group: 'siblings', base: null, label: 'Label B' },
+        { group: 'siblings', base: 'kin.sibling.half', label: 'Label B' },
       ],
     })
   })
@@ -106,10 +112,12 @@ describe('useKinshipNuancesStore', () => {
 // ── Family set roles ──────────────────────────────────────────────────────────
 
 describe('family set roles', () => {
-  it('reads the role and the female option the server set', () => {
-    const sex = { type: 'select', config: { kinRole: 'sex', kinFemaleOptionId: 'o-1' } }
+  it('reads the role and the female and male options the server set', () => {
+    const sex = { type: 'select', config: { kinRole: 'sex', kinFemaleOptionId: 'o-1', kinMaleOptionId: 'o-2' } }
     expect(kinshipRole(sex)).toBe('sex')
     expect(kinshipFemaleOptionId(sex)).toBe('o-1')
+    expect(kinshipMaleOptionId(sex)).toBe('o-2')
+    expect(kinshipMaleOptionId({ type: 'select', config: { kinMaleOptionId: 'o-2' } })).toBeNull()
     expect(kinshipRole({ type: 'text', config: { kinRole: 'other' } })).toBeNull()
     expect(kinshipFemaleOptionId({ type: 'select', config: { kinFemaleOptionId: 'o-1' } })).toBeNull()
   })
@@ -118,6 +126,12 @@ describe('family set roles', () => {
     expect(hasSystemNuances({ type: 'relation', config: { kinRole: 'partners' } })).toBe(true)
     expect(hasSystemNuances({ type: 'relation', config: {} })).toBe(false)
     expect(hasSystemNuances({ type: 'date', config: { kinRole: 'birth' } })).toBe(false)
+  })
+
+  it('couples the timelines of parents, children and siblings', () => {
+    expect(isKinshipTimelineCoupled({ type: 'relation', config: { kinRole: 'siblings' } })).toBe(true)
+    expect(isKinshipTimelineCoupled({ type: 'relation', config: { kinRole: 'children' } })).toBe(true)
+    expect(isKinshipTimelineCoupled({ type: 'relation', config: { kinRole: 'partners' } })).toBe(false)
   })
 
   it('locks deleting only while a family tree view exists', () => {
@@ -129,7 +143,8 @@ describe('family set roles', () => {
 
   it('recognises reserved names in either language, ignoring case and spaces', () => {
     expect(kinshipRoleForName(' eltern ')).toEqual({ role: 'parents', language: 'de' })
-    expect(kinshipRoleForName('HALF-SIBLINGS')).toEqual({ role: 'half_siblings', language: 'en' })
+    expect(kinshipRoleForName('SIBLINGS')).toEqual({ role: 'siblings', language: 'en' })
+    expect(kinshipRoleForName('Halbgeschwister')).toBeNull()
     expect(kinshipRoleForName('Parent')).toBeNull()
     expect(kinshipRoleForName('')).toBeNull()
   })

@@ -27,9 +27,9 @@ back with ``null`` keeps what is stored.
 Family set nuances
 ------------------
 The base nuances of the family set are fixed (``app.blocks.kinship``); an
-administrator adds aliases to them. Deleting an alias moves every value that
-used it to its base nuance, or removes it where the group has none (siblings);
-filters and automations that tested it lose that condition. Every database
+administrator adds aliases to them, each based on one of them. Deleting an
+alias moves every value that used it to its base nuance; filters and
+automations that tested it lose that condition. Every database
 holding a relation of the set is told that its properties changed.
 """
 from typing import Optional

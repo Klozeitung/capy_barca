@@ -171,10 +171,12 @@ def test_keep_server_owned_config_keeps_the_family_markers():
 def test_client_config_adds_the_system_nuances_of_a_marked_relation():
     config = {"direction": "bilateral_self", kinship.ROLE_KEY: kinship.SIBLINGS}
     catalogue = kinship.catalogue(
-        [{"id": "a-1", "group": kinship.GROUP_SIBLINGS, "base": None, "label": "Label A"}], "en",
+        [{"id": "a-1", "group": kinship.GROUP_SIBLINGS, "base": "kin.sibling.step", "label": "Label A"}], "en",
     )
     shown = schema_service.client_config(_schema("Siblings", "relation", config), [], catalogue)
-    assert shown["nuance"] == {"enabled": False, "options": [{"id": "a-1", "label": "Label A"}]}
+    assert shown["nuance"]["enabled"] is False
+    assert shown["nuance"]["options"][0] == {"id": "kin.sibling.biological", "label": "biological"}
+    assert shown["nuance"]["options"][-1] == {"id": "a-1", "label": "Label A"}
     assert "nuance" not in config
 
 

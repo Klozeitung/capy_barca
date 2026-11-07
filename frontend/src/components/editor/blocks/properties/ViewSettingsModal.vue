@@ -4,8 +4,11 @@
  *
  * Two-column settings modal for a single database view.
  * Sections:
- *  - viewType   : switch between table / calendar and configure type-specific options
- *  - properties : visibility toggles per column
+ *  - viewType   : switch between table / calendar / family tree and configure type-specific options
+ *  - familyTree : (family tree view only) root, instant, scope, properties under
+ *                 the life span, overlays and the sibling mapper
+ *                 (``FamilyTreeSettingsSection``)
+ *  - properties : visibility toggles per column (not for the family tree)
  *  - grouping   : (table view only) group-by property + per-column aggregation functions
  *  - headers    : (table view only) sticky column header + frozen leftmost columns
  *  - database   : settings of the whole database rather than of this view:
@@ -33,6 +36,8 @@ import { useDatabaseStore, clampFrozenColumns, MAX_FROZEN_COLUMNS, NAME_COL_KEY 
 import { getPropertyTypeIcon, isReadonlyPropertyType } from '@/stores/propertyTypes'
 import { orderAndSplitColumns } from './viewSettingsHelpers'
 import { viewDisplayName } from '@/composables/useViewManager'
+import { useEditable } from '@/composables/useEditable'
+import FamilyTreeSettingsSection from './FamilyTreeSettingsSection.vue'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
@@ -51,11 +56,13 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const dbStore = useDatabaseStore()
+const editable = useEditable()
 
 // ── Sidebar sections ──────────────────────────────────────────────────────────
 
 const SECTIONS = [
   { key: 'viewType',   labelKey: 'db.viewSettings.sectionViewType',   icon: 'mdi:view-dashboard-outline' },
+  { key: 'familyTree', labelKey: 'db.viewSettings.sectionFamilyTree', icon: 'mdi:family-tree' },
   { key: 'properties', labelKey: 'db.viewSettings.sectionProperties', icon: 'mdi:eye-outline' },
   { key: 'grouping',   labelKey: 'db.viewSettings.sectionGrouping',   icon: 'mdi:group' },
   { key: 'headers',    labelKey: 'db.viewSettings.sectionHeaders',    icon: 'mdi:pin-outline' },
@@ -63,7 +70,17 @@ const SECTIONS = [
 ] as const
 
 type SectionKey = typeof SECTIONS[number]['key']
-const activeSection = ref<SectionKey>('viewType')
+const activeSection = ref<SectionKey>(props.view.viewType === 'family_tree' ? 'familyTree' : 'viewType')
+
+/** Sections that apply to the view type being edited. */
+const visibleSections = computed(() =>
+  SECTIONS.filter((s) => {
+    if (s.key === 'grouping' || s.key === 'headers') return localViewType.value === 'table'
+    if (s.key === 'familyTree') return localViewType.value === 'family_tree'
+    if (s.key === 'properties') return localViewType.value !== 'family_tree'
+    return true
+  }),
+)
 
 // ── Database settings (whole database, not this view) ─────────────────────────
 
@@ -121,7 +138,7 @@ const VIEW_TYPES: ViewTypeDef[] = [
   { key: 'list',        icon: 'mdi:format-list-bulleted',   labelKey: 'db.viewSettings.viewTypes.list',        planned: true  },
   { key: 'gallery',     icon: 'mdi:view-grid-outline',      labelKey: 'db.viewSettings.viewTypes.gallery',     planned: true  },
   { key: 'board',       icon: 'mdi:view-column-outline',    labelKey: 'db.viewSettings.viewTypes.board',       planned: true  },
-  { key: 'family_tree', icon: 'mdi:file-tree-outline',      labelKey: 'db.viewSettings.viewTypes.family_tree', planned: true  },
+  { key: 'family_tree', icon: 'mdi:family-tree',            labelKey: 'db.viewSettings.viewTypes.family_tree', planned: false },
   { key: 'mindmap',     icon: 'mdi:graph-outline',          labelKey: 'db.viewSettings.viewTypes.mindmap',     planned: true  },
   { key: 'graph',       icon: 'mdi:graph',                  labelKey: 'db.viewSettings.viewTypes.graph',       planned: true  },
 ]
@@ -258,6 +275,11 @@ function setViewType(type: ViewType): void {
   emitUpdate()
 }
 
+/** A change made in the family tree section, saved with the rest of the view. */
+function updateFamilyTree(patch: Partial<DatabaseView>): void {
+  emit('update', { ...props.view, viewType: localViewType.value, ...patch })
+}
+
 // ── Working copy of hiddenColumns ─────────────────────────────────────────────
 
 // The name column can be hidden like any other, which suits views where the
@@ -353,7 +375,7 @@ function hideAll() {
         <!-- Sidebar -->
         <nav class="vsm__sidebar">
           <button
-            v-for="section in SECTIONS.filter(s => (s.key !== 'grouping' && s.key !== 'headers') || localViewType === 'table')"
+            v-for="section in visibleSections"
             :key="section.key"
             class="vsm__nav-item"
             :class="{ 'vsm__nav-item--active': activeSection === section.key }"
@@ -449,6 +471,21 @@ function hideAll() {
                 {{ t('db.viewSettings.calendarCreateDateProp') }}
               </button>
             </template>
+          </template>
+
+          <!-- ── Section: Family tree ─────────────────────────────────────── -->
+          <template v-if="activeSection === 'familyTree' && localViewType === 'family_tree'">
+            <div class="vsm__section-header">
+              <span class="vsm__section-title">{{ t('db.viewSettings.sectionFamilyTree') }}</span>
+            </div>
+            <FamilyTreeSettingsSection
+              :view="view"
+              :schemas="schemas"
+              :database-id="databaseId"
+              :editable="editable"
+              @update="updateFamilyTree"
+              @close="emit('close')"
+            />
           </template>
 
           <!-- ── Section: Properties ──────────────────────────────────────── -->

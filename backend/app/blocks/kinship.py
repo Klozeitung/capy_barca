@@ -2,8 +2,8 @@
 The kinship set: the properties a family tree reads.
 
 A database that describes people can carry a fixed set of properties with
-reserved names. The family tree view of a later release reads them; until a
-database has such a view, the set is dormant and the properties behave like
+reserved names. The family tree view reads them (``app.family_tree``); until
+a database has such a view, the set is dormant and the properties behave like
 any other, apart from the guards below.
 
 Roles and reserved names
@@ -19,16 +19,24 @@ Structure per role:
 
 * ``parents`` / ``children``: a bilateral relation to the database itself
   whose mirror carries the reserved name of the other role.
-* ``partners``, ``siblings``, ``half_siblings``: a ``bilateral_self``
-  relation to the database itself.
+* ``partners``, ``siblings``: a ``bilateral_self`` relation to the database
+  itself.
 * ``birth`` / ``death``: a date, rollup or formula property.
-* ``sex``: a select property. The option that means "female" is pointed at by
-  ``config.kinFemaleOptionId``, also kept by the server alone.
+* ``sex``: a select property. The options that mean "female" and "male" are
+  pointed at by ``config.kinFemaleOptionId`` and ``config.kinMaleOptionId``,
+  also kept by the server alone. Any other option counts as neither.
 
 A marked property cannot be renamed, retyped or keyed, and its structure
-cannot change (:func:`check_update`). While a family tree view exists in its
-database, it cannot be deleted either, and ``parents``, ``children`` and
-``partners`` keep their timeline and nuance switched on.
+cannot change (:func:`check_update`). The relation roles always carry
+nuances, from the moment they are marked.
+
+Timelines
+---------
+``parents``, ``children`` and ``siblings`` share one data model: once one of
+them has a timeline, the others get one too (:func:`couple_timelines`), and
+none of them can switch it off again. While a family tree view exists in the
+database, the set cannot be deleted, and every relation role keeps its
+timeline.
 
 System nuances
 --------------
@@ -38,14 +46,14 @@ by installation-wide aliases an administrator maintains (``app_settings``
 under :data:`ALIASES_KEY`). The API returns them in the caller's language as
 ``config.nuance.options`` (:func:`with_system_nuances`); options a client
 sends for such a property are dropped (:func:`without_client_nuance_options`).
-An alias counts as its base nuance; siblings have no base nuance, so their
-aliases are labels only.
+Every alias names a base nuance of its group and counts as it
+(:func:`base_of`).
 
 Completion
 ----------
 Creating or changing a family tree view completes the set of its database
 (:func:`ensure_set`): missing properties are created in the caller's
-language, and the relations a tree draws get a timeline and nuances.
+language, and the relations get a timeline.
 """
 import uuid
 from typing import Any, Iterable, Optional
@@ -60,7 +68,8 @@ from app.settings.model import AppSetting
 
 ROLE_KEY = "kinRole"
 FEMALE_OPTION_KEY = "kinFemaleOptionId"
-SERVER_OWNED_KEYS = (ROLE_KEY, FEMALE_OPTION_KEY)
+MALE_OPTION_KEY = "kinMaleOptionId"
+SERVER_OWNED_KEYS = (ROLE_KEY, FEMALE_OPTION_KEY, MALE_OPTION_KEY)
 
 FAMILY_TREE_VIEW = "family_tree"
 
@@ -68,13 +77,12 @@ PARENTS = "parents"
 CHILDREN = "children"
 PARTNERS = "partners"
 SIBLINGS = "siblings"
-HALF_SIBLINGS = "half_siblings"
 BIRTH = "birth"
 DEATH = "death"
 SEX = "sex"
 
 #: Every role, in the order a missing set is created.
-ROLES = (PARENTS, CHILDREN, PARTNERS, SIBLINGS, HALF_SIBLINGS, BIRTH, DEATH, SEX)
+ROLES = (PARENTS, CHILDREN, PARTNERS, SIBLINGS, BIRTH, DEATH, SEX)
 
 LANGUAGES = ("de", "en")
 DEFAULT_LANGUAGE = "en"
@@ -84,7 +92,6 @@ RESERVED_NAMES: dict[str, dict[str, str]] = {
     CHILDREN: {"de": "Kinder", "en": "Children"},
     PARTNERS: {"de": "Partner", "en": "Partners"},
     SIBLINGS: {"de": "Geschwister", "en": "Siblings"},
-    HALF_SIBLINGS: {"de": "Halbgeschwister", "en": "Half-siblings"},
     BIRTH: {"de": "Geburtsdatum", "en": "Date of birth"},
     DEATH: {"de": "Todeszeitpunkt", "en": "Time of death"},
     SEX: {"de": "Geschlecht (Biologisch)", "en": "Sex (biological)"},
@@ -95,31 +102,33 @@ SEX_OPTIONS: tuple[dict[str, str], ...] = (
     {"de": "weiblich", "en": "female"},
     {"de": "männlich", "en": "male"},
 )
+_FEMALE_LABELS = (SEX_OPTIONS[0]["de"], SEX_OPTIONS[0]["en"])
+_MALE_LABELS = (SEX_OPTIONS[1]["de"], SEX_OPTIONS[1]["en"])
 
-RELATION_ROLES = (PARENTS, CHILDREN, PARTNERS, SIBLINGS, HALF_SIBLINGS)
+RELATION_ROLES = (PARENTS, CHILDREN, PARTNERS, SIBLINGS)
 MIRRORED_ROLES = {PARENTS: CHILDREN, CHILDREN: PARENTS}
-SELF_ROLES = (PARTNERS, SIBLINGS, HALF_SIBLINGS)
+SELF_ROLES = (PARTNERS, SIBLINGS)
 DATE_ROLES = (BIRTH, DEATH)
 DATE_TYPES = ("date", "rollup", "formula")
 
-#: Roles a family tree draws edges from; they keep timeline and nuance while
-#: a family tree view exists.
-TREE_EDGE_ROLES = (PARENTS, CHILDREN, PARTNERS)
+#: Roles whose timeline is coupled: one with a timeline gives all of them one.
+TIMELINE_COUPLED_ROLES = (PARENTS, CHILDREN, SIBLINGS)
+
+#: Roles that get and keep a timeline while a family tree view exists.
+TREE_TIMELINE_ROLES = RELATION_ROLES
 
 # ─── Nuance groups ────────────────────────────────────────────────────────────
 
 GROUP_PARENTS = "parents"
 GROUP_PARTNERS = "partners"
 GROUP_SIBLINGS = "siblings"
-GROUP_HALF_SIBLINGS = "half_siblings"
-GROUPS = (GROUP_PARENTS, GROUP_PARTNERS, GROUP_SIBLINGS, GROUP_HALF_SIBLINGS)
+GROUPS = (GROUP_PARENTS, GROUP_PARTNERS, GROUP_SIBLINGS)
 
 _ROLE_GROUPS = {
     PARENTS: GROUP_PARENTS,
     CHILDREN: GROUP_PARENTS,
     PARTNERS: GROUP_PARTNERS,
     SIBLINGS: GROUP_SIBLINGS,
-    HALF_SIBLINGS: GROUP_HALF_SIBLINGS,
 }
 
 #: The fixed nuances per group, in display order. Ids never change; values
@@ -140,8 +149,35 @@ BASE_NUANCES: dict[str, tuple[dict[str, str], ...]] = {
         {"id": "kin.partner.affair", "de": "Affäre", "en": "affair"},
         {"id": "kin.partner.concubinage", "de": "Konkubinat", "en": "concubinage"},
     ),
-    GROUP_SIBLINGS: (),
-    GROUP_HALF_SIBLINGS: (),
+    GROUP_SIBLINGS: (
+        {"id": "kin.sibling.biological", "de": "leiblich", "en": "biological"},
+        {"id": "kin.sibling.half", "de": "halb", "en": "half"},
+        {"id": "kin.sibling.putative", "de": "vorgeblich", "en": "putative"},
+        {"id": "kin.sibling.legal", "de": "rechtlich", "en": "legal"},
+        {"id": "kin.sibling.adoptive", "de": "adoptiv", "en": "adoptive"},
+        {"id": "kin.sibling.foster", "de": "Pflege", "en": "foster"},
+        {"id": "kin.sibling.step", "de": "Stief", "en": "step"},
+    ),
+}
+
+PARENT_BIOLOGICAL = "kin.parent.biological"
+SIBLING_BIOLOGICAL = "kin.sibling.biological"
+SIBLING_HALF = "kin.sibling.half"
+
+#: Parent nuances from the strongest to the weakest bond. A parent edge
+#: without nuance ranks after all of them ("unspecified").
+PARENT_RANK: tuple[str, ...] = tuple(n["id"] for n in BASE_NUANCES[GROUP_PARENTS])
+
+#: The sibling nuance two children have through one shared parent, by the
+#: weaker of their two parent nuances (biological maps to half, since one
+#: shared biological parent alone makes half siblings).
+SIBLING_FOR_PARENT: dict[str, str] = {
+    "kin.parent.biological": SIBLING_HALF,
+    "kin.parent.putative": "kin.sibling.putative",
+    "kin.parent.legal": "kin.sibling.legal",
+    "kin.parent.adoptive": "kin.sibling.adoptive",
+    "kin.parent.foster": "kin.sibling.foster",
+    "kin.parent.step": "kin.sibling.step",
 }
 
 ALIASES_KEY = "kinship_nuances"
@@ -240,17 +276,36 @@ def describe_structure(role: str) -> str:
     )
 
 
-def _female_option(config: dict, previous: Optional[str]) -> Optional[str]:
-    """The option a ``sex`` property means "female" by: the one marked before
-    while it exists, else the first one labelled female in any language."""
+def _sex_option(
+    config: dict, previous: Optional[str], labels: tuple[str, ...], exclude: Optional[str] = None,
+) -> Optional[str]:
+    """The option a ``sex`` property means one sex by: the one marked before
+    while it exists, else the first one with one of *labels* in any
+    language. *exclude* is the option the other sex is marked by."""
     ids = _option_ids(config)
-    if previous in ids:
+    if previous in ids and previous != exclude:
         return previous
-    labels = {_fold(option[lang]) for option in SEX_OPTIONS[:1] for lang in LANGUAGES}
+    folded = {_fold(label) for label in labels}
     for option in config.get("options") or []:
-        if isinstance(option, dict) and _fold(option.get("label")) in labels:
+        if (
+            isinstance(option, dict)
+            and _fold(option.get("label")) in folded
+            and option.get("id") != exclude
+        ):
             return option.get("id")
     return None
+
+
+def _nuance_on(config: dict) -> bool:
+    nuance = config.get("nuance")
+    return isinstance(nuance, dict) and nuance.get("enabled") is True
+
+
+def _with_nuance_on(config: dict) -> dict:
+    nuance = config.get("nuance")
+    nuance = dict(nuance) if isinstance(nuance, dict) else {}
+    nuance["enabled"] = True
+    return {**config, "nuance": nuance}
 
 
 def marked_config(
@@ -261,7 +316,9 @@ def marked_config(
     properties of its database. Returns None when nothing changes.
 
     The role goes to a property whose name is reserved for it and whose
-    structure fits, unless another property of the database holds it.
+    structure fits, unless another property of the database holds it. A
+    relation role switches the nuance on; a ``sex`` property points at its
+    female and male options.
     """
     config = dict(getattr(schema, "config", None) or {})
     role = role_for_name(schema.name)
@@ -272,15 +329,18 @@ def marked_config(
     ):
         role = None
 
-    wanted = dict(config)
-    wanted.pop(ROLE_KEY, None)
-    wanted.pop(FEMALE_OPTION_KEY, None)
+    wanted = {k: v for k, v in config.items() if k not in SERVER_OWNED_KEYS}
     if role is not None:
         wanted[ROLE_KEY] = role
+        if role in RELATION_ROLES and not _nuance_on(wanted):
+            wanted = _with_nuance_on(wanted)
         if role == SEX:
-            female = _female_option(config, config.get(FEMALE_OPTION_KEY))
+            female = _sex_option(config, config.get(FEMALE_OPTION_KEY), _FEMALE_LABELS)
             if female:
                 wanted[FEMALE_OPTION_KEY] = female
+            male = _sex_option(config, config.get(MALE_OPTION_KEY), _MALE_LABELS, exclude=female)
+            if male:
+                wanted[MALE_OPTION_KEY] = male
     return None if wanted == config else wanted
 
 
@@ -379,8 +439,8 @@ def check_update(
     """
     Refuse with 422 a change a marked property does not allow: a rename, a
     retype, a structure that no longer fits, keying, the loss of the option
-    marked female, and, while a family tree view exists, switching off the
-    timeline or the nuance of an edge role.
+    marked female or male, switching off the nuance of a relation role, and
+    switching off a timeline the set needs (:func:`timeline_required`).
     """
     role = role_of(schema)
     if role is None:
@@ -407,20 +467,45 @@ def check_update(
             status_code=422, detail="A property of the family set cannot be keyed",
         )
     if role == SEX:
-        female = (schema.config or {}).get(FEMALE_OPTION_KEY)
-        if female and female not in _option_ids(new_config):
-            raise HTTPException(
-                status_code=422,
-                detail="The option the family tree reads as female cannot be removed",
-            )
-    if role in TREE_EDGE_ROLES and has_family_tree(db, schema.database_id):
-        nuance = new_config.get("nuance")
-        nuance_on = isinstance(nuance, dict) and nuance.get("enabled") is True
-        if not new_config.get("hasTimeline") or not nuance_on:
-            raise HTTPException(
-                status_code=422,
-                detail="A family tree uses this relation; its timeline and nuances stay on",
-            )
+        kept = _option_ids(new_config)
+        for key, sex in ((FEMALE_OPTION_KEY, "female"), (MALE_OPTION_KEY, "male")):
+            marked = (schema.config or {}).get(key)
+            if marked and marked not in kept:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"The option the family tree reads as {sex} cannot be removed",
+                )
+    if role in RELATION_ROLES and not _nuance_on(new_config):
+        raise HTTPException(
+            status_code=422,
+            detail="A relation of the family set always carries nuances",
+        )
+    if not new_config.get("hasTimeline") and timeline_required(db, schema):
+        raise HTTPException(
+            status_code=422,
+            detail="The family set needs the timeline of this relation; it stays on",
+        )
+
+
+def timeline_required(db: Session, schema: PropertySchema) -> bool:
+    """
+    Whether the marked relation *schema* must keep a timeline: while its
+    database has a family tree view, or, for the coupled roles, while it or
+    another coupled role of its database has one.
+    """
+    role = role_of(schema)
+    if role not in RELATION_ROLES:
+        return False
+    if has_family_tree(db, schema.database_id):
+        return True
+    if role not in TIMELINE_COUPLED_ROLES:
+        return False
+    return any(
+        role_of(s) in TIMELINE_COUPLED_ROLES and (s.config or {}).get("hasTimeline")
+        for s in db.scalars(
+            select(PropertySchema).where(PropertySchema.database_id == schema.database_id)
+        )
+    )
 
 
 def check_delete(db: Session, schema: PropertySchema) -> None:
@@ -516,6 +601,22 @@ def without_client_nuance_options(name: str, type_: str, config: Optional[dict])
     return {**config, "nuance": {**nuance, "options": []}}
 
 
+def base_of(nuance: Optional[str], aliases: list[dict]) -> Optional[str]:
+    """
+    The base nuance *nuance* counts as: itself when it is a base nuance, the
+    base of an alias, None for anything else (no nuance, an unknown id).
+    """
+    if not isinstance(nuance, str):
+        return None
+    for group in GROUPS:
+        if nuance in base_ids(group):
+            return nuance
+    for alias in aliases:
+        if alias["id"] == nuance:
+            return alias.get("base")
+    return None
+
+
 def marked_relations(db: Session, group: str) -> list[PropertySchema]:
     """Every marked relation of *group*, in all databases."""
     return [
@@ -530,10 +631,10 @@ def normalize_aliases(raw: list[dict], previous: list[dict]) -> list[dict]:
     """
     The aliases a client sent, checked and in canonical form.
 
-    An alias of a group with base nuances names one of them as ``base``; an
-    alias of the sibling groups has none. Labels are trimmed and must be
-    unique within a group, base labels in every language included. An alias
-    without id gets a new one; an existing id keeps its group. Raises 422.
+    Every alias names one of the base nuances of its group as ``base``.
+    Labels are trimmed and must be unique within a group, base labels in
+    every language included. An alias without id gets a new one; an existing
+    id keeps its group. Raises 422.
     """
     if len(raw) > MAX_ALIASES:
         raise HTTPException(status_code=422, detail="Too many nuances")
@@ -554,11 +655,8 @@ def normalize_aliases(raw: list[dict], previous: list[dict]) -> list[dict]:
         if _fold(label) in taken[group]:
             raise HTTPException(status_code=422, detail=f"The nuance '{label}' exists already")
         base = item.get("base") or None
-        bases = base_ids(group)
-        if bases and base not in bases:
+        if base not in base_ids(group):
             raise HTTPException(status_code=422, detail=f"The nuance '{label}' needs a base nuance")
-        if not bases and base is not None:
-            raise HTTPException(status_code=422, detail=f"The group {group!r} has no base nuances")
         alias_id = item.get("id") or None
         if alias_id is not None and groups_by_id.get(alias_id) != group:
             if alias_id in groups_by_id:
@@ -575,7 +673,8 @@ def normalize_aliases(raw: list[dict], previous: list[dict]) -> list[dict]:
 def replacements_for_removed(previous: list[dict], current: list[dict]) -> dict[str, dict[str, Optional[str]]]:
     """
     Per group, the aliases *current* no longer holds and what their values
-    become: the base nuance, or None (removed) for groups without one.
+    become: their base nuance. An alias stored without base (none should
+    exist) maps to None, which removes the nuance.
     """
     kept = {a["id"] for a in current}
     result: dict[str, dict[str, Optional[str]]] = {}
@@ -607,7 +706,7 @@ def _new_config(role: str, database_id: uuid.UUID, language: str) -> tuple[str, 
     }
 
 
-def _edges_on(config: dict) -> dict:
+def _timeline_on(config: dict) -> dict:
     """*config* with timeline and nuance switched on, and keying off."""
     nuance = config.get("nuance")
     nuance = dict(nuance) if isinstance(nuance, dict) else {}
@@ -618,6 +717,79 @@ def _edges_on(config: dict) -> dict:
     return result
 
 
+def _switch_timeline_on(db: Session, database_id: uuid.UUID, schema: PropertySchema) -> set[uuid.UUID]:
+    """
+    Give the marked relation *schema* a timeline and nuances, carry the
+    change over to its mirror and wrap existing values into timeline slots.
+    Returns the databases whose entry values changed.
+    """
+    from app.blocks import repository as repo
+    from app.blocks import schema_service
+
+    migrated: set[uuid.UUID] = set()
+    old_config = dict(schema.config or {})
+    new_config = _timeline_on(old_config)
+    if new_config == old_config:
+        return migrated
+    repo.update_schema(db, schema, config=new_config)
+    removed = opts.removed_ids(opts.RELATION_TYPE, old_config, new_config)
+    if removed and schema_service.purge_options(db, schema, removed):
+        migrated.add(database_id)
+    migrated |= schema_service.propagate_to_mirror(
+        db, schema, schema.name, old_config, name_changed=False, config_changed=True,
+    )
+    migrated |= schema_service.migrate_values_for_enabled_timeline(
+        db, database_id, schema, old_config,
+    )
+    return migrated
+
+
+def couple_timelines(db: Session, database_id: uuid.UUID) -> set[uuid.UUID]:
+    """
+    Give every coupled role of *database_id* a timeline once one of them has
+    one (:data:`TIMELINE_COUPLED_ROLES`). Runs after every property change
+    that may mark a property or switch a timeline on. Returns the databases
+    whose entry values changed.
+    """
+    from app.blocks import repository as repo
+
+    coupled = [
+        s for s in repo.list_schemas(db, database_id) if role_of(s) in TIMELINE_COUPLED_ROLES
+    ]
+    if not any((s.config or {}).get("hasTimeline") for s in coupled):
+        return set()
+    migrated: set[uuid.UUID] = set()
+    for schema in coupled:
+        # The mirror of a coupled role may have been switched on by its
+        # counterpart above; it is read again.
+        db.refresh(schema)
+        if not (schema.config or {}).get("hasTimeline"):
+            migrated |= _switch_timeline_on(db, database_id, schema)
+    return migrated
+
+
+def enforce_timelines(db: Session, database_id: uuid.UUID) -> tuple[bool, set[uuid.UUID]]:
+    """
+    Give the marked relations of *database_id* the timelines the set needs:
+    every relation role while a family tree view exists, the coupled roles
+    once one of them has one. Runs after a property is created or changed.
+    Returns whether a property changed, and the databases whose entry values
+    changed.
+    """
+    from app.blocks import repository as repo
+
+    before = [(s.id, dict(s.config or {})) for s in repo.list_schemas(db, database_id)]
+    migrated: set[uuid.UUID] = set()
+    if has_family_tree(db, database_id):
+        for schema in repo.list_schemas(db, database_id):
+            if role_of(schema) in TREE_TIMELINE_ROLES:
+                db.refresh(schema)
+                migrated |= _switch_timeline_on(db, database_id, schema)
+    migrated |= couple_timelines(db, database_id)
+    after = [(s.id, dict(s.config or {})) for s in repo.list_schemas(db, database_id)]
+    return before != after, migrated
+
+
 def ensure_set(db: Session, database_id: uuid.UUID, language: str) -> set[uuid.UUID]:
     """
     Complete the family set of *database_id* for a family tree view.
@@ -625,8 +797,8 @@ def ensure_set(db: Session, database_id: uuid.UUID, language: str) -> set[uuid.U
     Missing roles are created under their reserved name in *language*; a
     missing parents or children property is found through the mirror name of
     the other one. A reserved name another property already uses answers 409.
-    The edge roles get timeline and nuance, existing values wrapped into
-    timeline slots. Returns the databases whose entry values changed.
+    The relation roles get a timeline, existing values wrapped into timeline
+    slots. Returns the databases whose entry values changed.
     """
     from app.blocks import repository as repo
     from app.blocks import schema_service
@@ -669,24 +841,11 @@ def ensure_set(db: Session, database_id: uuid.UUID, language: str) -> set[uuid.U
             schema_service.create_eager_mirror(db, schema, config)
 
     migrated: set[uuid.UUID] = set()
-    for role in TREE_EDGE_ROLES:
+    for role in TREE_TIMELINE_ROLES:
         schema = next(
             (s for s in repo.list_schemas(db, database_id) if role_of(s) == role), None,
         )
-        if schema is None:
-            continue
-        old_config = dict(schema.config or {})
-        new_config = _edges_on(old_config)
-        if new_config == old_config:
-            continue
-        repo.update_schema(db, schema, config=new_config)
-        removed = opts.removed_ids(opts.RELATION_TYPE, old_config, new_config)
-        if removed and schema_service.purge_options(db, schema, removed):
-            migrated.add(database_id)
-        migrated |= schema_service.propagate_to_mirror(
-            db, schema, schema.name, old_config, name_changed=False, config_changed=True,
-        )
-        migrated |= schema_service.migrate_values_for_enabled_timeline(
-            db, database_id, schema, old_config,
-        )
+        if schema is not None:
+            db.refresh(schema)
+            migrated |= _switch_timeline_on(db, database_id, schema)
     return migrated

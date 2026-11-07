@@ -353,18 +353,14 @@
     "iconsDeleteError": "Das Icon konnte nicht gelöscht werden.",
     "systemDefaults": "Systemvorgaben",
     "kinNuances": "Stammbaum-Nuancen",
-    "kinNuancesDesc": "Eltern, Kinder und Partner bieten feste Basisnuancen, die der Stammbaum auswertet. Eigene Nuancen trägst du neben der Basisnuance ein, als die sie zählen sollen. Sie stehen sofort in jeder Datenbank zur Verfügung.",
+    "kinNuancesDesc": "Eltern, Kinder, Partner und Geschwister bieten feste Basisnuancen, die der Stammbaum auswertet. Eigene Nuancen trägst du neben der Basisnuance ein, als die sie zählen sollen. Sie stehen sofort in jeder Datenbank zur Verfügung.",
     "kinGroupParents": "Eltern / Kinder",
     "kinGroupPartners": "Partner",
     "kinGroupSiblings": "Geschwister",
-    "kinGroupHalfSiblings": "Halbgeschwister",
     "kinAliasPlaceholder": "Hier kannst du eigene Nuancen hinterlegen, die vom System so berechnet werden sollen wie die Basisnuance",
-    "kinSiblingsPlaceholder": "Für Geschwister gibt es keine Basisnuance. Du kannst hier dennoch eigene Nuancen hinterlegen, das System wird sie allerdings ignorieren (zwischen Geschwistern gibt es keinen beschriftbaren Pfad)",
-    "kinHalfSiblingsPlaceholder": "Für Halbgeschwister gibt es keine Basisnuance. Du kannst hier dennoch eigene Nuancen hinterlegen, das System wird sie allerdings ignorieren (zwischen Halbgeschwistern gibt es keinen beschriftbaren Pfad)",
     "kinAliasAdd": "Nuance hinzufügen",
     "kinAliasDelete": "Nuance löschen",
     "kinAliasDeleteToBase": "„{label}“ wird von keinem Eintrag genutzt. | Ein Eintrag nutzt „{label}“ und zeigt danach „{base}“. | {count} Einträge nutzen „{label}“ und zeigen danach „{base}“.",
-    "kinAliasDeleteRemoves": "„{label}“ wird von keinem Eintrag genutzt. | „{label}“ wird aus einem Eintrag entfernt. | „{label}“ wird aus {count} Einträgen entfernt.",
     "kinAliasDeleteUnknown": "„{label}“ wird möglicherweise genutzt. Trotzdem löschen?",
     "kinAliasExists": "„{label}“ gibt es in dieser Gruppe bereits.",
     "kinSaveError": "Die Nuancen konnten nicht gespeichert werden.",
@@ -482,7 +478,8 @@
       "groupComputed": "Berechnet",
       "groupReadonly": "System (schreibgeschützt)",
       "kinReserved": "Dieser Name ist für den Stammbaum reserviert. Die Struktur der Eigenschaft ist festgelegt.",
-      "errorReserved": "Dieser Name ist für den Stammbaum reserviert und braucht die hier angebotene Struktur, oder die Datenbank hat bereits eine solche Eigenschaft."
+      "errorReserved": "Dieser Name ist für den Stammbaum reserviert und braucht die hier angebotene Struktur, oder die Datenbank hat bereits eine solche Eigenschaft.",
+      "kinReservedSynonyms": "Etwas anderes gemeint? Ein anderes Wort hält den Namen frei, zum Beispiel „Geschäftspartner“ statt „Partner“."
     },
     "settings": {
       "title": "Eigenschaft bearbeiten",
@@ -612,7 +609,8 @@
       "kinNuancesAdminOnly": "Die Nuancen dieser Eigenschaft sind Systemnuancen. Neue Nuancen für eine systemgeschützte Eigenschaft legen nur Admins in den Einstellungen unter Systemvorgaben an.",
       "kinFemaleOptionLocked": "Der Stammbaum liest diese Option als weiblich. Sie kann nicht entfernt werden.",
       "kinDeleteLocked": "Eine Stammbaum-Ansicht verwendet diese Eigenschaft. Solange die Ansicht besteht, kann sie nicht gelöscht werden.",
-      "errorSaveRefused": "Diese Änderung ist für diese Eigenschaft nicht erlaubt."
+      "errorSaveRefused": "Diese Änderung ist für diese Eigenschaft nicht erlaubt.",
+      "kinMaleOptionLocked": "Der Stammbaum liest diese Option als männlich. Sie kann nicht entfernt werden."
     },
     "formulaHelp": {
       "prop": {
@@ -872,7 +870,8 @@
       "defaultEntryIconOwnerOnly": "Nur der Eigentümer der Datenbank oder ein Administrator kann das Standard-Icon festlegen.",
       "databaseSettingsError": "Die Datenbankeinstellungen konnten nicht geladen oder gespeichert werden.",
       "calendarTimelineHint": "Datumseigenschaften mit Zeitleiste können nicht für einen Kalender verwendet werden.",
-      "calendarAlertsHint": "Jeder Eintrag mit Datum im Kalender erhält eine Benachrichtigung für seinen Besitzer: 30 Minuten vor einer Uhrzeit, bei ganztägigen Daten um 18:00 Uhr am Vortag."
+      "calendarAlertsHint": "Jeder Eintrag mit Datum im Kalender erhält eine Benachrichtigung für seinen Besitzer: 30 Minuten vor einer Uhrzeit, bei ganztägigen Daten um 18:00 Uhr am Vortag.",
+      "sectionFamilyTree": "Stammbaum"
     },
     "relation": {
       "addLink": "Verknüpfung hinzufügen",
@@ -880,7 +879,8 @@
       "noEntries": "Keine Einträge vorhanden",
       "searchPlaceholder": "Suchen oder erstellen…",
       "createAndLink": "\"{query}\" erstellen & verknüpfen",
-      "moreResults": "{shown} von {total} Treffern – Suche verfeinern"
+      "moreResults": "{shown} von {total} Treffern – Suche verfeinern",
+      "derivedLink": "Vom Stammbaum aus gemeinsamen Eltern abgeleitet"
     },
     "select": {
       "searchPlaceholder": "Suchen oder erstellen…",
@@ -955,7 +955,9 @@
       "pdf": "Als PDF exportieren",
       "ics": "Als ICS exportieren",
       "descriptionPrefix": "Description",
-      "viewDescriptionPrefix": "Global description"
+      "viewDescriptionPrefix": "Global description",
+      "svg": "Als SVG exportieren",
+      "svgHint": "Den Stammbaum so, wie er angezeigt wird, als SVG-Datei herunterladen"
     },
     "calendar": {
       "prevMonth": "Vorheriger Monat",
@@ -1040,7 +1042,8 @@
       "modeLast": "Letzten anzeigen",
       "modeAll": "Alle anzeigen",
       "modeNow": "Aktuellen anzeigen (demnächst)",
-      "modeCustom": "Benutzerdefinierten Zeitpunkt (demnächst)"
+      "modeCustom": "Benutzerdefinierten Zeitpunkt (demnächst)",
+      "kinCoupled": "Eltern, Kinder und Geschwister bekommen die Timeline gemeinsam: Wird sie hier eingeschaltet, gilt das für alle drei."
     },
     "deleteColumnKeyedTitle": "Gekeyte Relationen zurücksetzen?",
     "deleteColumnKeyedBody": "Das Löschen dieser Eigenschaft setzt die folgenden Relationen in den unsortierten Zustand zurück:",
@@ -1049,7 +1052,85 @@
     "changeIcon": "Symbol ändern",
     "formulaCellError": "Fehler",
     "rollupCellError": "Fehler",
-    "cellSaving": "Wird gespeichert…"
+    "cellSaving": "Wird gespeichert…",
+    "familyTree": {
+      "noRoot": "Wähle in den Einstellungen der Ansicht die Person, von der der Stammbaum ausgeht.",
+      "noRootShort": "Keine Wurzel gewählt",
+      "rootMissing": "Die Wurzel dieses Stammbaums ist nicht mehr in der Datenbank. Wähle in den Einstellungen der Ansicht eine andere.",
+      "rootUnresolved": "Unbekannter Eintrag",
+      "loading": "Stammbaum wird geladen …",
+      "loadError": "Der Stammbaum konnte nicht geladen werden.",
+      "root": "Wurzel",
+      "rootSearch": "Eintrag nach Titel suchen",
+      "instant": "Zeitpunkt",
+      "overall": "Gesamtansicht",
+      "scope": "Umfang",
+      "scopes": {
+        "lineage": "Vorfahren und Nachkommen",
+        "collateral": "Mit Seitenlinien",
+        "connected": "Gesamte zusammenhängende Verwandtschaft",
+        "blood": "Nur Blutsverwandte"
+      },
+      "scopeHints": {
+        "lineage": "Vorfahren und Nachkommen der Wurzel sowie die anderen Elternteile ihrer Kinder.",
+        "collateral": "Zusätzlich die Linien aller Vorfahren: Geschwister, Cousins und deren Nachkommen.",
+        "connected": "Alle, die über Eltern, Kinder, Partner oder Geschwister mit der Wurzel verbunden sind.",
+        "blood": "Nur, wer mit der Wurzel über leibliche, vorgebliche oder nicht spezifizierte Elternschaft verwandt ist."
+      },
+      "properties": "Unter der Lebensspanne",
+      "propertiesHint": "Die Werte dieser Eigenschaften stehen kommagetrennt unter jeder Person. Eine Eigenschaft mit Timeline zeigt den Wert zum Zeitpunkt.",
+      "overlays": "Overlays",
+      "overlaysHint": "Weitere Relationen dieser Datenbank, die über die Familienlinien gezeichnet werden.",
+      "overlayChoose": "Relation wählen",
+      "overlayAdd": "Hinzufügen",
+      "overlayNone": "Diese Datenbank hat außer den Stammbaum-Eigenschaften keine zweiseitige Relation auf sich selbst.",
+      "overlayInvalid": "Gelöschte Eigenschaft",
+      "overlayRemove": "Overlay entfernen",
+      "directionForward": "Pfeil in Richtung der Eigenschaft",
+      "directionBoth": "Pfeile in beide Richtungen",
+      "directionNone": "Kein Pfeil",
+      "showOutsiders": "Anzeige bei Nichtverwandtschaft",
+      "showNuances": "Nuancen zum Zeitpunkt anzeigen",
+      "mapper": "Stammbaum ermitteln",
+      "mapperHint": "Leitet für alle im Umfang Geschwister aus gemeinsamen Eltern ab und schreibt sie in „Geschwister“. Von Hand eingetragene Geschwister bleiben. Widersprüche werden danach aufgelistet.",
+      "mapperRun": "Stammbaum ermitteln",
+      "mapperNeedsRoot": "Wähle zuerst eine Wurzel.",
+      "mapperError": "Der Stammbaum konnte nicht ermittelt werden.",
+      "mapperSummary": "Geschwister hinzugefügt: {added}, geändert: {updated}, entfernt: {removed}, Nuancen ergänzt: {filled}.",
+      "mapperNoConflicts": "Keine Widersprüche gefunden.",
+      "mapperConflicts": "Ein Widerspruch; die betroffenen Paare blieben unverändert: | {count} Widersprüche; die betroffenen Paare blieben unverändert:",
+      "mapperWarnings": "Ein Hinweis: | {count} Hinweise:",
+      "conflict": {
+        "cycle": "Jemand ist sein eigener Vorfahre.",
+        "two_mothers": "Ein Kind hat mehr als eine leibliche Mutter.",
+        "two_fathers": "Ein Kind hat mehr als einen leiblichen Vater.",
+        "too_many_parents": "Ein Kind hat mehr als zwei leibliche Elternteile.",
+        "sibling_is_parent": "Zwei Geschwister sind zugleich Elternteil und Kind.",
+        "sibling_nuance_parents": "Als leiblich oder halb eingetragene Geschwister passen nicht zu ihren bekannten leiblichen Eltern.",
+        "sibling_nuance_differs": "Von Hand eingetragene Geschwister tragen eine andere Nuance, als ihre Eltern ergeben.",
+        "parent_born_after_child": "Ein leiblicher Elternteil ist nach dem Kind geboren."
+      },
+      "resolve": {
+        "cycle": "Prüfe „Eltern“ der genannten Einträge; eine der Verknüpfungen zeigt in die falsche Richtung.",
+        "two_mothers": "Öffne das Kind und gib einer Mutter in „Eltern“ eine andere Nuance, oder berichtige das Geschlecht einer der beiden.",
+        "two_fathers": "Öffne das Kind und gib einem Vater in „Eltern“ eine andere Nuance, oder berichtige das Geschlecht eines der beiden.",
+        "too_many_parents": "Öffne das Kind und lass in „Eltern“ höchstens zwei Elternteile leiblich.",
+        "sibling_is_parent": "Entferne die Verknüpfung aus „Geschwister“ oder aus „Eltern“ eines der beiden.",
+        "sibling_nuance_parents": "Berichtige die Nuance in „Geschwister“ oder die Eltern in „Eltern“.",
+        "sibling_nuance_differs": "Berichtige die Nuance in „Geschwister“, oder entferne die Verknüpfung dort und lass den Stammbaum sie ableiten.",
+        "parent_born_after_child": "Prüfe die Geburtsdaten."
+      },
+      "warning": {
+        "two_mothers": "Mehr als eine leibliche Mutter; der Stammbaum folgt der ersten.",
+        "two_fathers": "Mehr als ein leiblicher Vater."
+      },
+      "brokenLink": "Diese Verknüpfung schließt einen Kreis über Eltern.",
+      "unspecified": "Nicht spezifiziert",
+      "unknownParent": "Unbekannter Elternteil",
+      "dateUnknown": "Datum unbekannt",
+      "yes": "ja",
+      "no": "nein"
+    }
   },
   "propertySection": {
     "title": "Eigenschaften",
@@ -1211,14 +1292,15 @@
     "databasesGroups": "In der Eigenschaften-Seitenleiste lassen sich Properties zu Gruppen zusammenfassen. Eigene Gruppen kannst du ein- und ausklappen, per Doppelklick umbenennen und über den Ziehpunkt rechts im Gruppenkopf per Drag-and-drop neu anordnen. Die Standardgruppe bleibt immer oben.",
     "databasesFormulas": "Formel-Eigenschaften berechnen einen Wert aus anderen Eigenschaften desselben Eintrags, referenziert mit prop('Name'). Die Syntaxreferenz in den Eigenschaftseinstellungen listet alle Funktionen und Operatoren. Beim Umbenennen einer Eigenschaft funktionieren die Formeln, die sie verwenden, weiter.",
     "databasesKeying": "Eine Relations-Eigenschaft kann gekeyt werden: Wähle eine Eigenschaft der Zieldatenbank, nach der die Einträge der Relation sortiert werden. Der gewählte Wert wird neben jedem Eintrag angezeigt.",
-    "databasesFamilySet": "Einige Eigenschaftsnamen sind für den Stammbaum reserviert: Eltern, Kinder, Partner, Geschwister, Halbgeschwister, Geburtsdatum, Todeszeitpunkt und Geschlecht (Biologisch) sowie ihre englischen Entsprechungen. Eine Eigenschaft mit einem solchen Namen braucht die Struktur, für die der Name steht, und behält Namen und Typ. Eltern, Kinder, Partner und Geschwister bieten Systemnuancen; Admins ergänzen eigene Nuancen unter Einstellungen → Systemvorgaben.",
+    "databasesFamilySet": "Einige Eigenschaftsnamen sind für den Stammbaum reserviert: Eltern, Kinder, Partner, Geschwister, Geburtsdatum, Todeszeitpunkt und Geschlecht (Biologisch) sowie ihre englischen Entsprechungen. Eine Eigenschaft mit einem solchen Namen braucht die Struktur, für die der Name steht, und behält Namen und Typ. Eltern, Kinder, Partner und Geschwister tragen immer eine Nuance aus den Systemnuancen; Admins ergänzen eigene Nuancen unter Einstellungen → Systemvorgaben. Eltern, Kinder und Geschwister bekommen eine Timeline nur gemeinsam.",
     "databasesAlerts": "Eine Eigenschaft vom Typ Erinnerungen enthält persönliche Erinnerungen mit Datum, Uhrzeit und optionalem Titel. Jede Datenbank kann eine davon haben. Jede Person sieht nur ihre eigenen Erinnerungen. Wird eine Erinnerung fällig, erscheint in jeder offenen Sitzung ein Hinweis, der bis zum Schließen stehen bleibt; ein Klick öffnet den Eintrag. Verpasste Erinnerungen erscheinen bei der nächsten Anmeldung, höchstens sieben Tage nach ihrem Zeitpunkt. In einer Datenbank mit Kalender wird der Besitzer jedes Eintrags zusätzlich an dessen Datum erinnert: 30 Minuten vor einer Uhrzeit, bei ganztägigen Daten um 18:00 Uhr am Vortag. Wird ein Datum verschoben, auf dem du Erinnerungen hast, kannst du sie mitverschieben.",
     "databasesViewDescription": "Jede Ansicht kann eine eigene Beschreibung haben: Klicke in den Bereich unter der Toolbar, um sie zu schreiben, und klicke daneben, um sie zu speichern. Sie wird mit exportiert — im PDF unter dem Titel, in CSV und Excel im Kopf der Name-Spalte (bzw. der ersten Spalte, solange die Name-Spalte ausgeblendet ist).",
     "databasesCollaboration": "Änderungen anderer Benutzer erscheinen sofort. Ändert jemand einen Wert, den du gerade bearbeitest oder in der letzten Minute geändert hast, gilt die spätere Änderung, und du erhältst einen Hinweis. War die Verbindung unterbrochen, werden offene Seiten und Ansichten danach neu geladen. Solange ein Feld einen Ladekreis zeigt, wird dein Wert gespeichert; bis die Antwort des Servers da ist, nimmt das Feld keine weitere Eingabe an. Verlässt du die Seite in diesem Moment, fragt der Browser nach.",
     "sectionPrint": "Schnelldruck",
     "printTitle": "Schnelldruck",
     "printWhat": "Schnelldruck gibt eine Seite als schlichten Text aus: Titel, Eigenschaften mit Wert und alle Textblöcke. Aus einer Tabelle heraus (Ziehpunkt einer Zeile) zählen die in der Ansicht sichtbaren Spalten in ihrer Reihenfolge, aus den Seiteneinstellungen (Export) die Eigenschaften, wie die Seite sie zeigt.",
-    "printSetup": "Ein Administrator richtet unter Einstellungen → API einen eigenen Drucker mit URL, Feldname und Argumenten ein und erlaubt in der Benutzerverwaltung, wer drucken darf. Ohne Drucker oder ohne Druckrecht wird der Text als .txt-Datei heruntergeladen. Für den gewöhnlichen Druck die Seite als PDF exportieren."
+    "printSetup": "Ein Administrator richtet unter Einstellungen → API einen eigenen Drucker mit URL, Feldname und Argumenten ein und erlaubt in der Benutzerverwaltung, wer drucken darf. Ohne Drucker oder ohne Druckrecht wird der Text als .txt-Datei heruntergeladen. Für den gewöhnlichen Druck die Seite als PDF exportieren.",
+    "databasesFamilyTree": "Die Stammbaum-Ansicht zeichnet die Personen einer Datenbank Generation für Generation um eine Wurzel, die du in den Einstellungen der Ansicht wählst, als Gesamtansicht oder zu einem Zeitpunkt. Der Umfang legt fest, wer dazugehört; unter jeder Lebensspanne lassen sich Eigenschaften zeigen und weitere Relationen darüberlegen. „Stammbaum ermitteln“ in den Einstellungen der Ansicht trägt Geschwister aus gemeinsamen Eltern ein und listet Widersprüche in den Daten. Ein Klick auf eine Person öffnet den Eintrag; die Werkzeugleiste exportiert den Stammbaum als SVG."
   },
   "synchedBlock": {
     "originLabel": "Synced",

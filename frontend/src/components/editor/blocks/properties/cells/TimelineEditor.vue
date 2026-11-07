@@ -247,6 +247,16 @@ function targetDbId() {
 }
 
 /**
+ * Links of the pool the server derived (the siblings a family tree derives
+ * from shared parents); their tooltip says so. Changing their periods or
+ * nuances makes them manual when saved.
+ */
+const derivedPoolIds = computed(() => {
+  const raw = props.entry.values[props.schema.id] as { derived?: unknown } | null | undefined
+  return new Set(Array.isArray(raw?.derived) ? (raw.derived as string[]) : [])
+})
+
+/**
  * Title of a linked pool entry. Read from the store's relation-title resolver,
  * which is independent of any view's page of the target database; falls back
  * to the current search results and, while unresolved, to a short id.
@@ -791,7 +801,10 @@ onUnmounted(() => {
             :key="entry.uid"
             class="te__pool-entry"
           >
-            <div class="te__pool-uid">
+            <div
+              class="te__pool-uid"
+              :title="derivedPoolIds.has(entry.uid) ? t('db.relation.derivedLink') : undefined"
+            >
               <Icon icon="mdi:link-variant" width="12" height="12" class="te__pool-icon" />
               {{ entryTitle(entry.uid) }}
             </div>

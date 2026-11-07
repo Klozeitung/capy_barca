@@ -1,6 +1,9 @@
 <script lang="ts">
-/** What the export menu offers; calendar views export to ICS only. */
-export type ExportFormat = 'csv' | 'excel' | 'pdf' | 'ics'
+/**
+ * What the export menu offers; calendar views export to ICS only, family
+ * trees to SVG only.
+ */
+export type ExportFormat = 'csv' | 'excel' | 'pdf' | 'ics' | 'svg'
 </script>
 
 <script setup lang="ts">
@@ -16,6 +19,10 @@ export type ExportFormat = 'csv' | 'excel' | 'pdf' | 'ics'
  *
  * Right: the name search, the new-entry button (table views) and the export
  * menu.
+ *
+ * A family tree view shows only the view settings and an SVG export button:
+ * filters, sorts, automations, templates, the name search and the other
+ * exports do not apply to it.
  *
  * At most one of the filter, sort, export and template panels is open; opening
  * one closes the others. The open state is owned by the parent (v-model), which
@@ -43,6 +50,8 @@ defineProps<{
   sortCount: number
   /** Calendar views export to ICS only. */
   isCalendarView: boolean
+  /** Family tree views offer the view settings and the SVG export only. */
+  isFamilyTreeView?: boolean
   /** Whether the new-entry button applies (table views). */
   showNewEntry: boolean
   /** More entries exist than are loaded; the new-entry hint says so. */
@@ -169,6 +178,7 @@ function onSearchBlur(): void {
 
       <template v-if="editable">
 
+      <template v-if="!isFamilyTreeView">
       <!-- Filter -->
       <div class="db__toolbar-item">
         <button
@@ -196,6 +206,7 @@ function onSearchBlur(): void {
         </button>
         <slot v-if="showSortPanel" name="sort-panel" />
       </div>
+      </template>
 
       <!-- View settings -->
       <div class="db__toolbar-item">
@@ -209,6 +220,7 @@ function onSearchBlur(): void {
         </button>
       </div>
 
+      <template v-if="!isFamilyTreeView">
       <!-- Automations -->
       <div class="db__toolbar-item">
         <button
@@ -241,12 +253,28 @@ function onSearchBlur(): void {
           />
         </div>
       </div>
+      </template>
 
       </template>
 
     </div>
 
-    <div class="db__toolbar-right">
+    <div v-if="isFamilyTreeView" class="db__toolbar-right">
+      <!-- SVG export of the family tree -->
+      <div class="db__toolbar-item">
+        <button
+          class="db__toolbar-btn"
+          @mouseenter="emit('show-tip', $event, t('db.export.svgHint'))"
+          @mouseleave="emit('hide-tip')"
+          @click.stop="emit('hide-tip'); emit('export', 'svg')"
+        >
+          <Icon icon="mdi:file-image-outline" width="14" height="14" />
+          {{ t('db.export.svg') }}
+        </button>
+      </div>
+    </div>
+
+    <div v-else class="db__toolbar-right">
       <!-- Name search -->
       <div class="db__toolbar-item">
         <button

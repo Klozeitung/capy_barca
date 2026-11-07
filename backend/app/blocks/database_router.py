@@ -319,7 +319,10 @@ def create_schema(
     A reserved name of the family set needs the structure of its role (422)
     and a role the database does not hold yet (409); nuance options sent for
     such a relation are dropped, it offers the system nuances (see
-    ``app.blocks.kinship``).
+    ``app.blocks.kinship``). A new relation of the set gets a timeline when
+    the set needs one (``kinship.enforce_timelines``); that broadcasts
+    ``database_schema_updated`` and, for migrated values,
+    ``database_entries_updated``.
     """
     get_database_or_raise(db, database_id, current_user, Access.WRITE)
     if payload.type == "relation":
@@ -358,6 +361,7 @@ def create_schema(
         schema.group = payload.group
         schema_service.bind_formula_references(db, database_id)
         mirror_created_in = schema_service.create_eager_mirror(db, schema, payload.config)
+        set_changed, migrated = kinship.enforce_timelines(db, database_id)
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -373,6 +377,9 @@ def create_schema(
     # the new mirror property.
     if mirror_created_in is not None:
         emit_schema_updated(db, mirror_created_in)
+    if set_changed:
+        emit_schema_updated(db, database_id)
+    emit_entries_updated_for(db, migrated)
 
     return _schema_response(
         schema, repo.list_schemas(db, database_id), _nuances(db, current_user, request),
@@ -424,10 +431,12 @@ def update_schema(
     * Enabling ``hasTimeline`` wraps the existing values into the timeline
       format (see ``schema_service.migrate_values_for_enabled_timeline``).
     * A property of the family set cannot be renamed, retyped, keyed or
-      changed in structure, and while a family tree view exists its edge
-      relations keep timeline and nuance (422). Renaming a property to a
-      reserved name follows the rules of creating one. Nuance options sent
-      for a relation of the set are dropped (see ``app.blocks.kinship``).
+      changed in structure, its relations keep their nuance, and a timeline
+      the set needs stays on (422). Renaming a property to a reserved name
+      follows the rules of creating one. Nuance options sent for a relation
+      of the set are dropped. A timeline switched on at parents, children or
+      siblings is switched on at the others too, which broadcasts
+      ``database_schema_updated`` (see ``app.blocks.kinship``).
 
     Options
     -------
@@ -552,6 +561,8 @@ def update_schema(
             migrated |= schema_service.migrate_values_for_enabled_timeline(
                 db, database_id, updated, old_config,
             )
+        set_changed, set_migrated = kinship.enforce_timelines(db, database_id)
+        migrated |= set_migrated
 
         db.commit()
     except IntegrityError:
@@ -564,6 +575,8 @@ def update_schema(
         db.rollback()
         raise
 
+    if set_changed:
+        emit_schema_updated(db, database_id)
     emit_entries_updated_for(db, migrated)
     return _schema_response(
         updated, repo.list_schemas(db, database_id), _nuances(db, current_user, request),

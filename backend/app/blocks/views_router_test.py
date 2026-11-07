@@ -708,8 +708,9 @@ def test_turning_a_view_into_a_family_tree_completes_the_family_set(http_client,
     )
     assert resp.status_code == 200, resp.text
     names = {s["name"] for s in http_client.get(f"/api/databases/{db_id}/schemas").json()}
-    assert {"Parents", "Children", "Partners", "Siblings", "Half-siblings",
+    assert {"Parents", "Children", "Partners", "Siblings",
             "Date of birth", "Time of death", "Sex (biological)"} <= names
+    assert "Half-siblings" not in names
     assert ("database_schema_updated", db_id) in announced
 
     # A second change finds the set complete and changes no property.

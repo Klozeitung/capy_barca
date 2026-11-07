@@ -141,3 +141,45 @@ def test_an_alerts_property_is_not_writable_through_the_value_endpoint():
         entry_service.check_writable(_schema("alerts"))
     assert exc.value.status_code == 422
     assert "/api/alerts" in exc.value.detail
+
+
+# ─── Derived links ───────────────────────────────────────────────────────────
+
+
+def test_a_client_cannot_mark_links_as_derived():
+    stored = entry_service.build_stored_value(_schema(), {"related_ids": ["a"], "derived": ["a"]})
+    assert stored == {"related_ids": ["a"]}
+
+
+def test_keep_derived_keeps_unchanged_links_and_reports_changed_ones():
+    old = {
+        "related_ids": ["a", "b", "c"],
+        "nuances": {"a": "n-1", "b": "n-1"},
+        "derived": ["a", "b", "c"],
+    }
+    new = {"related_ids": ["a", "b"], "nuances": {"a": "n-1", "b": "n-2"}}
+    kept, manual = entry_service.keep_derived(old, new)
+    assert kept == {**new, "derived": ["a"]}
+    # "c" is gone, so it is neither derived nor manual.
+    assert manual == {"b"}
+
+
+def test_keep_derived_compares_ranges_of_a_pool():
+    old = {
+        "relationPool": {"a": ["2000-07-28→"], "b": [""]},
+        "nuancePool": {"a": {"2000-07-28→": "n-1"}},
+        "derived": ["a", "b"],
+    }
+    new = {
+        "relationPool": {"a": ["2000-07-28→"], "b": ["2045-07-17→"]},
+        "nuancePool": {"a": {"2000-07-28→": "n-1"}},
+    }
+    kept, manual = entry_service.keep_derived(old, new)
+    assert kept["derived"] == ["a"]
+    assert manual == {"b"}
+
+
+def test_keep_derived_leaves_values_without_derived_links_alone():
+    new = {"related_ids": ["a"]}
+    assert entry_service.keep_derived({"related_ids": ["a"]}, new) == (new, set())
+    assert entry_service.keep_derived({"related_ids": ["a"], "derived": ["a"]}, None) == (None, set())

@@ -6,15 +6,14 @@
  *
  * Family tree nuances
  * -------------------
- * The relations of the family set (parents and children, partners, siblings,
- * half-siblings) offer fixed base nuances the system interprets. Admins add
+ * The relations of the family set (parents and children, partners,
+ * siblings) offer fixed base nuances the system interprets. Admins add
  * nuances of their own here, each next to the base nuance it counts as;
- * every database shows them at once. Siblings have no base nuance: nuances
- * added there are labels the system does not interpret.
+ * every database shows them at once.
  *
  * Every change is saved immediately. Deleting a nuance asks for confirmation
  * with the number of entries using it; the server moves those values to the
- * base nuance, or removes them for siblings.
+ * base nuance.
  */
 import { computed, onMounted, ref } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -53,9 +52,8 @@ onMounted(async () => {
 
 interface Row {
   key: string
-  base: { id: string; label: string } | null
+  base: { id: string; label: string }
   aliases: KinshipAlias[]
-  placeholder: string
 }
 
 interface GroupView {
@@ -68,31 +66,17 @@ const GROUP_TITLES: Record<string, string> = {
   parents: 'settings.kinGroupParents',
   partners: 'settings.kinGroupPartners',
   siblings: 'settings.kinGroupSiblings',
-  half_siblings: 'settings.kinGroupHalfSiblings',
-}
-
-const NO_BASE_PLACEHOLDERS: Record<string, string> = {
-  siblings: 'settings.kinSiblingsPlaceholder',
-  half_siblings: 'settings.kinHalfSiblingsPlaceholder',
 }
 
 const groupViews = computed<GroupView[]>(() =>
   store.groups.map((group) => ({
     group,
     title: t(GROUP_TITLES[group.group] ?? group.group),
-    rows: group.bases.length
-      ? group.bases.map((base) => ({
-          key: `${group.group}/${base.id}`,
-          base,
-          aliases: group.aliases.filter((a) => a.base === base.id),
-          placeholder: t('settings.kinAliasPlaceholder'),
-        }))
-      : [{
-          key: `${group.group}/`,
-          base: null,
-          aliases: group.aliases,
-          placeholder: t(NO_BASE_PLACEHOLDERS[group.group] ?? 'settings.kinAliasPlaceholder'),
-        }],
+    rows: group.bases.map((base) => ({
+      key: `${group.group}/${base.id}`,
+      base,
+      aliases: group.aliases.filter((a) => a.base === base.id),
+    })),
   })),
 )
 
@@ -121,7 +105,7 @@ async function add(group: KinshipNuanceGroup, row: Row): Promise<void> {
     feedback.value = t('settings.kinAliasExists', { label })
     return
   }
-  const alias: KinshipAlias = { id: null, base: row.base?.id ?? null, label }
+  const alias: KinshipAlias = { id: null, base: row.base.id, label }
   if (await persist(withAliases(group, [...group.aliases, alias]))) {
     drafts.value[row.key] = ''
   }
@@ -156,9 +140,11 @@ function deleteText(pending: PendingDelete): string {
   const base = pending.group.bases.find((b) => b.id === pending.alias.base)
   const label = pending.alias.label
   if (pending.count === null) return t('settings.kinAliasDeleteUnknown', { label })
-  return base
-    ? t('settings.kinAliasDeleteToBase', { label, base: base.label, count: pending.count }, pending.count)
-    : t('settings.kinAliasDeleteRemoves', { label, count: pending.count }, pending.count)
+  return t(
+    'settings.kinAliasDeleteToBase',
+    { label, base: base?.label ?? '', count: pending.count },
+    pending.count,
+  )
 }
 </script>
 
@@ -173,9 +159,7 @@ function deleteText(pending: PendingDelete): string {
     <section v-for="view in groupViews" :key="view.group.group" class="sysdef__group">
       <h4 class="sysdef__group-title">{{ view.title }}</h4>
       <div v-for="row in view.rows" :key="row.key" class="sysdef__row">
-        <span class="sysdef__base" :class="{ 'sysdef__base--none': !row.base }">
-          {{ row.base ? row.base.label : '—' }}
-        </span>
+        <span class="sysdef__base">{{ row.base.label }}</span>
         <div class="sysdef__aliases">
           <span v-for="alias in row.aliases" :key="alias.id ?? alias.label" class="sysdef__chip">
             {{ alias.label }}
@@ -193,8 +177,8 @@ function deleteText(pending: PendingDelete): string {
           <input
             v-model="drafts[row.key]"
             class="sysdef__input"
-            :placeholder="row.placeholder"
-            :title="row.placeholder"
+            :placeholder="t('settings.kinAliasPlaceholder')"
+            :title="t('settings.kinAliasPlaceholder')"
             :disabled="saving"
             @keydown.enter.prevent="add(view.group, row)"
           />
@@ -280,10 +264,6 @@ function deleteText(pending: PendingDelete): string {
 .sysdef__base {
   font-size: 0.8125rem;
   color: var(--color-text);
-}
-
-.sysdef__base--none {
-  color: var(--color-text-muted);
 }
 
 .sysdef__aliases {

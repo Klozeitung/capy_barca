@@ -11,6 +11,14 @@ Relation properties do not store their slots directly. The client writes a
 (linked entry and range to a nuance label); :func:`pool_to_timeline` derives
 the ``_timeline`` slots from them.
 
+Derived links
+-------------
+A relation value of either format may carry ``derived``: the linked entries
+the server wrote itself (the siblings a family tree derives from parents, see
+``app.family_tree``) rather than a person. The server keeps the list; what a
+client sends under the key is ignored. A link stays derived while nobody
+changes its ranges or nuances by hand (:func:`unchanged_links`).
+
 Contents
 --------
 parse_pool_range                    – split a range or period key into its sides
@@ -21,6 +29,9 @@ validate_timeline_value             – structure check of a scalar timeline
 slot_at                             – the slot valid at an instant, or the
                                       most recent slot
 extract_related_ids_now             – current links of a relation value
+linked_ids                          – every entry a relation value links
+derived_ids / with_derived          – read and set the derived links
+unchanged_links                     – links two values hold identically
 migrate_relation_values_to_timeline – convert relation values when a timeline
                                       is enabled
 migrate_scalar_values_to_timeline   – the same for every other property type
@@ -495,6 +506,71 @@ def extract_related_ids_now(value: Optional[dict]) -> list[str]:
     return list(value.get("related_ids", []))
 
 
+DERIVED_KEY = "derived"
+
+
+def linked_ids(value: Optional[dict]) -> list[str]:
+    """
+    Every entry *value* links at any time: the keys of a pool, else the flat
+    ``related_ids``.
+    """
+    if not isinstance(value, dict):
+        return []
+    if isinstance(value.get("relationPool"), dict):
+        return [uid for uid, ranges in value["relationPool"].items() if ranges]
+    return [uid for uid in value.get("related_ids") or [] if isinstance(uid, str)]
+
+
+def derived_ids(value: Optional[dict]) -> list[str]:
+    """The derived links of *value* that it still links."""
+    if not isinstance(value, dict) or not isinstance(value.get(DERIVED_KEY), list):
+        return []
+    linked = set(linked_ids(value))
+    return [uid for uid in value[DERIVED_KEY] if uid in linked]
+
+
+def with_derived(value: Optional[dict], ids) -> Optional[dict]:
+    """
+    *value* with *ids* as its derived links, limited to the entries it links
+    and in their order; without any, the key is left out.
+    """
+    if not isinstance(value, dict):
+        return value
+    wanted = set(ids)
+    kept = [uid for uid in linked_ids(value) if uid in wanted]
+    result = {k: v for k, v in value.items() if k != DERIVED_KEY}
+    if kept:
+        result[DERIVED_KEY] = kept
+    return result
+
+
+def _link_state(value: Optional[dict], uid: str):
+    if not isinstance(value, dict):
+        return None
+    if isinstance(value.get("relationPool"), dict):
+        ranges = value["relationPool"].get(uid)
+        if not ranges:
+            return None
+        nuances = (value.get("nuancePool") or {}).get(uid) or {}
+        return ("pool", frozenset(ranges), frozenset(
+            (r, n) for r, n in nuances.items() if r in ranges and n
+        ))
+    if uid not in (value.get("related_ids") or []):
+        return None
+    return ("flat", (value.get("nuances") or {}).get(uid) or None)
+
+
+def unchanged_links(old: Optional[dict], new: Optional[dict], ids) -> set[str]:
+    """
+    The entries among *ids* that *new* links with the same ranges and
+    nuances as *old*.
+    """
+    return {
+        uid for uid in ids
+        if _link_state(new, uid) is not None and _link_state(new, uid) == _link_state(old, uid)
+    }
+
+
 def migrate_relation_values_to_timeline(
     db: Session,
     database_id: uuid.UUID,
@@ -556,6 +632,7 @@ def migrate_relation_values_to_timeline(
         if nuance_pool:
             value["nuancePool"] = nuance_pool
         value["_timeline"] = timeline
+        value = with_derived(value, derived_ids(val))
         repo.upsert_value(
             db,
             page_id=entry.id,

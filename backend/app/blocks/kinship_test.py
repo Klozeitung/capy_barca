@@ -42,7 +42,7 @@ def _self_config(target=DB):
     ("Eltern", kinship.PARENTS),
     ("  parents ", kinship.PARENTS),
     ("KINDER", kinship.CHILDREN),
-    ("Half-siblings", kinship.HALF_SIBLINGS),
+    ("Half-siblings", None),
     ("geschlecht (biologisch)", kinship.SEX),
     ("Time of death", kinship.DEATH),
     ("Parent", None),
@@ -110,19 +110,38 @@ def test_marked_config_gives_each_role_to_one_property_per_database():
 
 
 def test_marked_config_returns_none_when_nothing_changes():
-    schema = _schema("Partner", config={**_self_config(), kinship.ROLE_KEY: kinship.PARTNERS})
+    schema = _schema("Partner", config={
+        **_self_config(), kinship.ROLE_KEY: kinship.PARTNERS, "nuance": {"enabled": True},
+    })
     assert kinship.marked_config(schema, []) is None
 
 
-def test_sex_points_at_the_female_option_and_keeps_it_while_it_exists():
-    options = [{"id": "o-1", "label": "Male"}, {"id": "o-2", "label": " Female "}]
+def test_marked_config_switches_the_nuance_of_relation_roles_on():
+    schema = _schema("Geschwister", config={**_self_config(), "nuance": {"enabled": False, "affix1": "x"}})
+    marked = kinship.marked_config(schema, [])
+    assert marked["nuance"] == {"enabled": True, "affix1": "x"}
+    birth = _schema("Geburtsdatum", "date", {})
+    assert "nuance" not in kinship.marked_config(birth, [])
+
+
+def test_sex_points_at_the_female_and_male_options_and_keeps_them_while_they_exist():
+    options = [{"id": "o-1", "label": "Male"}, {"id": "o-2", "label": " Female "}, {"id": "o-4", "label": "Other"}]
     schema = _schema("Sex (biological)", "select", {"options": options})
     marked = kinship.marked_config(schema, [])
     assert marked[kinship.FEMALE_OPTION_KEY] == "o-2"
+    assert marked[kinship.MALE_OPTION_KEY] == "o-1"
 
     kept = _schema("Sex (biological)", "select", {**marked, "options": [*options, {"id": "o-3", "label": "weiblich"}]})
-    kept.config[kinship.FEMALE_OPTION_KEY] = "o-1"
+    kept.config[kinship.FEMALE_OPTION_KEY] = "o-4"
     assert kinship.marked_config(kept, []) is None
+
+
+def test_the_male_option_is_never_the_female_one():
+    options = [{"id": "o-1", "label": "female"}]
+    schema = _schema("Sex (biological)", "select", {"options": options, kinship.MALE_OPTION_KEY: "o-1"})
+    marked = kinship.marked_config(schema, [])
+    assert marked[kinship.FEMALE_OPTION_KEY] == "o-1"
+    assert kinship.MALE_OPTION_KEY not in marked
 
 
 def test_keep_server_owned_keys_drops_the_clients_markers():
@@ -145,14 +164,25 @@ def test_strip_markers_leaves_other_keys():
 def test_catalogue_lists_base_nuances_in_the_language_then_aliases():
     aliases = [
         {"id": "a-1", "group": kinship.GROUP_PARENTS, "base": "kin.parent.adoptive", "label": "Label A"},
-        {"id": "a-2", "group": kinship.GROUP_SIBLINGS, "base": None, "label": "Label B"},
+        {"id": "a-2", "group": kinship.GROUP_SIBLINGS, "base": "kin.sibling.half", "label": "Label B"},
     ]
     catalogue = kinship.catalogue(aliases, "de")
     assert catalogue[kinship.GROUP_PARENTS][0] == {"id": "kin.parent.biological", "label": "leiblich"}
     assert catalogue[kinship.GROUP_PARENTS][-1] == {"id": "a-1", "label": "Label A"}
-    assert catalogue[kinship.GROUP_SIBLINGS] == [{"id": "a-2", "label": "Label B"}]
-    assert catalogue[kinship.GROUP_HALF_SIBLINGS] == []
+    assert [o["id"] for o in catalogue[kinship.GROUP_SIBLINGS]] == [
+        *kinship.base_ids(kinship.GROUP_SIBLINGS), "a-2",
+    ]
+    assert catalogue[kinship.GROUP_SIBLINGS][1]["label"] == "halb"
+    assert set(catalogue) == {kinship.GROUP_PARENTS, kinship.GROUP_PARTNERS, kinship.GROUP_SIBLINGS}
     assert kinship.catalogue([], "en")[kinship.GROUP_PARTNERS][0]["label"] == "marriage"
+
+
+def test_base_of_resolves_aliases_to_their_base():
+    aliases = [{"id": "a-1", "group": kinship.GROUP_SIBLINGS, "base": "kin.sibling.step", "label": "Label A"}]
+    assert kinship.base_of("kin.parent.legal", aliases) == "kin.parent.legal"
+    assert kinship.base_of("a-1", aliases) == "kin.sibling.step"
+    assert kinship.base_of("unknown", aliases) is None
+    assert kinship.base_of(None, aliases) is None
 
 
 def test_with_system_nuances_fills_options_of_marked_relations_only():
@@ -184,10 +214,10 @@ def test_without_client_nuance_options_applies_to_reserved_relation_names():
 def test_normalize_aliases_checks_groups_bases_and_labels():
     result = kinship.normalize_aliases([
         {"group": "parents", "base": "kin.parent.foster", "label": " Label A "},
-        {"group": "siblings", "base": None, "label": "Label B"},
+        {"group": "siblings", "base": "kin.sibling.half", "label": "Label B"},
     ], [])
     assert [(a["group"], a["base"], a["label"]) for a in result] == [
-        ("parents", "kin.parent.foster", "Label A"), ("siblings", None, "Label B"),
+        ("parents", "kin.parent.foster", "Label A"), ("siblings", "kin.sibling.half", "Label B"),
     ]
     assert all(uuid.UUID(a["id"]) for a in result)
 
@@ -197,6 +227,9 @@ def test_normalize_aliases_checks_groups_bases_and_labels():
     {"group": "parents", "base": None, "label": "Label A"},
     {"group": "parents", "base": "kin.partner.marriage", "label": "Label A"},
     {"group": "siblings", "base": "kin.parent.legal", "label": "Label A"},
+    {"group": "siblings", "base": None, "label": "Label A"},
+    {"group": "half_siblings", "base": None, "label": "Label A"},
+    {"group": "siblings", "base": "kin.sibling.step", "label": "Halb"},
     {"group": "parents", "base": "kin.parent.legal", "label": "  "},
     {"group": "parents", "base": "kin.parent.legal", "label": "Adoptive"},
 ])
@@ -216,18 +249,19 @@ def test_normalize_aliases_keeps_ids_and_refuses_duplicates_and_group_moves():
         kinship.normalize_aliases([{"id": "a-1", "group": "partners", "base": "kin.partner.affair", "label": "X"}], previous)
     with pytest.raises(HTTPException):
         kinship.normalize_aliases([
-            {"group": "siblings", "label": "Label A"}, {"group": "siblings", "label": "label a"},
+            {"group": "siblings", "base": "kin.sibling.step", "label": "Label A"},
+            {"group": "siblings", "base": "kin.sibling.step", "label": "label a"},
         ], [])
 
 
 def test_replacements_map_removed_aliases_to_their_base():
     previous = [
         {"id": "a-1", "group": "parents", "base": "kin.parent.step", "label": "Label A"},
-        {"id": "a-2", "group": "siblings", "base": None, "label": "Label B"},
+        {"id": "a-2", "group": "siblings", "base": "kin.sibling.foster", "label": "Label B"},
         {"id": "a-3", "group": "parents", "base": "kin.parent.legal", "label": "Label C"},
     ]
     assert kinship.replacements_for_removed(previous, previous[2:]) == {
-        "parents": {"a-1": "kin.parent.step"}, "siblings": {"a-2": None},
+        "parents": {"a-1": "kin.parent.step"}, "siblings": {"a-2": "kin.sibling.foster"},
     }
 
 
@@ -344,31 +378,96 @@ def test_renaming_onto_a_reserved_name_marks_the_property(http_client):
     assert resp.json()["config"][kinship.ROLE_KEY] == kinship.DEATH
 
     text = _create(http_client, db_id, "Text A", "text").json()
-    assert _patch(http_client, db_id, text["id"], name="Halbgeschwister").status_code == 422
+    assert _patch(http_client, db_id, text["id"], name="Geschwister").status_code == 422
+    # No longer reserved.
+    assert _patch(http_client, db_id, text["id"], name="Halbgeschwister").status_code == 200
 
 
-def test_the_option_marked_female_cannot_be_removed(http_client):
+def test_the_options_marked_female_and_male_cannot_be_removed(http_client):
     db_id = _database(http_client)
     sex = _create(http_client, db_id, "Sex (biological)", "select", {
-        "options": [{"label": "female"}, {"label": "male"}],
+        "options": [{"label": "female"}, {"label": "male"}, {"label": "Option C"}],
     }).json()
     female = sex["config"][kinship.FEMALE_OPTION_KEY]
-    male = next(o for o in sex["config"]["options"] if o["id"] != female)
-    resp = _patch(http_client, db_id, sex["id"], config={"options": [male]})
+    male_id = sex["config"][kinship.MALE_OPTION_KEY]
+    by_id = {o["id"]: o for o in sex["config"]["options"]}
+    other = next(o for o in sex["config"]["options"] if o["id"] not in (female, male_id))
+    resp = _patch(http_client, db_id, sex["id"], config={"options": [by_id[male_id], other]})
     assert resp.status_code == 422
-    renamed = [{"id": female, "label": "Label A"}, male]
+    resp = _patch(http_client, db_id, sex["id"], config={"options": [by_id[female], other]})
+    assert resp.status_code == 422
+    renamed = [{"id": female, "label": "Label A"}, {"id": male_id, "label": "Label B"}]
     resp = _patch(http_client, db_id, sex["id"], config={"options": renamed})
     assert resp.status_code == 200, resp.text
     assert resp.json()["config"][kinship.FEMALE_OPTION_KEY] == female
+    assert resp.json()["config"][kinship.MALE_OPTION_KEY] == male_id
 
 
-def test_a_dormant_set_may_be_deleted_and_switched_off(http_client):
+def test_a_relation_of_the_set_is_nuanced_from_the_start_and_stays_so(http_client):
     db_id = _database(http_client)
     partner = _create(http_client, db_id, "Partner", "relation", _self_config(db_id)).json()
-    resp = _patch(http_client, db_id, partner["id"], config={**_self_config(db_id), "hasTimeline": False})
+    assert partner["config"]["nuance"]["enabled"] is True
+    resp = _patch(http_client, db_id, partner["id"], config={**_self_config(db_id), "nuance": {"enabled": False}})
+    assert resp.status_code == 422
+    resp = _patch(http_client, db_id, partner["id"], config={**_self_config(db_id)})
+    assert resp.status_code == 422
+
+
+def test_a_dormant_set_may_be_deleted_and_partners_switch_their_timeline_off(http_client):
+    db_id = _database(http_client)
+    partner = _create(http_client, db_id, "Partner", "relation", _self_config(db_id)).json()
+    nuanced = {**_self_config(db_id), "nuance": {"enabled": True}}
+    resp = _patch(http_client, db_id, partner["id"], config={**nuanced, "hasTimeline": True})
+    assert resp.status_code == 200, resp.text
+    resp = _patch(http_client, db_id, partner["id"], config={**nuanced, "hasTimeline": False})
     assert resp.status_code == 200, resp.text
     resp = http_client.delete(f"/api/databases/{db_id}/schemas/{partner['id']}")
     assert resp.status_code == 204
+
+
+def _value(schema_id, entry_id):
+    with db_module.SessionLocal() as db:
+        return db.scalar(select(PropertyValue.value).where(
+            PropertyValue.page_id == uuid.UUID(entry_id),
+            PropertyValue.property_schema_id == uuid.UUID(schema_id),
+        ))
+
+
+def test_a_timeline_at_siblings_switches_parents_and_children_on(http_client):
+    db_id = _database(http_client)
+    _create(http_client, db_id, "Eltern", "relation", _parents_config(target=db_id))
+    _create(http_client, db_id, "Partner", "relation", _self_config(db_id))
+    siblings = _create(http_client, db_id, "Geschwister", "relation", _self_config(db_id)).json()
+    schemas = _schemas(http_client, db_id)
+    entry_a = http_client.post(f"/api/databases/{db_id}/entries").json()["id"]
+    entry_b = http_client.post(f"/api/databases/{db_id}/entries").json()["id"]
+    resp = http_client.put(
+        f"/api/databases/{db_id}/entries/{entry_a}/values/{schemas['Eltern']['id']}",
+        json={"value": {"related_ids": [entry_b]}},
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp = _patch(http_client, db_id, siblings["id"], config={**siblings["config"], "hasTimeline": True})
+    assert resp.status_code == 200, resp.text
+    schemas = _schemas(http_client, db_id)
+    for name in ("Eltern", "Kinder", "Geschwister"):
+        assert schemas[name]["config"]["hasTimeline"] is True, name
+    assert not schemas["Partner"]["config"].get("hasTimeline")
+    assert "_timeline" in _value(schemas["Eltern"]["id"], entry_a)
+    assert "_timeline" in _value(schemas["Kinder"]["id"], entry_b)
+
+    off = {**schemas["Kinder"]["config"], "hasTimeline": False}
+    assert _patch(http_client, db_id, schemas["Kinder"]["id"], config=off).status_code == 422
+
+
+def test_a_new_coupled_role_gets_the_timeline_of_the_others(http_client):
+    db_id = _database(http_client)
+    parents = _create(http_client, db_id, "Eltern", "relation", _parents_config(target=db_id)).json()
+    resp = _patch(http_client, db_id, parents["id"], config={**parents["config"], "hasTimeline": True})
+    assert resp.status_code == 200, resp.text
+    resp = _create(http_client, db_id, "Geschwister", "relation", _self_config(db_id))
+    assert resp.status_code == 201, resp.text
+    assert _schemas(http_client, db_id)["Geschwister"]["config"]["hasTimeline"] is True
 
 
 def test_a_family_tree_view_completes_the_set_in_the_callers_language(http_client):
@@ -380,17 +479,18 @@ def test_a_family_tree_view_completes_the_set_in_the_callers_language(http_clien
     roles = {s["config"].get(kinship.ROLE_KEY): name for name, s in schemas.items() if s["config"]}
     assert roles == {
         kinship.PARENTS: "Eltern", kinship.CHILDREN: "Kinder", kinship.PARTNERS: "Partner",
-        kinship.SIBLINGS: "Geschwister", kinship.HALF_SIBLINGS: "Halbgeschwister",
+        kinship.SIBLINGS: "Geschwister",
         kinship.BIRTH: "Geburtsdatum", kinship.DEATH: "Todeszeitpunkt",
         kinship.SEX: "Geschlecht (Biologisch)",
     }
-    for name in ("Eltern", "Kinder", "Partner"):
+    for name in ("Eltern", "Kinder", "Partner", "Geschwister"):
         config = schemas[name]["config"]
         assert config["hasTimeline"] is True
         assert config["nuance"]["enabled"] is True
     sex = schemas["Geschlecht (Biologisch)"]["config"]
     assert [o["label"] for o in sex["options"]] == ["weiblich", "männlich"]
     assert sex[kinship.FEMALE_OPTION_KEY] == sex["options"][0]["id"]
+    assert sex[kinship.MALE_OPTION_KEY] == sex["options"][1]["id"]
 
 
 def test_completion_keeps_existing_roles_and_wraps_values_into_timelines(http_client):
@@ -449,5 +549,8 @@ def test_a_family_tree_locks_deleting_and_switching_off_its_edges(http_client):
     assert resp.json()["config"]["nuance"]["affix1"] == "Prefix A"
 
     siblings = schemas["Siblings"]
-    off = {**siblings["config"], "hasTimeline": True}
-    assert _patch(http_client, db_id, siblings["id"], config=off).status_code == 200
+    off = {**siblings["config"], "hasTimeline": False}
+    assert _patch(http_client, db_id, siblings["id"], config=off).status_code == 422
+    partners = schemas["Partners"]
+    off = {**partners["config"], "hasTimeline": False}
+    assert _patch(http_client, db_id, partners["id"], config=off).status_code == 422

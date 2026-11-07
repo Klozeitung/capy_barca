@@ -32,7 +32,7 @@ export const VIEW_TYPE_ICONS: Record<string, string> = {
   list:        'mdi:format-list-bulleted',
   gallery:     'mdi:view-grid-outline',
   board:       'mdi:view-column-outline',
-  family_tree: 'mdi:file-tree-outline',
+  family_tree: 'mdi:family-tree',
   mindmap:     'mdi:graph-outline',
   graph:       'mdi:graph',
 }

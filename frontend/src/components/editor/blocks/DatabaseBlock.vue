@@ -43,6 +43,14 @@
  * SortPanel        – sort UI
  * ViewDescription  – per-view description between toolbar and view content
  *
+ * Family tree
+ * -----------
+ * A family tree view (``FamilyTreeView``) loads its own data: the tree
+ * around its root, not a page of entries, so no entries are loaded for it.
+ * Its toolbar offers the view settings and the SVG export only; filters,
+ * sorts, the name search, new entries and the other exports do not apply.
+ * The refreshes that would update a page of entries reload the tree.
+ *
  * Write access
  * ------------
  * The database's ``can_write`` is provided to everything inside (see
@@ -73,7 +81,7 @@ import { provideEditable } from '@/composables/useEditable'
 
 // ── Composables ───────────────────────────────────────────────────────────────
 import { useDatabaseViewsStore } from '@/stores/databaseViews'
-import { useViewManager } from '@/composables/useViewManager'
+import { useViewManager, viewDisplayName } from '@/composables/useViewManager'
 import { useFilterPanel } from '@/composables/useFilterPanel'
 import { useColumnResize } from '@/composables/useColumnResize'
 import { useExport } from '@/composables/useExport'
@@ -104,6 +112,7 @@ import KeyReferenceDeleteDialog from './properties/KeyReferenceDeleteDialog.vue'
 import RelationCell from './properties/cells/RelationCell.vue'
 import ViewSettingsModal from './properties/ViewSettingsModal.vue'
 import CalendarView from './CalendarView.vue'
+import FamilyTreeView from './FamilyTreeView.vue'
 import AgendaView from './AgendaView.vue'
 import IconPicker from '@/components/IconPicker.vue'
 import { getSchemaIcon, isCalendarDateSchema, isKinshipDeleteLocked } from '@/stores/propertyTypes'
@@ -311,6 +320,8 @@ const {
 // ── Query function (uses activeView from viewManager) ─────────────────────────
 
 const isCalendarView = computed(() => activeView.value?.viewType === 'calendar')
+const isFamilyTreeView = computed(() => activeView.value?.viewType === 'family_tree')
+const familyTreeRef = ref<InstanceType<typeof FamilyTreeView> | null>(null)
 
 /**
  * Calendar views (including the agenda subtype) always receive the full entry
@@ -332,6 +343,10 @@ const isUnlimitedView = computed(() =>
 async function _loadEntries(offset: number, limit: number | null, append: boolean): Promise<void> {
   const view = activeView.value
   if (!view) return
+  if (view.viewType === 'family_tree') {
+    await familyTreeRef.value?.reload()
+    return
+  }
   const result = await dbStore.loadViewPage(
     props.blockId,
     view.id,
@@ -361,6 +376,10 @@ function _loadedRangeLimit(): number {
 async function _syncEntries(): Promise<void> {
   const view = activeView.value
   if (!view) return
+  if (view.viewType === 'family_tree') {
+    await familyTreeRef.value?.reload()
+    return
+  }
   const result = await dbStore.syncViewPage(
     props.blockId,
     view.id,
@@ -487,6 +506,7 @@ const EXPORTS: Record<ExportFormat, () => unknown> = {
   excel: exportExcel,
   pdf: exportPDF,
   ics: exportICS,
+  svg: () => familyTreeRef.value?.exportSvg(),
 }
 
 function onExport(format: ExportFormat): void {
@@ -1060,6 +1080,7 @@ async function saveNameEdit(entry: DatabaseEntry) {
 const sideViewEntryId = ref<string | null>(null)
 
 function openEntry(entry: DatabaseEntry) { sideViewEntryId.value = entry.id }
+function openEntryById(entryId: string) { sideViewEntryId.value = entryId }
 function closeSideView(): void           { sideViewEntryId.value = null }
 
 // ── Active cell ───────────────────────────────────────────────────────────────
@@ -1265,6 +1286,7 @@ async function toggleWrapColumn(colKey: string): Promise<void> {
         :filter-count="filterCount"
         :sort-count="sortCount"
         :is-calendar-view="isCalendarView"
+        :is-family-tree-view="isFamilyTreeView"
         :show-new-entry="!activeView || activeView.viewType === 'table'"
         :has-more="hasMore"
         :is-adding-row="isAddingRow"
@@ -1930,6 +1952,16 @@ async function toggleWrapColumn(colKey: string): Promise<void> {
         @refresh="queryFromActiveView"
       />
 
+      <!-- ── Family tree view ──────────────────────────────────────────── -->
+      <FamilyTreeView
+        v-else-if="activeView?.viewType === 'family_tree'"
+        ref="familyTreeRef"
+        :database-id="blockId"
+        :view="activeView"
+        :view-name="viewDisplayName(activeView, t)"
+        @open-entry="openEntryById"
+      />
+
       <!-- ── Planned view placeholder ──────────────────────────────────── -->
       <div v-else class="db__view-planned">
         <Icon icon="mdi:wrench-clock-outline" width="32" height="32" />
@@ -1938,7 +1970,7 @@ async function toggleWrapColumn(colKey: string): Promise<void> {
 
       <!-- ── Load-more bar ─────────────────────────────────────────────── -->
       <div
-        v-if="hasMore && !isCalendarView"
+        v-if="hasMore && !isCalendarView && !isFamilyTreeView"
         class="db__load-more"
         @click.stop
       >

@@ -137,13 +137,12 @@ export type KinshipRole =
   | 'children'
   | 'partners'
   | 'siblings'
-  | 'half_siblings'
   | 'birth'
   | 'death'
   | 'sex'
 
 const KINSHIP_ROLES: readonly KinshipRole[] = [
-  'parents', 'children', 'partners', 'siblings', 'half_siblings', 'birth', 'death', 'sex',
+  'parents', 'children', 'partners', 'siblings', 'birth', 'death', 'sex',
 ]
 
 /**
@@ -156,7 +155,6 @@ export const KINSHIP_RESERVED_NAMES: Record<KinshipRole, { de: string; en: strin
   children: { de: 'Kinder', en: 'Children' },
   partners: { de: 'Partner', en: 'Partners' },
   siblings: { de: 'Geschwister', en: 'Siblings' },
-  half_siblings: { de: 'Halbgeschwister', en: 'Half-siblings' },
   birth: { de: 'Geburtsdatum', en: 'Date of birth' },
   death: { de: 'Todeszeitpunkt', en: 'Time of death' },
   sex: { de: 'Geschlecht (Biologisch)', en: 'Sex (biological)' },
@@ -197,7 +195,6 @@ export function kinshipPreset(role: KinshipRole, language: 'de' | 'en'): Kinship
       return { types: ['relation'], relation: { direction: 'bilateral', mirrorName: KINSHIP_RESERVED_NAMES.parents[language] } }
     case 'partners':
     case 'siblings':
-    case 'half_siblings':
       return { types: ['relation'], relation: { direction: 'bilateral_self', mirrorName: null } }
     case 'birth':
     case 'death':
@@ -233,6 +230,21 @@ export function hasSystemNuances(schema: SchemaLike): boolean {
 export function kinshipFemaleOptionId(schema: SchemaLike): string | null {
   const id = schema?.config?.kinFemaleOptionId
   return kinshipRole(schema) === 'sex' && typeof id === 'string' ? id : null
+}
+
+/** The option a ``sex`` property of the family set reads as male, or null. */
+export function kinshipMaleOptionId(schema: SchemaLike): string | null {
+  const id = schema?.config?.kinMaleOptionId
+  return kinshipRole(schema) === 'sex' && typeof id === 'string' ? id : null
+}
+
+/**
+ * True for parents, children and siblings of the family set: switching the
+ * timeline on at one of them switches it on at the others too.
+ */
+export function isKinshipTimelineCoupled(schema: SchemaLike): boolean {
+  const role = kinshipRole(schema)
+  return role === 'parents' || role === 'children' || role === 'siblings'
 }
 
 /**

@@ -127,6 +127,21 @@ class ViewSort(_Strict):
     direction: Literal["asc", "desc"] = "asc"
 
 
+class FamilyTreeOverlay(_Strict):
+    """
+    A relation a family tree draws on top of the family links (see
+    ``app.family_tree.render``). ``direction`` is the arrow: from the entry
+    holding the link to the linked one, both ways, or none.
+    """
+
+    schemaId: str
+    direction: Literal["forward", "both", "none"] = "forward"
+    color: Optional[str] = Field(default=None, max_length=40)
+    showOutsiders: bool = False
+    showNuances: bool = False
+
+
+
 class ViewSettings(_Strict):
     """Presentation of a view. Every key is optional."""
 
@@ -142,6 +157,13 @@ class ViewSettings(_Strict):
     calendarSubtype: Optional[Literal["standard", "agenda"]] = None
     calendarGranularity: Optional[Literal["month", "week", "day"]] = None
     calendarChipColors: Optional[dict[str, str]] = None
+    familyTreeRootId: Optional[str] = None
+    familyTreeAt: Optional[str] = Field(
+        default=None, pattern=r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$",
+    )
+    familyTreeScope: Optional[Literal["lineage", "collateral", "connected", "blood"]] = None
+    familyTreeProperties: Optional[list[str]] = None
+    familyTreeOverlays: Optional[list[FamilyTreeOverlay]] = None
 
 
 def _validated_filter_groups(raw: Any) -> list[dict]:
@@ -617,7 +639,7 @@ def hide_schema_in_views(
 
 def _forget_in_settings(settings: dict, key: str) -> dict:
     result = dict(settings)
-    for list_key in ("colOrder", "hiddenColumns", "wrapColumns"):
+    for list_key in ("colOrder", "hiddenColumns", "wrapColumns", "familyTreeProperties"):
         if list_key in result:
             result[list_key] = [k for k in result[list_key] if k != key]
     for map_key in ("colWidths", "columnAggregations"):
@@ -630,7 +652,11 @@ def _forget_in_settings(settings: dict, key: str) -> dict:
 
 
 def forget_schema_in_views(db: Session, database_id: uuid.UUID, schema_id: uuid.UUID) -> None:
-    """Remove every reference to a deleted property from the database's views."""
+    """
+    Remove every reference to a deleted property from the database's views.
+    A family tree overlay of the property stays, shown as invalid, so the
+    user sees what was lost.
+    """
     key = str(schema_id)
     for view in list_views(db, database_id):
         groups = []

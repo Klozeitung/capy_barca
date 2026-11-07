@@ -12,20 +12,23 @@ the same transaction:
 
 1. Relation values are sanitised, and a timeline relation's ``_timeline`` is
    derived from its ``relationPool`` (see ``app.blocks.timeline``).
-2. Mirrors are kept in sync: the other side of a bilateral relation, the
+2. Derived links of a relation value (``app.blocks.timeline``) stay
+   derived while the write leaves their ranges and nuances as they were;
+   one the write changes becomes manual, on the mirror side as well.
+3. Mirrors are kept in sync: the other side of a bilateral relation, the
    ``sub_item`` list of the old and new parent of a ``parent_item``, the
    ``parent_item`` of the children of a ``sub_item``. Entry templates write
    no mirrors; they are no participant in any relation graph.
-3. ``last_edited_*`` is refreshed. Times of day of a date value are stored
+4. ``last_edited_*`` is refreshed. Times of day of a date value are stored
    in UTC, read in the zone of the request (see ``app.timezones``).
-4. What is computed from the changed values is brought up to date: the
+5. What is computed from the changed values is brought up to date: the
    entry's own formulas and rollups, then those of other entries that read a
    changed property through a relation linking this entry, and the same for
    every entry that received a mirror value (see
    ``app.blocks.computed.recompute_after_value_change``).
 
 :func:`copy_entry` (duplicate) and :func:`apply_template` reuse the mirror
-steps for every value they copy.
+steps for every value they copy; copied links are never derived.
 """
 import uuid
 from dataclasses import dataclass, field
@@ -52,6 +55,7 @@ from app.blocks.readonly_properties import (
     refresh_last_edited,
 )
 from app.blocks.relation_sync import (
+    drop_mirror_derived,
     get_mirror_schema,
     sync_bilateral_relation,
     sync_bilateral_relation_timeline,
@@ -60,11 +64,15 @@ from app.blocks.relation_sync import (
     would_create_parent_cycle,
 )
 from app.blocks.timeline import (
+    derived_ids,
     extract_related_ids_now,
+    linked_ids,
     pool_to_timeline,
     sanitize_flat_nuances,
     sanitize_nuance_pool,
+    unchanged_links,
     validate_timeline_value,
+    with_derived,
 )
 
 # Mirror values written for one change: the mirror property and the entries
@@ -301,7 +309,8 @@ def build_stored_value(schema, value: Optional[dict]) -> Optional[dict]:
 
     A timeline relation keeps its pool and the nuance labels of ranges it
     has, and gains the derived ``_timeline``. Any other relation keeps its
-    links and the nuance labels of linked entries. Other values are stored as
+    links and the nuance labels of linked entries. Derived links a client
+    sends are dropped (see :func:`keep_derived`). Other values are stored as
     sent.
     """
     if value is None or schema.type != "relation":
@@ -322,14 +331,27 @@ def build_stored_value(schema, value: Optional[dict]) -> Optional[dict]:
     return stored
 
 
+def keep_derived(old_value: Optional[dict], stored_value: Optional[dict]) -> tuple[Optional[dict], set[str]]:
+    """
+    *stored_value* with the derived links of *old_value* it holds unchanged,
+    and the derived links it changed but still holds, which become manual.
+    """
+    previous = derived_ids(old_value)
+    if not previous or not isinstance(stored_value, dict):
+        return stored_value, set()
+    kept = unchanged_links(old_value, stored_value, previous)
+    linked = set(linked_ids(stored_value))
+    return with_derived(stored_value, kept), {u for u in previous if u not in kept and u in linked}
+
+
 def _value_before(db: Session, entry_id: uuid.UUID, schema) -> Optional[dict]:
     """
-    A copy of the value the mirrors are diffed against, read before the
-    write; None for properties without mirrors.
+    A copy of the value the mirrors and derived links are diffed against,
+    read before the write; None for properties without either.
 
     Copied, because the write changes the same row object.
     """
-    if not (is_bilateral(schema) or schema.type in ("parent_item", "sub_item")):
+    if not (schema.type in ("relation", "parent_item", "sub_item")):
         return None
     pv = repo.get_value(db, entry_id, schema.id)
     if pv is None or not pv.value:
@@ -371,6 +393,9 @@ def write_value(
         partner_schema = resolve_partner_schema(repo.list_schemas(db, database_id), schema)
 
     stored_value = build_stored_value(schema, value)
+    made_manual: set[str] = set()
+    if schema.type == "relation":
+        stored_value, made_manual = keep_derived(old_value, stored_value)
     if schema.type == "date":
         # Times of day arrive in the zone of the request and are stored in UTC.
         stored_value = timezones.date_value_to_utc(stored_value, timezones.zone_of(db))
@@ -387,6 +412,8 @@ def write_value(
             result.mirror_created_in = sync.created_in
             if sync.mirror_schema is not None:
                 mirror_writes.append((sync.mirror_schema, sync.written))
+            # Only the mark changes on the mirror side; nothing computed reads it.
+            drop_mirror_derived(db, sync.mirror_schema, entry_id, made_manual)
         elif schema.type in ("parent_item", "sub_item"):
             mirror_writes += sync_hierarchy_mirror(
                 db, schema, entry_id,
@@ -444,12 +471,13 @@ def copy_entry(
         schema = schema_map.get(pv.property_schema_id)
         if schema is None or schema.type in READONLY_TYPES or pv.value is None:
             continue
+        value = with_derived(pv.value, []) if schema.type == "relation" else pv.value
         repo.upsert_value(
-            db, page_id=new_block.id, schema_id=pv.property_schema_id, value=pv.value,
+            db, page_id=new_block.id, schema_id=pv.property_schema_id, value=value,
         )
         if is_bilateral(schema):
             # The copy is a fresh entry without links on the mirror side yet.
-            sync_relation_mirror(db, schema, new_block.id, pv.value, None)
+            sync_relation_mirror(db, schema, new_block.id, value, None)
             target = foreign_target(schema, database_id)
             if target:
                 bilateral_target_dbs.add(target)
@@ -528,11 +556,12 @@ def apply_template(
             if old_pv is not None and old_pv.value:
                 old_value = dict(old_pv.value)
 
-        repo.upsert_value(db, page_id=entry_id, schema_id=pv.property_schema_id, value=pv.value)
+        value = with_derived(pv.value, []) if schema.type == "relation" else pv.value
+        repo.upsert_value(db, page_id=entry_id, schema_id=pv.property_schema_id, value=value)
         changed_schema_ids.add(pv.property_schema_id)
 
         if is_bilateral(schema):
-            sync = sync_relation_mirror(db, schema, entry_id, pv.value, old_value)
+            sync = sync_relation_mirror(db, schema, entry_id, value, old_value)
             if sync.created_in is not None:
                 result.mirrors_created_in.add(sync.created_in)
             if sync.mirror_schema is not None:

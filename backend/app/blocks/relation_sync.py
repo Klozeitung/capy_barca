@@ -8,6 +8,9 @@ mirror property in the target database holds the back-references; with
 ``"bilateral_self"`` the property mirrors itself. Writing a value keeps the
 mirror side in sync within the same transaction
 (:func:`sync_bilateral_relation`, :func:`sync_bilateral_relation_timeline`).
+A mirror value keeps its derived links (``app.blocks.timeline``) while it
+links them; :func:`drop_mirror_derived` removes the mark of a link a person
+changed on the other side.
 
 Sub-item hierarchy
 ------------------
@@ -36,7 +39,12 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.blocks import repository as repo
-from app.blocks.timeline import extract_related_ids_now, pool_to_timeline
+from app.blocks.timeline import (
+    derived_ids,
+    extract_related_ids_now,
+    pool_to_timeline,
+    with_derived,
+)
 
 
 # ─── Mirrors of bilateral relations ───────────────────────────────────────────
@@ -211,6 +219,7 @@ def sync_bilateral_relation(
         value: dict = {"related_ids": current}
         if current_nuances:
             value["nuances"] = current_nuances
+        value = with_derived(value, derived_ids(pv.value if pv else None))
         repo.upsert_value(
             db,
             page_id=rid,
@@ -237,6 +246,7 @@ def sync_bilateral_relation(
                 value = {"related_ids": current}
                 if current_nuances:
                     value["nuances"] = current_nuances
+                value = with_derived(value, derived_ids(pv.value))
                 repo.upsert_value(
                     db, page_id=rid, schema_id=mirror_schema.id, value=value,
                 )
@@ -330,6 +340,7 @@ def sync_bilateral_relation_timeline(
         if current_nuance:
             value["nuancePool"] = current_nuance
         value["_timeline"] = new_timeline
+        value = with_derived(value, derived_ids(current_value))
         repo.upsert_value(db, page_id=uid, schema_id=mirror_schema.id, value=value)
         written.add(uid)
 
@@ -361,11 +372,40 @@ def sync_bilateral_relation_timeline(
             if current_nuance:
                 value["nuancePool"] = current_nuance
             value["_timeline"] = new_timeline
+            value = with_derived(value, derived_ids(pv.value))
             repo.upsert_value(db, page_id=uid, schema_id=mirror_schema.id, value=value)
         else:
             repo.upsert_value(db, page_id=uid, schema_id=mirror_schema.id, value=None)
         written.add(uid)
 
+    return written
+
+
+def drop_mirror_derived(
+    db: Session, mirror_schema, entry_id: uuid.UUID, uids,
+) -> set[uuid.UUID]:
+    """
+    Remove *entry_id* from the derived links of the mirror values of *uids*:
+    the link was changed by hand on *entry_id*'s side, so it is manual on
+    both. Returns the entries whose mirror value was written.
+    """
+    written: set[uuid.UUID] = set()
+    if mirror_schema is None:
+        return written
+    entry_id_str = str(entry_id)
+    for uid_str in uids:
+        try:
+            uid = uuid.UUID(uid_str)
+        except ValueError:
+            continue
+        pv = repo.get_value(db, uid, mirror_schema.id)
+        if pv is None or entry_id_str not in derived_ids(pv.value):
+            continue
+        kept = [u for u in derived_ids(pv.value) if u != entry_id_str]
+        repo.upsert_value(
+            db, page_id=uid, schema_id=mirror_schema.id, value=with_derived(pv.value, kept),
+        )
+        written.add(uid)
     return written
 
 

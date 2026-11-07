@@ -5376,14 +5376,15 @@ def test_date_filters_compare_the_local_day(http_client):
 
 def test_schema_listing_offers_the_system_nuances_of_the_family_set(http_client):
     db_id = _create_database(http_client)
-    _create_schema(http_client, db_id, "Half-siblings", "relation", {
+    _create_schema(http_client, db_id, "Siblings", "relation", {
         "target_database_id": db_id, "direction": "bilateral_self",
         "nuance": {"enabled": True, "options": [{"label": "Value A"}]},
     })
     listed = http_client.get(f"/api/databases/{db_id}/schemas").json()
-    half = next(s for s in listed if s["name"] == "Half-siblings")
-    assert half["config"]["kinRole"] == "half_siblings"
-    assert half["config"]["nuance"] == {"enabled": True, "options": []}
+    siblings = next(s for s in listed if s["name"] == "Siblings")
+    assert siblings["config"]["kinRole"] == "siblings"
+    assert siblings["config"]["nuance"]["enabled"] is True
+    assert [o["label"] for o in siblings["config"]["nuance"]["options"]][:2] == ["biological", "half"]
 
 
 def test_deleting_a_property_of_the_family_set_needs_no_family_tree(http_client):

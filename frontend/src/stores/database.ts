@@ -268,7 +268,7 @@ export interface KeyReference {
 
 /**
  * All supported view type identifiers.
- * 'table' and 'calendar' are currently implemented; all others are planned.
+ * 'table', 'calendar' and 'family_tree' are implemented; all others are planned.
  */
 export type ViewType =
   | 'table'
@@ -484,6 +484,46 @@ export interface DatabaseView {
    * ``normalizeViewDescription``.
    */
   description?: string
+  /**
+   * For viewType === 'family_tree': the entry the tree is drawn around
+   * (generation 0). The tree and its sibling mapper need one.
+   */
+  familyTreeRootId?: string
+  /**
+   * The instant the tree shows, a date or ``YYYY-MM-DDTHH:MM``. Absent means
+   * the overall view.
+   */
+  familyTreeAt?: string
+  /** Who belongs to the tree; absent means 'lineage'. */
+  familyTreeScope?: FamilyTreeScope
+  /** Schema ids of the properties shown under each life span, in order. */
+  familyTreeProperties?: string[]
+  /** Relations drawn on top of the family links. */
+  familyTreeOverlays?: FamilyTreeOverlay[]
+}
+
+/**
+ * Who a family tree shows: ancestors and descendants with the other parents
+ * of their children; that and the lines of every ancestor; everybody linked
+ * by family links; blood relatives only.
+ */
+export type FamilyTreeScope = 'lineage' | 'collateral' | 'connected' | 'blood'
+
+export const FAMILY_TREE_SCOPES: readonly FamilyTreeScope[] = ['lineage', 'collateral', 'connected', 'blood']
+
+/**
+ * A relation a family tree draws on top of the family links. ``direction``
+ * is the arrow: from the entry holding the link to the linked one, both ways
+ * or none. ``showOutsiders`` brings in people outside the tree whom the
+ * relation links to someone in it; ``showNuances`` labels the lines with
+ * their nuance at an instant.
+ */
+export interface FamilyTreeOverlay {
+  schemaId: string
+  direction: 'forward' | 'both' | 'none'
+  color?: SelectColorKey
+  showOutsiders: boolean
+  showNuances: boolean
 }
 
 // ── Sticky-header / frozen-column helpers ─────────────────────────────────────

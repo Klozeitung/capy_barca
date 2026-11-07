@@ -9,13 +9,17 @@ them are covered in ``database_router_test.py``.
 import pytest
 
 from app.blocks.timeline import (
+    derived_ids,
     extract_related_ids_now,
+    linked_ids,
     parse_pool_range,
     pool_to_timeline,
     sanitize_flat_nuances,
     sanitize_nuance_pool,
     slot_at,
+    unchanged_links,
     validate_timeline_value,
+    with_derived,
 )
 
 
@@ -529,3 +533,35 @@ def test_extract_related_ids_now_reads_the_most_recent_slot():
     assert extract_related_ids_now(value) == ["b", "c"]
     assert extract_related_ids_now({"related_ids": ["x"]}) == ["x"]
     assert extract_related_ids_now(None) == []
+
+
+# ── Derived links ────────────────────────────────────────────────────────────
+
+
+def test_linked_ids_reads_both_formats():
+    assert linked_ids({"related_ids": ["a", "b"]}) == ["a", "b"]
+    assert linked_ids({"relationPool": {"a": [""], "b": []}, "related_ids": ["x"]}) == ["a"]
+    assert linked_ids(None) == []
+
+
+def test_derived_ids_lists_only_linked_entries():
+    assert derived_ids({"related_ids": ["a"], "derived": ["a", "b"]}) == ["a"]
+    assert derived_ids({"related_ids": ["a"], "derived": "a"}) == []
+    assert derived_ids(None) == []
+
+
+def test_with_derived_sets_the_list_in_link_order_and_drops_an_empty_one():
+    value = {"related_ids": ["a", "b", "c"], "derived": ["a"]}
+    assert with_derived(value, {"c", "a", "x"}) == {"related_ids": ["a", "b", "c"], "derived": ["a", "c"]}
+    assert with_derived(value, []) == {"related_ids": ["a", "b", "c"]}
+    assert with_derived(None, ["a"]) is None
+
+
+def test_unchanged_links_compares_ranges_and_nuances():
+    old = {"relationPool": {"a": ["", "2000-07-28→"]}, "nuancePool": {"a": {"": "n-1"}}}
+    same = {"relationPool": {"a": ["2000-07-28→", ""]}, "nuancePool": {"a": {"": "n-1"}}}
+    other = {"relationPool": {"a": [""]}, "nuancePool": {"a": {"": "n-1"}}}
+    assert unchanged_links(old, same, ["a"]) == {"a"}
+    assert unchanged_links(old, other, ["a"]) == set()
+    assert unchanged_links({"related_ids": ["a"]}, {"related_ids": ["a"], "nuances": {"a": "n-1"}}, ["a"]) == set()
+    assert unchanged_links({"related_ids": ["a"]}, {"related_ids": []}, ["a"]) == set()

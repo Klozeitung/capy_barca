@@ -4,7 +4,7 @@ import { apiClient } from '@/api/client'
 
 const URL = '/api/settings/kinship-nuances'
 
-export type KinshipGroup = 'parents' | 'partners' | 'siblings' | 'half_siblings'
+export type KinshipGroup = 'parents' | 'partners' | 'siblings'
 
 /** A fixed nuance of the family set, labelled in the account's language. */
 export interface KinshipBaseNuance {
@@ -12,10 +12,10 @@ export interface KinshipBaseNuance {
   label: string
 }
 
-/** A nuance an administrator added. ``base`` is null for the sibling groups. */
+/** A nuance an administrator added, counting as its ``base`` nuance. */
 export interface KinshipAlias {
   id: string | null
-  base: string | null
+  base: string
   label: string
 }
 
@@ -64,9 +64,8 @@ export function isFreeLabel(group: KinshipNuanceGroup, label: string): boolean {
  * change them; the server refuses everyone else.
  *
  * An alias counts as its base nuance wherever the system interprets
- * nuances. Deleting one moves every value that used it to its base nuance,
- * or removes it in the sibling groups, which have none; ``usage`` tells the
- * confirmation how many entries that affects.
+ * nuances. Deleting one moves every value that used it to its base nuance;
+ * ``usage`` tells the confirmation how many entries that affects.
  */
 export const useKinshipNuancesStore = defineStore('kinshipNuances', () => {
   const groups = ref<KinshipNuanceGroup[]>([])

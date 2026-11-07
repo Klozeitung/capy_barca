@@ -17,15 +17,15 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 - **Backup and restore** portable `.capy` backup files covering database, uploads, and configuration; full restore via a single script
 - **Multi-user** admin and member roles, optional self-registration, permission model per block (everyone / private / whitelist) and inheritance system
 - **Supported Languages**: English, German, chosen per account; a new account is asked for its language and date format after the first login
-- **Exports**: Export your data (the current view) to PDF or CSV
+- **Exports**: Export your data (the current view) to PDF or CSV, a family tree to SVG
+- **Comments** inline comments on pages and database entries
+- **Custom icons** upload your own Icons, which every user can then pick wherever icons are offered in addition to a variety of preset icons available from the get go.
+- **Profile pictures & Page covers** every page, database entries included, can carry a profile picture and a cover image, just like your run-of-the-mill social media page.
 
 ### Advanced features
 
 - **Automations** rule-based triggers that act on database entries
-- **Alerts** personal reminders on database entries (one alerts property per database); each user sees only their own, and a due alert shows a notice in every open session until it is closed
-- **Comments** inline comments on pages and database entries
-- **Custom icons** admins upload images (PNG, JPEG, GIF, WebP) under Settings → Icons, which every user can then pick wherever icons are offered
-- **Profile pictures** every page, database entries included, can carry a round profile picture above its icon and title; the section shown is chosen when uploading
+- **Alerts** personal reminders on database entries
 - **Collaborative editing** real-time document collaboration via integrated Collabora Online (WOPI)
 - **Android app** a mobile client for phones, where the browser interface designed for desktop and tablet is cramped; see [Android app](#android-app)
 
@@ -33,6 +33,7 @@ CapyBarca is a self-hosted personal knowledge management application. It runs en
 
 - **Property timelining** any database property can be given a timeline: values are stored as date-ranged slots rather than a single value. Example: In Notion, you could only put "City A" in a relation property for a character in a world-building database, but if that location were to change, you wouldn't be able to see the previous cities the character resided in. With CapyBarca you can display a full history within a single property ("timelining a property").
 - **Nuanced Relations**: relation properties are able to track qualifiers, so called "Nuances". Example: In Notion, you could only put "organisation X" into the relation property "organisation" in a character database. CapyBarca allows you to qualify that relation. Now you not only can set it to "**organisation X** *as* **rank A**", but you can combine nuancing and timelining, enabling you to track the career of your character within not only one, but any number of organisations. Of course, nuancing (and timelining) has a lot more nifty use cases.
+- **Family tree** a view type that draws the people of a database generation by generation around a chosen person, as a whole or at a point in time. It reads a fixed set of properties with reserved names (parents, children, partners, siblings, dates of birth and death, sex), whose nuances (biological, adoptive, step, marriage, …) decide how each line is drawn; further relations can be laid on top. On request it derives siblings from shared parents and lists contradictions in the data, such as someone being their own ancestor.
 - **Keyed Relations**: A rollup within a relation property, providing data from the target relation entries to sort them by. For example, a plot property normally suffers from all plot beats being sorted by seniority, i.e. the order you added them to the list. Your plot beats will show up in a non chronological order. By keying them to their own date properties, they will now be listed next to their respective dates in chronological order - or whatever order you like to apply.
 
 *A grain of salt: For now, rollups and formulas only use the most recent value of timelined properties and ignore nuances.*
@@ -90,17 +91,6 @@ If you want the script to prune the docker build cache afterwards, set the envir
 ```bash
 CLEANUP=1 ./update.sh
 ```
-
-### Times of day are stored in UTC
-
-Since 0.17.1.0 the server stores every date with a time of day in UTC and shows it in each user's time zone, which the browser reports. The installation's own zone is `CB_TIMEZONE` in `.env`; `setup.sh` takes it from the host. Dates written before that were stored as local wall-clock time, so an installation updated from an earlier version converts them once after the update:
-
-```bash
-docker compose exec backend python -m app.maintenance.convert_dates_to_utc --dry-run
-docker compose exec backend python -m app.maintenance.convert_dates_to_utc
-```
-
-The first command only reports how many values would change. `--timezone` names the zone the old values were written in (default: `CB_TIMEZONE`). Values already stored in UTC are left alone, so running the conversion again changes nothing.
 
 ---
 
@@ -199,7 +189,7 @@ The Anthropic LLM "Claude" assisted in creating this software.
 
 ## Project Status
 
-Despite heavy testing (~3400 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet.
+Despite heavy testing (~3500 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet.
 
 Do not use for irreplaceable data without regularly creating backups. Use at your own risk.
 
