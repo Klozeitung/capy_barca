@@ -29,7 +29,7 @@ Linked entries in a database the user may not read do not resolve.
 """
 import re
 import uuid
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -271,10 +271,13 @@ def _overlays(
     return result, outsiders
 
 
-def render(db: Session, view: Any, user: Any, language: str) -> dict:
-    """The family tree of *view* (see the module docstring)."""
+def render(db: Session, view: Any, user: Any, language: str, settings: Optional[dict] = None) -> dict:
+    """
+    The family tree of *view* (see the module docstring), drawn with
+    *settings* when given, else with the view's stored settings.
+    """
     database_id = view.database_id
-    settings = view.settings or {}
+    settings = settings if settings is not None else (view.settings or {})
     root = settings.get("familyTreeRootId")
     mode = settings.get("familyTreeScope") if settings.get("familyTreeScope") in SCOPES else DEFAULT_SCOPE
     graph = load_graph(db, database_id)

@@ -156,11 +156,12 @@ function onTitleKeydown(e: KeyboardEvent): void {
 
 .block-meta--with-cover { padding-top: 1rem; }
 
+/* Profile pictures are 3:4 portraits; older square ones are cut at the sides. */
 .block-avatar {
   display: block;
-  width: 112px;
-  height: 112px;
-  border-radius: 50%;
+  width: 105px;
+  height: 140px;
+  border-radius: 4px;
   object-fit: cover;
   margin-bottom: 0.75rem;
   border: 4px solid var(--color-bg, var(--color-surface));
@@ -170,7 +171,7 @@ function onTitleKeydown(e: KeyboardEvent): void {
 /* Pulled up into the cover; position: relative keeps it painted in front. */
 .block-avatar--over-cover {
   position: relative;
-  margin-top: calc(-1rem - 64px);
+  margin-top: calc(-1rem - 80px);
 }
 
 .block-icon-wrap {

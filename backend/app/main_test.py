@@ -9,7 +9,7 @@ client = TestClient(app)
 
 def test_app_is_initialized():
     assert app.title == "CapyBarca API"
-    assert app.version == "0.18.2.0"
+    assert app.version == "0.18.2.1"
 
 
 @pytest.mark.parametrize("secret", ["", "   ", "changeme"])

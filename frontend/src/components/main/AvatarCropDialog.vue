@@ -2,21 +2,22 @@
 /**
  * AvatarCropDialog
  *
- * Lets the user choose the square section of an image that becomes a page's
- * profile picture. The image lies behind a round viewport; dragging moves it,
- * the mouse wheel and the slider zoom it. The image always covers the whole
- * viewport (see ``avatarCropHelpers``), so the result has no empty corners.
+ * Lets the user choose the 3:4 portrait section of an image that becomes a
+ * page's profile picture. The image lies behind a viewport of that shape;
+ * dragging moves it, the mouse wheel and the slider zoom it. The image
+ * always covers the whole viewport (see ``avatarCropHelpers``), so the
+ * result has no empty edges.
  *
- * Confirming draws the visible section onto a square canvas of
- * ``AVATAR_OUTPUT_SIZE`` pixels and emits it as WebP, or as PNG where the
- * browser cannot encode WebP. The original image is not uploaded.
+ * Confirming draws the visible section onto a canvas of ``AVATAR_OUTPUT``
+ * pixels and emits it as WebP, or as PNG where the browser cannot encode
+ * WebP. The original image is not uploaded.
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Icon } from '@iconify/vue'
 import {
   AVATAR_MAX_ZOOM,
-  AVATAR_OUTPUT_SIZE,
+  AVATAR_OUTPUT,
   centredOffset,
   clampOffset,
   coverScale,
@@ -34,8 +35,8 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-/** Edge length of the on-screen viewport in pixels. */
-const VIEW = 240
+/** Size of the on-screen viewport in pixels, 3:4 like the result. */
+const VIEW = { width: 180, height: 240 }
 
 const objectUrl = URL.createObjectURL(props.file)
 const image = ref<HTMLImageElement | null>(null)
@@ -71,7 +72,7 @@ function onImageError(): void {
 
 // ── Zoom ──────────────────────────────────────────────────────────────────────
 
-function setZoom(next: number, anchor: Point = { x: VIEW / 2, y: VIEW / 2 }): void {
+function setZoom(next: number, anchor: Point = { x: VIEW.width / 2, y: VIEW.height / 2 }): void {
   const bounded = Math.min(AVATAR_MAX_ZOOM, Math.max(1, next))
   const oldScale = scale.value
   zoom.value = bounded
@@ -127,8 +128,8 @@ async function confirm(): Promise<void> {
   working.value = true
   try {
     const canvas = document.createElement('canvas')
-    canvas.width = AVATAR_OUTPUT_SIZE
-    canvas.height = AVATAR_OUTPUT_SIZE
+    canvas.width = AVATAR_OUTPUT.width
+    canvas.height = AVATAR_OUTPUT.height
     const context = canvas.getContext('2d')
     if (!context) {
       loadFailed.value = true
@@ -137,8 +138,8 @@ async function confirm(): Promise<void> {
     const src = sourceRect(offset.value, scale.value, VIEW)
     context.imageSmoothingQuality = 'high'
     context.drawImage(
-      image.value, src.x, src.y, src.size, src.size,
-      0, 0, AVATAR_OUTPUT_SIZE, AVATAR_OUTPUT_SIZE,
+      image.value, src.x, src.y, src.width, src.height,
+      0, 0, AVATAR_OUTPUT.width, AVATAR_OUTPUT.height,
     )
     // A browser without a WebP encoder silently returns PNG for the request.
     const webp = await encode(canvas, 'image/webp')
@@ -190,7 +191,7 @@ function onBackdropClick(e: MouseEvent): void {
         <template v-else>
           <div
             class="acd__viewport"
-            :style="{ width: `${VIEW}px`, height: `${VIEW}px` }"
+            :style="{ width: `${VIEW.width}px`, height: `${VIEW.height}px` }"
             @pointerdown="onPointerDown"
             @pointermove="onPointerMove"
             @pointerup="onPointerUp"
@@ -319,11 +320,11 @@ function onBackdropClick(e: MouseEvent): void {
   pointer-events: none;
 }
 
-/* Darkens everything outside the circle the picture is shown in. */
+/* Outlines the section that becomes the picture, with its rounded corners. */
 .acd__mask {
   position: absolute;
   inset: 0;
-  border-radius: 50%;
+  border-radius: 4px;
   box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5);
   pointer-events: none;
 }

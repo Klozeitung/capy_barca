@@ -8,15 +8,22 @@ POST /api/databases/{database_id}/views/{view_id}/family-tree/map   run the sibl
 
 Both need a view of type ``family_tree`` (404 otherwise). Drawing needs read
 access to the database (404 otherwise, see ``app.blocks.views_router``),
-mapping write access (403). Mapping needs a root in the view's settings
-(422). Nothing is cached: the tree is computed from the current data on
-every request, and the mapper writes only when it is run.
+mapping write access (403). Mapping needs a root (422). Nothing is cached:
+the tree is computed from the current data on every request, and the mapper
+writes only when it is run.
+
+Both take the family tree settings the client shows (``settings``, the
+``familyTree*`` keys of the view settings) and work with them instead of the
+stored ones. A change made in the view settings is drawn at once, without
+waiting for it to be saved; nothing is stored here. Without ``settings`` the
+stored ones apply. Keys outside the family tree, or malformed values,
+answer 422.
 """
 import uuid
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
 from app.blocks import kinship, relation_lock, views
@@ -30,7 +37,20 @@ from app.users.model import User
 family_tree_router = APIRouter(prefix="/api/databases", tags=["family-tree"])
 
 
-# ─── Response shapes ─────────────────────────────────────────────────────────
+# ─── Request and response shapes ─────────────────────────────────────────────
+
+#: The keys of the view settings a family tree reads.
+FAMILY_TREE_KEYS = (
+    "familyTreeRootId", "familyTreeAt", "familyTreeScope",
+    "familyTreeProperties", "familyTreeOverlays",
+)
+
+
+class TreeRequest(BaseModel):
+    """The family tree settings to work with instead of the stored ones."""
+
+    settings: Optional[dict[str, Any]] = None
+
 
 
 class TreeSegment(BaseModel):
@@ -151,6 +171,25 @@ def _language(user: User, request: Request) -> str:
     return kinship.language_for(user.language, request.headers.get("accept-language"))
 
 
+def _settings(view, payload: Optional[TreeRequest]) -> dict:
+    """
+    The settings to work with: the view's stored ones, with the family tree
+    keys replaced by those of *payload* when it carries any. Raises 422.
+    """
+    stored = dict(view.settings or {})
+    if payload is None or payload.settings is None:
+        return stored
+    foreign = sorted(k for k in payload.settings if k not in FAMILY_TREE_KEYS)
+    if foreign:
+        raise HTTPException(status_code=422, detail=f"Not family tree settings: {', '.join(foreign)}")
+    try:
+        validated = views.ViewSettings.model_validate(payload.settings).model_dump(exclude_none=True)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors(include_url=False)) from exc
+    kept = {k: v for k, v in stored.items() if k not in FAMILY_TREE_KEYS}
+    return {**kept, **validated}
+
+
 # ─── Endpoints ───────────────────────────────────────────────────────────────
 
 
@@ -161,13 +200,15 @@ def get_family_tree(
     database_id: uuid.UUID,
     view_id: uuid.UUID,
     request: Request,
+    payload: Optional[TreeRequest] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """The tree as the view's settings describe it, for every point in time."""
+    """The tree as the settings describe it, for every point in time."""
     views.require_readable(db, database_id, current_user)
     view = _family_tree_view(db, database_id, view_id)
-    return tree_render.render(db, view, current_user, _language(current_user, request))
+    settings = _settings(view, payload)
+    return tree_render.render(db, view, current_user, _language(current_user, request), settings)
 
 
 @family_tree_router.post(
@@ -176,6 +217,7 @@ def get_family_tree(
 def map_family_tree(
     database_id: uuid.UUID,
     view_id: uuid.UUID,
+    payload: Optional[TreeRequest] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -187,7 +229,7 @@ def map_family_tree(
     """
     views.require_writable(db, database_id, current_user)
     view = _family_tree_view(db, database_id, view_id)
-    settings = view.settings or {}
+    settings = _settings(view, payload)
     root = settings.get("familyTreeRootId")
     if not root:
         raise HTTPException(status_code=422, detail="The family tree has no root")

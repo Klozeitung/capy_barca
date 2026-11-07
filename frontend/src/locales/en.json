@@ -1255,7 +1255,7 @@
     "filesTypes": "Image, video, audio and PDF blocks only accept their matching formats. SVG is excluded, because an SVG file can carry scripts and would be rendered directly inside the block.",
     "filesDownload": "File and drive blocks accept anything. Those are always downloaded rather than opened in the browser.",
     "filesIcons": "Admins upload their own images as icons under Settings → Icons (PNG, JPEG, GIF or WebP). Everyone finds them in the icon picker under “Custom” and can search them by name.",
-    "filesAvatar": "Every page, database entries included, can have a profile picture: in the page settings, choose an image and the section shown in the circle. It appears above the icon and the title, in front of the cover.",
+    "filesAvatar": "Every page, database entries included, can have a profile picture: in the page settings, choose an image and the 3:4 portrait section that is shown. It appears above the icon and the title, in front of the cover.",
     "title": "Help",
     "sectionBlocks": "Block Types",
     "sectionShortcuts": "Shortcuts",

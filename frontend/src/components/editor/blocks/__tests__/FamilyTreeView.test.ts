@@ -63,7 +63,9 @@ describe('FamilyTreeView', () => {
   it('draws the people of the instant and opens an entry on click', async () => {
     vi.mocked(apiClient.post).mockResolvedValue(sampleTree())
     const onOpen = await mount({ view: view({ familyTreeAt: '2022-01-01' }) })
-    expect(apiClient.post).toHaveBeenCalledWith('/api/databases/db-1/views/view-1/family-tree', {})
+    expect(apiClient.post).toHaveBeenCalledWith('/api/databases/db-1/views/view-1/family-tree', {
+      settings: { familyTreeRootId: 'Person C', familyTreeAt: '2022-01-01' },
+    })
     const titles = Array.from(host!.querySelectorAll('.ft-node__title')).map((n) => n.textContent)
     expect(titles).toEqual(['Person A', 'Person B', 'Person C'])
     expect(host!.textContent).toContain('Value A')

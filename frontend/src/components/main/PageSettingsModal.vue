@@ -705,9 +705,9 @@ async function quickPrint(): Promise<void> {
 
 /* ── Profile picture preview ─────────────────────────────────────────────── */
 .psm__avatar-preview {
-  width: 72px;
+  width: 54px;
   height: 72px;
-  border-radius: 50%;
+  border-radius: 4px;
   object-fit: cover;
   border: 1px solid var(--color-border);
 }

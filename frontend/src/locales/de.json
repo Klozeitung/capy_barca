@@ -1255,7 +1255,7 @@
     "filesTypes": "Bild-, Video-, Audio- und PDF-Blöcke nehmen nur die jeweils passenden Formate an. SVG ist ausgenommen, weil eine SVG-Datei Skripte enthalten kann und im Block direkt dargestellt würde.",
     "filesDownload": "Datei- und Ablage-Blöcke nehmen beliebige Dateien. Diese werden immer heruntergeladen statt im Browser geöffnet.",
     "filesIcons": "Administratoren laden unter Einstellungen → Icons eigene Bilder als Icons hoch (PNG, JPEG, GIF oder WebP). Sie stehen allen im Icon-Auswahlfeld unter „Eigene“ zur Verfügung und lassen sich dort auch per Namen suchen.",
-    "filesAvatar": "Jede Seite, auch jeder Datenbankeintrag, kann ein Profilbild haben: In den Seiteneinstellungen ein Bild wählen und den Ausschnitt im Kreis festlegen. Es steht über Icon und Titel, vor dem Cover.",
+    "filesAvatar": "Jede Seite, auch jeder Datenbankeintrag, kann ein Profilbild haben: In den Seiteneinstellungen ein Bild wählen und den Ausschnitt im Hochformat 3:4 festlegen. Es steht über Icon und Titel, vor dem Cover.",
     "title": "Hilfe",
     "sectionBlocks": "Block-Typen",
     "sectionShortcuts": "Tastaturkürzel",

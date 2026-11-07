@@ -11,8 +11,13 @@
  *   tree's scope and writes them; contradictions come back with the result.
  *
  * Instants are wall-clock minutes ``YYYY-MM-DDTHH:MM`` and compare as strings.
+ *
+ * Both send the family tree settings of the view as the user sees them
+ * (``familyTreeSettings``); the server works with those rather than the
+ * stored ones, so a change is drawn at once instead of after it was saved.
  */
 import { apiClient } from '@/api/client'
+import type { DatabaseView } from '@/stores/database'
 
 export interface TreeSegment {
   start: string | null
@@ -123,10 +128,22 @@ function base(databaseId: string, viewId: string): string {
   return `/api/databases/${databaseId}/views/${viewId}/family-tree`
 }
 
-export function fetchFamilyTree(databaseId: string, viewId: string): Promise<FamilyTree> {
-  return apiClient.post<FamilyTree>(base(databaseId, viewId), {})
+/** The family tree keys of *view*'s settings; unset ones are left out. */
+export function familyTreeSettings(view: DatabaseView): Record<string, unknown> {
+  const settings: Record<string, unknown> = {
+    familyTreeRootId: view.familyTreeRootId,
+    familyTreeAt: view.familyTreeAt,
+    familyTreeScope: view.familyTreeScope,
+    familyTreeProperties: view.familyTreeProperties,
+    familyTreeOverlays: view.familyTreeOverlays,
+  }
+  return Object.fromEntries(Object.entries(settings).filter(([, value]) => value !== undefined && value !== null))
 }
 
-export function runFamilyTreeMapper(databaseId: string, viewId: string): Promise<MapperResult> {
-  return apiClient.post<MapperResult>(`${base(databaseId, viewId)}/map`, {})
+export function fetchFamilyTree(databaseId: string, view: DatabaseView): Promise<FamilyTree> {
+  return apiClient.post<FamilyTree>(base(databaseId, view.id), { settings: familyTreeSettings(view) })
+}
+
+export function runFamilyTreeMapper(databaseId: string, view: DatabaseView): Promise<MapperResult> {
+  return apiClient.post<MapperResult>(`${base(databaseId, view.id)}/map`, { settings: familyTreeSettings(view) })
 }

@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import {
-  AVATAR_SIZE,
+  BOW_DROP,
+  PICTURE_HEIGHT,
+  PICTURE_WIDTH,
+  bowMiddle,
+  bowPath,
+  bowY,
+  groupLinks,
+  stemPath,
   NODE_WIDTH,
   OUTSIDER_GAP,
   directPath,
@@ -76,7 +83,7 @@ describe('layoutTree', () => {
     })
     expect(longestPropertyText(tall)).toBe(82)
     expect(nodeHeight(tall)).toBeGreaterThan(nodeHeight(node('Person B', 0)))
-    expect(nodeHeight(node('virtual:x', 0, { virtual: true }))).toBeLessThan(AVATAR_SIZE)
+    expect(nodeHeight(node('virtual:x', 0, { virtual: true }))).toBeLessThan(PICTURE_HEIGHT)
   })
 })
 
@@ -104,8 +111,11 @@ describe('link styles', () => {
   it('runs a direct link from the edge of one picture to the edge of the other', () => {
     const a = { id: 'a', x: 0, y: 0, width: 100, height: 120, generation: 0 }
     const b = { id: 'b', x: 300, y: 0, width: 100, height: 120, generation: 0 }
-    const half = AVATAR_SIZE / 2
-    expect(directPath(a, b)).toBe(`M ${50 + half + 2} ${half} L ${350 - half - 2} ${half}`)
+    const y = PICTURE_HEIGHT / 2
+    expect(directPath(a, b)).toBe(`M ${50 + PICTURE_WIDTH / 2 + 2} ${y} L ${350 - PICTURE_WIDTH / 2 - 2} ${y}`)
+    const below = { id: 'c', x: 0, y: 300, width: 100, height: 120, generation: 1 }
+    // Straight down: the line leaves through the bottom edge of the picture.
+    expect(directPath(a, below)).toBe(`M 50 ${y + PICTURE_HEIGHT / 2 + 2} L 50 ${300 + y - PICTURE_HEIGHT / 2 - 2}`)
   })
 })
 
@@ -114,5 +124,58 @@ describe('wrapText', () => {
     expect(wrapText('Value A, Value B', 9)).toEqual(['Value A,', 'Value B'])
     expect(wrapText('abcdefghij', 4)).toEqual(['abcd', 'efgh', 'ij'])
     expect(wrapText('')).toEqual([])
+  })
+})
+
+describe('couples', () => {
+  const link = (parent: string, child: string, base: string | null) => ({
+    parent, child, anchor: false, broken: false, base, label: null,
+    segment: { start: null, end: null, base },
+  })
+  const partner = (a: string, b: string) => ({
+    a, b, base: 'kin.partner.marriage', label: null, segment: { start: null, end: null },
+  })
+  const rows: Record<string, number> = { 'Person A': 0, 'Person B': 0, 'Person X': 1, 'Person C': 1, 'Person D': 1 }
+
+  it('joins partners with shared children of one nuance and leaves the rest alone', () => {
+    const groups = groupLinks({
+      nodes: [], virtual: [], overlays: [],
+      partners: [partner('Person A', 'Person B'), partner('Person A', 'Person X')],
+      parents: [
+        link('Person A', 'Person C', 'kin.parent.biological'),
+        link('Person B', 'Person C', 'kin.parent.biological'),
+        link('Person A', 'Person D', 'kin.parent.biological'),
+        link('Person B', 'Person D', 'kin.parent.step'),
+      ],
+    }, (id) => rows[id])
+    expect(groups.couples).toHaveLength(1)
+    expect(groups.couples[0].children.map((c) => c.child)).toEqual(['Person C'])
+    // Different nuances to the two parents: two lines of their own.
+    expect(groups.parents.map((l) => `${l.parent}>${l.child}`)).toEqual(['Person A>Person D', 'Person B>Person D'])
+    // Different rows: no couple, the straight line stays.
+    expect(groups.partners.map((p) => p.b)).toEqual(['Person X'])
+  })
+
+  it('draws the bow under both and the line to the child from its middle', () => {
+    const a = { id: 'a', x: 0, y: 0, width: 100, height: 120, generation: 0 }
+    const b = { id: 'b', x: 200, y: 0, width: 100, height: 100, generation: 0 }
+    const child = { id: 'c', x: 100, y: 200, width: 100, height: 120, generation: 1 }
+    const y = 120 + BOW_DROP
+    expect(bowPath(b, a, y)).toBe(`M 50 120 L 50 ${y} L 250 ${y} L 250 100`)
+    const middle = bowMiddle(a, b, y)
+    expect(middle).toEqual({ x: 150, y })
+    expect(stemPath(middle, child)).toBe(`M 150 ${y} L 150 168 L 150 168 L 150 200`)
+  })
+
+  it('lowers further bows of a row a little, staying above the children\'s lines', () => {
+    expect(bowY(100, 0)).toBe(100 + BOW_DROP)
+    expect(bowY(100, 1)).toBeGreaterThan(bowY(100, 0))
+    for (let i = 0; i < 10; i++) expect(bowY(100, i)).toBeLessThan(100 + 64 / 2)
+  })
+
+  it('reports the bottom of every row', () => {
+    const layout = layoutTree(sampleTree())
+    const a = layout.boxes.get('Person A')!
+    expect(layout.rowBottoms.get(-1)).toBeGreaterThanOrEqual(a.y + a.height)
   })
 })

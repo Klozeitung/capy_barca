@@ -63,11 +63,13 @@ class Tree:
                 PropertyValue.property_schema_id == uuid.UUID(self.schemas[role]["id"]),
             ))
 
-    def draw(self):
-        return self.client.post(f"/api/databases/{self.db}/views/{self.view}/family-tree")
+    def draw(self, settings=None):
+        body = {"settings": settings} if settings is not None else None
+        return self.client.post(f"/api/databases/{self.db}/views/{self.view}/family-tree", json=body)
 
-    def map(self):
-        return self.client.post(f"/api/databases/{self.db}/views/{self.view}/family-tree/map")
+    def map(self, settings=None):
+        body = {"settings": settings} if settings is not None else None
+        return self.client.post(f"/api/databases/{self.db}/views/{self.view}/family-tree/map", json=body)
 
 
 @pytest.fixture
@@ -216,3 +218,38 @@ def test_overlays_and_the_property_line_come_with_the_tree(tree, http_client):
     http_client.delete(f"/api/databases/{tree.db}/schemas/{text['id']}")
     view = next(v for v in http_client.get(f"/api/databases/{tree.db}/views").json()["views"] if v["id"] == tree.view)
     assert view["settings"]["familyTreeProperties"] == []
+
+
+def test_settings_sent_with_the_request_win_over_the_stored_ones(tree, http_client):
+    text = http_client.post(f"/api/databases/{tree.db}/schemas", json={"name": "Text A", "type": "text"}).json()
+    parent, child = tree.entry(), tree.entry()
+    tree.parents(child, parent)
+    http_client.put(
+        f"/api/databases/{tree.db}/entries/{child}/values/{text['id']}", json={"value": {"text": "Value A"}},
+    )
+    tree.settings(familyTreeRootId=parent)
+
+    # Not saved yet: the request carries the settings the client shows.
+    body = tree.draw({"familyTreeRootId": child, "familyTreeProperties": [text["id"]]}).json()
+    nodes = {n["id"]: n for n in body["nodes"]}
+    assert body["root"] == child
+    assert nodes[child]["properties"][0]["tokens"] == [{"text": "Value A"}]
+    # Keys left out are unset, the stored root does not come back.
+    assert tree.draw({}).json()["root_valid"] is False
+    # Nothing was stored.
+    assert tree.draw().json()["root"] == parent
+
+
+def test_settings_in_the_request_are_validated(tree):
+    assert tree.draw({"colOrder": []}).status_code == 422
+    assert tree.draw({"familyTreeScope": "everyone"}).status_code == 422
+    assert tree.map({}).status_code == 422
+
+
+def test_the_mapper_works_with_the_settings_of_the_request(tree):
+    parent, child_a, child_b = (tree.entry() for _ in range(3))
+    tree.parents(child_a, parent)
+    tree.parents(child_b, parent)
+    resp = tree.map({"familyTreeRootId": parent})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["added"] == 1

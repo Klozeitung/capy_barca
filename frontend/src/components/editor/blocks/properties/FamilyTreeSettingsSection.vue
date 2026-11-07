@@ -200,7 +200,7 @@ async function runMapper(): Promise<void> {
   mapping.value = true
   mapperFailed.value = false
   try {
-    mapperResult.value = await runFamilyTreeMapper(props.databaseId, props.view.id)
+    mapperResult.value = await runFamilyTreeMapper(props.databaseId, props.view)
   } catch {
     mapperFailed.value = true
     mapperResult.value = null

@@ -6,9 +6,14 @@
  *
  * The drawing in the page takes its colours and fonts from the stylesheet
  * (theme variables) and its profile pictures from the server. A file opened
- * elsewhere has neither, so the export copies the computed style of every
- * element into attributes and embeds every picture as a data URL. A picture
- * that cannot be loaded is left out; its node keeps the placeholder circle.
+ * elsewhere has neither, so the export copies the computed style into
+ * attributes and embeds every picture as a data URL. A picture that cannot
+ * be loaded is left out; its node keeps the placeholder.
+ *
+ * To keep the file small, the root carries every style property and each
+ * element below only those that differ from its parent, since SVG inherits
+ * them; opacity, which multiplies instead, stays wherever it is not 1.
+ * Classes and the attributes Vue adds for scoped styles are dropped.
  */
 import { apiClient } from '@/api/client'
 
@@ -66,14 +71,25 @@ export async function standaloneSvg(svg: SVGSVGElement, deps: ExportDeps = brows
   const copy = svg.cloneNode(true) as SVGSVGElement
   const originals = [svg, ...Array.from(svg.querySelectorAll('*'))]
   const copies = [copy, ...Array.from(copy.querySelectorAll('*'))]
+  const computed = new Map<Element, Map<string, string>>()
   originals.forEach((original, index) => {
     const target = copies[index]
     const style = deps.style(original)
+    const values = new Map<string, string>()
+    const inherited = original === svg ? undefined : computed.get(original.parentElement as Element)
     for (const property of INLINED_PROPERTIES) {
-      const value = style.getPropertyValue(property)
-      if (value) target.setAttribute(property, value.trim())
+      const value = style.getPropertyValue(property).trim()
+      if (!value) continue
+      values.set(property, value)
+      // Opacity is not inherited but multiplied, so it goes on every element that has one.
+      const needed = property === 'opacity' ? value !== '1' : inherited?.get(property) !== value
+      if (needed || original === svg) target.setAttribute(property, value)
     }
+    computed.set(original, values)
     target.removeAttribute('class')
+    for (const name of target.getAttributeNames()) {
+      if (name.startsWith('data-v-')) target.removeAttribute(name)
+    }
   })
   for (const skipped of Array.from(copy.querySelectorAll('[data-export="skip"]'))) skipped.remove()
 

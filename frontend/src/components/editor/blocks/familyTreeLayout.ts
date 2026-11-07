@@ -24,15 +24,44 @@
  * Coordinates
  * -----------
  * Rows are placed top to bottom, each as high as its highest node, so the
- * profile pictures of a generation share one height. Within a row a node
- * moves under the middle of its parents where there is room. People outside
- * the family who come in through an overlay stand in a column on the right.
+ * profile pictures of a generation share one height. Pictures are 3:4
+ * portrait rectangles. Within a row a node moves under the middle of its
+ * parents where there is room. People outside the family who come in
+ * through an overlay stand in a column on the right.
+ *
+ * Couples
+ * -------
+ * Partners in one row who have children shown together are joined by a bow
+ * under both of them, in the style of their partnership, and the line to
+ * those children leaves from the middle of the bow (``groupLinks``). A child
+ * whose links to the two differ in nuance keeps two separate lines, so no
+ * nuance is lost; partners without shared children keep the straight line
+ * between their pictures.
  */
 import type { FamilyTree, TreeNode, TreeToken } from '@/composables/useFamilyTree'
+import type { ParentLinkAt, PartnerLinkAt, TreeAt } from './familyTreeAt'
 
 export const NODE_WIDTH = 168
-export const AVATAR_SIZE = 56
-export const VIRTUAL_SIZE = 28
+export const PICTURE_WIDTH = 48
+export const PICTURE_HEIGHT = 64
+export const VIRTUAL_WIDTH = 21
+export const VIRTUAL_HEIGHT = 28
+/** Corner radius of pictures and placeholders. */
+export const PICTURE_RADIUS = 4
+/** How far a couple's bow runs below the lowest node of its row. */
+export const BOW_DROP = 14
+/**
+ * Further couples of a row run a little lower each, so two bows that share
+ * a person (someone with children by two partners) stay apart; at most
+ * ``BOW_LEVELS`` levels, which keeps every bow above the children's lines.
+ */
+export const BOW_STEP = 5
+export const BOW_LEVELS = 4
+
+/** The height of the bow of the *index*-th couple of a row whose nodes end at *bottom*. */
+export function bowY(bottom: number, index: number): number {
+  return bottom + BOW_DROP + BOW_STEP * (index % BOW_LEVELS)
+}
 export const H_GAP = 28
 export const V_GAP = 64
 export const LINE_HEIGHT = 15
@@ -51,6 +80,8 @@ export interface Box {
 
 export interface TreeLayout {
   boxes: Map<string, Box>
+  /** Lowest point of each row's nodes, by generation. */
+  rowBottoms: Map<number, number>
   width: number
   height: number
 }
@@ -79,14 +110,14 @@ export function longestPropertyText(node: TreeNode): number {
 
 /** Height of a node: picture, title, life span and the property line. */
 export function nodeHeight(node: TreeNode): number {
-  if (node.virtual) return VIRTUAL_SIZE
+  if (node.virtual) return VIRTUAL_HEIGHT
   const title = lines((node.title ?? '').length)
   const properties = longestPropertyText(node)
-  return AVATAR_SIZE + 6 + title * LINE_HEIGHT + LINE_HEIGHT + (properties ? lines(properties) * LINE_HEIGHT : 0) + 4
+  return PICTURE_HEIGHT + 6 + title * LINE_HEIGHT + LINE_HEIGHT + (properties ? lines(properties) * LINE_HEIGHT : 0) + 4
 }
 
 function nodeWidth(node: TreeNode): number {
-  return node.virtual ? VIRTUAL_SIZE : NODE_WIDTH
+  return node.virtual ? VIRTUAL_WIDTH : NODE_WIDTH
 }
 
 function sortKey(node: TreeNode): string {
@@ -180,6 +211,7 @@ export function layoutTree(tree: FamilyTree): TreeLayout {
   const byId = new Map(tree.nodes.map((n) => [n.id, n]))
   const rows = orderRows(tree)
   const boxes = new Map<string, Box>()
+  const rowBottoms = new Map<number, number>()
   const parentsOf = new Map<string, string[]>()
   for (const edge of [...tree.parent_edges, ...tree.virtual_edges]) {
     parentsOf.set(edge.child, [...(parentsOf.get(edge.child) ?? []), edge.parent])
@@ -199,10 +231,11 @@ export function layoutTree(tree: FamilyTree): TreeLayout {
       const wanted = mean(parentCenters)
       const x = Math.max(right + H_GAP, wanted === null ? right + H_GAP : wanted - width / 2)
       // A virtual parent sits level with the pictures of its row.
-      const top = node.virtual ? y + (AVATAR_SIZE - VIRTUAL_SIZE) / 2 : y
+      const top = node.virtual ? y + (PICTURE_HEIGHT - VIRTUAL_HEIGHT) / 2 : y
       boxes.set(id, { id, x, y: top, width, height: nodeHeight(node), generation })
       right = x + width
     }
+    rowBottoms.set(generation, y + height)
     y += height + V_GAP
   }
 
@@ -222,7 +255,7 @@ export function layoutTree(tree: FamilyTree): TreeLayout {
     width = x + NODE_WIDTH
     y = Math.max(y, top + V_GAP)
   }
-  return { boxes, width, height: Math.max(0, y - V_GAP) }
+  return { boxes, rowBottoms, width, height: Math.max(0, y - V_GAP) }
 }
 
 // ─── Links ───────────────────────────────────────────────────────────────────
@@ -289,7 +322,16 @@ export function nodeBottom(box: Box): { x: number; y: number } {
 
 /** Middle of a node's picture, where partner and overlay lines meet. */
 export function pictureCenter(box: Box): { x: number; y: number } {
-  return { x: box.x + box.width / 2, y: box.y + Math.min(AVATAR_SIZE, box.height) / 2 }
+  return { x: box.x + box.width / 2, y: box.y + Math.min(PICTURE_HEIGHT, box.height) / 2 }
+}
+
+/** Distance from a picture's centre to its edge in the direction (*ux*, *uy*). */
+function edgeDistance(box: Box, ux: number, uy: number): number {
+  const halfWidth = Math.min(PICTURE_WIDTH, box.width) / 2
+  const halfHeight = Math.min(PICTURE_HEIGHT, box.height) / 2
+  const alongX = ux === 0 ? Infinity : halfWidth / Math.abs(ux)
+  const alongY = uy === 0 ? Infinity : halfHeight / Math.abs(uy)
+  return Math.min(alongX, alongY)
 }
 
 /**
@@ -314,12 +356,85 @@ export function directPath(a: Box, b: Box): string {
   const dx = to.x - from.x
   const dy = to.y - from.y
   const length = Math.hypot(dx, dy)
-  const inset = AVATAR_SIZE / 2 + 2
-  if (length <= inset * 2) return `M ${from.x} ${from.y} L ${to.x} ${to.y}`
+  if (length === 0) return `M ${from.x} ${from.y} L ${to.x} ${to.y}`
   const ux = dx / length
   const uy = dy / length
+  const start = edgeDistance(a, ux, uy) + 2
+  const end = edgeDistance(b, ux, uy) + 2
+  if (length <= start + end) return `M ${from.x} ${from.y} L ${to.x} ${to.y}`
   const round = (n: number) => Math.round(n * 10) / 10
-  return `M ${round(from.x + ux * inset)} ${round(from.y + uy * inset)} L ${round(to.x - ux * inset)} ${round(to.y - uy * inset)}`
+  return `M ${round(from.x + ux * start)} ${round(from.y + uy * start)} L ${round(to.x - ux * end)} ${round(to.y - uy * end)}`
+}
+
+/**
+ * The bow joining partners with shared children: down from below each of
+ * them to *y*, under the row, and across.
+ */
+export function bowPath(a: Box, b: Box, y: number): string {
+  const left = a.x <= b.x ? a : b
+  const right = left === a ? b : a
+  const from = nodeBottom(left)
+  const to = nodeBottom(right)
+  return `M ${from.x} ${from.y} L ${from.x} ${y} L ${to.x} ${y} L ${to.x} ${to.y}`
+}
+
+/** The middle of the bow between *a* and *b*, where the children's line starts. */
+export function bowMiddle(a: Box, b: Box, y: number): { x: number; y: number } {
+  return { x: (nodeBottom(a).x + nodeBottom(b).x) / 2, y }
+}
+
+/** The line from a point (the middle of a bow) across above the child's row down to the child. */
+export function stemPath(from: { x: number; y: number }, child: Box): string {
+  const to = { x: child.x + child.width / 2, y: child.y }
+  const across = to.y - V_GAP / 2
+  if (across <= from.y) return `M ${from.x} ${from.y} L ${to.x} ${to.y}`
+  return `M ${from.x} ${from.y} L ${from.x} ${across} L ${to.x} ${across} L ${to.x} ${to.y}`
+}
+
+// ─── Grouping links ──────────────────────────────────────────────────────────
+
+export interface CoupleGroup {
+  partner: PartnerLinkAt
+  /** The children the couple share, each with its two links of one nuance. */
+  children: { child: string; links: [ParentLinkAt, ParentLinkAt] }[]
+}
+
+export interface LinkGroups {
+  couples: CoupleGroup[]
+  /** Partnerships without shared children shown: a straight line. */
+  partners: PartnerLinkAt[]
+  /** Parent links drawn on their own. */
+  parents: ParentLinkAt[]
+}
+
+/**
+ * The links of *state* sorted into couples with their shared children,
+ * plain partnerships and single parent links (see the module). Partners
+ * form a couple only within one row; *generation* tells the rows.
+ */
+export function groupLinks(state: TreeAt, generation: (id: string) => number | null | undefined): LinkGroups {
+  const byPair = new Map<string, ParentLinkAt>()
+  for (const link of state.parents) byPair.set(`${link.parent}|${link.child}`, link)
+  const used = new Set<ParentLinkAt>()
+  const couples: CoupleGroup[] = []
+  const partners: PartnerLinkAt[] = []
+  for (const partner of state.partners) {
+    const row = generation(partner.a)
+    const children: CoupleGroup['children'] = []
+    if (row !== null && row !== undefined && row === generation(partner.b)) {
+      for (const link of state.parents) {
+        if (link.parent !== partner.a || used.has(link) || link.broken) continue
+        const other = byPair.get(`${partner.b}|${link.child}`)
+        if (!other || used.has(other) || other.broken || other.base !== link.base) continue
+        children.push({ child: link.child, links: [link, other] })
+        used.add(link)
+        used.add(other)
+      }
+    }
+    if (children.length) couples.push({ partner, children })
+    else partners.push(partner)
+  }
+  return { couples, partners, parents: state.parents.filter((link) => !used.has(link)) }
 }
 
 /** The midpoint of a path built by the functions above, for marks and labels. */
