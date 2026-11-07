@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import {
   BOW_DROP,
+  MIN_DROP,
   PICTURE_HEIGHT,
+  TRACK_STEP,
+  V_GAP,
+  assignTracks,
+  routeAcross,
   PICTURE_WIDTH,
   bowMiddle,
   bowPath,
@@ -177,5 +182,100 @@ describe('couples', () => {
     const layout = layoutTree(sampleTree())
     const a = layout.boxes.get('Person A')!
     expect(layout.rowBottoms.get(-1)).toBeGreaterThanOrEqual(a.y + a.height)
+  })
+})
+
+describe('channel routing', () => {
+  const item = (net: string, sourceX: number, dropX: number, row = 1) => ({
+    key: `${net}>${dropX}`, net, row, sourceX, dropX,
+  })
+
+  it('keeps one track when lines of different nets stay apart', () => {
+    const { tracks, count } = assignTracks([item('A', 0, 0), item('A', 0, 100), item('B', 400, 500)])
+    expect(count).toBe(1)
+    expect(tracks.get('1|A')).toBe(0)
+    expect(tracks.get('1|B')).toBe(0)
+  })
+
+  it('puts touching runs on different tracks and a source above another end higher', () => {
+    // Net A runs from 100 to 300 and ends at 300, where net B leaves from.
+    const { tracks, count } = assignTracks([item('A', 100, 100), item('A', 100, 300), item('B', 300, 500)])
+    expect(count).toBe(2)
+    expect(tracks.get('1|B')).toBeLessThan(tracks.get('1|A')!)
+  })
+
+  it('still assigns every net when the constraints form a cycle', () => {
+    const { tracks, count } = assignTracks([item('A', 100, 300), item('B', 300, 100)])
+    expect(tracks.size).toBe(2)
+    expect(count).toBe(2)
+    expect(tracks.get('1|A')).not.toBe(tracks.get('1|B'))
+  })
+
+  it('routes each row on its own', () => {
+    const { count } = assignTracks([item('A', 0, 200, 1), item('B', 100, 300, 2)])
+    expect(count).toBe(1)
+  })
+
+  it('places tracks in the channel and packs them when more are needed than reserved', () => {
+    const channels = new Map([[1, { top: 132, bottom: 164 + TRACK_STEP, tracks: 2 }]])
+    const across = routeAcross([item('A', 100, 300), item('B', 300, 500)], channels)
+    expect(across.get('B>500')).toBe(132)
+    expect(across.get('A>300')).toBe(132 + TRACK_STEP)
+
+    const tight = new Map([[1, { top: 132, bottom: 164, tracks: 1 }]])
+    const packed = routeAcross([item('A', 100, 300), item('B', 300, 500), item('C', 500, 700)], tight)
+    const heights = [...packed.values()]
+    expect(new Set(heights).size).toBe(3)
+    for (const h of heights) expect(h).toBeLessThanOrEqual(164 - MIN_DROP)
+    // Outside any channel: no height, the default route.
+    expect(routeAcross([item('A', 0, 100, 7)], tight).size).toBe(0)
+  })
+
+  it('separates a parent above another parent\'s child and widens only that gap', () => {
+    // Person A has children Person C and Person D; Person D stands right
+    // under Person B, whose child is Person E.
+    const t = tree({
+      nodes: [
+        node('Person A', 0, { birth: '2000-01-01T00:00' }),
+        node('Person B', 0, { birth: '2001-01-01T00:00' }),
+        node('Person C', 1, { birth: '2020-01-01T00:00' }),
+        node('Person D', 1, { birth: '2021-01-01T00:00' }),
+        node('Person E', 1, { birth: '2022-01-01T00:00' }),
+      ],
+      parent_edges: [['Person A', 'Person C'], ['Person A', 'Person D'], ['Person B', 'Person E']].map(([parent, child]) => ({
+        parent, child, anchor: true, broken: false,
+        segments: [{ start: null, end: null, base: 'kin.parent.biological', label: null }],
+      })),
+    })
+    const layout = layoutTree(t)
+    const b = layout.boxes.get('Person B')!
+    const d = layout.boxes.get('Person D')!
+    // The case to solve: the second child stands under the other parent.
+    expect(d.x + d.width / 2).toBeCloseTo(b.x + b.width / 2)
+    const channel = layout.channels.get(1)!
+    expect(channel.tracks).toBe(2)
+    expect(channel.bottom - channel.top).toBe(V_GAP / 2 + TRACK_STEP)
+    expect(d.y).toBe(channel.bottom)
+
+    const items = [
+      { key: 'ad', net: 'A', row: 1, sourceX: layout.boxes.get('Person A')!.x + NODE_WIDTH / 2, dropX: d.x + d.width / 2 },
+      { key: 'be', net: 'B', row: 1, sourceX: b.x + b.width / 2, dropX: layout.boxes.get('Person E')!.x + NODE_WIDTH / 2 },
+    ]
+    const across = routeAcross(items, layout.channels)
+    expect(across.get('be')).toBeLessThan(across.get('ad')!)
+  })
+
+  it('keeps the gap of a channel with a single track', () => {
+    const layout = layoutTree(sampleTree())
+    for (const channel of layout.channels.values()) {
+      if (channel.tracks === 1) expect(channel.bottom - channel.top).toBe(V_GAP / 2)
+    }
+    expect(layout.channels.size).toBeGreaterThan(0)
+  })
+
+  it('runs a line across at the height it is given', () => {
+    const parent = { id: 'p', x: 0, y: 0, width: 100, height: 120, generation: 0 }
+    const child = { id: 'c', x: 200, y: 200, width: 100, height: 120, generation: 1 }
+    expect(parentPath(parent, child, 150)).toBe('M 50 120 L 50 150 L 250 150 L 250 200')
   })
 })

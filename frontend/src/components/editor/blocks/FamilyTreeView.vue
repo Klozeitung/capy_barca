@@ -26,7 +26,8 @@
  *
  * Links
  * -----
- * Parent links run from below the parent across above the child's row.
+ * Parent links run from below the parent across above the child's row, on
+ * a track of their own where they would meet another line (``routeAcross``).
  * Partners with children shown together hang on a bow under both of them,
  * and the line to those children leaves from its middle; other partnerships
  * connect the pictures (``groupLinks``). Pictures are 3:4 rectangles. The style follows the nuance
@@ -56,15 +57,17 @@ import {
   directPath,
   groupLinks,
   layoutTree,
+  nodeBottom,
   overlayColor,
-  parentPath,
   parentStyle,
   partnerStyle,
   pathMiddle,
+  routeAcross,
   stemPath,
   wrapText,
   type Box,
   type LinkStyle,
+  type RouteItem,
 } from './familyTreeLayout'
 import { downloadSvg, standaloneSvg, svgFileName } from './familyTreeExport'
 
@@ -186,24 +189,51 @@ function parentTitle(link: { broken: boolean; label: string | null }): string {
   return link.broken ? t('db.familyTree.brokenLink') : link.label ?? t('db.familyTree.unspecified')
 }
 
-/** Parent links, bows of couples with the lines to their children, partnerships. */
-const familyLinks = computed<DrawnLink[]>(() => {
+interface PendingLine {
+  key: string
+  net: string
+  from: { x: number; y: number }
+  child: Box
+}
+
+/** A line that runs across a channel, for the routing below. */
+function routeItem(line: PendingLine): RouteItem | null {
+  if (line.child.generation == null) return null
+  return { key: line.key, net: line.net, row: line.child.generation, sourceX: line.from.x, dropX: line.child.x + line.child.width / 2 }
+}
+
+/**
+ * Every link of the instant: lines to children (parent links, the lines from
+ * the bows, links of virtual parents) routed together through their
+ * channels, bows and partnerships.
+ */
+const drawing = computed(() => {
   const current = state.value
-  if (!current) return []
+  const family: DrawnLink[] = []
+  const virtual: { key: string; path: string }[] = []
+  if (!current) return { family, virtual }
   const groups = groupLinks(current, (id) => box(id)?.generation)
-  const result: DrawnLink[] = []
+
+  const lines: (PendingLine & { make: (path: string) => void })[] = []
   for (const link of groups.parents) {
     const parent = box(link.parent)
     const child = box(link.child)
     if (!parent || !child) continue
-    result.push({
+    lines.push({
       key: `p:${link.parent}:${link.child}`,
-      path: parentPath(parent, child),
-      style: parentStyle(link.base),
-      broken: link.broken,
-      title: parentTitle(link),
+      net: `p:${link.parent}`,
+      from: nodeBottom(parent),
+      child,
+      make: (path) => family.push({
+        key: `p:${link.parent}:${link.child}`,
+        path,
+        style: parentStyle(link.base),
+        broken: link.broken,
+        title: parentTitle(link),
+      }),
     })
   }
+  const bows: DrawnLink[] = []
   const couplesInRow = new Map<number, number>()
   for (const couple of groups.couples) {
     const a = box(couple.partner.a)
@@ -217,15 +247,22 @@ const familyLinks = computed<DrawnLink[]>(() => {
     for (const { child, links } of couple.children) {
       const target = box(child)
       if (!target) continue
-      result.push({
-        key: `s:${couple.partner.a}:${couple.partner.b}:${child}`,
-        path: stemPath(middle, target),
-        style: parentStyle(links[0].base),
-        broken: false,
-        title: parentTitle(links[0]),
+      const key = `s:${couple.partner.a}:${couple.partner.b}:${child}`
+      lines.push({
+        key,
+        net: `c:${couple.partner.a}:${couple.partner.b}`,
+        from: middle,
+        child: target,
+        make: (path) => family.push({
+          key,
+          path,
+          style: parentStyle(links[0].base),
+          broken: false,
+          title: parentTitle(links[0]),
+        }),
       })
     }
-    result.push({
+    bows.push({
       key: `b:${couple.partner.a}:${couple.partner.b}`,
       path: bowPath(a, b, y),
       style: partnerStyle(couple.partner.base),
@@ -233,11 +270,25 @@ const familyLinks = computed<DrawnLink[]>(() => {
       title: couple.partner.label ?? t('db.familyTree.unspecified'),
     })
   }
+  for (const link of current.virtual) {
+    const parent = box(link.parent)
+    const child = box(link.child)
+    if (!parent || !child) continue
+    const key = `v:${link.parent}:${link.child}`
+    lines.push({ key, net: `v:${link.parent}`, from: nodeBottom(parent), child, make: (path) => virtual.push({ key, path }) })
+  }
+
+  const across = routeAcross(
+    lines.map(routeItem).filter((item): item is RouteItem => item !== null),
+    layout.value?.channels ?? new Map(),
+  )
+  for (const line of lines) line.make(stemPath(line.from, line.child, across.get(line.key)))
+  family.push(...bows)
   for (const link of groups.partners) {
     const a = box(link.a)
     const b = box(link.b)
     if (!a || !b) continue
-    result.push({
+    family.push({
       key: `r:${link.a}:${link.b}`,
       path: directPath(a, b),
       style: partnerStyle(link.base),
@@ -245,16 +296,13 @@ const familyLinks = computed<DrawnLink[]>(() => {
       title: link.label ?? t('db.familyTree.unspecified'),
     })
   }
-  return result
+  return { family, virtual }
 })
 
-const virtualLinks = computed(() =>
-  (state.value?.virtual ?? []).flatMap((link) => {
-    const parent = box(link.parent)
-    const child = box(link.child)
-    return parent && child ? [{ key: `v:${link.parent}:${link.child}`, path: parentPath(parent, child) }] : []
-  }),
-)
+/** Parent links, bows of couples with the lines to their children, partnerships. */
+const familyLinks = computed<DrawnLink[]>(() => drawing.value.family)
+
+const virtualLinks = computed(() => drawing.value.virtual)
 
 const overlayLinks = computed(() =>
   (state.value?.overlays ?? []).flatMap((link, index) => {
