@@ -17,6 +17,8 @@
  *  api      – API        (admin-only: local AI and custom printer, see
  *                         ApiSettingsSection)
  *  icons    – Icons      (admin-only: uploaded icons, see CustomIconsSection)
+ *  system   – System defaults (admin-only: nuances of the family tree, see
+ *                         SystemDefaultsSection)
  */
 import { ref, computed, watch, onMounted } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -32,6 +34,7 @@ import { apiClient, ApiError } from '@/api/client'
 import type { SupportedLocale } from '@/plugins/i18n'
 import ApiSettingsSection from './ApiSettingsSection.vue'
 import CustomIconsSection from './CustomIconsSection.vue'
+import SystemDefaultsSection from './SystemDefaultsSection.vue'
 
 const { t } = useI18n()
 const { closeSettings } = useSettingsModal()
@@ -493,6 +496,27 @@ function handleBackdropClick(e: MouseEvent): void {
               />
             </button>
 
+            <button
+              class="settings-nav__item"
+              :class="{
+                'settings-nav__item--active': activeSection === 'system',
+                'settings-nav__item--locked': !auth.isAdmin,
+              }"
+              :disabled="!auth.isAdmin"
+              :title="!auth.isAdmin ? t('settings.usersAdminOnly') : undefined"
+              @click="auth.isAdmin && (activeSection = 'system')"
+            >
+              <Icon icon="mdi:tune-variant" width="15" height="15" class="settings-nav__icon" />
+              <span>{{ t('settings.systemDefaults') }}</span>
+              <Icon
+                v-if="!auth.isAdmin"
+                icon="mdi:lock-outline"
+                width="12"
+                height="12"
+                class="settings-nav__lock"
+              />
+            </button>
+
           </nav>
 
           <!-- Right: content -->
@@ -930,6 +954,12 @@ function handleBackdropClick(e: MouseEvent): void {
             <template v-else-if="activeSection === 'icons'">
               <h2 class="settings-view__heading">{{ t('settings.icons') }}</h2>
               <CustomIconsSection />
+            </template>
+
+            <!-- ── System defaults ─────────────────────────────────────── -->
+            <template v-else-if="activeSection === 'system'">
+              <h2 class="settings-view__heading">{{ t('settings.systemDefaults') }}</h2>
+              <SystemDefaultsSection />
             </template>
 
           </div>

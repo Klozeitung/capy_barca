@@ -42,6 +42,12 @@ A date property a calendar view uses carries ``config.calendarDate``, which
 only the server sets (:func:`keep_server_owned_config`). It cannot be
 deleted, retyped or given a timeline (:func:`check_calendar_date_lock`).
 
+Family set
+----------
+Properties with a reserved name of the family set carry markers only the
+server sets (``app.blocks.kinship``); the API returns the relations among
+them with the system nuances as their options (:func:`client_config`).
+
 Alerts
 ------
 A database has at most one ``alerts`` property
@@ -62,6 +68,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
+from app.blocks import kinship
 from app.blocks import options as opts
 from app.blocks import relation_lock
 from app.blocks import repository as repo
@@ -329,14 +336,15 @@ def check_calendar_date_lock(
 def keep_server_owned_config(old_config: Optional[dict], new_config: Optional[dict]) -> Optional[dict]:
     """
     *new_config* with the keys only the server sets carried over from
-    *old_config*: the calendar mark is the views' business, not the client's.
+    *old_config*: the calendar mark is the views' business, the family set
+    markers the repository's (``app.blocks.kinship``), neither the client's.
     """
     if new_config is None:
         return None
     result = {k: v for k, v in new_config.items() if k != views.CALENDAR_DATE_KEY}
     if (old_config or {}).get(views.CALENDAR_DATE_KEY):
         result[views.CALENDAR_DATE_KEY] = True
-    return result
+    return kinship.keep_server_owned_keys(old_config, result)
 
 
 # ─── Creation ─────────────────────────────────────────────────────────────────
@@ -437,15 +445,19 @@ def unbind_formula_references(db: Session, deleted: PropertySchema) -> None:
             repo.update_schema(db, schema, config=_with_expression(schema, unbound))
 
 
-def client_config(schema, schemas: list) -> Optional[dict]:
+def client_config(
+    schema, schemas: list, nuances: Optional[dict[str, list[dict]]] = None,
+) -> Optional[dict]:
     """
     *schema*'s config as the API returns it: a formula's references as the
-    names of *schemas* (the properties of its database). The stored config
-    is not touched.
+    names of *schemas* (the properties of its database), and a relation of
+    the family set with its system nuances from *nuances*, a
+    ``kinship.catalogue`` in the caller's language. The stored config is not
+    touched.
     """
     expression = _expression(schema)
     if not expression:
-        return schema.config
+        return kinship.with_system_nuances(schema.config, nuances)
     return _with_expression(schema, formula_expression_with_names(expression, schemas))
 
 
@@ -453,7 +465,8 @@ def portable_config(db: Session, schema) -> Optional[dict]:
     """
     *schema*'s config for use in another database: a formula's references as
     names, which the target database binds to its own properties. The calendar
-    mark stays behind; it belongs to the views of the database it was set in.
+    mark stays behind; it belongs to the views of the database it was set in,
+    and so do the family set markers, which the target database sets anew.
     """
     if not _expression(schema):
         config = schema.config
@@ -461,7 +474,7 @@ def portable_config(db: Session, schema) -> Optional[dict]:
         config = client_config(schema, repo.list_schemas(db, schema.database_id))
     if isinstance(config, dict) and views.CALENDAR_DATE_KEY in config:
         config = {k: v for k, v in config.items() if k != views.CALENDAR_DATE_KEY}
-    return config
+    return kinship.strip_markers(config)
 
 
 def recompute_entries(db: Session, database_id: uuid.UUID) -> None:

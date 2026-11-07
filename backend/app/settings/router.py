@@ -6,6 +6,9 @@ Settings (admin only)
 ``GET  /api/settings/api``               current settings, secrets reported as set or not
 ``PUT  /api/settings/api``               replace the settings
 ``POST /api/settings/api/printer-test``  send a test text to the stored printer
+``GET  /api/settings/kinship-nuances``   system nuances of the family set and their aliases
+``PUT  /api/settings/kinship-nuances``   replace the aliases
+``GET  /api/settings/kinship-nuances/{alias_id}/usage``  entries using an alias
 
 Quick Print (any signed-in account)
 -----------------------------------
@@ -20,13 +23,23 @@ frontend then offers the text as a download instead.
 
 Secret values are never returned. A header argument or the local AI key sent
 back with ``null`` keeps what is stored.
+
+Family set nuances
+------------------
+The base nuances of the family set are fixed (``app.blocks.kinship``); an
+administrator adds aliases to them. Deleting an alias moves every value that
+used it to its base nuance, or removes it where the group has none (siblings);
+filters and automations that tested it lose that condition. Every database
+holding a relation of the set is told that its properties changed.
 """
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from app.blocks import kinship, options, views
+from app.blocks.database_events import emit_entries_updated_for, emit_schema_updated
 from app.blocks.models import Block
 from app.session.deps import get_current_user, get_db, require_admin, require_block_access
 from app.settings import custom_printer
@@ -37,6 +50,12 @@ from app.settings.model import (
     ApiSettingsOut,
     AppSetting,
     CustomPrinterOut,
+    KinshipAliasOut,
+    KinshipGroupOut,
+    KinshipNuanceOut,
+    KinshipNuancesIn,
+    KinshipNuancesOut,
+    KinshipUsage,
     LocalAiOut,
     PrinterArgumentOut,
     PrintRequest,
@@ -193,6 +212,106 @@ def test_printer(
     return custom_printer.send(
         prepared, success=lambda status: status == 200, transport=_transport,
     )
+
+
+# ─── Family set nuances ───────────────────────────────────────────────────────
+
+
+def _kinship_out(db: Session, user: User, request: Request) -> KinshipNuancesOut:
+    language = kinship.language_for(user.language, request.headers.get("accept-language"))
+    aliases = kinship.load_aliases(db)
+    return KinshipNuancesOut(groups=[
+        KinshipGroupOut(
+            group=group,
+            bases=[KinshipNuanceOut(**o) for o in kinship.base_options(group, language)],
+            aliases=[
+                KinshipAliasOut(id=a["id"], base=a["base"], label=a["label"])
+                for a in aliases if a["group"] == group
+            ],
+        )
+        for group in kinship.GROUPS
+    ])
+
+
+def _remove_aliases(db: Session, previous: list[dict], current: list[dict]) -> set:
+    """
+    Move the values of deleted aliases to their base nuance and drop the
+    filter and automation conditions that tested them. Returns the databases
+    whose entry values changed.
+    """
+    changed = set()
+    for group, mapping in kinship.replacements_for_removed(previous, current).items():
+        removed = set(mapping)
+        for schema in kinship.marked_relations(db, group):
+            if options.rewrite_nuance_values(db, schema, mapping):
+                changed.add(schema.database_id)
+            views.forget_options_in_views(db, schema.database_id, schema.id, removed)
+            options.purge_automations(db, schema.id, removed)
+    return changed
+
+
+@settings_router.get("/kinship-nuances", response_model=KinshipNuancesOut)
+def get_kinship_nuances(
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """The system nuances of the family set and their aliases (admin only)."""
+    return _kinship_out(db, admin, request)
+
+
+@settings_router.put("/kinship-nuances", response_model=KinshipNuancesOut)
+def put_kinship_nuances(
+    payload: KinshipNuancesIn,
+    request: Request,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Replace the aliases (admin only) and return the nuances as stored. An
+    alias left out is deleted (see the module docstring); 422 for an alias
+    without label, with a label its group has already, with a missing or
+    foreign base nuance, or that moves to another group.
+    """
+    previous = kinship.load_aliases(db)
+    current = kinship.normalize_aliases(
+        [a.model_dump() for a in payload.aliases], previous,
+    )
+    try:
+        changed = _remove_aliases(db, previous, current)
+        kinship.store_aliases(db, current)
+        databases = {
+            schema.database_id
+            for group in kinship.GROUPS
+            for schema in kinship.marked_relations(db, group)
+        }
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    for database_id in sorted(databases, key=str):
+        emit_schema_updated(db, database_id)
+    emit_entries_updated_for(db, sorted(changed, key=str))
+    return _kinship_out(db, admin, request)
+
+
+@settings_router.get("/kinship-nuances/{alias_id}/usage", response_model=KinshipUsage)
+def get_kinship_nuance_usage(
+    alias_id: str,
+    _admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Count the active entries that use an alias, across all databases (admin
+    only). Pre-flight for deleting it.
+    """
+    alias = next((a for a in kinship.load_aliases(db) if a["id"] == alias_id), None)
+    if alias is None:
+        raise HTTPException(status_code=404, detail="Unknown nuance")
+    return KinshipUsage(entries=sum(
+        options.count_usage(db, schema, alias_id)
+        for schema in kinship.marked_relations(db, alias["group"])
+    ))
 
 
 # ─── Quick Print ──────────────────────────────────────────────────────────────

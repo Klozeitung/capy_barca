@@ -16,7 +16,7 @@ from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.orm import Session, aliased
 
 from app import timezones
-from app.blocks import options
+from app.blocks import kinship, options
 from app.blocks.models import (
     Block,
     BlockEvent,
@@ -1225,6 +1225,9 @@ def create_schema(
     surface in views that were arranged without it. *visible_in_view_id* names
     the one view, if any, where it should appear right away: the view it was
     added from.
+
+    A property that takes a reserved name of the family set and fits its role
+    is marked for it (see ``app.blocks.kinship``).
     """
     from app.blocks import views  # local import — views imports this module
 
@@ -1238,6 +1241,7 @@ def create_schema(
     db.add(schema)
     db.flush()
     db.refresh(schema)
+    kinship.apply_markers(db, schema)
     views.hide_schema_in_views(db, database_id, schema.id, except_view_id=visible_in_view_id)
     return schema
 
@@ -1251,7 +1255,11 @@ def update_schema(
     config: Optional[dict] = None,
     position: Optional[float] = None,
 ) -> PropertySchema:
-    """Apply the supplied keyword arguments to *schema* and flush the change."""
+    """
+    Apply the supplied keyword arguments to *schema* and flush the change.
+    A changed name, type or config brings the family set markers in line
+    (see ``app.blocks.kinship``).
+    """
     if name is not None:
         schema.name = name
     if type is not None:
@@ -1262,6 +1270,8 @@ def update_schema(
         schema.position = position
     db.flush()
     db.refresh(schema)
+    if name is not None or type is not None or config is not None:
+        kinship.apply_markers(db, schema)
     return schema
 
 

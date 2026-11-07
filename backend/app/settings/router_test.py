@@ -12,7 +12,8 @@ import pytest
 
 import app.database.database as db_module
 import app.settings.router as router_module
-from app.blocks.models import Block
+from app.blocks import repository as repo
+from app.blocks.models import WORKSPACE_ROOT_ID, Block
 from app.settings.model import CUSTOM_PRINTER_KEY, LOCAL_AI_KEY, AppSetting
 from app.settings.secret_box import open_sealed
 from app.users.model import User
@@ -328,3 +329,97 @@ def test_quick_print_requires_a_session():
         "/api/print", json={"block_id": str(uuid.uuid4()), "text": "Line A"},
     )
     assert response.status_code == 401
+
+
+# ─── Family set nuances ──────────────────────────────────────────────────────
+
+
+def _family_database(client) -> tuple[str, dict]:
+    db_id = client.post("/api/blocks", json={"type": "database", "parent_id": str(WORKSPACE_ROOT_ID)}).json()["id"]
+    resp = client.post(
+        f"/api/databases/{db_id}/views", json={"name": "Tree", "view_type": "family_tree"},
+    )
+    assert resp.status_code == 201, resp.text
+    schemas = {s["name"]: s for s in client.get(f"/api/databases/{db_id}/schemas").json()}
+    return db_id, schemas
+
+
+def test_kinship_nuances_list_the_base_nuances_per_group(http_client):
+    response = http_client.get(
+        "/api/settings/kinship-nuances", headers={"Accept-Language": "de"},
+    )
+    assert response.status_code == 200
+    groups = {g["group"]: g for g in response.json()["groups"]}
+    assert list(groups) == ["parents", "partners", "siblings", "half_siblings"]
+    assert groups["parents"]["bases"][0] == {"id": "kin.parent.biological", "label": "leiblich"}
+    assert groups["siblings"]["bases"] == []
+    assert all(g["aliases"] == [] for g in groups.values())
+
+
+def test_kinship_aliases_reach_the_properties_of_the_set(http_client):
+    db_id, _ = _family_database(http_client)
+    response = http_client.put("/api/settings/kinship-nuances", json={"aliases": [
+        {"group": "parents", "base": "kin.parent.adoptive", "label": "Label A"},
+        {"group": "siblings", "label": "Label B"},
+    ]})
+    assert response.status_code == 200, response.text
+    groups = {g["group"]: g for g in response.json()["groups"]}
+    alias = groups["parents"]["aliases"][0]
+    assert alias["base"] == "kin.parent.adoptive" and alias["label"] == "Label A"
+
+    schemas = {s["name"]: s for s in http_client.get(f"/api/databases/{db_id}/schemas").json()}
+    assert schemas["Children"]["config"]["nuance"]["options"][-1] == {"id": alias["id"], "label": "Label A"}
+    assert schemas["Siblings"]["config"]["nuance"]["options"] == [
+        {"id": groups["siblings"]["aliases"][0]["id"], "label": "Label B"},
+    ]
+
+
+def test_kinship_alias_rejects_a_label_of_a_base_nuance(http_client):
+    response = http_client.put("/api/settings/kinship-nuances", json={"aliases": [
+        {"group": "partners", "base": "kin.partner.affair", "label": "Ehe"},
+    ]})
+    assert response.status_code == 422
+
+
+def test_deleting_an_alias_moves_its_values_to_the_base_nuance(http_client):
+    db_id, schemas = _family_database(http_client)
+    stored = http_client.put("/api/settings/kinship-nuances", json={"aliases": [
+        {"group": "parents", "base": "kin.parent.step", "label": "Label A"},
+        {"group": "siblings", "label": "Label B"},
+    ]}).json()
+    groups = {g["group"]: g for g in stored["groups"]}
+    parent_alias = groups["parents"]["aliases"][0]["id"]
+    sibling_alias = groups["siblings"]["aliases"][0]["id"]
+
+    entry_a = http_client.post(f"/api/databases/{db_id}/entries").json()["id"]
+    entry_b = http_client.post(f"/api/databases/{db_id}/entries").json()["id"]
+    parents = schemas["Parents"]["id"]
+    siblings = schemas["Siblings"]["id"]
+    with db_module.SessionLocal() as db:
+        repo.upsert_value(db, page_id=uuid.UUID(entry_a), schema_id=uuid.UUID(parents), value={
+            "relationPool": {entry_b: [""]}, "nuancePool": {entry_b: {"": parent_alias}},
+            "_timeline": {"": {"related_ids": [entry_b], "nuances": {entry_b: parent_alias}}},
+        })
+        repo.upsert_value(db, page_id=uuid.UUID(entry_a), schema_id=uuid.UUID(siblings), value={
+            "related_ids": [entry_b], "nuances": {entry_b: sibling_alias},
+        })
+        db.commit()
+
+    usage = http_client.get(f"/api/settings/kinship-nuances/{parent_alias}/usage")
+    assert usage.json() == {"entries": 1}
+    assert http_client.get("/api/settings/kinship-nuances/unknown/usage").status_code == 404
+
+    response = http_client.put("/api/settings/kinship-nuances", json={"aliases": []})
+    assert response.status_code == 200, response.text
+    with db_module.SessionLocal() as db:
+        parent_value = repo.get_value(db, uuid.UUID(entry_a), uuid.UUID(parents)).value
+        sibling_value = repo.get_value(db, uuid.UUID(entry_a), uuid.UUID(siblings)).value
+    assert parent_value["nuancePool"] == {entry_b: {"": "kin.parent.step"}}
+    assert parent_value["_timeline"][""]["nuances"] == {entry_b: "kin.parent.step"}
+    assert "nuances" not in sibling_value
+
+
+def test_kinship_nuances_are_admin_only(http_client, login_as):
+    login_as(_account("member-a", can_print=False))
+    assert http_client.get("/api/settings/kinship-nuances").status_code == 403
+    assert http_client.put("/api/settings/kinship-nuances", json={"aliases": []}).status_code == 403

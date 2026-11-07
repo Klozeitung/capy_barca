@@ -350,7 +350,25 @@
     "iconsDelete": "Delete icon",
     "iconsDeleteConfirm": "Click again to delete",
     "iconsDeleteHint": "When an icon is deleted, entries get their database's default icon and every other place loses it.",
-    "iconsDeleteError": "The icon could not be deleted."
+    "iconsDeleteError": "The icon could not be deleted.",
+    "systemDefaults": "System defaults",
+    "kinNuances": "Family tree nuances",
+    "kinNuancesDesc": "Parents, children and partners offer fixed base nuances the family tree interprets. Add nuances of your own next to the base nuance they should count as. They are available in every database at once.",
+    "kinGroupParents": "Parents / Children",
+    "kinGroupPartners": "Partners",
+    "kinGroupSiblings": "Siblings",
+    "kinGroupHalfSiblings": "Half-siblings",
+    "kinAliasPlaceholder": "Add nuances of your own here that the system should treat like the base nuance",
+    "kinSiblingsPlaceholder": "Siblings have no base nuance. You can still add nuances of your own here, but the system will ignore them (there is no path between siblings that could carry a label)",
+    "kinHalfSiblingsPlaceholder": "Half-siblings have no base nuance. You can still add nuances of your own here, but the system will ignore them (there is no path between half-siblings that could carry a label)",
+    "kinAliasAdd": "Add nuance",
+    "kinAliasDelete": "Delete nuance",
+    "kinAliasDeleteToBase": "No entry uses \"{label}\". | One entry uses \"{label}\"; it will show \"{base}\" instead. | {count} entries use \"{label}\"; they will show \"{base}\" instead.",
+    "kinAliasDeleteRemoves": "No entry uses \"{label}\". | \"{label}\" will be removed from one entry. | \"{label}\" will be removed from {count} entries.",
+    "kinAliasDeleteUnknown": "\"{label}\" may be in use. Delete it anyway?",
+    "kinAliasExists": "\"{label}\" exists already in this group.",
+    "kinSaveError": "The nuances could not be saved.",
+    "kinLoadError": "The nuances could not be loaded."
   },
   "pageSettings": {
     "title": "Page settings",
@@ -462,7 +480,9 @@
       "groupUpload": "Upload media",
       "groupFormatted": "Formatted",
       "groupComputed": "Computed",
-      "groupReadonly": "System (read-only)"
+      "groupReadonly": "System (read-only)",
+      "kinReserved": "This name is reserved for the family tree. The structure of the property is fixed.",
+      "errorReserved": "This name is reserved for the family tree and needs the structure offered here, or the database already has such a property."
     },
     "settings": {
       "title": "Edit property",
@@ -586,7 +606,13 @@
       "keyingBlockedByMirror": "Not available: the mirror property is timelined or nuanced.",
       "keyingBlocksOthers": "Not available while this relation is keyed.",
       "keyingMirrorKeyed": "Not available: the mirror property is keyed. A keyed relation restricts the other side to vanilla or keyed.",
-      "calendarDateLocked": "This date property is used by a calendar view. It cannot be deleted, given another type or a timeline while the calendar uses it."
+      "calendarDateLocked": "This date property is used by a calendar view. It cannot be deleted, given another type or a timeline while the calendar uses it.",
+      "kinLocked": "This property belongs to the family tree set. Its name, type and structure stay as they are.",
+      "kinKeyingLocked": "A property of the family tree set cannot be keyed.",
+      "kinNuancesAdminOnly": "The nuances of this property are system nuances. Only administrators add new ones, in the settings under System defaults.",
+      "kinFemaleOptionLocked": "The family tree reads this option as female. It cannot be removed.",
+      "kinDeleteLocked": "A family tree view uses this property. It cannot be deleted while the view exists.",
+      "errorSaveRefused": "This change is not allowed for this property."
     },
     "formulaHelp": {
       "prop": {
@@ -1185,6 +1211,7 @@
     "databasesGroups": "In the properties side panel you can organise properties into groups. Custom groups fold and unfold, rename on double-click, and reorder by drag-and-drop via the handle on the right of the group header. The default group always stays on top.",
     "databasesFormulas": "Formula properties calculate a value from other properties of the same entry, referenced with prop('Name'). The syntax reference in the property settings lists every function and operator. Renaming a property keeps the formulas that use it working.",
     "databasesKeying": "A relation property can be keyed: choose a property of the target database to sort the relation's entries by. The chosen value is shown beside each entry.",
+    "databasesFamilySet": "Some property names are reserved for the family tree: Parents, Children, Partners, Siblings, Half-siblings, Date of birth, Time of death and Sex (biological), and their German counterparts. A property with such a name needs the structure the name stands for and keeps its name and type. Parents, children, partners and siblings offer system nuances; administrators add nuances of their own under Settings → System defaults.",
     "databasesAlerts": "An Alerts property holds personal reminders with a date, a time and an optional title. Each database can have one. Everyone sees only their own alerts. When an alert is due, a notice appears in every open session and stays until it is closed; clicking it opens the entry. Alerts missed while offline appear at the next login, up to seven days late. In a database with a calendar, each entry's owner is also reminded of its date: 30 minutes before a time, or at 18:00 on the day before an all-day date. When you move a date you have alerts on, you can move them along.",
     "databasesViewDescription": "Each view can have its own description: click the area below the toolbar to write it, click elsewhere to save. It is included in exports — beneath the title in PDF, on the header of the name column in CSV and Excel (or of the first column while the name column is hidden).",
     "databasesCollaboration": "Changes by other users appear right away. If someone changes a value you are editing or changed within the last minute, the later change applies and you get a notice. After an interrupted connection, open pages and views load again. While a field shows a spinner, your value is being saved; until the server has answered, the field takes no further input. Leaving the page at that moment makes the browser ask first.",

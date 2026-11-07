@@ -199,7 +199,7 @@ The Anthropic LLM "Claude" assisted in creating this software.
 
 ## Project Status
 
-Despite heavy testing (~3300 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet.
+Despite heavy testing (~3400 automated backend tests on every push through CI and on every build in the dev environment by setup.sh, plus a lot of checklists to ensure nothing breaks in A when working on B or adding C) this project is not peer reviewed or community tested as of yet.
 
 Do not use for irreplaceable data without regularly creating backups. Use at your own risk.
 

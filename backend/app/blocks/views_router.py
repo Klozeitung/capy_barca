@@ -32,7 +32,7 @@ POST   /api/databases/{database_id}/views/{view_id}/entry-ids
 import uuid
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -184,18 +184,39 @@ def _schema_state(db: Session, database_id: uuid.UUID) -> list[tuple]:
     """The properties of *database_id* as far as views can change them."""
     from app.blocks import repository as repo
 
-    return [
-        (s.id, s.type, bool((s.config or {}).get(views.CALENDAR_DATE_KEY)))
-        for s in repo.list_schemas(db, database_id)
-    ]
+    return [(s.id, s.type, s.name, s.config) for s in repo.list_schemas(db, database_id)]
 
 
 def _announce_schema_change(db: Session, database_id: uuid.UUID, before: list[tuple]) -> None:
-    """Tell open views when a view change created or marked a date property."""
+    """
+    Tell open views when a view change created or changed properties: a
+    calendar's date, the family set of a family tree.
+    """
     from app.blocks.database_events import emit_schema_updated
 
     if _schema_state(db, database_id) != before:
         emit_schema_updated(db, database_id)
+
+
+def _complete_family_set(
+    db: Session, view, user: User, request: Request,
+) -> set[uuid.UUID]:
+    """
+    Complete the family set of a family tree view's database, in the
+    caller's language. Returns the databases whose entry values changed.
+    """
+    from app.blocks import kinship
+
+    if view.view_type != kinship.FAMILY_TREE_VIEW:
+        return set()
+    language = kinship.language_for(user.language, request.headers.get("accept-language"))
+    return kinship.ensure_set(db, view.database_id, language)
+
+
+def _announce_entries_change(db: Session, migrated: set[uuid.UUID]) -> None:
+    from app.blocks.database_events import emit_entries_updated_for
+
+    emit_entries_updated_for(db, migrated)
 
 
 # ─── Endpoints ───────────────────────────────────────────────────────────────
@@ -231,13 +252,16 @@ def list_views(
 def create_view(
     database_id: uuid.UUID,
     payload: ViewCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     Append a new view. Without settings it gets the default layout. A
-    calendar view gets a date property; when that changes the database's
-    properties, ``database_schema_updated`` is broadcast.
+    calendar view gets a date property, a family tree view the missing
+    properties of the family set (``app.blocks.kinship``); when that changes
+    the database's properties, ``database_schema_updated`` is broadcast, and
+    ``database_entries_updated`` when values were moved into timelines.
     """
     views.require_writable(db, database_id, current_user)
     schemas_before = _schema_state(db, database_id)
@@ -252,8 +276,10 @@ def create_view(
         settings=payload.settings,
         calendar_date_name=payload.calendar_date_name,
     )
+    migrated = _complete_family_set(db, view, current_user, request)
     db.commit()
     _announce_schema_change(db, database_id, schemas_before)
+    _announce_entries_change(db, migrated)
     return view
 
 
@@ -308,12 +334,14 @@ def update_view(
     database_id: uuid.UUID,
     view_id: uuid.UUID,
     payload: ViewUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     Change some fields of a view. The row is locked for the merge, so
-    concurrent updates of different fields both survive.
+    concurrent updates of different fields both survive. A family tree view
+    completes the family set of its database, as on creation.
     """
     views.require_writable(db, database_id, current_user)
     changes = {key: getattr(payload, key) for key in payload.model_fields_set}
@@ -325,9 +353,11 @@ def update_view(
     view = views.get_view_or_404(db, database_id, view_id, for_update=True)
     schemas_before = _schema_state(db, database_id)
     views.update_view(db, view, **changes)
+    migrated = _complete_family_set(db, view, current_user, request)
     db.commit()
     db.refresh(view)
     _announce_schema_change(db, database_id, schemas_before)
+    _announce_entries_change(db, migrated)
     return view
 
 

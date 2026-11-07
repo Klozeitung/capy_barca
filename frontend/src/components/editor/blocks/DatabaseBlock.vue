@@ -106,7 +106,7 @@ import ViewSettingsModal from './properties/ViewSettingsModal.vue'
 import CalendarView from './CalendarView.vue'
 import AgendaView from './AgendaView.vue'
 import IconPicker from '@/components/IconPicker.vue'
-import { getSchemaIcon, isCalendarDateSchema } from '@/stores/propertyTypes'
+import { getSchemaIcon, isCalendarDateSchema, isKinshipDeleteLocked } from '@/stores/propertyTypes'
 import CheckboxCell from './properties/cells/CheckboxCell.vue'
 import SelectCell from './properties/cells/SelectCell.vue'
 import MultiSelectCell from './properties/cells/MultiSelectCell.vue'
@@ -154,6 +154,15 @@ const placementId = props.placementId ?? props.blockId
 const block   = computed(() => blockStore.blocks[props.blockId])
 const editable = provideEditable(block)
 const schemas = computed(() => dbStore.getSchemas(props.blockId))
+/** View types of this database; a family tree locks its family set. */
+const viewTypes = computed(() => viewsStore.getViews(props.blockId).map((v) => v.viewType))
+
+/** Why a column cannot be deleted, or '' when it can. */
+function deleteLockReason(schema: PropertySchema | null | undefined): string {
+  if (isCalendarDateSchema(schema)) return t('db.settings.calendarDateLocked')
+  if (isKinshipDeleteLocked(schema, viewTypes.value)) return t('db.settings.kinDeleteLocked')
+  return ''
+}
 /**
  * Properties offered for filters and sorts. Alerts are left out: each user
  * sees only their own, so the server has nothing shared to filter or sort by.
@@ -1445,8 +1454,8 @@ async function toggleWrapColumn(colKey: string): Promise<void> {
                       <button
                         v-else
                         class="db__th-btn db__th-btn--delete"
-                        :disabled="isCalendarDateSchema(col.schema)"
-                        :title="isCalendarDateSchema(col.schema) ? t('db.settings.calendarDateLocked') : t('db.deleteColumn')"
+                        :disabled="!!deleteLockReason(col.schema)"
+                        :title="deleteLockReason(col.schema) || t('db.deleteColumn')"
                         @click.stop="promptDeleteSchema(col.key)"
                       >
                         <Icon icon="mdi:trash-can-outline" width="13" height="13" />

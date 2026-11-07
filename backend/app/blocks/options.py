@@ -24,6 +24,8 @@ This module owns the rules around that:
   everything that refers to it: entry and template values, view filters and
   automations. Nothing keeps an id whose option is gone.
 * ``count_usage`` tells a delete confirmation how many entries use an option.
+* ``rewrite_nuance_values`` moves nuance values from one id to another, for
+  system nuances whose alias is deleted (see ``app.blocks.kinship``).
 * ``label_map`` turns ids back into labels for formulas, rollups and sorting.
 
 Bilateral relations share their nuance options between both sides, ids
@@ -265,6 +267,71 @@ def strip_nuance_value(value: Any, removed: set[str]) -> Any:
         result["_timeline"] = timeline
 
     return result
+
+
+def _replace_nuance_map(nuances: Any, mapping: dict[str, Optional[str]]) -> Any:
+    if not isinstance(nuances, dict):
+        return nuances
+    result = {}
+    for uid, nuance in nuances.items():
+        if nuance in mapping:
+            nuance = mapping[nuance]
+        if nuance is not None:
+            result[uid] = nuance
+    return result
+
+
+def replace_nuance_value(value: Any, mapping: dict[str, Optional[str]]) -> Any:
+    """
+    A stored relation value with every nuance id of *mapping* replaced by the
+    id it maps to; an id mapped to None is removed like a deleted option.
+
+    Covers the same places as :func:`strip_nuance_value`; empty maps are
+    removed.
+    """
+    if not isinstance(value, dict) or not mapping:
+        return value
+    replaced = {k: v for k, v in mapping.items() if v is not None}
+    removed = {k for k, v in mapping.items() if v is None}
+    result = strip_nuance_value(value, removed) if removed else dict(value)
+    if not replaced:
+        return result
+
+    if isinstance(result.get("nuances"), dict):
+        result["nuances"] = _replace_nuance_map(result["nuances"], replaced)
+
+    if isinstance(result.get("nuancePool"), dict):
+        result["nuancePool"] = {
+            uid: _replace_nuance_map(ranges, replaced) if isinstance(ranges, dict) else ranges
+            for uid, ranges in result["nuancePool"].items()
+        }
+
+    if isinstance(result.get("_timeline"), dict):
+        timeline = {}
+        for period, slot in result["_timeline"].items():
+            if isinstance(slot, dict) and isinstance(slot.get("nuances"), dict):
+                slot = {**slot, "nuances": _replace_nuance_map(slot["nuances"], replaced)}
+            timeline[period] = slot
+        result["_timeline"] = timeline
+
+    return result
+
+
+def rewrite_nuance_values(
+    db: Session, schema: PropertySchema, mapping: dict[str, Optional[str]],
+) -> int:
+    """
+    Apply :func:`replace_nuance_value` to every stored value of *schema*,
+    entries and templates alike. Returns the number of values changed.
+    """
+    changed = 0
+    for pv in _values_mentioning(db, schema.id, mapping):
+        new_value = replace_nuance_value(pv.value, mapping)
+        if new_value != pv.value:
+            pv.value = new_value
+            changed += 1
+    db.flush()
+    return changed
 
 
 def _values_mentioning(db: Session, schema_id: uuid.UUID, ids: Iterable[str]):

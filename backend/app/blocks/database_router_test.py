@@ -1819,7 +1819,7 @@ def test_same_db_rollup_updates_when_linked_entry_value_changes(http_client):
     """
     db_id = _create_database(http_client)
 
-    rel = _create_relation_schema(http_client, db_id, db_id, name="Children")
+    rel = _create_relation_schema(http_client, db_id, db_id, name="Linked")
     amount_col = _create_number_schema(http_client, db_id, "Amount")
     rollup = _create_rollup_schema(
         http_client, db_id, "Total Amount", rel["id"], amount_col["id"], "sum"
@@ -1850,7 +1850,7 @@ def test_same_db_rollup_on_formula_column_updates_when_linked_entry_changes(http
     """
     db_id = _create_database(http_client)
 
-    rel = _create_relation_schema(http_client, db_id, db_id, name="Children")
+    rel = _create_relation_schema(http_client, db_id, db_id, name="Linked")
     base_col = _create_number_schema(http_client, db_id, "Base")
     formula = _create_formula_schema(http_client, db_id, "Doubled", "prop('Base') * 2")
     rollup = _create_rollup_schema(
@@ -3389,7 +3389,7 @@ def test_sub_item_direct_write_updates_the_rollups_of_the_previous_parent(http_c
     db_id = _create_database(http_client)
     _pi, si = _get_subitem_schemas(http_client, db_id)
     note = _create_schema(http_client, db_id, name="Note", type_="text")
-    children = _create_rollup_schema(http_client, db_id, "Children", si["id"], note["id"], "count")
+    children = _create_rollup_schema(http_client, db_id, "Sub count", si["id"], note["id"], "count")
     child = _create_entry(http_client, db_id)
     old_parent = _create_entry(http_client, db_id)
     new_parent = _create_entry(http_client, db_id)
@@ -5087,7 +5087,7 @@ def test_reparenting_updates_the_rollups_of_both_parents(http_client):
     db_id = _create_database(http_client)
     pi, si = _get_subitem_schemas(http_client, db_id)
     note = _create_schema(http_client, db_id, name="Note", type_="text")
-    children = _create_rollup_schema(http_client, db_id, "Children", si["id"], note["id"], "count")
+    children = _create_rollup_schema(http_client, db_id, "Sub count", si["id"], note["id"], "count")
     child = _create_entry(http_client, db_id)
     old_parent = _create_entry(http_client, db_id)
     new_parent = _create_entry(http_client, db_id)
@@ -5369,3 +5369,31 @@ def test_date_filters_compare_the_local_day(http_client):
 
     assert [e["id"] for e in hit.json()["entries"]] == [entry["id"]]
     assert miss.json()["entries"] == []
+
+
+# ─── Family set ──────────────────────────────────────────────────────────────
+
+
+def test_schema_listing_offers_the_system_nuances_of_the_family_set(http_client):
+    db_id = _create_database(http_client)
+    _create_schema(http_client, db_id, "Half-siblings", "relation", {
+        "target_database_id": db_id, "direction": "bilateral_self",
+        "nuance": {"enabled": True, "options": [{"label": "Value A"}]},
+    })
+    listed = http_client.get(f"/api/databases/{db_id}/schemas").json()
+    half = next(s for s in listed if s["name"] == "Half-siblings")
+    assert half["config"]["kinRole"] == "half_siblings"
+    assert half["config"]["nuance"] == {"enabled": True, "options": []}
+
+
+def test_deleting_a_property_of_the_family_set_needs_no_family_tree(http_client):
+    db_id = _create_database(http_client)
+    birth = _create_schema(http_client, db_id, "Date of birth", "date")
+    assert http_client.delete(f"/api/databases/{db_id}/schemas/{birth['id']}").status_code == 204
+
+    sex = _create_schema(http_client, db_id, "Sex (biological)", "select", {"options": []})
+    resp = http_client.post(
+        f"/api/databases/{db_id}/views", json={"name": "Tree", "view_type": "family_tree"},
+    )
+    assert resp.status_code == 201, resp.text
+    assert http_client.delete(f"/api/databases/{db_id}/schemas/{sex['id']}").status_code == 422

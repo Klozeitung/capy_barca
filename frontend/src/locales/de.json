@@ -350,7 +350,25 @@
     "iconsDelete": "Icon löschen",
     "iconsDeleteConfirm": "Zum Löschen erneut klicken",
     "iconsDeleteHint": "Wird ein Icon gelöscht, bekommen Einträge das Standardicon ihrer Datenbank, alle anderen Stellen verlieren es.",
-    "iconsDeleteError": "Das Icon konnte nicht gelöscht werden."
+    "iconsDeleteError": "Das Icon konnte nicht gelöscht werden.",
+    "systemDefaults": "Systemvorgaben",
+    "kinNuances": "Stammbaum-Nuancen",
+    "kinNuancesDesc": "Eltern, Kinder und Partner bieten feste Basisnuancen, die der Stammbaum auswertet. Eigene Nuancen trägst du neben der Basisnuance ein, als die sie zählen sollen. Sie stehen sofort in jeder Datenbank zur Verfügung.",
+    "kinGroupParents": "Eltern / Kinder",
+    "kinGroupPartners": "Partner",
+    "kinGroupSiblings": "Geschwister",
+    "kinGroupHalfSiblings": "Halbgeschwister",
+    "kinAliasPlaceholder": "Hier kannst du eigene Nuancen hinterlegen, die vom System so berechnet werden sollen wie die Basisnuance",
+    "kinSiblingsPlaceholder": "Für Geschwister gibt es keine Basisnuance. Du kannst hier dennoch eigene Nuancen hinterlegen, das System wird sie allerdings ignorieren (zwischen Geschwistern gibt es keinen beschriftbaren Pfad)",
+    "kinHalfSiblingsPlaceholder": "Für Halbgeschwister gibt es keine Basisnuance. Du kannst hier dennoch eigene Nuancen hinterlegen, das System wird sie allerdings ignorieren (zwischen Halbgeschwistern gibt es keinen beschriftbaren Pfad)",
+    "kinAliasAdd": "Nuance hinzufügen",
+    "kinAliasDelete": "Nuance löschen",
+    "kinAliasDeleteToBase": "„{label}“ wird von keinem Eintrag genutzt. | Ein Eintrag nutzt „{label}“ und zeigt danach „{base}“. | {count} Einträge nutzen „{label}“ und zeigen danach „{base}“.",
+    "kinAliasDeleteRemoves": "„{label}“ wird von keinem Eintrag genutzt. | „{label}“ wird aus einem Eintrag entfernt. | „{label}“ wird aus {count} Einträgen entfernt.",
+    "kinAliasDeleteUnknown": "„{label}“ wird möglicherweise genutzt. Trotzdem löschen?",
+    "kinAliasExists": "„{label}“ gibt es in dieser Gruppe bereits.",
+    "kinSaveError": "Die Nuancen konnten nicht gespeichert werden.",
+    "kinLoadError": "Die Nuancen konnten nicht geladen werden."
   },
   "pageSettings": {
     "title": "Seiteneinstellungen",
@@ -462,7 +480,9 @@
       "groupUpload": "Medien-Upload",
       "groupFormatted": "Formatiert",
       "groupComputed": "Berechnet",
-      "groupReadonly": "System (schreibgeschützt)"
+      "groupReadonly": "System (schreibgeschützt)",
+      "kinReserved": "Dieser Name ist für den Stammbaum reserviert. Die Struktur der Eigenschaft ist festgelegt.",
+      "errorReserved": "Dieser Name ist für den Stammbaum reserviert und braucht die hier angebotene Struktur, oder die Datenbank hat bereits eine solche Eigenschaft."
     },
     "settings": {
       "title": "Eigenschaft bearbeiten",
@@ -586,7 +606,13 @@
       "keyingBlockedByMirror": "Nicht verfügbar: Die Gegenseite hat eine Timeline oder Nuancen.",
       "keyingBlocksOthers": "Nicht verfügbar, solange diese Relation gekeyt ist.",
       "keyingMirrorKeyed": "Nicht verfügbar: Die Gegenseite ist gekeyt. Eine gekeyte Relation lässt auf der anderen Seite nur vanilla oder gekeyt zu.",
-      "calendarDateLocked": "Diese Datumseigenschaft wird von einer Kalenderansicht verwendet. Solange der Kalender sie nutzt, kann sie nicht gelöscht, umgewandelt oder mit einer Zeitleiste versehen werden."
+      "calendarDateLocked": "Diese Datumseigenschaft wird von einer Kalenderansicht verwendet. Solange der Kalender sie nutzt, kann sie nicht gelöscht, umgewandelt oder mit einer Zeitleiste versehen werden.",
+      "kinLocked": "Diese Eigenschaft gehört zum Stammbaum-Set. Name, Typ und Struktur bleiben unverändert.",
+      "kinKeyingLocked": "Eine Eigenschaft des Stammbaum-Sets kann nicht gekeyt werden.",
+      "kinNuancesAdminOnly": "Die Nuancen dieser Eigenschaft sind Systemnuancen. Neue Nuancen für eine systemgeschützte Eigenschaft legen nur Admins in den Einstellungen unter Systemvorgaben an.",
+      "kinFemaleOptionLocked": "Der Stammbaum liest diese Option als weiblich. Sie kann nicht entfernt werden.",
+      "kinDeleteLocked": "Eine Stammbaum-Ansicht verwendet diese Eigenschaft. Solange die Ansicht besteht, kann sie nicht gelöscht werden.",
+      "errorSaveRefused": "Diese Änderung ist für diese Eigenschaft nicht erlaubt."
     },
     "formulaHelp": {
       "prop": {
@@ -1185,6 +1211,7 @@
     "databasesGroups": "In der Eigenschaften-Seitenleiste lassen sich Properties zu Gruppen zusammenfassen. Eigene Gruppen kannst du ein- und ausklappen, per Doppelklick umbenennen und über den Ziehpunkt rechts im Gruppenkopf per Drag-and-drop neu anordnen. Die Standardgruppe bleibt immer oben.",
     "databasesFormulas": "Formel-Eigenschaften berechnen einen Wert aus anderen Eigenschaften desselben Eintrags, referenziert mit prop('Name'). Die Syntaxreferenz in den Eigenschaftseinstellungen listet alle Funktionen und Operatoren. Beim Umbenennen einer Eigenschaft funktionieren die Formeln, die sie verwenden, weiter.",
     "databasesKeying": "Eine Relations-Eigenschaft kann gekeyt werden: Wähle eine Eigenschaft der Zieldatenbank, nach der die Einträge der Relation sortiert werden. Der gewählte Wert wird neben jedem Eintrag angezeigt.",
+    "databasesFamilySet": "Einige Eigenschaftsnamen sind für den Stammbaum reserviert: Eltern, Kinder, Partner, Geschwister, Halbgeschwister, Geburtsdatum, Todeszeitpunkt und Geschlecht (Biologisch) sowie ihre englischen Entsprechungen. Eine Eigenschaft mit einem solchen Namen braucht die Struktur, für die der Name steht, und behält Namen und Typ. Eltern, Kinder, Partner und Geschwister bieten Systemnuancen; Admins ergänzen eigene Nuancen unter Einstellungen → Systemvorgaben.",
     "databasesAlerts": "Eine Eigenschaft vom Typ Erinnerungen enthält persönliche Erinnerungen mit Datum, Uhrzeit und optionalem Titel. Jede Datenbank kann eine davon haben. Jede Person sieht nur ihre eigenen Erinnerungen. Wird eine Erinnerung fällig, erscheint in jeder offenen Sitzung ein Hinweis, der bis zum Schließen stehen bleibt; ein Klick öffnet den Eintrag. Verpasste Erinnerungen erscheinen bei der nächsten Anmeldung, höchstens sieben Tage nach ihrem Zeitpunkt. In einer Datenbank mit Kalender wird der Besitzer jedes Eintrags zusätzlich an dessen Datum erinnert: 30 Minuten vor einer Uhrzeit, bei ganztägigen Daten um 18:00 Uhr am Vortag. Wird ein Datum verschoben, auf dem du Erinnerungen hast, kannst du sie mitverschieben.",
     "databasesViewDescription": "Jede Ansicht kann eine eigene Beschreibung haben: Klicke in den Bereich unter der Toolbar, um sie zu schreiben, und klicke daneben, um sie zu speichern. Sie wird mit exportiert — im PDF unter dem Titel, in CSV und Excel im Kopf der Name-Spalte (bzw. der ersten Spalte, solange die Name-Spalte ausgeblendet ist).",
     "databasesCollaboration": "Änderungen anderer Benutzer erscheinen sofort. Ändert jemand einen Wert, den du gerade bearbeitest oder in der letzten Minute geändert hast, gilt die spätere Änderung, und du erhältst einen Hinweis. War die Verbindung unterbrochen, werden offene Seiten und Ansichten danach neu geladen. Solange ein Feld einen Ladekreis zeigt, wird dein Wert gespeichert; bis die Antwort des Servers da ist, nimmt das Feld keine weitere Eingabe an. Verlässt du die Seite in diesem Moment, fragt der Browser nach.",

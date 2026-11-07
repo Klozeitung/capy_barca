@@ -131,6 +131,118 @@ export function isCalendarDateSchema(
   return schema?.type === 'date' && schema.config?.calendarDate === true
 }
 
+/** Roles of the family set a family tree reads. */
+export type KinshipRole =
+  | 'parents'
+  | 'children'
+  | 'partners'
+  | 'siblings'
+  | 'half_siblings'
+  | 'birth'
+  | 'death'
+  | 'sex'
+
+const KINSHIP_ROLES: readonly KinshipRole[] = [
+  'parents', 'children', 'partners', 'siblings', 'half_siblings', 'birth', 'death', 'sex',
+]
+
+/**
+ * Names reserved for the roles, per language. The server compares them
+ * ignoring case and surrounding spaces and gives a property with such a name
+ * its role when the structure fits (``app.blocks.kinship``).
+ */
+export const KINSHIP_RESERVED_NAMES: Record<KinshipRole, { de: string; en: string }> = {
+  parents: { de: 'Eltern', en: 'Parents' },
+  children: { de: 'Kinder', en: 'Children' },
+  partners: { de: 'Partner', en: 'Partners' },
+  siblings: { de: 'Geschwister', en: 'Siblings' },
+  half_siblings: { de: 'Halbgeschwister', en: 'Half-siblings' },
+  birth: { de: 'Geburtsdatum', en: 'Date of birth' },
+  death: { de: 'Todeszeitpunkt', en: 'Time of death' },
+  sex: { de: 'Geschlecht (Biologisch)', en: 'Sex (biological)' },
+}
+
+/** The role whose reserved name *name* is, and in which language. */
+export function kinshipRoleForName(
+  name: string,
+): { role: KinshipRole; language: 'de' | 'en' } | null {
+  const folded = name.trim().toLocaleLowerCase()
+  if (!folded) return null
+  for (const role of KINSHIP_ROLES) {
+    for (const language of ['de', 'en'] as const) {
+      if (KINSHIP_RESERVED_NAMES[role][language].toLocaleLowerCase() === folded) {
+        return { role, language }
+      }
+    }
+  }
+  return null
+}
+
+/** The structure a new property with a reserved name must have. */
+export interface KinshipPreset {
+  /** Types the role accepts; the first is preselected. */
+  types: string[]
+  /** Fixed relation settings, for the relation roles. */
+  relation?: {
+    direction: 'bilateral' | 'bilateral_self'
+    mirrorName: string | null
+  }
+}
+
+export function kinshipPreset(role: KinshipRole, language: 'de' | 'en'): KinshipPreset {
+  switch (role) {
+    case 'parents':
+      return { types: ['relation'], relation: { direction: 'bilateral', mirrorName: KINSHIP_RESERVED_NAMES.children[language] } }
+    case 'children':
+      return { types: ['relation'], relation: { direction: 'bilateral', mirrorName: KINSHIP_RESERVED_NAMES.parents[language] } }
+    case 'partners':
+    case 'siblings':
+    case 'half_siblings':
+      return { types: ['relation'], relation: { direction: 'bilateral_self', mirrorName: null } }
+    case 'birth':
+    case 'death':
+      return { types: ['date', 'rollup', 'formula'] }
+    case 'sex':
+      return { types: ['select'] }
+  }
+}
+
+type SchemaLike = { type: string; config?: Record<string, unknown> | null } | null | undefined
+
+/**
+ * The family set role of a property, or null. The server sets
+ * ``config.kinRole`` on a property whose name is reserved for a role and
+ * whose structure fits it; such a property keeps its name, type and
+ * structure, and cannot be keyed.
+ */
+export function kinshipRole(schema: SchemaLike): KinshipRole | null {
+  const role = schema?.config?.kinRole
+  return KINSHIP_ROLES.includes(role as KinshipRole) ? (role as KinshipRole) : null
+}
+
+/**
+ * True for a relation of the family set. Its nuances are the system nuances
+ * the server sends as ``config.nuance.options``; only administrators extend
+ * them, in the settings.
+ */
+export function hasSystemNuances(schema: SchemaLike): boolean {
+  return schema?.type === 'relation' && kinshipRole(schema) !== null
+}
+
+/** The option a ``sex`` property of the family set reads as female, or null. */
+export function kinshipFemaleOptionId(schema: SchemaLike): string | null {
+  const id = schema?.config?.kinFemaleOptionId
+  return kinshipRole(schema) === 'sex' && typeof id === 'string' ? id : null
+}
+
+/**
+ * True when a property of the family set cannot be deleted: while its
+ * database has a family tree view (*viewTypes* lists the types of its views).
+ */
+export function isKinshipDeleteLocked(schema: SchemaLike, viewTypes: readonly string[]): boolean {
+  return kinshipRole(schema) !== null && viewTypes.includes('family_tree')
+}
+
 /** Return true if the type is system-managed and cannot be written via the API. */
 export function isReadonlyPropertyType(type: string): boolean {
   return PROPERTY_TYPES.find(pt => pt.value === type)?.readonly === true

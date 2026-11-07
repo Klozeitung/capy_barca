@@ -47,6 +47,15 @@
  * Because timeline and nuance are edge data and therefore shared by both sides
  * of a bilateral relation, a keyed mirror also locks them out on this side.
  * id:       { prefix: string, next_id: number }  (next_id managed by backend)
+ *
+ * Family set
+ * ----------
+ * A property of the family set (``config.kinRole``, set by the server) keeps
+ * its name, type and structure and cannot be keyed; the controls for them are
+ * locked here. Its relation nuances are the system nuances, which only
+ * administrators extend in the settings, so they are shown read-only; the
+ * affixes and the orientation stay editable. The option a ``sex`` property
+ * reads as female cannot be removed.
  */
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
@@ -60,8 +69,14 @@ import {
   optionColorStyle,
   SELECT_OPTION_COLORS,
 } from '@/stores/database'
-import { getSchemaIcon, isCalendarDateSchema } from '@/stores/propertyTypes'
-import { apiClient } from '@/api/client'
+import {
+  getSchemaIcon,
+  hasSystemNuances,
+  isCalendarDateSchema,
+  kinshipFemaleOptionId,
+  kinshipRole,
+} from '@/stores/propertyTypes'
+import { apiClient, ApiError } from '@/api/client'
 import {
   filterSyntaxEntries,
   groupSyntaxEntries,
@@ -102,6 +117,11 @@ const description = ref<string>(
 )
 
 // Group is set in the side panel via drag and drop, not here.
+
+// family set: locked name, type and structure; system nuances
+const kinRole = computed(() => kinshipRole(props.schema))
+const systemNuances = computed(() => hasSystemNuances(props.schema))
+const femaleOptionId = computed(() => kinshipFemaleOptionId(props.schema))
 
 // number
 const numberFormat = ref<'plain' | 'euro'>(
@@ -808,8 +828,10 @@ async function save() {
       // Group is set in the side panel via drag and drop, not here.
     })
     emit('close')
-  } catch {
-    nameError.value = t('db.settings.errorNameDuplicate')
+  } catch (error) {
+    nameError.value = error instanceof ApiError && error.status === 422
+      ? t('db.settings.errorSaveRefused')
+      : t('db.settings.errorNameDuplicate')
   } finally {
     isSaving.value = false
   }
@@ -872,10 +894,16 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
             v-model="name"
             class="psm__input"
             :class="{ 'psm__input--error': nameError }"
+            :disabled="!!kinRole"
+            :title="kinRole ? t('db.settings.kinLocked') : undefined"
             @keydown.enter.prevent="save"
             @keydown.escape.prevent="emit('close')"
           />
           <span v-if="nameError" class="psm__error">{{ nameError }}</span>
+          <p v-if="kinRole" class="psm__hint psm__hint--system">
+            <Icon icon="mdi:family-tree" width="13" height="13" />
+            {{ t('db.settings.kinLocked') }}
+          </p>
         </div>
 
         <!-- Description (all types) -->
@@ -986,7 +1014,12 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
                 >
                   <Icon icon="mdi:chevron-down" width="13" height="13" />
                 </button>
-                <button class="psm__option-remove" @click="requestRemoveOption('select', idx)">
+                <button
+                  class="psm__option-remove"
+                  :disabled="opt.id === femaleOptionId"
+                  :title="opt.id === femaleOptionId ? t('db.settings.kinFemaleOptionLocked') : undefined"
+                  @click="requestRemoveOption('select', idx)"
+                >
                   <Icon icon="mdi:close" width="13" height="13" />
                 </button>
               </div>
@@ -1071,6 +1104,8 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
               v-model="mirrorPropertyName"
               class="psm__input"
               :placeholder="t('db.settings.relationMirrorPlaceholder')"
+              :disabled="!!kinRole"
+              :title="kinRole ? t('db.settings.kinLocked') : undefined"
             />
             <p class="psm__hint">{{ t('db.settings.relationMirrorHint') }}</p>
           </div>
@@ -1087,19 +1122,22 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
           <div class="psm__field">
             <label
               class="psm__check-label"
-              :class="{ 'psm__check-label--disabled': !!keyingBlockedReason && !keyingEnabled }"
+              :class="{ 'psm__check-label--disabled': !!kinRole || (!!keyingBlockedReason && !keyingEnabled) }"
             >
               <input
                 type="checkbox"
                 v-model="keyingEnabled"
                 class="psm__checkbox"
-                :disabled="!!keyingBlockedReason && !keyingEnabled"
+                :disabled="!!kinRole || (!!keyingBlockedReason && !keyingEnabled)"
               />
               {{ t('db.settings.keyingEnable') }}
             </label>
             <p class="psm__hint">{{ t('db.settings.keyingHint') }}</p>
+            <p v-if="kinRole" class="psm__hint psm__hint--warning">
+              {{ t('db.settings.kinKeyingLocked') }}
+            </p>
             <p
-              v-if="!!keyingBlockedReason && !keyingEnabled"
+              v-else-if="!!keyingBlockedReason && !keyingEnabled"
               class="psm__hint psm__hint--warning"
             >
               {{ keyingBlockedReason }}
@@ -1235,6 +1273,22 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
               </template>
 
               <label class="psm__label psm__nuance-sublabel">{{ t('db.settings.nuanceOptions') }}</label>
+              <!-- System nuances: read-only, extended by admins in the settings -->
+              <template v-if="systemNuances">
+                <div class="psm__options-list" :title="t('db.settings.kinNuancesAdminOnly')">
+                  <div v-for="opt in nuanceOptions" :key="opt.id" class="psm__option-row">
+                    <span class="psm__option-chip" :style="optionColorStyle(opt.color)">{{ opt.label }}</span>
+                  </div>
+                  <div v-if="nuanceOptions.length === 0" class="psm__options-empty">
+                    {{ t('db.settings.selectOptionsEmpty') }}
+                  </div>
+                </div>
+                <p class="psm__hint psm__hint--system">
+                  <Icon icon="mdi:lock-outline" width="13" height="13" />
+                  {{ t('db.settings.kinNuancesAdminOnly') }}
+                </p>
+              </template>
+              <template v-else>
               <div class="psm__options-list">
                 <div
                   v-for="(opt, idx) in nuanceOptions"
@@ -1291,6 +1345,7 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
                   <Icon icon="mdi:plus" width="15" height="15" />
                 </button>
               </div>
+              </template>
             </template>
           </div>
         </template>
@@ -1956,9 +2011,19 @@ function moveNuanceOption(index: number, direction: -1 | 1) {
   background: var(--color-hover);
 }
 
-.psm__option-remove:hover {
+.psm__option-remove:hover:not(:disabled) {
   color: #e05555;
   background: var(--color-hover);
+}
+
+.psm__option-remove:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.psm__input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .psm__options-empty {

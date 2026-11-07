@@ -211,3 +211,59 @@ def test_purge_automations_drops_conditions_and_written_values(db, select_schema
 
     assert automation.actions[0]["body"] == {"value": None}
     assert automation.actions[1]["filter"]["groups"] == []
+
+
+# ─── Moving nuance values to another id ──────────────────────────────────────
+
+
+def test_replace_nuance_value_maps_ids_in_every_place_and_removes_unmapped():
+    value = {
+        "related_ids": ["u1", "u2"],
+        "nuances": {"u1": "alias-a", "u2": "alias-b"},
+        "nuancePool": {"u1": {"": "alias-a"}, "u2": {"2000-07-28→": "alias-b"}},
+        "_timeline": {
+            "": {"related_ids": ["u1"], "nuances": {"u1": "alias-a"}},
+            "2000-07-28→": {"related_ids": ["u2"], "nuances": {"u2": "alias-b"}},
+        },
+    }
+    result = opts.replace_nuance_value(value, {"alias-a": "base-a", "alias-b": None})
+    assert result == {
+        "related_ids": ["u1", "u2"],
+        "nuances": {"u1": "base-a"},
+        "nuancePool": {"u1": {"": "base-a"}},
+        "_timeline": {
+            "": {"related_ids": ["u1"], "nuances": {"u1": "base-a"}},
+            "2000-07-28→": {"related_ids": ["u2"]},
+        },
+    }
+    assert value["nuances"] == {"u1": "alias-a", "u2": "alias-b"}
+
+
+def test_replace_nuance_value_leaves_other_values_alone():
+    value = {"related_ids": ["u1"], "nuances": {"u1": "other"}}
+    assert opts.replace_nuance_value(value, {"alias-a": "base-a"}) == value
+    assert opts.replace_nuance_value(None, {"alias-a": "base-a"}) is None
+    assert opts.replace_nuance_value(value, {}) is value
+
+
+def test_rewrite_nuance_values_changes_only_values_that_use_a_mapped_id(db):
+    database = repo.create_block(db, type="database", position=1.0, parent_id=WORKSPACE_ROOT_ID)
+    schema = repo.create_schema(
+        db, database_id=database.id, name="Link", type="relation", position=1.0,
+        config={"target_database_id": str(database.id), "direction": "unilateral"},
+    )
+    entry_a = repo.create_block(db, type="page", position=1.0, parent_id=database.id)
+    entry_b = repo.create_block(db, type="page", position=2.0, parent_id=database.id)
+    repo.upsert_value(
+        db, page_id=entry_a.id, schema_id=schema.id,
+        value={"related_ids": ["u1"], "nuances": {"u1": "alias-a"}},
+    )
+    repo.upsert_value(
+        db, page_id=entry_b.id, schema_id=schema.id,
+        value={"related_ids": ["u1"], "nuances": {"u1": "other"}},
+    )
+
+    assert opts.rewrite_nuance_values(db, schema, {"alias-a": "base-a"}) == 1
+    db.commit()
+    assert repo.get_value(db, entry_a.id, schema.id).value["nuances"] == {"u1": "base-a"}
+    assert repo.get_value(db, entry_b.id, schema.id).value["nuances"] == {"u1": "other"}

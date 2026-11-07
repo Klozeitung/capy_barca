@@ -14,6 +14,11 @@ One row per setting, addressed by a fixed key (``LOCAL_AI_KEY``,
     ``query``, and ``{"name", "target": "header", "sealed": <token> | null}``
     for headers. Header values often carry credentials, so they are stored
     encrypted (``secret_box``) and never sent back to the frontend.
+
+``kinship_nuances``
+    ``{"aliases": [{"id", "group", "base": <base nuance id> | null, "label"}]}``,
+    the nuances an administrator adds to the system nuances of the family set
+    (see ``app.blocks.kinship``).
 """
 import re
 import uuid
@@ -223,3 +228,48 @@ class PrintResult(BaseModel):
     ok: bool
     status: Optional[int]
     body: str
+
+
+# ─── Family set nuances ───────────────────────────────────────────────────────
+
+
+class KinshipAliasIn(BaseModel):
+    """An added nuance. Without ``id`` it is new."""
+
+    id: Optional[str] = Field(default=None, max_length=64)
+    group: str = Field(max_length=32)
+    base: Optional[str] = Field(default=None, max_length=64)
+    label: str = Field(max_length=200)
+
+
+class KinshipNuancesIn(BaseModel):
+    aliases: list[KinshipAliasIn] = Field(default_factory=list)
+
+
+class KinshipNuanceOut(BaseModel):
+    id: str
+    label: str
+
+
+class KinshipAliasOut(BaseModel):
+    id: str
+    base: Optional[str]
+    label: str
+
+
+class KinshipGroupOut(BaseModel):
+    """One group: its base nuances in the caller's language and its aliases."""
+
+    group: str
+    bases: list[KinshipNuanceOut]
+    aliases: list[KinshipAliasOut]
+
+
+class KinshipNuancesOut(BaseModel):
+    groups: list[KinshipGroupOut]
+
+
+class KinshipUsage(BaseModel):
+    """How many active entries use a nuance, across all databases."""
+
+    entries: int

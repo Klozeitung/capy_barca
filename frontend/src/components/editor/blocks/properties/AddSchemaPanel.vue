@@ -15,6 +15,13 @@
  * A database has at most one ``alerts`` property; once it has one, the type
  * is not offered.
  *
+ * Family set
+ * ----------
+ * A name reserved for a role of the family set (``kinshipRoleForName``)
+ * fixes the structure the server requires: only the types of the role are
+ * offered, and a relation gets its direction, the database itself as target
+ * and, for parents and children, the mirror named after the other role.
+ *
  * Virtual types
  * -------------
  * ``select_multiple`` is a UI-only entry that maps to type ``select`` with
@@ -25,7 +32,8 @@ import { ref, onMounted, nextTick, watch, computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useI18n } from 'vue-i18n'
 import { useDatabaseStore } from '@/stores/database'
-import { PROPERTY_TYPES } from '@/stores/propertyTypes'
+import { ApiError } from '@/api/client'
+import { PROPERTY_TYPES, kinshipPreset, kinshipRoleForName } from '@/stores/propertyTypes'
 
 // ── Props / emits ─────────────────────────────────────────────────────────────
 
@@ -69,6 +77,28 @@ const effectiveTargetDbId = computed(() =>
 )
 
 const allDatabases = computed(() => dbStore.allDatabases)
+
+// ── Family set ────────────────────────────────────────────────────────────────
+
+/** The structure a reserved name requires, or null for any other name. */
+const kinPreset = computed(() => {
+  const match = kinshipRoleForName(name.value)
+  return match ? kinshipPreset(match.role, match.language) : null
+})
+
+function isTypeAllowed(typeValue: string): boolean {
+  return !kinPreset.value || kinPreset.value.types.includes(typeValue)
+}
+
+watch(kinPreset, (preset) => {
+  if (!preset) return
+  if (!preset.types.includes(selectedType.value)) selectedType.value = preset.types[0]
+  if (preset.relation) {
+    relationTargetDbId.value = props.databaseId
+    relationDirection.value = preset.relation.direction
+    relationMirrorName.value = preset.relation.mirrorName ?? ''
+  }
+})
 
 // ── Auto-name logic ───────────────────────────────────────────────────────────
 
@@ -177,8 +207,10 @@ async function confirm() {
       group: 'Standard',
     })
     emit('close', schema.id)
-  } catch {
-    error.value = t('db.addSchema.errorDuplicate')
+  } catch (err) {
+    error.value = err instanceof ApiError && err.status === 422
+      ? t('db.addSchema.errorReserved')
+      : t('db.addSchema.errorDuplicate')
   }
 }
 
@@ -203,6 +235,10 @@ function cancel() {
         @keydown.escape.prevent="cancel"
       />
       <span v-if="error" class="asp__error">{{ error }}</span>
+      <p v-if="kinPreset" class="asp__hint">
+        <Icon icon="mdi:family-tree" width="13" height="13" />
+        {{ t('db.addSchema.kinReserved') }}
+      </p>
 
       <label class="asp__label">{{ t('db.addSchema.typeLabel') }}</label>
 
@@ -218,6 +254,7 @@ function cancel() {
                 'asp__type-btn--active': selectedType === pt.value,
                 'asp__type-btn--readonly': pt.readonly,
               }"
+              :disabled="!isTypeAllowed(pt.value)"
               @click="selectedType = pt.value"
             >
               <Icon :icon="pt.icon" width="14" height="14" />
@@ -238,7 +275,7 @@ function cancel() {
       <template v-if="isRelationType">
         <div v-if="relationDirection !== 'bilateral_self'" class="asp__rel-section">
           <label class="asp__label">{{ t('db.settings.relationTarget') }}</label>
-          <select v-model="relationTargetDbId" class="asp__select">
+          <select v-model="relationTargetDbId" class="asp__select" :disabled="!!kinPreset">
             <option :value="databaseId">{{ t('db.settings.relationSelf') }}</option>
             <option
               v-for="db in allDatabases.filter(d => d.id !== databaseId)"
@@ -256,6 +293,7 @@ function cancel() {
             <button
               class="asp__toggle-btn"
               :class="{ 'asp__toggle-btn--active': relationDirection === 'unilateral' }"
+              :disabled="!!kinPreset"
               @click="relationDirection = 'unilateral'"
             >
               <Icon icon="mdi:arrow-right" width="14" height="14" />
@@ -264,6 +302,7 @@ function cancel() {
             <button
               class="asp__toggle-btn"
               :class="{ 'asp__toggle-btn--active': relationDirection === 'bilateral' }"
+              :disabled="!!kinPreset"
               @click="relationDirection = 'bilateral'"
             >
               <Icon icon="mdi:arrow-left-right" width="14" height="14" />
@@ -272,6 +311,7 @@ function cancel() {
             <button
               class="asp__toggle-btn"
               :class="{ 'asp__toggle-btn--active': relationDirection === 'bilateral_self' }"
+              :disabled="!!kinPreset"
               @click="relationDirection = 'bilateral_self'"
             >
               <Icon icon="mdi:arrow-u-left-top" width="14" height="14" />
@@ -286,6 +326,7 @@ function cancel() {
             v-model="relationMirrorName"
             class="asp__input"
             :placeholder="t('db.settings.relationMirrorPlaceholder')"
+            :disabled="!!kinPreset"
           />
           <p class="asp__hint">{{ t('db.settings.relationMirrorHint') }}</p>
         </div>
@@ -402,9 +443,17 @@ function cancel() {
   text-align: left;
 }
 
-.asp__type-btn:hover {
+.asp__type-btn:hover:not(:disabled) {
   border-color: var(--color-accent);
   color: var(--color-text);
+}
+
+.asp__type-btn:disabled,
+.asp__toggle-btn:disabled,
+.asp__select:disabled,
+.asp__input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .asp__type-btn--active {
@@ -469,6 +518,9 @@ function cancel() {
 }
 
 .asp__hint {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 0.72rem;
   color: var(--color-text-muted);
   margin: 0;
@@ -512,7 +564,7 @@ function cancel() {
   transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 
-.asp__toggle-btn:hover {
+.asp__toggle-btn:hover:not(:disabled) {
   border-color: var(--color-accent);
   color: var(--color-text);
 }

@@ -57,7 +57,13 @@ import {
   type DatabaseEntry,
   type KeyReference,
 } from '@/stores/database'
-import { isReadonlyPropertyType, getSchemaIcon, isCalendarDateSchema } from '@/stores/propertyTypes'
+import {
+  isReadonlyPropertyType,
+  getSchemaIcon,
+  isCalendarDateSchema,
+  isKinshipDeleteLocked,
+} from '@/stores/propertyTypes'
+import { useDatabaseViewsStore } from '@/stores/databaseViews'
 import {
   DEFAULT_GROUP,
   PREF_GROUP_ORDER,
@@ -103,6 +109,9 @@ const props = defineProps<{
 const { t } = useI18n()
 const blockStore = useBlockStore()
 const dbStore = useDatabaseStore()
+const viewsStore = useDatabaseViewsStore()
+/** View types of the database, as far as they are loaded; a family tree locks its family set. */
+const viewTypes = computed(() => viewsStore.getViews(props.databaseId).map((v) => v.viewType))
 const editable = useEditable()
 
 // ── Schemas (excluding __name__) ──────────────────────────────────────────────
@@ -280,7 +289,11 @@ async function requestDelete(schemaId: string): Promise<void> {
     // Second click: actually delete.
     if (confirmDeleteTimer) { clearTimeout(confirmDeleteTimer); confirmDeleteTimer = null }
     confirmDeleteId.value = null
-    await dbStore.deleteSchema(props.databaseId, schemaId)
+    try {
+      await dbStore.deleteSchema(props.databaseId, schemaId)
+    } catch {
+      // Refused (a calendar or a family tree uses the property): it stays.
+    }
     return
   }
 
@@ -746,7 +759,7 @@ async function onGroupHeaderDrop(e: DragEvent, groupName: string): Promise<void>
               <Icon icon="mdi:cog-outline" width="13" height="13" />
             </button>
             <button
-              v-if="editable && !isCalendarDateSchema(schema)"
+              v-if="editable && !isCalendarDateSchema(schema) && !isKinshipDeleteLocked(schema, viewTypes)"
               class="bps__action-btn bps__action-btn--danger"
               :class="{ 'bps__action-btn--confirm': confirmDeleteId === schema.id }"
               :title="confirmDeleteId === schema.id ? t('db.deleteColumnConfirm') : t('actions.delete')"

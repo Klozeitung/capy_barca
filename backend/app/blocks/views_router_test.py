@@ -684,3 +684,36 @@ def test_a_reader_cannot_change_views(private_database, reader_client, method, s
     resp = reader_client.request(method, url, **kwargs)
     assert resp.status_code == 403
     assert resp.json()["detail"] == READ_ONLY_DETAIL
+
+
+# ─── Family tree views ───────────────────────────────────────────────────────
+
+
+def test_turning_a_view_into_a_family_tree_completes_the_family_set(http_client, monkeypatch):
+    import app.blocks.database_events as events
+
+    announced = []
+    monkeypatch.setattr(
+        events, "emit_block_event",
+        lambda db, event_type, block_id, before, after: announced.append((event_type, block_id)),
+    )
+    db_id = _database(http_client)
+    view_id = _views(http_client, db_id)["views"][0]["id"]
+    announced.clear()
+
+    resp = http_client.patch(
+        f"/api/databases/{db_id}/views/{view_id}",
+        json={"view_type": "family_tree"},
+        headers={"Accept-Language": "en-GB,en;q=0.9"},
+    )
+    assert resp.status_code == 200, resp.text
+    names = {s["name"] for s in http_client.get(f"/api/databases/{db_id}/schemas").json()}
+    assert {"Parents", "Children", "Partners", "Siblings", "Half-siblings",
+            "Date of birth", "Time of death", "Sex (biological)"} <= names
+    assert ("database_schema_updated", db_id) in announced
+
+    # A second change finds the set complete and changes no property.
+    announced.clear()
+    resp = http_client.patch(f"/api/databases/{db_id}/views/{view_id}", json={"name": "Tree"})
+    assert resp.status_code == 200, resp.text
+    assert ("database_schema_updated", db_id) not in announced

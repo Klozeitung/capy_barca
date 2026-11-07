@@ -89,10 +89,11 @@ entry keeps the original's icon.
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.blocks import kinship
 from app.blocks import options as opts
 from app.blocks import repository as repo
 from app.blocks import schema_service
@@ -140,17 +141,26 @@ from app.users.model import User
 database_router = APIRouter(prefix="/api/databases", tags=["databases"])
 
 
-def _schema_response(schema, schemas: list) -> SchemaResponse:
+def _nuances(db: Session, user: User, request: Request) -> dict[str, list[dict]]:
+    """The family set's system nuances in the caller's language."""
+    language = kinship.language_for(user.language, request.headers.get("accept-language"))
+    return kinship.catalogue(kinship.load_aliases(db), language)
+
+
+def _schema_response(
+    schema, schemas: list, nuances: Optional[dict[str, list[dict]]] = None,
+) -> SchemaResponse:
     """
     *schema* as the API returns it, with a formula's references as names of
-    *schemas*, the properties of its database.
+    *schemas*, the properties of its database, and a relation of the family
+    set with the system nuances of *nuances* (see ``app.blocks.kinship``).
     """
     return SchemaResponse(
         id=schema.id,
         database_id=schema.database_id,
         name=schema.name,
         type=schema.type,
-        config=schema_service.client_config(schema, schemas),
+        config=schema_service.client_config(schema, schemas, nuances),
         position=schema.position,
         group=schema.group,
     )
@@ -199,16 +209,19 @@ def list_databases(
 )
 def list_schemas(
     database_id: uuid.UUID,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     Return all property schemas for a database, ordered by position, formulas
-    with their references as names.
+    with their references as names, the relations of the family set with
+    their system nuances in the caller's language.
     """
     get_database_or_raise(db, database_id, current_user, Access.READ)
     schemas = repo.list_schemas(db, database_id)
-    return [_schema_response(s, schemas) for s in schemas]
+    nuances = _nuances(db, current_user, request)
+    return [_schema_response(s, schemas, nuances) for s in schemas]
 
 
 @database_router.get(
@@ -276,6 +289,7 @@ def update_database_settings(
 def create_schema(
     database_id: uuid.UUID,
     payload: SchemaCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -301,13 +315,22 @@ def create_schema(
     A formula is stored with its references as property ids. Creating a
     property also binds references other formulas made to its name before it
     existed.
+
+    A reserved name of the family set needs the structure of its role (422)
+    and a role the database does not hold yet (409); nuance options sent for
+    such a relation are dropped, it offers the system nuances (see
+    ``app.blocks.kinship``).
     """
     get_database_or_raise(db, database_id, current_user, Access.WRITE)
     if payload.type == "relation":
         require_relation_targets_access(db, database_id, [payload.config], current_user)
     config = schema_service.keep_server_owned_config(
-        None, opts.normalize_config(payload.type, payload.config),
+        None,
+        kinship.without_client_nuance_options(
+            payload.name, payload.type, opts.normalize_config(payload.type, payload.config),
+        ),
     )
+    kinship.check_new_name(db, database_id, payload.name, payload.type, config)
     position = (
         payload.position
         if payload.position is not None
@@ -351,7 +374,9 @@ def create_schema(
     if mirror_created_in is not None:
         emit_schema_updated(db, mirror_created_in)
 
-    return _schema_response(schema, repo.list_schemas(db, database_id))
+    return _schema_response(
+        schema, repo.list_schemas(db, database_id), _nuances(db, current_user, request),
+    )
 
 
 @database_router.patch(
@@ -362,6 +387,7 @@ def update_schema(
     database_id: uuid.UUID,
     schema_id: uuid.UUID,
     payload: SchemaUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -397,6 +423,11 @@ def update_schema(
       ``schema_service.propagate_to_mirror``).
     * Enabling ``hasTimeline`` wraps the existing values into the timeline
       format (see ``schema_service.migrate_values_for_enabled_timeline``).
+    * A property of the family set cannot be renamed, retyped, keyed or
+      changed in structure, and while a family tree view exists its edge
+      relations keep timeline and nuance (422). Renaming a property to a
+      reserved name follows the rules of creating one. Nuance options sent
+      for a relation of the set are dropped (see ``app.blocks.kinship``).
 
     Options
     -------
@@ -432,15 +463,26 @@ def update_schema(
     old_name = schema.name
     old_config = dict(schema.config or {})
     effective_type = payload.type if payload.type is not None else schema.type
+    effective_name = payload.name if payload.name is not None else schema.name
     new_config = schema_service.keep_server_owned_config(
         old_config,
-        opts.normalize_config(effective_type, payload.config, old_config)
+        kinship.without_client_nuance_options(
+            effective_name,
+            effective_type,
+            opts.normalize_config(effective_type, payload.config, old_config),
+        )
         if config_changed
         else None,
     )
     schema_service.check_calendar_date_lock(schema, payload.type, new_config)
     effective_config = new_config if new_config is not None else schema.config
-    effective_name = payload.name if payload.name is not None else schema.name
+    kinship.check_update(
+        db, schema, new_name=payload.name, new_type=payload.type, new_config=new_config,
+    )
+    if kinship.role_of(schema) is None and payload.name is not None and payload.name != old_name:
+        kinship.check_new_name(
+            db, database_id, effective_name, effective_type, effective_config, schema_id,
+        )
     removed_options, options_relabelled = schema_service.option_changes(
         schema.type, effective_type, old_config, new_config,
     )
@@ -523,7 +565,9 @@ def update_schema(
         raise
 
     emit_entries_updated_for(db, migrated)
-    return _schema_response(updated, repo.list_schemas(db, database_id))
+    return _schema_response(
+        updated, repo.list_schemas(db, database_id), _nuances(db, current_user, request),
+    )
 
 
 @database_router.get(
@@ -578,7 +622,8 @@ def delete_schema(
     Formulas referring to the property keep the reference as its name: they
     stay readable and bind again once a property with that name exists.
 
-    A date property a calendar view uses cannot be deleted (422).
+    A date property a calendar view uses cannot be deleted (422), nor can a
+    property of the family set while a family tree view exists.
 
     Returns 204 No Content on success.
     """
@@ -590,6 +635,7 @@ def delete_schema(
             detail=f"Schema {schema_id} not found in database {database_id}",
         )
     schema_service.check_calendar_date_lock(schema, deleting=True)
+    kinship.check_delete(db, schema)
     try:
         clear_keying_for_property(db, schema_id)
         schema_service.unbind_formula_references(db, schema)

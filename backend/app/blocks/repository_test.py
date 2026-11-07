@@ -1708,3 +1708,40 @@ def test_select_sorts_by_configured_order_when_asked(db, database_block):
     assert _order(db, database_block, schema, "desc")[:3] == [
         entries["o-gamma"].id, entries["o-alpha"].id, entries["o-beta"].id,
     ]
+
+
+# ─── Family set markers ──────────────────────────────────────────────────────
+
+
+def test_create_schema_marks_a_fitting_property_of_the_family_set(db, database_block):
+    schema = repo.create_schema(
+        db, database_id=database_block.id, name="Geburtsdatum", type="date", position=1.0,
+    )
+    db.commit()
+    assert schema.config == {"kinRole": "birth"}
+
+
+def test_update_schema_brings_the_markers_in_line(db, database_block):
+    schema = repo.create_schema(
+        db, database_id=database_block.id, name="Other", type="date", position=1.0, config={},
+    )
+    repo.update_schema(db, schema, name="Time of death")
+    assert schema.config == {"kinRole": "death"}
+    repo.update_schema(db, schema, type="text")
+    assert schema.config == {}
+    db.commit()
+
+
+def test_moving_a_position_leaves_the_markers_alone(db, database_block, monkeypatch):
+    from app.blocks import kinship
+
+    schema = repo.create_schema(
+        db, database_id=database_block.id, name="Geschwister", type="relation", position=1.0,
+        config={"target_database_id": str(database_block.id), "direction": "bilateral_self"},
+    )
+    assert schema.config["kinRole"] == "siblings"
+    calls = []
+    monkeypatch.setattr(kinship, "apply_markers", lambda db, schema: calls.append(schema))
+    repo.update_schema(db, schema, position=2.0)
+    assert calls == []
+    assert schema.config["kinRole"] == "siblings"

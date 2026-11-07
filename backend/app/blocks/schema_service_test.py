@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from app.blocks import schema_service
+from app.blocks import kinship, schema_service
 
 
 # ─── Validation ──────────────────────────────────────────────────────────────
@@ -154,3 +154,32 @@ def test_alerts_retype_without_a_type_change_touches_nothing():
     schema = _schema("Reminders", "alerts")
     assert schema_service.apply_alerts_retype(None, schema, "alerts", None) is False
     assert schema_service.apply_alerts_retype(None, schema, "alerts", "alerts") is False
+
+
+# ─── Family set ──────────────────────────────────────────────────────────────
+
+
+def test_keep_server_owned_config_keeps_the_family_markers():
+    old = {kinship.ROLE_KEY: kinship.BIRTH}
+    new = {"includeTime": True, kinship.ROLE_KEY: kinship.DEATH}
+    assert schema_service.keep_server_owned_config(old, new) == {
+        "includeTime": True, kinship.ROLE_KEY: kinship.BIRTH,
+    }
+    assert schema_service.keep_server_owned_config(None, new) == {"includeTime": True}
+
+
+def test_client_config_adds_the_system_nuances_of_a_marked_relation():
+    config = {"direction": "bilateral_self", kinship.ROLE_KEY: kinship.SIBLINGS}
+    catalogue = kinship.catalogue(
+        [{"id": "a-1", "group": kinship.GROUP_SIBLINGS, "base": None, "label": "Label A"}], "en",
+    )
+    shown = schema_service.client_config(_schema("Siblings", "relation", config), [], catalogue)
+    assert shown["nuance"] == {"enabled": False, "options": [{"id": "a-1", "label": "Label A"}]}
+    assert "nuance" not in config
+
+
+def test_portable_config_leaves_the_family_markers_behind():
+    schema = _schema("Sex (biological)", "select", {
+        "options": [], kinship.ROLE_KEY: kinship.SEX, kinship.FEMALE_OPTION_KEY: "o-1",
+    })
+    assert schema_service.portable_config(None, schema) == {"options": []}
